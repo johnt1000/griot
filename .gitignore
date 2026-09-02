@@ -1,0 +1,50 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.python-version
+
+# --- build / packaging ---
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+pip-wheel-metadata/
+
+# --- segredos e config local (nunca commitar) ---
+.env
+.env.*
+*.env
+
+# --- dados/estado do griot (vivem em ~/.local/share/griot e ~/.config/griot;
+#     entradas mantidas como defesa pra quem rodar com GRIOT_DATA_DIR=.) ---
+qdrant_data/
+logs/
+.spend_state.json
+.griot.lock
+repos.json
+quality_golden_set.json
+
+# --- internal design notes: kept on disk, out of the public repo ---
+docs/mcp-server-plan.md
+CLAUDE.md
+
+# --- ferramentas / IDE / SO ---
+.claude/
+.idea/
+.vscode/
+.DS_Store
+
+# Pre-open-source internal README, kept out of the repo
+docs/README-interno-ptbr.md
