@@ -1,0 +1,108 @@
+---
+name: griot-workflows
+description: Day-to-day usage of an EXISTING griot index — griot search vs griot ask (vector-only vs paid synthesis), group_by_document tradeoffs, reading source_type on results, and (when working via Claude Code with griot's MCP server attached) the existing MCP prompts for common investigations. Use once an index already exists; for first-time setup see griot-onboarding, for indexing decisions see griot-indexing.
+---
+
+# griot workflows
+
+## `griot search` vs `griot ask`
+
+`griot search` is **vector search only** — free (aside from embedding the
+query itself, which costs nothing on the default local profile), no LLM
+call:
+
+```bash
+griot search "where is the retry logic for the payment API?" --limit 5
+```
+
+`griot ask` is search **plus LLM synthesis** into a written answer, and it
+is a **paid path** — it calls a chat provider (default `gemini`, needing
+`GEMINI_TOKEN`; switchable with `--chat-profile`/`GRIOT_CHAT_PROFILE`):
+
+```bash
+griot ask "how does authentication work in this codebase?" --show-sources
+```
+
+Reach for `search` when you (or the agent you're working through) can read
+and reason over raw excerpts yourselves — this is the common case if you're
+an agent with your own LLM already in the loop, since paying for a second
+synthesis layer adds nothing. Reach for `ask` when a human wants a written,
+cited answer directly, or when the context is too large/scattered to reason
+over by hand. `griot ask --show-sources` prints every source it used, which
+is worth turning on whenever you want to verify the answer against the
+underlying excerpts.
+
+If you're an agent talking to griot over MCP: **there is no `griot_ask`
+MCP tool, deliberately** — you already have your own LLM, so use
+`griot_search` and reason over the results yourself.
+
+## `group_by_document`
+
+`griot_search` (MCP tool) and the underlying search function take an
+optional `group_by_document` parameter — off by default. It collapses each
+document's matching chunks down to its single best-scoring chunk.
+
+- **Off (default)** favors **depth**: repeated hits from the same file,
+  commit, or PR are usually *not* redundant — they're different chunks of
+  the same document each carrying different, real information. This is
+  what you want when you expect the answer to live in one or two
+  documents and want as much of their content as fits in `limit` results.
+- **On** favors **breadth**: the same `limit` reaches more distinct files,
+  commits, and PRs, at the cost of only seeing each one's best chunk. Use
+  this when you're not sure which document has the answer and want to
+  survey more of them before drilling in.
+
+The CLI's `griot search` has no flag for this — it always searches
+ungrouped. `group_by_document` is MCP/programmatic-only.
+
+## Reading `source_type`
+
+Every search result carries `source_type`: `code`, `commit`, `tag`,
+`branch`, `merge_request`, `release`, or `issue`. This is the field worth
+branching on, because the same question is answered differently depending
+on which kind of source responds:
+
+- **code** — what the implementation does *now*.
+- **commit** — *when* it changed, and the commit message's own account of
+  why.
+- **merge_request** — what was argued *before* the change was accepted.
+- **issue** — what problem *started* the change in the first place.
+
+**There is no filter parameter** on `griot_search` — it takes a query and a
+limit, nothing else. Covering several kinds of source for one question
+means varying the query wording and then sorting/reading the results by
+`source_type` yourself; griot doesn't do that for you. (`griot search`
+prints a labeled excerpt per hit, e.g. `commit a1b2c3d4 — my-service` or
+`MR !245 (merged) — my-api`, so the source kind is visible at a glance even
+from the CLI.)
+
+## If you're working through Claude Code with griot's MCP server attached
+
+griot ships four MCP prompts, surfaced as slash commands, that already
+encode multi-step investigation strategies — don't re-derive the same
+reasoning by hand when one of these already does it:
+
+| Command | Use it for |
+|---|---|
+| `/mcp__griot__stats` | A read usage/spend snapshot — same report as `griot stats`. |
+| `/mcp__griot__history` | Investigating a "why is this like this" question across every source type (code, commits, PRs, issues) as a cited history, oldest cause first — the multi-source strategy described above, already automated. |
+| `/mcp__griot__health` | Whether the index is currently worth trusting, and which kind of failure it is if not. |
+| `/mcp__griot__overview` | What's indexed here, and which registered repos are no longer usable. |
+
+A prompt only injects text — the actual work still happens as a tool call
+(`griot_search`, `griot_stats`, etc.), so invoking one never spends money or
+runs anything in the background on its own.
+
+## `griot stats` — usage and spend snapshot
+
+```bash
+griot stats               # last 30 days by default
+griot stats --days 7
+griot stats --json        # raw JSON instead of the formatted report
+```
+
+Reports indexing runs (embedded/skipped/failed, reuse rate), API spend
+against the daily ceiling, query volume and latency, which source types
+answered most queries, and — if any quality checks have been run — a
+pass-rate trend. If you're an agent, `griot_stats` (or the `stats`/`history`
+prompts above) gives you the same data without shelling out.
