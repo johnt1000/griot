@@ -1,0 +1,92 @@
+[build-system]
+# >=77: license as an SPDX string + license-files are PEP 639 — setuptools
+# 68-76 would satisfy a lower floor and fail metadata validation.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "griot"
+version = "0.1.0"
+description = "Local-first RAG over your git repositories — index code, git history and platform data (PRs/issues/releases) into an embedded vector store, search it and ask questions from the CLI or via MCP"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "johnt1000" }]
+requires-python = ">=3.10"
+keywords = ["rag", "vector-search", "git", "mcp", "mcp-server", "claude-code",
+            "code-search", "semantic-search", "local-first", "developer-tools",
+            "qdrant", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Text Processing :: Indexing",
+]
+# psutil: acquire_lock()/get_index_status() need Process.create_time() to
+# detect PID recycling in the lock (see common.py).
+# qdrant-edge-py: real in-process Qdrant engine — the default storage
+# backend (not an optional prototype).
+# mcp: MCP server SDK (`griot mcp`).
+dependencies = [
+    "requests",
+    "tqdm",
+    "python-dotenv",
+    # fastembed only: the ONNX embedding runtime for the local profiles.
+    # qdrant-client itself is never imported — the vector store is
+    # qdrant-edge-py, in-process. Pulled through the extra rather than
+    # depending on fastembed directly because that is how the pinned,
+    # compatible pairing is published.
+    "qdrant-client[fastembed]",
+    "psutil",
+    "qdrant-edge-py",
+    "mcp>=2.0.0",
+    # Declared explicitly although pydantic already pulls it in: mcp_server.py
+    # imports TypedDict from here because pydantic rejects typing.TypedDict on
+    # Python < 3.12, and relying on a transitive dependency for something this
+    # module cannot import without would break on any resolution that drops it.
+    "typing-extensions>=4.6",
+    # Same reasoning as typing-extensions: mcp_server.py imports BaseModel from
+    # pydantic directly, so it must not rely on `mcp` continuing to pull it in.
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# OS keychain storage for credentials (macOS Keychain / Linux Secret
+# Service / Windows Credential Manager) — opt-in, not a core dependency:
+# common.py's keychain wrappers already degrade to the existing file-based
+# .env storage when this isn't installed or no backend is reachable
+# (headless Linux without a Secret Service provider, a container, etc.),
+# so griot's core CLI/MCP behavior never depends on it.
+keychain = ["keyring>=24"]
+
+[project.urls]
+Homepage = "https://github.com/johnt1000/griot"
+Repository = "https://github.com/johnt1000/griot"
+Issues = "https://github.com/johnt1000/griot/issues"
+Changelog = "https://github.com/johnt1000/griot/blob/main/CHANGELOG.md"
+
+[project.scripts]
+griot = "griot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Without this, the bundled skill/agent .md files under resources/ (see
+# harnesses.py) work in an editable install (files are read straight off the
+# source tree) but are silently OMITTED from a real built wheel — `pip
+# install griot` outside this dev checkout would ship `griot assist install`
+# with nothing to install.
+[tool.setuptools.package-data]
+griot = ["resources/skills/**/*.md", "resources/agents/**/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
