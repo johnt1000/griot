@@ -1,0 +1,1938 @@
+import hashlib
+import json
+import logging
+import os
+import shutil
+import stat
+import time
+import uuid
+from pathlib import Path
+
+import psutil
+import qdrant_edge as qe
+import requests
+from dotenv import load_dotenv, set_key, unset_key
+from fastembed import TextEmbedding
+from tqdm import tqdm
+
+from griot import logdb
+
+# Where user config and data live: explicit
+# override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
+# otherwise honors XDG_CONFIG_HOME/XDG_DATA_HOME, otherwise falls back to
+# ~/.config and ~/.local/share — even on macOS (departs from the "correct"
+# ~/Library/Application Support, but it's the convention most dev CLIs
+# follow today regardless of OS). No platformdirs on purpose: it would be
+# one more dependency just for this. No directory is created here at
+# import time — whoever writes to them creates them on demand
+# (mkdir parents=True exist_ok=True).
+CONFIG_DIR = Path(os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))) / "griot"
+DATA_DIR = Path(os.getenv("GRIOT_DATA_DIR", os.getenv("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))) / "griot"
+
+# User-editable config — lives in CONFIG_DIR, never inside the installed
+# code (site-packages is immutable/shared). The indexers and quality_check
+# resolve repos.json/quality_golden_set.json from HERE now, instead of each
+# one doing its own Path(__file__).parent.
+ENV_PATH = CONFIG_DIR / ".env"
+REPOS_JSON_PATH = CONFIG_DIR / "repos.json"
+GOLDEN_SET_PATH = CONFIG_DIR / "quality_golden_set.json"
+
+# Persistent execution log — print()/log_and_print() disappear once the
+# terminal session ends. Writes to a file (plain text, for debugging)
+# WITHOUT duplicating to the console — tqdm already handles showing it on
+# screen without breaking the progress bar; log_and_print() just mirrors the
+# same message to the file.
+LOG_DIR = DATA_DIR / "logs"
+
+_logger = logging.getLogger("griot")
+_logger.setLevel(logging.INFO)
+
+
+# [findings M2/L4 from the 2026-08-19 security audit] Only .env had
+# permission handling — logs (the user's question, source labels),
+# .spend_state.json, repos.json, quality_golden_set.json and the whole
+# qdrant_data/ (a recoverable plaintext copy of everything indexed) were
+# born with the default umask (0644/0755, readable by any local user).
+# These helpers are the ONE path through which griot writes data: files
+# 0600, directories 0700 — and writing to a pre-existing file repairs its
+# permission (an old install inherits the fix on its first write).
+
+def secure_mkdir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+
+
+def secure_append_line(path: Path, line: str) -> None:
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)  # O_CREAT only applies the mode on creation — repairs legacy files
+        with os.fdopen(fd, "a") as f:
+            fd = None  # fdopen takes ownership of the fd; avoid a double close
+            f.write(line)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def secure_write_text(path: Path, text: str) -> None:
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            fd = None
+            f.write(text)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def secure_write_text_atomic(path: Path, text: str) -> None:
+    """Same 0600 contract as secure_write_text(), but crash-safe: writes to
+    a sibling .tmp file first and os.replace()s it into place, so a crash
+    mid-write (Ctrl-C, OOM kill) can never leave `path` truncated/corrupted
+    — the previous version (or its absence) survives intact. Extracted
+    from the spend-state writer (which had this exact tmp+rename pattern
+    inline) so any other writer of a small, easily-corrupted state file
+    (repos.json, the same file every registration path writes to)
+    gets the identical guarantee instead of reimplementing it. Caller is
+    responsible for secure_mkdir()'ing the parent first, same as
+    secure_write_text().
+
+    [real bug, reproduced with 6 concurrent processes] The scratch file is
+    named per-writer (pid suffix), NOT a fixed `<target>.tmp`: with a
+    shared name, two processes writing the same target raced on the same
+    scratch path — one os.replace()d it out from under the other, and the
+    loser died with FileNotFoundError mid-write, crashing a real griot
+    process during a paid indexing run. os.replace() is still atomic, so
+    the last writer wins cleanly instead of both corrupting each other."""
+    tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    try:
+        secure_write_text(tmp_path, text)  # already 0600 on the tmp file — the rename preserves it
+        os.replace(tmp_path, path)
+    finally:
+        # A failure between write and replace would otherwise leave this
+        # process's scratch file behind forever (its name is unique, so
+        # nothing else would ever reclaim it).
+        tmp_path.unlink(missing_ok=True)
+
+
+# Provider -> one-line description for the credentials section of the
+# generated .env template (ensure_env_template() below). Not the source of
+# truth for WHICH providers exist — that's auth._providers() (derived from
+# EMBED_PROFILES/CHAT_PROFILES + the 5 platform tokens); this is only extra
+# prose for a provider auth._providers() already knows about. A provider
+# missing here just gets a generic fallback comment, never breaks.
+_ENV_TEMPLATE_PROVIDER_NOTES = {
+    "gemini": "default chat profile; not the default embed profile (jina-code, local, is)",
+    "openai": "shared by the 'openai-small' embed profile and the 'openai' chat profile — same account/key",
+    "deepseek": "chat profile only",
+    "groq": "chat profile only, free tier by default (see GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS below)",
+    "github": "for `griot index platform` against GitHub repos",
+    "gitlab": "for `griot index platform` against GitLab repos (incl. self-hosted, see GRIOT_GITLAB_API_BASE)",
+    "bitbucket": "for `griot index platform` against Bitbucket Cloud repos",
+    "azure_devops": "for `griot index platform` against Azure Repos",
+    "gitea": "for `griot index platform` against Gitea/Forgejo (also needs GRIOT_GITEA_HOSTS)",
+}
+
+# (var, default, comment, leave_commented) — operational settings that
+# already have a literal default in code (os.getenv(name, default)
+# elsewhere in this file/mcp_server.py/platforms.py). Writing the same
+# default here explicitly is behaviorally IDENTICAL to leaving the var
+# unset — pure documentation, zero behavior change. Keep this in sync if a
+# new such var is added.
+#
+# leave_commented=True is REQUIRED (not cosmetic) for any var whose
+# consuming code distinguishes "absent" from "present but empty" via an
+# `is not None` check rather than a falsy check — e.g. _optional_float_env()
+# below, used by the openai/deepseek/groq chat price vars. [real bug found
+# via smoke test] writing `VAR=` (present, empty) makes os.getenv(name)
+# return "", which passes the `is not None` check and then crashes on
+# float(""). Only a genuinely absent (commented-out) line reproduces "not
+# configured" for these. The credential vars in _providers() don't have
+# this problem — they're all checked with `if not token`, where "" and
+# None behave identically — so they're written empty, not commented.
+_ENV_TEMPLATE_SETTINGS = [
+    ("GRIOT_EMBED_PROFILE", "jina-code", "active embedding profile — see `griot profiles list`", False),
+    ("GRIOT_CHAT_PROFILE", "gemini", "active chat profile for `griot ask` — gemini/openai/deepseek/groq", False),
+    ("GRIOT_CHAT_MODEL", "gemini-2.5-flash", "model override within the gemini chat profile", False),
+    ("GRIOT_OPENAI_CHAT_MODEL", "gpt-4o-mini", "model override within the openai chat profile", False),
+    ("GRIOT_DEEPSEEK_CHAT_MODEL", "deepseek-chat", "model override within the deepseek chat profile", False),
+    ("GRIOT_GROQ_CHAT_MODEL", "llama-3.3-70b-versatile", "model override within the groq chat profile", False),
+    ("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50", "USD/1M tokens for the gemini chat profile (confirmed price, override if it changes)", False),
+    ("GRIOT_OPENAI_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile openai — griot never guesses a paid price. Uncomment and set a real value.", True),
+    ("GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile deepseek — same reason. Uncomment and set a real value.", True),
+    ("GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS", "", "optional — defaults to $0 (free tier) if left commented out; uncomment only if that changes", True),
+    ("GRIOT_SPEND_CEILING_USD", "3.0", "daily spend ceiling for the local circuit breaker", False),
+    ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
+    ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
+    ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
+    ("GRIOT_MCP_ENABLE_INDEX", "false", "set to true to enable the griot_index_repo MCP tool (can spend money on a paid profile)", False),
+    ("GRIOT_MCP_INDEX_ROOTS", "", "':'-separated directory prefixes allowed for MCP indexing, e.g. /Users/you/code — empty means only repos.json entries are allowed", False),
+    ("GRIOT_MCP_CONCURRENCY_MODE", "single", "single (default, zero overhead) or multi (releases the collection handle when idle, for concurrent griot mcp sessions)", False),
+    ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
+    ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
+    ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
+]
+
+
+def ensure_env_template() -> None:
+    """Creates <config_dir>/.env pre-populated with every environment
+    variable griot supports, each on its own line with an explanatory
+    comment — real defaults written out explicitly (behaviorally identical
+    to leaving them unset, pure documentation), credentials as empty
+    placeholders (never a fake value). No-op if the file already exists —
+    never overwrites real configuration.
+
+    This is the closest thing to "on install" a plain pip/pipx package can
+    hook into (no reliable post-install hook exists) — called from
+    cli.main() on every invocation (cheap no-op after the first) and from
+    auth._ensure_env_file() (so `griot auth set` alone triggers it too,
+    even if some other command never ran first)."""
+    if ENV_PATH.exists():
+        return
+    from griot import auth  # lazy: auth.py imports common.py at module load, avoid the cycle
+
+    lines = [
+        "# griot configuration — generated on first run.",
+        "# Uncomment/edit only what you need; every setting below already carries",
+        "# griot's built-in default written out explicitly, so nothing here changes",
+        "# behavior until you actually change a value.",
+        "#",
+        "# GRIOT_CONFIG_DIR / GRIOT_DATA_DIR are NOT listed here on purpose — they",
+        "# decide WHERE this file lives, so they must be real shell/session",
+        "# environment variables, never a line inside it.",
+        "",
+        "# --- Embedding & chat credentials ---",
+    ]
+    for provider, env_var in sorted(auth._providers().items()):
+        note = _ENV_TEMPLATE_PROVIDER_NOTES.get(provider, f"credential for the '{provider}' provider")
+        lines.append(f"# {provider} — {note}")
+        lines.append(f"{env_var}=")
+    lines.append("")
+    lines.append("# --- Profiles, pricing, spend limits, logging, MCP server, platforms ---")
+    for var, default, comment, leave_commented in _ENV_TEMPLATE_SETTINGS:
+        lines.append(f"# {comment}")
+        prefix = "#" if leave_commented else ""
+        lines.append(f"{prefix}{var}={default}")
+
+    secure_mkdir(ENV_PATH.parent)
+    secure_write_text(ENV_PATH, "\n".join(lines) + "\n")
+
+
+def env_file_set(var: str, value: str) -> None:
+    """The single write path INTO <config_dir>/.env for an arbitrary var
+    (credential or operational setting). Ensures the template exists first
+    (so this works even on a fresh install), writes via dotenv's set_key(),
+    and re-applies 0600 — set_key() rewrites the WHOLE file, so the
+    permission guaranteed at creation may not survive the rewrite depending
+    on umask. Extracted from auth.cmd_set() (which used to do this inline)
+    so any other writer reuses the exact same
+    discipline instead of duplicating it and risking a missed chmod.
+
+    [review] Known cosmetic wart, consciously accepted: dotenv's set_key()
+    doesn't recognize an existing COMMENTED-OUT line for `var` as "already
+    present" — setting a var that ships pre-commented in the template (the
+    3 leave_commented price vars) leaves the stale `#VAR=` line in place
+    and appends a new active `VAR=value` line below it. Harmless
+    functionally (dotenv_values()/os.getenv() only ever see the active
+    line, never the commented one), just a redundant leftover a hand-edit
+    of .env would find odd. Not worth the complexity of post-processing
+    the file to strip it."""
+    ensure_env_template()
+    set_key(ENV_PATH, var, value)
+    ENV_PATH.chmod(0o600)
+
+
+def env_file_unset(var: str) -> None:
+    """Removes one var's line from .env entirely — no-op if it's already
+    absent. Clearing a `leave_commented=True` setting must go through here:
+    a removed line, never a written-but-empty `VAR=`, which several readers
+    would treat as "present and empty" rather than "unset"."""
+    if not ENV_PATH.exists():
+        return
+    unset_key(ENV_PATH, var)
+
+
+def _ensure_log_handler() -> None:
+    """FileHandler created on demand (not at import time): LOG_DIR lives in
+    DATA_DIR, and the directory is only created by whoever actually writes
+    to it. Reads LOG_DIR as a module attribute at call time — tests swap
+    LOG_DIR (and the logger's handlers) via monkeypatch without touching the
+    real one."""
+    if not _logger.handlers:
+        secure_mkdir(LOG_DIR)
+        log_path = LOG_DIR / "griot.log"
+        _handler = logging.FileHandler(log_path)
+        os.chmod(log_path, 0o600)  # FileHandler creates with the default umask
+        _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        _logger.addHandler(_handler)
+
+
+def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
+    from tqdm import tqdm as _tqdm
+    _ensure_log_handler()
+    # [shared config path] echo=False keeps the persistent log entry (audit trail
+    # intact) while omitting stdout — needed by `griot quality-check
+    # --json`, whose stdout contract is "JSON payload only" (jobs.py's
+    # subprocess caller parses it as such; any stray line would break that).
+    if echo:
+        _tqdm.write(msg)
+    getattr(_logger, level)(msg)
+
+
+def log_run_summary(**fields) -> None:
+    """Records a structured record per indexer run — script, profile, repo,
+    indexed/skipped/failed counts, duration, estimated spend for the day.
+    Queryable history afterward (cost + execution), without depending on
+    the terminal it ran in. Stored in logs/logs.db (SQLite, see logdb.py —
+    replaced the old logs/runs.jsonl in 2026-08-21: that file had to be
+    read and re-parsed in full on every griot stats call, with
+    no rotation, so the cost grew unboundedly with history)."""
+    from datetime import datetime, timezone
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "profile": ACTIVE_PROFILE_NAME,
+        "collection": COLLECTION_NAME,
+        **fields,
+    }
+    secure_mkdir(LOG_DIR)
+    logdb.write_run(LOG_DIR, record)
+
+
+def log_questions_enabled() -> bool:
+    """[finding M1 from the audit, 2026-08-19] queries.jsonl stores the full
+    question forever — GRIOT_LOG_QUESTIONS=false allows turning off just the
+    question text without losing the metrics (latency, sources, spend).
+    Read at call time (not at import time) so it can be controlled
+    per-invocation."""
+    return os.getenv("GRIOT_LOG_QUESTIONS", "true").lower() not in ("0", "false")
+
+
+def log_query(**fields) -> None:
+    """Same idea as log_run_summary(), but for ask.py queries (not
+    indexing) — a separate table (logs/logs.db's `queries` table) so as
+    not to mix the two record types in the same analysis."""
+    from datetime import datetime, timezone
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "profile": ACTIVE_PROFILE_NAME,
+        "collection": COLLECTION_NAME,
+        **fields,
+    }
+    secure_mkdir(LOG_DIR)
+    logdb.write_query(LOG_DIR, record)
+
+
+def _check_env_file_permissions(env_path: Path) -> None:
+    """[review] <config_dir>/.env holds secrets (GEMINI_TOKEN,
+    GITLAB_PERSONAL_ACCESS_TOKEN) — if it exists with a permission more open
+    than 0600 (readable by group/others), warns and tries to fix it with
+    chmod 0600. If the chmod fails (e.g. file owned by someone else), only
+    the warning remains."""
+    if not env_path.is_file():
+        return
+    mode = stat.S_IMODE(env_path.stat().st_mode)
+    if mode & 0o077:
+        log_and_print(
+            f"Warning: {env_path} has permission {oct(mode)} (more open than 0600) "
+            f"and holds secrets — fixing to 0600.",
+            level="warning",
+        )
+        try:
+            env_path.chmod(0o600)
+        except OSError as e:
+            log_and_print(f"Warning: could not fix the permission of {env_path}: {e}", level="warning")
+
+
+# griot is independent of litellm/ — it never points at that .env. If a
+# <config_dir>/.env exists, loads from there;
+# otherwise, the variables (GEMINI_TOKEN, GITLAB_PERSONAL_ACCESS_TOKEN)
+# already come from the shell (~/.bashrc / ~/.zshrc).
+_check_env_file_permissions(ENV_PATH)
+load_dotenv(dotenv_path=ENV_PATH)
+
+# Rename RAG_* -> GRIOT_*: values under the
+# old names are IGNORED — better to warn loudly than to let, say, a
+# configured spend ceiling under the old name silently fall back to the
+# default.
+_LEGACY_ENV_RENAMES = {
+    "RAG_EMBED_PROFILE": "GRIOT_EMBED_PROFILE",
+    "RAG_SPEND_CEILING_USD": "GRIOT_SPEND_CEILING_USD",
+    "RAG_SPEND_VELOCITY_CEILING_USD": "GRIOT_SPEND_VELOCITY_CEILING_USD",
+    "RAG_CHAT_MODEL": "GRIOT_CHAT_MODEL",
+    "RAG_CHAT_PRICE_PER_1M_TOKENS": "GRIOT_CHAT_PRICE_PER_1M_TOKENS",
+    "RAG_MAX_CONSECUTIVE_FAILED_BATCHES": "GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES",
+}
+
+
+def warn_legacy_env_vars() -> None:
+    for old, new in _LEGACY_ENV_RENAMES.items():
+        if os.getenv(old) is not None:
+            log_and_print(
+                f"Warning: the env var {old} was renamed and is IGNORED — use {new}.",
+                level="warning",
+            )
+
+
+warn_legacy_env_vars()
+
+
+def load_repos() -> list[str]:
+    """List of repo paths to index — CONFIG_DIR/repos.json (user config,
+    the design notes). Centralized here so the five indexers don't
+    each resolve the path their own way."""
+    with open(REPOS_JSON_PATH, "r") as f:
+        return json.load(f)
+
+
+# griot doesn't depend on LiteLLM/Docker at any point — indexing and
+# search are local (embedded Qdrant + fastembed), and ask.py's chat call
+# goes straight to Google's API (GEMINI_TOKEN), no proxy in between.
+# GEMINI_TOKEN is only required at the moment of use (the "gemini" embedding
+# profile, or the chat answer) — it doesn't fail here at import time, so as
+# not to break users of local-only profiles (jina-code/bge-m3), which need
+# no credential at all.
+GEMINI_TOKEN = os.getenv("GEMINI_TOKEN")
+
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+QDRANT_PATH = DATA_DIR / "qdrant_data"
+
+# Migration to Qdrant Edge (that decision— validated in an
+# isolated prototype before the migration): EdgeShard is a shard per
+# DIRECTORY (a real in-process Qdrant engine), unlike the old QdrantClient,
+# which multiplexed several collections into a single path. Each collection
+# (one per embedding profile, see COLLECTION_NAME below) gets its own
+# subdirectory inside QDRANT_PATH.
+def _collection_path(collection: str) -> Path:
+    return QDRANT_PATH / collection
+
+
+# Marker that a subdirectory already contains an Edge shard — always
+# written on create(), so its presence distinguishes "create from scratch"
+# from "load existing" without trial-and-error (EdgeShard.create() fails
+# explicitly if the path already has segment data).
+_EDGE_CONFIG_MARKER = "edge_config.json"
+
+# Same HnswIndexConfig validated in docs/benchmarks/bench_edge.py and
+# replicated in the migration prototype (m=16, ef_construct=100) — a
+# reasonable starting point; full_scan_threshold high enough not to affect
+# small corpora (tests, a fresh install), which fall back to brute force,
+# which is correct by definition.
+_HNSW_CONFIG = qe.HnswIndexConfig(m=16, ef_construct=100, full_scan_threshold=10000)
+
+# Available embedding profiles. Switching profile = switching collection
+# (name derived from the profile) — vectors from different models aren't
+# comparable with each other, so each profile is isolated by design, with
+# no risk of mixing incompatible vector spaces in the same search.
+#
+# "direct": embeds by calling the Google API directly (batchEmbedContents),
+#           with GEMINI_TOKEN — no LiteLLM, no Docker, API cost.
+# "local":  embeds locally via fastembed/ONNX (slow on CPU, but offline —
+#           no network dependency at all for indexing or searching).
+# "price_per_1m_tokens" (USD) only exists on paid profiles — feeds the
+# local circuit breaker below. Local/no-cost profiles simply omit the field.
+# "ram_tier"/"onnx_size_mb"/"rss_estimate_mb" (only on "local" profiles):
+# RAM metadata from the design notes, used by `griot profiles
+# list` (section 9.3) to group by tier and flag what comfortably fits the
+# machine detected via psutil. rss_estimate_mb is an engineering ESTIMATE
+# (1.3-1.8x factor over onnx_size_mb — memory arena + activation tensors +
+# tokenizer), not a measurement — document it as such, never as a
+# benchmark.
+EMBED_PROFILES = {
+    "gemini": {
+        "backend": "direct",
+        "model": "gemini-embedding-2",
+        "dim": 768,
+        "price_per_1m_tokens": 0.20,  # confirmed 2026-08 (same price as before — same model, only the call path changed)
+    },
+    "openai-small": {
+        "backend": "direct",
+        "request_style": "openai_compatible",  # generic adapter — see _embed_texts_openai_compatible()
+        "endpoint_url": "https://api.openai.com/v1/embeddings",
+        "model": "text-embedding-3-small",
+        "dim": 1536,
+        "price_per_1m_tokens": 0.02,
+        "api_key_env": "GRIOT_OPENAI_API_KEY",  # griot's own name, never the generic "OPENAI_API_KEY" — a scoped key avoids any other local tool inheriting it
+    },
+    "bge-small": {
+        "backend": "local", "model": "BAAI/bge-small-en-v1.5", "dim": 384,
+        "ram_tier": "light", "onnx_size_mb": 67, "rss_estimate_mb": (90, 120),
+    },
+    "nomic-q": {
+        "backend": "local", "model": "nomic-ai/nomic-embed-text-v1.5-Q", "dim": 768,
+        "ram_tier": "light", "onnx_size_mb": 130, "rss_estimate_mb": (170, 235),
+    },
+    "jina-code": {   # default — unchanged, just gains ram_tier (it was implicitly "light")
+        "backend": "local", "model": "jinaai/jina-embeddings-v2-base-code", "dim": 768,
+        "ram_tier": "medium", "onnx_size_mb": 640, "rss_estimate_mb": (830, 1150),
+    },
+    "mxbai-large": {
+        "backend": "local", "model": "mixedbread-ai/mxbai-embed-large-v1", "dim": 1024,
+        "ram_tier": "medium", "onnx_size_mb": 640, "rss_estimate_mb": (830, 1150),
+    },
+    "bge-m3": {   # unchanged, only ram_tier/onnx_size_mb corrected (was ~1GB, is 2.27GB confirmed in fastembed#602)
+        "backend": "local", "model": "BAAI/bge-m3", "dim": 1024,
+        "ram_tier": "heavy", "onnx_size_mb": 2270, "rss_estimate_mb": (2950, 4100),
+    },
+    "bge-large-en": {
+        "backend": "local", "model": "BAAI/bge-large-en-v1.5", "dim": 1024,
+        "ram_tier": "heavy", "onnx_size_mb": 1200, "rss_estimate_mb": (1560, 2160),
+    },
+}
+
+
+def _resolve_profile(name: str) -> dict:
+    """Validates a profile name against EMBED_PROFILES — extracted from the
+    import-time resolution so it can be reused by set_active_profile()
+    (override via the CLI's --profile, the design notes) without
+    duplicating the error message."""
+    if name not in EMBED_PROFILES:
+        raise ValueError(
+            f"Unknown embedding profile {name!r}. "
+            f"Options: {', '.join(EMBED_PROFILES)} (or add a new one to EMBED_PROFILES, common.py)"
+        )
+    return EMBED_PROFILES[name]
+
+
+ACTIVE_PROFILE_NAME = os.getenv("GRIOT_EMBED_PROFILE", "jina-code")
+if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
+    raise ValueError(
+        f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}. "
+        f"Options: {', '.join(EMBED_PROFILES)} (or add a new one to EMBED_PROFILES, common.py)"
+    )
+ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
+
+
+def collection_name_for(profile_name: str) -> str:
+    """The "codebase__{profile}" naming pattern, formalized — used to only
+    exist inline for the active profile (COLLECTION_NAME below). Callers that
+    report status per profile — `griot profiles list`, griot_profiles_list —
+    need the collection name for every embed profile, not just the active
+    one."""
+    return f"codebase__{profile_name}"
+
+
+COLLECTION_NAME = collection_name_for(ACTIVE_PROFILE_NAME)
+EMBED_DIM = ACTIVE_PROFILE["dim"]
+# The "50" for the "direct" backend is tuned for a different reason (the
+# Gemini batchEmbedContents API's request batch size) — don't touch it. The
+# "local" one went from 20 to 128: research
+# showed fastembed's .embed() has an internal default of 256, and a batch
+# of 20 sits well below the ONNX Runtime's efficiency sweet spot on CPU —
+# peak throughput at a batch of ~128 for quantized models, and even a
+# non-quantized model benefits from batches larger than 20.
+INDEX_BATCH_SIZE = 50 if ACTIVE_PROFILE["backend"] == "direct" else 128
+# Explicit batch_size passed to fastembed's .embed() (the "local" branch of
+# embed_texts) — same reasoning as above (section 10.2, item 1). Kept as a
+# separate constant from INDEX_BATCH_SIZE because the two could diverge in
+# the future (one controls the outer slicing for content_hash/upsert
+# checking, the other ONNX's internal batch size); today they share the
+# same value by coincidence.
+EMBED_CALL_BATCH_SIZE = 128
+
+# ask.py's chat model — a direct call to generateContent (Google's API),
+# no LiteLLM. "-latest" (gemini-flash-latest) was tried first but rejected
+# thinkingConfig.thinkingBudget=0 on that version; gemini-2.5-flash accepts
+# explicitly turning off "thinking", which is what we want here — RAG is
+# simple synthesis over already-retrieved context, it doesn't need extended
+# reasoning (tested: 213 "thinking" tokens billed on a trivial question
+# without thinkingBudget=0, ~0 with it).
+CHAT_MODEL = os.getenv("GRIOT_CHAT_MODEL", "gemini-2.5-flash")
+# The API doesn't expose a separate prompt/completion price in the
+# response — we use the more expensive ceiling (output tokens) as a
+# conservative estimate, so as to never UNDERestimate real spend against the
+# circuit breaker (the opposite would be dangerous). Adjust via env if you
+# know the exact contracted price.
+CHAT_PRICE_PER_1M_TOKENS = float(os.getenv("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50"))
+
+
+def _optional_float_env(name: str) -> float | None:
+    """None when the env var isn't set — used by chat profiles without a
+    confirmed price (openai/deepseek, 2026-08-13): griot never guesses an
+    unverified price (same discipline as an earlier decision/24, about
+    not including an unconfirmed embedding price). chat_completion() refuses
+    to call a profile with price_per_1m_tokens=None, forcing the user to
+    confirm before any real spend."""
+    value = os.getenv(name)
+    return float(value) if value is not None else None
+
+
+# Chat profiles (2026-08-13) — generalizes what used to be Gemini-only to
+# any OpenAI-compatible provider (the same generic adapter as the
+# openai-small embedding profile, reused here:
+# _openai_compatible_post_with_retry()). 'gemini' is the only
+# "gemini_native" backend — the other three (openai/deepseek/groq) document
+# their own APIs as compatible with OpenAI's chat completions format, so a
+# single adapter covers all three.
+#
+# Prices: openai/deepseek do NOT have a hardcoded price_per_1m_tokens (None
+# by default) — model names and prices for these providers change too fast
+# to guess a number here with confidence (same reason
+# jina-code-embeddings/codestral-embed were left out of section 9 of the
+# plan without a confirmed source). groq is the exception: it has a
+# well-known free tier (rate-limited, but genuinely $0) — it's not a
+# guess, it's a reasonably stable fact; still, confirm current limits on
+# their console before relying on this for heavy use.
+CHAT_PROFILES = {
+    "gemini": {
+        "backend": "gemini_native",
+        "model": CHAT_MODEL,
+        "price_per_1m_tokens": CHAT_PRICE_PER_1M_TOKENS,
+    },
+    "openai": {
+        "backend": "openai_compatible_chat",
+        "endpoint_url": "https://api.openai.com/v1/chat/completions",
+        "model": os.getenv("GRIOT_OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+        "api_key_env": "GRIOT_OPENAI_API_KEY",
+        "price_per_1m_tokens": _optional_float_env("GRIOT_OPENAI_CHAT_PRICE_PER_1M_TOKENS"),
+    },
+    "deepseek": {
+        "backend": "openai_compatible_chat",
+        "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
+        "model": os.getenv("GRIOT_DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+        "api_key_env": "GRIOT_DEEPSEEK_API_KEY",
+        "price_per_1m_tokens": _optional_float_env("GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS"),
+    },
+    "groq": {
+        "backend": "openai_compatible_chat",
+        "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
+        "model": os.getenv("GRIOT_GROQ_CHAT_MODEL", "llama-3.3-70b-versatile"),
+        "api_key_env": "GRIOT_GROQ_API_KEY",
+        "price_per_1m_tokens": _optional_float_env("GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS") or 0.0,
+    },
+}
+
+ACTIVE_CHAT_PROFILE_NAME = os.getenv("GRIOT_CHAT_PROFILE", "gemini")
+if ACTIVE_CHAT_PROFILE_NAME not in CHAT_PROFILES:
+    raise ValueError(
+        f"Unknown GRIOT_CHAT_PROFILE={ACTIVE_CHAT_PROFILE_NAME!r}. "
+        f"Options: {', '.join(CHAT_PROFILES)}"
+    )
+ACTIVE_CHAT_PROFILE = CHAT_PROFILES[ACTIVE_CHAT_PROFILE_NAME]
+
+
+def credential_env_vars() -> dict[str, str]:
+    """[security review] provider -> env var name, for every external
+    credential griot manages (paid embedding/chat providers + the 5 code
+    platform tokens). Single source of truth, deduplicated between
+    EMBED_PROFILES and CHAT_PROFILES (e.g. openai's GRIOT_OPENAI_API_KEY
+    covers both the openai-small embedding profile and the openai chat
+    profile — same real account/key). 'gemini' is a special case in BOTH
+    profile dicts — it has no api_key_env field, it uses the historical
+    GEMINI_TOKEN var (no GRIOT_ prefix). Lives here (not in auth.py, which
+    used to own this exact logic as `_providers()`) so common.py's own
+    keychain-injection code below can use it without auth.py importing
+    common.py the other way around and creating a cycle — auth._providers()
+    is now a one-line wrapper around this."""
+    providers: dict[str, str] = {
+        "gitlab": "GITLAB_PERSONAL_ACCESS_TOKEN",
+        "github": "GITHUB_TOKEN",
+        "bitbucket": "BITBUCKET_ACCESS_TOKEN",
+        "azure_devops": "AZURE_DEVOPS_PAT",
+        "gitea": "GITEA_TOKEN",
+    }
+    for name, profile in {**EMBED_PROFILES, **CHAT_PROFILES}.items():
+        api_key_env = credential_env_for_profile(name, profile)
+        if api_key_env is None:
+            continue
+        if profile.get("api_key_env") is None:
+            # The special-cased profile: its label IS the profile name, since
+            # GEMINI_TOKEN carries no GRIOT_ prefix for the rule below to strip.
+            providers[name] = api_key_env
+            continue
+        label = api_key_env.removeprefix("GRIOT_").removesuffix("_API_KEY").removesuffix("_EMBED").lower()
+        providers[label] = api_key_env
+    return providers
+
+
+def credential_env_for_profile(name: str, profile: dict) -> str | None:
+    """The env var holding a profile's credential, or None when it needs
+    none (a local model).
+
+    Exists so the 'gemini' special case lives in exactly ONE place. That
+    profile predates the GRIOT_ prefix and carries no api_key_env field, so
+    `profile.get("api_key_env")` reports griot's flagship PAID profile as
+    free — a real defect found in griot_profiles_list, pointing in the worst
+    direction: it invites a switch to a profile that bills per query."""
+    api_key_env = profile.get("api_key_env")
+    if api_key_env:
+        return api_key_env
+    return "GEMINI_TOKEN" if name == "gemini" else None
+
+
+# [security review] OS keychain storage for credentials — additive,
+# best-effort layer on top of the existing <config_dir>/.env file. Real
+# finding from a live security review: .env sits in plaintext, protected
+# only by file permissions (0600) + whatever full-disk encryption the OS
+# provides — a leaked/misconfigured backup, or another local process/user
+# reading the file directly, gets the raw value. Unlike the RAG content
+# (a copy of what's already unencrypted in the user's own git checkouts —
+# see SECURITY.md's "Encryption at rest" position, deliberately NOT
+# revisited by this change), a credential is NOT redundant with anything
+# else on disk: a leaked API key is a standalone loss. The `keyring`
+# package (pyproject.toml's optional `keychain` extra — NOT a core
+# dependency) is the same pattern real CLI tools use (gh, docker
+# credential helpers, aws-cli, 1Password CLI). `import keyring` happens
+# LAZILY inside each wrapper below (never at module import time) so
+# griot's core CLI/MCP/UI behavior never depends on it being installed —
+# every wrapper catches ANY exception (ImportError when not installed,
+# keyring.errors.NoKeyringError when no backend is reachable — e.g.
+# headless Linux without a Secret Service provider, or a container — and
+# any backend-specific failure) and degrades to "unavailable," never
+# raises. Callers (auth.py) fall back to the existing file-based storage
+# whenever these return None/False.
+_KEYCHAIN_SERVICE = "griot"
+
+
+def _keychain_get(env_var: str) -> str | None:
+    try:
+        import keyring
+        return keyring.get_password(_KEYCHAIN_SERVICE, env_var)
+    except Exception:
+        return None
+
+
+def _keychain_set(env_var: str, value: str) -> bool:
+    try:
+        import keyring
+        keyring.set_password(_KEYCHAIN_SERVICE, env_var, value)
+        return True
+    except Exception:
+        return False
+
+
+def _keychain_delete(env_var: str) -> bool:
+    try:
+        import keyring
+        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
+        return True
+    except Exception:
+        return False
+
+
+def _inject_keychain_credentials() -> None:
+    """Best-effort: for every known credential env var NOT already present
+    in os.environ (a shell export or .env value already won — same
+    override=False precedence load_dotenv() above already applies),
+    checks the OS keychain and injects it into os.environ if found. Called
+    once below, at import time, right after this function and
+    credential_env_vars() exist (EMBED_PROFILES/CHAT_PROFILES must already
+    be defined) — keeps every existing os.getenv(...) call site across the
+    whole codebase working unchanged regardless of which backend a given
+    credential is actually stored in, since almost all of them read
+    lazily at call time, well after this has already run.
+
+    GEMINI_TOKEN (common.py's module-level constant above, line ~493) is
+    the ONE exception — it's resolved as a plain module global BEFORE
+    EMBED_PROFILES/CHAT_PROFILES even exist, so os.environ injection alone
+    wouldn't reach it. Patched explicitly via `global` here."""
+    global GEMINI_TOKEN
+    for env_var in credential_env_vars().values():
+        if os.environ.get(env_var):
+            continue
+        value = _keychain_get(env_var)
+        if value:
+            os.environ[env_var] = value
+            if env_var == "GEMINI_TOKEN":
+                GEMINI_TOKEN = value
+
+
+_inject_keychain_credentials()
+
+
+def _require_gemini_token() -> str:
+    if not GEMINI_TOKEN:
+        raise ValueError(
+            f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
+            f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
+            f"and for ask.py's chat answer (direct call to Google's API)."
+        )
+    return GEMINI_TOKEN
+
+# Local spend circuit breaker — direct calls to Gemini (embedding and chat)
+# don't go through any external platform budget, so this is the ONLY
+# spend ceiling that exists for these two paths. State persists on disk
+# (gitignored) and resets daily — covers both a single expensive run and
+# several small runs on the same day adding up to a lot.
+SPEND_STATE_PATH = DATA_DIR / ".spend_state.json"
+SPEND_CEILING_USD = float(os.getenv("GRIOT_SPEND_CEILING_USD", "3.0"))
+
+# VELOCITY ceiling (spend in the last 5min), separate from the daily
+# ceiling. Our code is sequential by design (one batch, wait for the
+# response, next one) — spend piling up too fast for that is the most
+# direct signal that something is wrong: two processes running at once, a
+# retry without real backoff, etc. (sustained bursts of hundreds of
+# calls/min from a SINGLE process are incompatible with one call at a time
+# waiting for the previous response).
+SPEND_VELOCITY_WINDOW_SECONDS = 300
+SPEND_VELOCITY_CEILING_USD = float(os.getenv("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0"))
+
+# Consecutive-failure detector — 5 batches in a row failing completely
+# isn't "bad luck", it's a sign that something is systemically broken
+# (external API down, invalid credential, etc.) — better to stop early and
+# loudly than to spend hours producing only empty batches.
+MAX_CONSECUTIVE_FAILED_BATCHES = int(os.getenv("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5"))
+
+# Single-process lock — besides Qdrant's native lock (which only blocks
+# access to the same collection), this one fails fast with a clear message
+# as soon as two indexers try to run at the same time in this directory,
+# instead of letting both worsen spend/CPU until one of them stumbles into
+# an obscure error.
+# (renamed from .rag-indexer.lock along with the rest of the rename to griot)
+LOCK_PATH = DATA_DIR / ".griot.lock"
+
+# Migration from the old layout (the design notes:
+# warn ONLY, never move). The old layout resolved everything relative to
+# the code's folder — which, in a source checkout, is parents[2] from here
+# (src/griot/common.py -> root). In a site-packages install that path
+# doesn't contain any of these files, so the checks simply find nothing.
+_LEGACY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def warn_legacy_layout(legacy_root: Path | None = None) -> None:
+    """Warns (and ONLY warns) if files from the old layout are
+    still at the root of the code checkout, pointing to the new location."""
+    root = _LEGACY_ROOT if legacy_root is None else legacy_root
+    if not root.is_dir():
+        return
+    legacy_items = {
+        "repos.json": CONFIG_DIR,
+        "quality_golden_set.json": CONFIG_DIR,
+        ".env": CONFIG_DIR,
+        "qdrant_data": DATA_DIR,
+        "logs": DATA_DIR,
+    }
+    for name, new_dir in legacy_items.items():
+        if (root / name).exists():
+            log_and_print(
+                f"Warning: {root / name} is in the old layout and is IGNORED — the new location is "
+                f"{new_dir / name} (move it manually; griot never moves it on its own).",
+                level="warning",
+            )
+
+
+def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
+    """EXCEPTION to the 'warn only' policy: .spend_state.json
+    migrates AUTOMATICALLY (copy, with a log entry) if it exists at the old
+    location and doesn't yet exist at the new one. It's ephemeral numeric
+    state, not user config — treating it as a 'nonexistent file' would
+    silently reset the day's spend counter, which would defeat the whole
+    point of the circuit breaker. Never overwrites state that already
+    exists at the new location."""
+    root = _LEGACY_ROOT if legacy_root is None else legacy_root
+    old = root / ".spend_state.json"
+    if old.is_file() and not SPEND_STATE_PATH.exists():
+        secure_mkdir(SPEND_STATE_PATH.parent)
+        shutil.copy2(old, SPEND_STATE_PATH)
+        log_and_print(
+            f"Automatically migrated {old} -> {SPEND_STATE_PATH} "
+            f"(the day's spend counter is preserved)."
+        )
+
+
+warn_legacy_layout()
+migrate_legacy_spend_state()
+
+_embed_model: TextEmbedding | None = None
+_client: "qe.EdgeShard | None" = None
+_client_last_used_at: float | None = None
+
+# [user decision, 2026-08-20] concurrency mode for the active collection's
+# handle. 'single' (default) is the traditional behavior — memoizes
+# forever, zero overhead, but a second REAL griot mcp SESSION (not a
+# subagent/workflow — those reuse the session's MCP connection, see the
+# decision) on the same profile hard-fails with a raw error. 'multi'
+# releases the handle after GRIOT_MCP_IDLE_RELEASE_SECONDS of no use and
+# retries-with-backoff when reopening, in exchange for reopening the
+# collection (94ms measured on this machine) whenever the
+# session sits idle too long.
+CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "single")
+if CONCURRENCY_MODE not in ("single", "multi"):
+    raise ValueError(
+        f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. "
+        f"Use 'single' (default) or 'multi'."
+    )
+IDLE_RELEASE_SECONDS = float(os.getenv("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30"))
+# [tuned after empirical validation with a real collision] local DISK
+# contention (another process with the WAL open), not network — a much
+# smaller budget than the 10-20s used for paid-API retries, but needs to
+# survive ONE full tool call from the other session (measured with a real
+# embed+query: a 3s collision nearly exhausted a 3.1s budget, with no
+# slack left for process import/startup overhead). A ~15s ceiling gives
+# real margin.
+_LOCK_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0, 4.0)
+
+
+def _read_lock() -> dict | None:
+    """Reads and validates the current lock. Returns {"pid", "start_time",
+    "label"} if the file exists and is in the new (JSON) format; None if
+    the lock doesn't exist OR is corrupted/in the old format (raw PID, from
+    before this change) — both cases are treated as "no valid lock" by
+    callers, and it's up to the caller to decide whether that means "free
+    to acquire" (acquire_lock) or "no indexing running" (get_index_status)."""
+    if not LOCK_PATH.exists():
+        return None
+    try:
+        info = json.loads(LOCK_PATH.read_text())
+        return {"pid": int(info["pid"]), "start_time": float(info["start_time"]), "label": info.get("label")}
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def _lock_owner_is_alive(info: dict) -> bool:
+    """[review] A more robust "is the lock owner still alive" check than
+    just "does the PID exist?" (vulnerable to PID recycling by the OS —
+    after enough process churn, the PID of a dead griot process may have
+    been recycled by an unrelated process, making the old check find
+    "still running" forever). Also compares the PID's current
+    create_time() against the start_time recorded at acquire time — only
+    matches if it's the SAME process (~1s tolerance for float rounding
+    between the two reads)."""
+    try:
+        proc = psutil.Process(info["pid"])
+    except psutil.NoSuchProcess:
+        return False  # dead PID — orphaned lock
+    except psutil.AccessDenied:
+        # a process with this PID exists but isn't ours — more likely a PID
+        # recycled by another program after the original griot process died
+        # than a real race (every process here runs as the same user).
+        # Treat as orphaned instead of letting the exception propagate.
+        log_and_print(f"Warning: lock PID {info['pid']} exists but doesn't belong to this user — treating it as an orphaned lock.", level="warning")
+        return False
+    if abs(proc.create_time() - info["start_time"]) > 1.0:
+        log_and_print(
+            f"Warning: lock PID {info['pid']} exists, but its start time doesn't match "
+            f"the one recorded in the lock — likely PID recycling by the OS after the original "
+            f"griot process died without clearing the lock. Treating it as an orphaned lock.",
+            level="warning",
+        )
+        return False
+    return True
+
+
+def acquire_lock(label: str | None = None) -> None:
+    """label: optional description of what's being indexed (e.g. a repo's
+    path) — forward-looking for griot_index_repo (section 2.7 of the MCP
+    plan); nobody passes this yet, it stays None in current calls to
+    index_documents(). Recorded in the lock and returned by
+    get_index_status() as the "path" field, to correlate a PID seen there
+    with what it's doing."""
+    secure_mkdir(LOCK_PATH.parent)  # DATA_DIR created on demand, 0700
+    if LOCK_PATH.exists():
+        info = _read_lock()
+        if info is not None and _lock_owner_is_alive(info):
+            raise RuntimeError(
+                f"A griot process is already running (PID {info['pid']}). Wait for it to finish, or delete "
+                f"{LOCK_PATH} if you're sure the process died without clearing the lock "
+                f"(e.g. kill -9 / OOM)."
+            )
+        # lock without valid info (corrupted/old format) or orphaned (owner
+        # dead or PID recycled) — proceed and overwrite it.
+        LOCK_PATH.unlink(missing_ok=True)
+
+    # O_CREAT|O_EXCL: atomic creation — if two processes get here at the
+    # same time (both see "no lock" or "orphaned lock" before either one
+    # writes), only one succeeds in creating the file; the other gets
+    # FileExistsError instead of both thinking they own the lock (a TOCTOU
+    # between the `exists()` check above and a plain `write_text()` would
+    # not be atomic).
+    try:
+        # 0600 [review]: the lock carries pid/start_time/label (label is
+        # designed to receive a repo path) — same M2 contract as the other files
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise RuntimeError(
+            f"Another process created {LOCK_PATH} at the same instant (a race between two "
+            f"indexers starting together). Run it again."
+        )
+    pid = os.getpid()
+    try:
+        start_time = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        # defensive — shouldn't happen for our own running process, but a
+        # missing start_time would break the comparison in
+        # _lock_owner_is_alive forever (it would never match); time.time()
+        # here is only slightly imprecise, not incorrect (it still detects
+        # PID recycling from another process, just not from our
+        # hypothetical failure case).
+        start_time = time.time()
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({"pid": pid, "start_time": start_time, "label": label}))
+
+    import atexit
+    atexit.register(release_lock)
+
+
+def release_lock() -> None:
+    try:
+        if not LOCK_PATH.exists():
+            return
+        info = json.loads(LOCK_PATH.read_text())
+        if info.get("pid") == os.getpid():
+            LOCK_PATH.unlink()
+    except Exception:
+        # includes corrupted JSON/old format — not our recognizable lock
+        # (or we're no longer the owner), leave it alone. Same defensive
+        # stance as before: never let release_lock() (called via atexit)
+        # propagate an exception.
+        pass
+
+
+def _today() -> str:
+    from datetime import date
+    return date.today().isoformat()
+
+
+def _ensure_spend_state_migrated() -> None:
+    """One-time import of a pre-SQLite .spend_state.json (see
+    logdb.migrate_legacy_spend_file). Called from every spend read/write
+    rather than at import time so it costs nothing until a paid call
+    actually happens; logdb tracks the marker, so it is idempotent."""
+    secure_mkdir(LOG_DIR)
+    logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
+
+
+def check_spend_ceiling() -> None:
+    """Two independent checks, run before ANY paid call directly to Gemini
+    (embedding or chat — no LiteLLM in between, this is the only budget
+    that exists for these two paths):
+    1. Daily ceiling (GRIOT_SPEND_CEILING_USD) — already existed.
+    2. VELOCITY ceiling (GRIOT_SPEND_VELOCITY_CEILING_USD, spend in the last
+       5min) — catches a concurrent burst well before the daily ceiling,
+       which only kicks in after the full daily amount has already been
+       burned.
+    It's up to the caller to decide WHETHER a call is paid (local
+    profiles/backends simply never call check_spend_ceiling or
+    record_spend)."""
+    _ensure_spend_state_migrated()
+    spend_today = logdb.read_spend_today(LOG_DIR, _today())
+    if spend_today >= SPEND_CEILING_USD:
+        raise RuntimeError(
+            f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
+            f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
+            f"reason before continuing — if this is expected, raise the ceiling explicitly."
+        )
+
+    now = time.time()
+    velocity = logdb.read_spend_velocity(LOG_DIR, now - SPEND_VELOCITY_WINDOW_SECONDS)
+    if velocity >= SPEND_VELOCITY_CEILING_USD:
+        raise RuntimeError(
+            f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
+            f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
+            f"${SPEND_VELOCITY_CEILING_USD:.2f}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
+            f"indicates two processes running at once or a retry loop out of control "
+            f"(a burst of simultaneous calls). Stop and check before continuing."
+        )
+
+
+def get_spend_today() -> float:
+    """Estimated spend (USD) accumulated today by the local circuit breaker
+    — 0.0 if only local (no-cost) calls have been made."""
+    _ensure_spend_state_migrated()
+    return logdb.read_spend_today(LOG_DIR, _today())
+
+
+def record_spend(cost_usd: float) -> None:
+    """Adds a real spend amount (USD, already computed by the caller —
+    tokens x price of what was actually used) to the day's total and to
+    the last-5min velocity window used by check_spend_ceiling(). Local
+    (no-cost) calls never call this.
+
+    [real bug, fixed 2026-08-21] The accumulation happens inside SQLite
+    (logdb.write_spend), not here — see that function's docstring for why
+    the previous read-modify-write over a JSON file silently lost most
+    concurrent spend."""
+    if cost_usd <= 0:
+        return
+    _ensure_spend_state_migrated()
+    logdb.write_spend(LOG_DIR, _today(), cost_usd, time.time(), SPEND_VELOCITY_WINDOW_SECONDS)
+
+
+def get_embed_model() -> TextEmbedding:
+    global _embed_model
+    if _embed_model is None:
+        # limited threads: the machine runs several other heavy things in
+        # parallel (Docker Desktop, corporate agents) — using all 12 cores
+        # for inference already caused an OOM kill in a previous session.
+        #
+        # explicit cache_dir (real finding, 2026-08-13): without this,
+        # fastembed defaults to tempfile.gettempdir()/fastembed_cache — a
+        # model of hundreds of MB to a few GB can disappear if the OS
+        # cleans up the temp directory, forcing a silent re-download.
+        # Placing it inside DATA_DIR keeps the cache alongside the rest of
+        # griot's data (qdrant_data/, logs/), persistent and under the
+        # same user control.
+        _embed_model = TextEmbedding(
+            model_name=ACTIVE_PROFILE["model"], threads=6,
+            cache_dir=str(DATA_DIR / "models"),
+        )
+    return _embed_model
+
+
+def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
+    """[multi mode] EdgeShard.load() can collide with another process that
+    hasn't released its handle yet (e.g. another griot mcp session that just
+    finished using it and whose idle release hasn't fired yet). The
+    exception has no specific 'locked' type (confirmed by introspection,
+    same observation already noted in get_index_status()) — retry with a
+    short backoff, local disk contention usually resolves in milliseconds."""
+    attempts = len(_LOCK_RETRY_DELAYS) + 1
+    for i in range(attempts):
+        try:
+            return qe.EdgeShard.load(str(path))
+        except Exception as e:
+            if i == attempts - 1:
+                raise RuntimeError(
+                    f"Could not open collection '{COLLECTION_NAME}' after {attempts} "
+                    f"attempts — another griot process still has it open."
+                ) from e
+            time.sleep(_LOCK_RETRY_DELAYS[i])
+
+
+def get_client() -> "qe.EdgeShard":
+    """Memoized handle for the ACTIVE collection's Edge shard
+    (COLLECTION_NAME) — only one process can have the directory open at a
+    time (Edge's mutual exclusion is per PROCESS — safe within threads of
+    the same process, not ACROSS processes). In 'single' mode
+    (default) the handle stays open forever, identical to the original
+    behavior. In 'multi' mode (GRIOT_MCP_CONCURRENCY_MODE=multi), it
+    releases itself after IDLE_RELEASE_SECONDS of no use — so a second
+    griot mcp session on the same profile can get in — and reopens with
+    retry-with-backoff."""
+    global _client, _client_last_used_at
+    if CONCURRENCY_MODE == "multi" and _client is not None and _client_last_used_at is not None:
+        if time.time() - _client_last_used_at > IDLE_RELEASE_SECONDS:
+            release_client()
+    if _client is None:
+        path = _collection_path(COLLECTION_NAME)
+        if (path / _EDGE_CONFIG_MARKER).exists():
+            _client = _load_shard_with_retry(path) if CONCURRENCY_MODE == "multi" else qe.EdgeShard.load(str(path))
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            cfg = qe.EdgeConfig(
+                vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
+            )
+            _client = qe.EdgeShard.create(str(path), cfg)
+        # [M2] qdrant_data is a recoverable plaintext copy (compressed
+        # payload, not encrypted) of ALL indexed content — 0700 on the root
+        # directory and on the collection's directory closes it off to
+        # other local users without depending on what the engine does with
+        # the internal files.
+        os.chmod(QDRANT_PATH, 0o700)
+        os.chmod(path, 0o700)
+        # [security review, lower-priority gap] the outer chmod above only
+        # covers the directory itself — Edge's own files inside it (WAL,
+        # segments, edge_config.json) are written with the process umask
+        # regardless of which caller reached this branch (search(),
+        # count_pending(), get_index_status() all funnel through here on a
+        # first open, not just index_documents()), so the same recursive
+        # repair index_documents() already does at the end of a write must
+        # also run here.
+        _secure_collection_dir(COLLECTION_NAME)
+        ensure_collection(_client)
+    if CONCURRENCY_MODE == "multi":
+        _client_last_used_at = time.time()
+    return _client
+
+
+def release_client() -> None:
+    """Closes and releases the memoized handle for the ACTIVE collection, if
+    one is open. [real finding, 2026-08-20] `griot mcp` is a long-lived
+    process that memoizes get_client() on its first read
+    (griot_search/griot_index_status/griot_quality_check) and holds the
+    collection open for the rest of the server's life — permanently
+    blocking any indexing subprocess later launched via griot_index_repo
+    (same directory, Qdrant Edge's mutual exclusion is per PROCESS, not
+    just per thread; confirmed empirically: 'failed to open WAL ...
+    WouldBlock'). Called by griot_index_repo BEFORE spawning the
+    subprocess — the next read reopens on demand, the same get_client() as
+    always (_client goes back to None)."""
+    global _client, _client_last_used_at
+    if _client is not None:
+        _client.close()
+        _client = None
+    _client_last_used_at = None
+
+
+def ensure_collection(client: "qe.EdgeShard") -> None:
+    """With Edge, creating/loading the shard is already a single operation
+    (EdgeShard.create/load, done in get_client() before the client exists)
+    — unlike the old QdrantClient, which connected first and only then
+    checked/created the collection. There's nothing left to "ensure" here
+    once the client already exists; kept as a no-op just for the public
+    signature (no code outside common.py calls this today, but it's one of
+    the functions whose contract this migration deliberately preserves)."""
+    pass
+
+
+class GeminiUnavailable(Exception):
+    """The Gemini API became unavailable/rate-limited beyond the configured
+    retries — the decision of what to do (give up on the item, propagate
+    the error) belongs to whoever called _gemini_post_with_retry, not to
+    the helper."""
+
+
+def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: int = 5, max_connection_retries: int = 30) -> dict:
+    """POST directly to Google's API (no LiteLLM/proxy in between) with two
+    independent retry budgets — used by embed_texts() ("direct" backend)
+    and chat_completion():
+    - 429 (rate limit): short backoff (up to max_rate_limit_retries).
+    - connection error (network down): a much more patient backoff (up to
+      max_connection_retries, 20s each — ~10min total), same philosophy as
+      when this used to protect against Docker Desktop crashing — now it
+      protects against a generic network outage."""
+    token = _require_gemini_token()
+    rate_limit_attempt = 0
+    connection_attempt = 0
+    while True:
+        try:
+            # [finding H1, 2026-08-19 audit] key in a header, NEVER in
+            # ?key= in the URL: requests' str() for HTTPError/ConnectionError
+            # includes the full URL, so a query param would leak the key
+            # into logs/stdout/tracebacks. allow_redirects=False: a
+            # cross-host redirect can't carry the credential along with it.
+            resp = requests.post(f"{GEMINI_API_BASE}/{path}", headers={"x-goog-api-key": token}, json=json_body, timeout=120, allow_redirects=False)
+            if resp.status_code == 429:
+                if rate_limit_attempt >= max_rate_limit_retries:
+                    raise GeminiUnavailable(f"persistent 429 after {max_rate_limit_retries} attempts")
+                wait = 2 ** rate_limit_attempt
+                rate_limit_attempt += 1
+                log_and_print(f"429 from the Gemini API, waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            if 300 <= resp.status_code < 400:
+                # [review] a 3xx sails right through raise_for_status() —
+                # turned into a typed error here instead of a raw
+                # JSONDecodeError further down.
+                raise GeminiUnavailable(f"redirect {resp.status_code} not followed (policy: the credential doesn't follow a redirect)")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            # only the status code — never str(e), which may contain the
+            # request URL (and, in a future regression, an embedded secret)
+            status = e.response.status_code if e.response is not None else "?"
+            raise GeminiUnavailable(f"HTTP error {status} from the Gemini API") from e
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if connection_attempt >= max_connection_retries:
+                raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+            connection_attempt += 1
+            log_and_print(f"Gemini API unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 20s...", level="warning")
+            time.sleep(20)
+
+
+class DirectAPIUnavailable(Exception):
+    """Same role as GeminiUnavailable, but for the generic HTTP adapter
+    reused by any OpenAI-compatible provider — embedding (openai-small
+    profile, the design notes) and chat (openai/deepseek/groq
+    profiles, see "Chat profiles" above). Renamed from
+    DirectEmbedUnavailable in 2026-08-13 when it stopped being
+    embedding-exclusive."""
+
+
+def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict, max_rate_limit_retries: int = 5, max_connection_retries: int = 10) -> dict:
+    """Generic POST for the {model, input} -> data[].embedding format
+    (OpenAI/Voyage/remote — request_style="openai_compatible"). Same
+    two-independent-retries philosophy as _gemini_post_with_retry, without
+    duplicating the logic for each paid provider."""
+    rate_limit_attempt = 0
+    connection_attempt = 0
+    while True:
+        try:
+            # [M5] allow_redirects=False: the Authorization header must not
+            # follow a cross-host redirect (requests only strips it in some
+            # cases; better to never follow one with a credential attached).
+            resp = requests.post(url, headers=headers, json=json_body, timeout=120, allow_redirects=False)
+            if resp.status_code == 429:
+                if rate_limit_attempt >= max_rate_limit_retries:
+                    raise DirectAPIUnavailable(f"persistent 429 after {max_rate_limit_retries} attempts on {url}")
+                wait = 2 ** rate_limit_attempt
+                rate_limit_attempt += 1
+                log_and_print(f"429 on {url}, waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            if 300 <= resp.status_code < 400:
+                # [review] raise_for_status() ignores 3xx — without this the
+                # redirect (never followed, M5) would fall through to
+                # resp.json() and die with a raw JSONDecodeError instead of
+                # the expected typed error.
+                raise DirectAPIUnavailable(f"redirect {resp.status_code} not followed (policy: the credential doesn't follow a redirect) on {url}")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            # [review, same contract as H1] never interpolate str(e) — the
+            # requests library's text may contain the full request URL, and
+            # a future provider with a key in a query param would silently
+            # regress this.
+            status = e.response.status_code if e.response is not None else "?"
+            raise DirectAPIUnavailable(f"HTTP error {status} on {url}") from e
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if connection_attempt >= max_connection_retries:
+                raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+            connection_attempt += 1
+            log_and_print(f"{url} unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 10s...", level="warning")
+            time.sleep(10)
+
+
+def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]:
+    """Generic HTTP adapter: only reads what the active
+    profile defines (endpoint_url/model/api_key_env/extra_params) — no
+    provider-specific logic here, so Voyage/remote can reuse it without
+    duplication when they're added."""
+    api_key_env = ACTIVE_PROFILE["api_key_env"]
+    api_key = os.getenv(api_key_env)
+    if not api_key:
+        raise ValueError(
+            f"{api_key_env} not found in the environment — required for the "
+            f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
+        )
+    body = {"model": ACTIVE_PROFILE["model"], "input": texts, **ACTIVE_PROFILE.get("extra_params", {})}
+    try:
+        data = _openai_compatible_post_with_retry(
+            ACTIVE_PROFILE["endpoint_url"], {"Authorization": f"Bearer {api_key}"}, body,
+        )
+    except DirectAPIUnavailable as e:
+        log_and_print(f"Error in the embedding batch ({ACTIVE_PROFILE_NAME}): {e}", level="warning")
+        return [None] * len(texts)
+
+    tokens = data.get("usage", {}).get("total_tokens", 0)
+    record_spend(tokens / 1_000_000 * ACTIVE_PROFILE["price_per_1m_tokens"])
+    # index guarantees correspondence with the input even if data[] comes
+    # back out of order — unlike Gemini's batchEmbedContents, which has no index.
+    by_index = {item["index"]: item["embedding"] for item in data["data"]}
+    return [by_index.get(i) for i in range(len(texts))]
+
+
+def embed_texts(texts: list[str]) -> list[list[float] | None]:
+    """Embeds a batch of texts with the active profile (direct to Gemini,
+    or local). Returns None for any item that fails (only possible on the
+    "direct" backend, due to a network error — the call is all-or-nothing
+    per batch, Google's API doesn't expose per-item failure)."""
+    if ACTIVE_PROFILE["backend"] == "local":
+        # Sort by length before embedding: fastembed pads each batch up to
+        # its longest text (enable_padding() without a length — plan
+        # section 10.2, item 3), and griot's corpus mixes long code chunks
+        # with short commit messages. Without sorting, a short commit in a
+        # mixed batch pays the padding cost of the longest chunk in the
+        # SAME batch. Explicit batch_size avoids tiny batches (item 1). At
+        # the end, undoes the sort — the caller (index_documents) does
+        # zip(to_embed, vectors) assuming index-to-index correspondence
+        # with the INPUT `texts` list, not with the internal processing order.
+        if not texts:
+            return []
+        sorted_idx = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+        sorted_texts = [texts[i] for i in sorted_idx]
+        sorted_vectors = list(get_embed_model().embed(sorted_texts, batch_size=EMBED_CALL_BATCH_SIZE))
+        result: list[list[float] | None] = [None] * len(texts)
+        for original_i, vector in zip(sorted_idx, sorted_vectors):
+            result[original_i] = vector.tolist()
+        return result
+
+    check_spend_ceiling()
+    if ACTIVE_PROFILE.get("request_style") == "openai_compatible":
+        return _embed_texts_openai_compatible(texts)
+
+    model = ACTIVE_PROFILE["model"]
+    try:
+        body = _gemini_post_with_retry(
+            f"models/{model}:batchEmbedContents",
+            {"requests": [
+                {"model": f"models/{model}", "content": {"parts": [{"text": t}]}, "outputDimensionality": EMBED_DIM}
+                for t in texts
+            ]},
+        )
+    except GeminiUnavailable as e:
+        log_and_print(f"Error in the embedding batch: {e}", level="warning")
+        return [None] * len(texts)
+
+    tokens = body.get("usageMetadata", {}).get("promptTokenCount", 0)
+    record_spend(tokens / 1_000_000 * ACTIVE_PROFILE["price_per_1m_tokens"])
+    # batchEmbedContents doesn't return a per-item id/index (unlike the
+    # OpenAI-style format the proxy call used to use) — the response order
+    # matches the order of the sent request list.
+    return [e["values"] for e in body["embeddings"]]
+
+
+def _chat_completion_openai_compatible(prompt: str, model: str | None = None) -> str:
+    """Generic adapter for chat profiles with backend="openai_compatible_chat"
+    (openai/deepseek/groq) — same request/response format as the embedding
+    adapter (_embed_texts_openai_compatible), reusing
+    _openai_compatible_post_with_retry() instead of duplicating retry/backoff logic."""
+    profile = ACTIVE_CHAT_PROFILE
+    api_key = os.getenv(profile["api_key_env"])
+    if not api_key:
+        raise ValueError(
+            f"{profile['api_key_env']} not found in the environment — required for the "
+            f"{ACTIVE_CHAT_PROFILE_NAME!r} chat profile."
+        )
+    price = profile.get("price_per_1m_tokens")
+    if price is None:
+        env_var = f"GRIOT_{ACTIVE_CHAT_PROFILE_NAME.upper()}_CHAT_PRICE_PER_1M_TOKENS"
+        raise ValueError(
+            f"Price per 1M tokens for the {ACTIVE_CHAT_PROFILE_NAME!r} chat profile is not confirmed. "
+            f"Set {env_var} (USD) before using this profile — griot never assumes an "
+            f"unverified price (protects the spend circuit breaker)."
+        )
+    check_spend_ceiling()
+
+    chat_model = model or profile["model"]
+    body = {"model": chat_model, "messages": [{"role": "user", "content": prompt}]}
+    try:
+        data = _openai_compatible_post_with_retry(
+            profile["endpoint_url"], {"Authorization": f"Bearer {api_key}"}, body,
+        )
+    except DirectAPIUnavailable as e:
+        raise RuntimeError(f"Could not get a response from {ACTIVE_CHAT_PROFILE_NAME}: {e}") from e
+
+    tokens = data.get("usage", {}).get("total_tokens", 0)
+    record_spend(tokens / 1_000_000 * price)
+    return data["choices"][0]["message"]["content"]
+
+
+def chat_completion(prompt: str, model: str | None = None) -> str:
+    """Synthesizes the final answer over the already-retrieved context —
+    uses the ACTIVE chat profile (GRIOT_CHAT_PROFILE, default "gemini"; see
+    CHAT_PROFILES). 'model' only overrides the model within the active
+    profile — to switch PROVIDER, use GRIOT_CHAT_PROFILE or `griot ask
+    --chat-profile`. Goes through the same local spend circuit breaker as
+    embed_texts()."""
+    if ACTIVE_CHAT_PROFILE["backend"] == "openai_compatible_chat":
+        return _chat_completion_openai_compatible(prompt, model=model)
+
+    # gemini_native (default) — direct call to generateContent, no
+    # LiteLLM/proxy, original behavior preserved.
+    model = model or ACTIVE_CHAT_PROFILE["model"]
+    check_spend_ceiling()
+    try:
+        body = _gemini_post_with_retry(
+            f"models/{model}:generateContent",
+            {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
+            },
+        )
+    except GeminiUnavailable as e:
+        raise RuntimeError(f"Could not get a response from Gemini: {e}") from e
+
+    tokens = body.get("usageMetadata", {}).get("totalTokenCount", 0)
+    record_spend(tokens / 1_000_000 * ACTIVE_CHAT_PROFILE["price_per_1m_tokens"])
+    return body["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200) -> list[str]:
+    if overlap >= max_chars:
+        raise ValueError(f"overlap ({overlap}) must be smaller than max_chars ({max_chars}), otherwise the cursor never advances")
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break  # this chunk already reached the end of the text —
+                    # without this, the next "start" (end - overlap) could
+                    # still be < len(text) and generate a spurious final
+                    # chunk, nearly identical to the previous one's overlap
+                    # (reproduces whenever the text ends within the last
+                    # `overlap` chars of a full chunk)
+        start = end - overlap
+    return chunks
+
+
+def stable_id(key: str) -> str:
+    """Deterministic UUID derived from a natural key (e.g.
+    'repo:commit:hash'). Upserting by this id overwrites instead of
+    duplicating — reindexing the same item (same key) doesn't create a new row."""
+    digest = hashlib.md5(key.encode()).hexdigest()
+    return str(uuid.UUID(hex=digest))
+
+
+# [user-requested] Cap on how many individual failures one run records. A
+# systemic failure (bad credential, API down) fails EVERY document — storing
+# thousands of ids would bloat the run summary for no extra insight, since
+# they all share the same reason. The count in `failed` stays exact
+# regardless; only the itemized list is capped.
+MAX_RECORDED_FAILURES = 20
+
+# Which documents failed in the most recent index_documents() call, as
+# [{"id", "reason"}]. Module-level rather than returned so index_documents()
+# keeps its (indexed, skipped, failed) contract — every index_*.py unpacks
+# exactly three values, and widening that tuple would touch all five for a
+# diagnostic detail only the run summary needs.
+_last_run_failures: list[dict] = []
+
+
+def _record_failures(docs: list[dict], reason: str) -> None:
+    """Appends failures up to the cap. Uses the document's own `id` (the
+    natural key: "repo:commit:<hash>", "repo:code:<file>:<chunk>"), not the
+    derived point id — the natural key is what a person can act on."""
+    room = MAX_RECORDED_FAILURES - len(_last_run_failures)
+    for doc in docs[:max(0, room)]:
+        _last_run_failures.append({"id": doc.get("id"), "reason": reason})
+
+
+def last_run_failures() -> list[dict]:
+    """The itemized failures from the last index_documents() call in this
+    process — id plus reason, capped at MAX_RECORDED_FAILURES.
+
+    [user-requested] `failed=50` is a number, not a diagnosis: learning that
+    those 50 were oversized commit bodies meant grepping
+    griot.log and correlating by hand. Naming the documents is what makes
+    the count actionable."""
+    return list(_last_run_failures)
+
+
+def _split_pending(batch: list[dict], client: "qe.EdgeShard") -> list[dict]:
+    """Tags each doc in the batch with _point_id/_content_hash and returns
+    only the ones that need to be (re)embedded (new point, or content hash
+    changed since last time). Used by index_documents() (actually embeds)
+    and count_pending() (only counts, spends nothing) — same logic, no
+    duplication.
+
+    shard.retrieve() (validated in the Edge migration prototype) is the
+    direct equivalent of the old qdrant-client's client.retrieve(): accepts
+    with_payload as a list of fields (only content_hash, without bringing
+    the rest of the payload) and omits missing IDs from the result instead
+    of raising an error — same contract as before."""
+    for doc in batch:
+        doc["_point_id"] = stable_id(doc["id"])
+        doc["_content_hash"] = hashlib.md5(doc["content"].encode()).hexdigest()
+
+    existing = client.retrieve(
+        point_ids=[doc["_point_id"] for doc in batch],
+        with_payload=["content_hash"],
+        with_vector=False,
+    )
+    existing_hashes = {str(r.id): (r.payload or {}).get("content_hash") for r in existing}
+
+    return [doc for doc in batch if existing_hashes.get(doc["_point_id"]) != doc["_content_hash"]]
+
+
+def count_pending(documents: list[dict], desc: str = "Checking") -> tuple[int, int]:
+    """--dry-run mode: counts how many documents would need to be
+    (re)embedded vs how many are already up to date in Qdrant, WITHOUT
+    calling embed_texts or upsert — zero cost (local Qdrant read only).
+    Returns (pending, up_to_date). Useful for predicting the real size of a
+    rerun before committing hours of CPU (local) or money (gateway)."""
+    client = get_client()
+    pending = 0
+    up_to_date = 0
+
+    for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+        batch = documents[i:i + INDEX_BATCH_SIZE]
+        to_embed = _split_pending(batch, client)
+        pending += len(to_embed)
+        up_to_date += len(batch) - len(to_embed)
+
+    return pending, up_to_date
+
+
+def _secure_collection_dir(collection: str) -> None:
+    """[security review] Qdrant Edge's own Rust engine writes its files
+    (WAL, segments, payload_storage/*.dat, vector_storage/*) with the
+    process umask, not through griot's secure_* helpers — a real gap a
+    security review found: those files can end up group/world-readable
+    (0644/0755) even though the outer qdrant_data/<collection>/ directory
+    is 0700. Harmless TODAY only because directory traversal permission is
+    required at every level to reach them — but fragile: a backup tool
+    without permission preservation (rsync/tar without -p), a naive cloud
+    sync, or restoring from an archive could reset the outer directories
+    and leave the actual RAG content world-readable with nothing else
+    standing in the way. Called once at the end of every index_documents()
+    run (the natural "a write just happened" point) — recursively repairs
+    whatever Edge wrote during this run. Best-effort per-file: one file's
+    chmod failing (e.g. a transient race with Edge's own I/O) must never
+    fail the whole indexing run over a permission repair. Also called on
+    every cold open in get_client() (including every multi-mode
+    idle-release reopen), so the walk always visits every entry (a new
+    file from another process must still be checked) but skips the chmod
+    syscall itself when the mode is already correct — a real cost on large
+    collections opened repeatedly."""
+    path = _collection_path(collection)
+    if not path.exists():
+        return
+    for root, _dirs, files in os.walk(path):
+        _repair_mode(root, 0o700)
+        for f in files:
+            _repair_mode(os.path.join(root, f), 0o600)
+
+
+def _repair_mode(target: str, mode: int) -> None:
+    """Chmods target to mode unless it already is — a failed stat falls
+    through to attempting the chmod anyway (never let a failed optimization
+    check block the real repair). A chmod failure is logged, not raised:
+    this must never fail the indexing run or search that called it over a
+    permission race, but silent swallowing left no trace anywhere.
+    echo=False is required, not optional — this runs from get_client(),
+    reached from the MCP server path where stdout is the JSON-RPC
+    transport."""
+    try:
+        if stat.S_IMODE(os.stat(target).st_mode) == mode:
+            return
+    except OSError:
+        pass
+    try:
+        os.chmod(target, mode)
+    except OSError as exc:
+        log_and_print(
+            f"permission repair failed for {target} (kept previous mode) — {exc}",
+            level="warning", echo=False,
+        )
+
+
+def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
+    """Receives documents with 'id' (natural key, string), 'content' and
+    'metadata' already prepared, embeds them in batches (active profile)
+    and writes them in batches to the embedded Qdrant. Shared by all
+    sources (code, commits, tags, branches, GitLab).
+
+    Idempotency of COST, not just of storage: before embedding, checks
+    whether the point already exists in Qdrant with the same content hash
+    — if so, skips it (doesn't re-embed). Upserting by stable_id already
+    prevented duplicate rows, but it didn't prevent paying again for
+    embedding something that hadn't changed; running the whole pipeline
+    several times in the same day adds up fast without this check. griot
+    doesn't depend on LiteLLM/Docker for anything. Returns (indexed,
+    skipped, failed)."""
+    acquire_lock()
+    # [real finding, 2026-08-13] index_documents() only registered the
+    # release via atexit — correct for a single-source CLI (process ends,
+    # atexit fires), but broke `griot index all`: 5 calls to
+    # index_documents() (one per source) in the SAME process, and the 2nd
+    # one onward always failed with "a griot process is already running
+    # (PID <the same process>)" because the 1st call's lock was never
+    # released between them. The try/finally here guarantees release at the
+    # END of EACH run (success or exception), not only at the end of the
+    # whole process — atexit (acquire_lock) stays registered as a safety
+    # net for a crash that skips the finally block.
+    try:
+        print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
+        client = get_client()
+        indexed = 0
+        skipped = 0
+        failed = 0
+        consecutive_failed_batches = 0
+        # Reset per run, not per process: a second index_documents() call
+        # (griot index all makes five) must not inherit the previous
+        # source's failures.
+        global _last_run_failures
+        _last_run_failures = []
+
+        for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+            batch = documents[i:i + INDEX_BATCH_SIZE]
+            to_embed = _split_pending(batch, client)
+            skipped += len(batch) - len(to_embed)
+            if not to_embed:
+                continue
+
+            texts = [doc["content"] for doc in to_embed]
+            vectors = embed_texts(texts)
+
+            points = [
+                qe.Point(
+                    id=doc["_point_id"],
+                    vector={"dense": vector},
+                    payload={**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
+                )
+                for doc, vector in zip(to_embed, vectors)
+                if vector is not None
+            ]
+            failed += len(to_embed) - len(points)
+            _record_failures(
+                [doc for doc, vector in zip(to_embed, vectors) if vector is None],
+                "embedding returned no vector",
+            )
+
+            if not points:
+                consecutive_failed_batches += 1
+                if consecutive_failed_batches >= MAX_CONSECUTIVE_FAILED_BATCHES:
+                    raise RuntimeError(
+                        f"{consecutive_failed_batches} consecutive batches failed completely — this isn't "
+                        f"bad luck, something is systemically broken (Gemini API down, "
+                        f"invalid credential, etc). Stopping instead of continuing to produce only failures. "
+                        f"See logs/griot.log for the reason behind each failure."
+                    )
+                continue
+            consecutive_failed_batches = 0
+
+            try:
+                client.update(qe.UpdateOperation.upsert_points(points))
+                # flush() on every batch (not just at the end, unlike the
+                # migration prototype) — index_documents() runs over large
+                # corpora (the initial load takes ~5h); losing an
+                # entire batch to a mid-run crash is worse here than the
+                # small cost of an fsync per batch. flush() is about
+                # durability on disk (WAL -> segments), not about read
+                # visibility (retrieve()/query() already see points just
+                # upserted in the same process without a flush).
+                client.flush()
+                indexed += len(points)
+            except Exception as e:
+                log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
+                failed += len(points)
+                # A whole batch lost to one write error: the reason is the
+                # same for all of them, which is exactly why the itemized
+                # list is capped while `failed` stays exact.
+                _record_failures([doc for doc, vector in zip(to_embed, vectors) if vector is not None],
+                                 f"write to the vector store failed: {e}")
+
+        # [review] shard.optimize() was never called — without this, the
+        # HNSW index is never (re)built over the new segments and searches
+        # on large corpora (>10k points, above _HNSW_CONFIG's
+        # full_scan_threshold) stay permanently in brute-force mode, and the
+        # Edge migration's performance gain never materializes. Only at the
+        # END of a full run (not per batch): measured cost ~8.8s for 30k
+        # points, too expensive to pay on every INDEX_BATCH_SIZE batch; and
+        # only when indexed > 0 — nothing new to optimize if the whole run
+        # was skipped (reindexing with no changes at all) or failed entirely.
+        if indexed > 0:
+            client.optimize()
+
+        return indexed, skipped, failed
+    finally:
+        _secure_collection_dir(COLLECTION_NAME)
+        release_lock()
+
+
+def index_lock_status() -> dict:
+    """[shared config path] Just the lock-derived fields of get_index_status()
+    (running/pid/path) — zero shard I/O. Extracted for callers that only
+    care about "is anything indexing right now" (a job-confirmation
+    screen, a status badge rendered on every page load): calling the full
+    get_index_status() for that would risk EdgeShard.load()'s warning-per-
+    call noise in griot.log against a collection currently held open by an
+    indexer (see get_index_status()'s own comment on that exact
+    scenario) — this never touches a shard at all, only the lock file."""
+    lock_info = _read_lock()
+    running = lock_info is not None and _lock_owner_is_alive(lock_info)
+    return {
+        "running": running,
+        "pid": lock_info["pid"] if running else None,
+        "path": lock_info["label"] if running else None,
+    }
+
+
+def collection_exists(collection: str) -> bool:
+    """True if a collection's Edge shard has actually been created on disk
+    — the same marker-file check get_index_status()/quality_check.py
+    already do inline to avoid opening/materializing a shard that isn't
+    there, factored out for delete_collection() and its callers (`griot
+    profiles delete`, griot_profiles_delete)."""
+    return (_collection_path(collection) / _EDGE_CONFIG_MARKER).exists()
+
+
+def delete_collection(collection: str) -> None:
+    """Permanently removes a collection's on-disk directory — the only way
+    today to reclaim disk space from a profile no longer in use (embedding
+    is paid once, at index time, never for storage). Pure filesystem
+    operation: never opens an Edge shard, so it can never trip the
+    get_client() memoization hazard, whether called from the CLI or a
+    long-lived process. Raises ValueError if the collection
+    doesn't exist, naming the collection (cli.delete_profile() wraps this
+    with a profile-scoped active-profile check of its own before ever
+    reaching here).
+
+    [review finding] Also raises if an indexing run currently holds the
+    lock: acquire_lock() is process-wide, not per-collection, so a run
+    writing to a DIFFERENT collection right now still means THIS one could
+    be next in the very same run. rmtree()ing a collection an indexer
+    still has a shard open on would race its WAL rather than raise
+    cleanly — an unlinked-while-open file just silently vanishes once the
+    other process closes it, no crash, no clean error, which is worse than
+    refusing up front."""
+    if not collection_exists(collection):
+        raise ValueError(f"collection '{collection}' does not exist.")
+    if index_lock_status()["running"]:
+        raise ValueError("an indexing run is currently in progress — wait for it to finish, then try again.")
+    shutil.rmtree(_collection_path(collection))
+
+
+def get_index_status(collection: str | None = None, *, reuse_active_handle: bool = True) -> dict:
+    """Snapshot of state for "does this collection have data? when was it
+    last indexed? is any indexing running right now?" (section 2.4 of the
+    MCP plan) — used by the griot_index_status tool, but it's a pure
+    common.py function (no network I/O, only local disk) so it can be
+    reused by the CLI too. 100% read-only, zero cost.
+
+    collection: defaults to common.COLLECTION_NAME (the active embedding
+    profile).
+
+    reuse_active_handle: True (default) preserves the original
+    behavior — the active collection goes through get_client(), which
+    memoizes the handle for the rest of the process AND creates the
+    collection from scratch if it doesn't exist yet (see get_client()).
+    That's fine for a short-lived CLI call or the MCP server (which is
+    already meant to hold the collection open to serve griot_search). It is
+    NOT fine for a long-lived read-only caller: it
+    would permanently block a concurrent `griot index` subprocess (same
+    failure mode release_client() documents for the MCP server) and would
+    materialize an empty collection on day 1 just from loading a status
+    page. Pass False to route the active collection through the SAME
+    read-only load-or-doesn't-exist path already used below for non-active
+    collections — no handle memoized, nothing created."""
+    collection = collection or COLLECTION_NAME
+
+    # [review] day 1 (collection doesn't exist yet): 0 points, not an
+    # error — same handling griot_search gives to a fresh install. With
+    # Edge, each collection is a shard in its own directory
+    # (_collection_path): the active one uses get_client()'s memoized
+    # handle; another collection is opened separately, read-only, and NEVER
+    # created here — checking status must not have the side effect of
+    # materializing an empty collection out of nowhere.
+    if reuse_active_handle and collection == COLLECTION_NAME:
+        # [real finding, 2026-08-20] this branch used to let the lock
+        # exception propagate raw — unlike the other-collection branch just
+        # below, which already handled the same error. Real scenario:
+        # griot_index_repo launches an indexing subprocess; if
+        # griot_index_status is called while that subprocess is still
+        # writing (same active collection), the whole tool would break
+        # instead of returning a best-effort result.
+        try:
+            points_count = get_client().info().points_count
+        except Exception as e:
+            log_and_print(
+                f"Warning: could not check points_count for '{collection}' "
+                f"(likely locked open by another process): {e}",
+                level="warning",
+            )
+            points_count = None
+    elif (_collection_path(collection) / _EDGE_CONFIG_MARKER).exists():
+        # [review] EdgeShard.load() on a collection that another process
+        # has open at this exact moment (e.g. a running indexer) raises a
+        # generic runtime exception ("failed to open WAL... WouldBlock",
+        # confirmed by introspection — not a specific "locked" type that
+        # can be caught precisely), not something specific to "doesn't
+        # exist". Without this except, checking the status of a concurrent
+        # collection broke this function's "100% read-only, zero cost"
+        # promise — it propagated the exception outward instead of
+        # returning a dict. Best-effort: points_count comes back as None
+        # when it can't be checked, instead of propagating.
+        try:
+            other_shard = qe.EdgeShard.load(str(_collection_path(collection)))
+            try:
+                points_count = other_shard.info().points_count
+            finally:
+                other_shard.close()
+        except Exception as e:
+            log_and_print(
+                f"Warning: could not check points_count for '{collection}' "
+                f"(likely locked open by another process): {e}",
+                level="warning",
+            )
+            points_count = None
+    else:
+        points_count = 0
+
+    lock_status = index_lock_status()
+    running = lock_status["running"]
+    pid = lock_status["pid"]
+    path = lock_status["path"]
+
+    # logdb.most_recent_run_for_collection() orders by id (insertion
+    # order) — same "last write wins" invariant runs.jsonl's append-only
+    # format used to give for free, now backed by logs/logs.db instead.
+    last_indexed = None
+    record = logdb.most_recent_run_for_collection(LOG_DIR, collection)
+    if record is not None:
+        last_indexed = {
+            "script": record.get("script"),
+            "timestamp": record.get("timestamp"),
+            "indexed": record.get("indexed"),
+            "skipped": record.get("skipped"),
+            "failed": record.get("failed"),
+            # None on a normal run; set when the run DIED before it could
+            # count anything (cli.py::_run_index_source). Passed through so
+            # consumers can render a failure as a failure instead of as
+            # "None indexed, None skipped, None failed", which reads like a
+            # successful no-op — the exact illusion recording died runs
+            # exists to remove.
+            "error": record.get("error"),
+        }
+
+    return {
+        "points_count": points_count,
+        "collection": collection,
+        "embed_profile": ACTIVE_PROFILE_NAME,
+        "running": running,
+        "pid": pid,
+        "path": path,
+        "last_indexed": last_indexed,
+        "spend_ceiling_exceeded": get_spend_today() >= SPEND_CEILING_USD,
+    }
+
+
+# What identifies ONE item of each source type, independent of how it was
+# chunked. Lives here (not in golden_set.py, which owned it first) so that
+# module and search()'s grouping apply the same rule — the mapping is
+# knowledge about the payloads the indexers write, which is this layer's.
+IDENTIFYING_FIELDS = {
+    "code": ["file_path"],
+    "commit": ["commit_hash"],
+    "tag": ["tag_name"],
+    "branch": ["branch_name"],
+    "merge_request": ["mr_iid"],
+    "release": ["tag_name"],
+    "issue": ["issue_iid"],
+}
+
+
+def document_key(payload: dict) -> tuple:
+    """Identifies the DOCUMENT a point belongs to — the file, commit, MR or
+    release — so several chunks of one document collapse to one thing.
+
+    Includes repo and source_type, not just the identifier: two repositories
+    commonly hold a README.md, and a release and a tag share tag_name."""
+    source_type = payload.get("source_type", "code")
+    identifiers = tuple(payload.get(f) for f in IDENTIFYING_FIELDS.get(source_type, []))
+    return (payload.get("repo"), source_type, *identifiers)
+
+
+# How many points to ask the store for, per document requested, when
+# grouping. The vector search runs in-process and the query embedding (the
+# only paid part) happens once either way — measured at 32 points being no
+# slower than 8 — so over-fetching costs nothing and a short factor would
+# silently return fewer documents than asked for.
+_GROUPING_OVERFETCH = 6
+
+
+def search(query: str, limit: int = 5, group_by_document: bool = False) -> list:
+    """Local search over Qdrant Edge — embeds the query with the active
+    profile and queries the embedded index. Returns a list of ScoredPoint
+    (.payload, .score) — shard.query() already returns the list directly
+    (unlike the old qdrant-client's query_points(), which wrapped it in a
+    QueryResponse object with a .points attribute).
+
+    group_by_document collapses a document's chunks to its best-scoring one,
+    making `limit` count DOCUMENTS instead of points. Off by default, and
+    deliberately so: repeated hits on one file are not redundancy — they are
+    different chunk_index values, 1500 chars each, overlapping by the
+    chunker's 200 — so grouping trades depth for breadth rather than
+    removing waste. Measured on a real index: a focused query held 4
+    documents in 8 slots, and grouping surfaced 4 more at a slightly LOWER
+    score than the eighth ungrouped hit. Worth it when the question is "where
+    does this live", wrong when one document IS the answer."""
+    client = get_client()
+    query_vector = embed_texts([query])[0]
+    fetch = limit * _GROUPING_OVERFETCH if group_by_document else limit
+    hits = client.query(
+        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True)
+    )
+    if not group_by_document:
+        return hits
+
+    best, seen = [], set()
+    for hit in hits:  # already ordered by score, so the first of a document is its best
+        key = document_key(hit.payload or {})
+        if key in seen:
+            continue
+        seen.add(key)
+        best.append(hit)
+        if len(best) == limit:
+            break
+    return best
+
+
+# gitlab_project_path()/gitlab_request() moved to platforms.py in
+# 2026-08-13, generalized to cover GitHub/Bitbucket/Azure DevOps/Gitea
+# besides GitLab (see griot.platforms — detect_platform()/fetch_*()) — not
+# duplicated here, index_platform.py (formerly index_gitlab.py) is the only
+# consumer now and imports from there.
