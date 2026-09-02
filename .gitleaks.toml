@@ -1,0 +1,42 @@
+# gitleaks configuration for griot.
+#
+# Starts from the upstream rule set and narrows it as little as possible:
+# every exception below is a specific literal, never a whole path. Allowing
+# a FILE would mean a real credential pasted into that file later would ship
+# silently, which is exactly the failure this scan exists to prevent.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and build artefacts"
+
+# Not versioned (see .gitignore), but `gitleaks dir` walks them anyway and
+# they contain compiled copies of the test fixtures below.
+paths = [
+    '''.*__pycache__.*''',
+    '''\.pytest_cache/.*''',
+    '''\.venv/.*''',
+    '''htmlcov/.*''',
+    '''dist/.*''',
+]
+
+# Literal fixtures used by tests/test_auth.py. Each is deliberately a
+# self-describing phrase rather than a random-looking string, so it reads as
+# a fixture on sight — and one of them exists precisely to assert that
+# `griot auth set` never echoes a key back to stdout.
+#
+# Written as PREFIXES on purpose: a rule that matches a fixed token length
+# (gitlab-pat takes exactly 20 characters after the prefix) reports a
+# TRUNCATED secret, so an allowlist carrying the full literal never matches
+# it. Verified against a canary — a realistic random token pasted into the
+# same directory is still reported.
+regexes = [
+    '''glpat-also-already-config''',
+    '''glpat-fake-token-9999''',
+    '''gm-already-configured-before''',
+    '''sk-super-secret-does-not-leak''',
+    '''sk-stale-from-shell-0000''',
+    '''sk-fresh-in-file-9999''',
+    '''sk-existing-value-here''',
+]
