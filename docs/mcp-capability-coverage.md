@@ -142,7 +142,13 @@ Two consequences that shape any design here:
    `ctx.client_capabilities.elicitation` is `None` when unsupported and an
    `ElicitationCapability(form=…, url=…)` when supported. No registry of
    client names, and it keeps working for clients that do not exist yet.
-2. **Ask last.** The resolver runs before the tool body, so it repeats the
+2. **Where a person can be asked, the person decides.** The resolver asks
+   whatever `confirm` says, and `_confirmed()` does not consult `confirm`
+   after a decline or a dismissal: the argument comes from the agent, and an
+   agent that was just told no could otherwise call again with
+   `confirm=true`. A dismissal (which is also what a headless Claude Code
+   answers by itself) gets the terminal command, a decline gets nothing.
+3. **Ask last.** The resolver runs before the tool body, so it repeats the
    cheap validation (an unknown harness, a path that would be refused, an
    invalid limit) and skips the question when the call cannot succeed. A
    confirmation whose answer cannot change the outcome only teaches people to
@@ -268,11 +274,11 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 | List profiles | `profiles list` | `griot_profiles_list` | — |
 | List golden set | `golden-set list` | `griot_golden_set_list` | — |
 | Register a repo | `repos add` | `griot_repos_add` | **human only** |
-| Unregister a repo | `repos remove` | `griot_repos_remove` | elicit or `confirm` |
+| Unregister a repo | `repos remove` | `griot_repos_remove` | dialog, or `confirm` where nobody can be asked |
 | Delete a profile | `profiles delete` | `griot_profiles_delete` | **human only** |
-| Curate a case | `golden-set add` | `griot_golden_set_add` | elicit or `confirm` |
-| Remove a case | `golden-set remove` | `griot_golden_set_remove` | elicit or `confirm` |
-| Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | elicit or `confirm` |
+| Curate a case | `golden-set add` | `griot_golden_set_add` | dialog, or `confirm` where nobody can be asked |
+| Remove a case | `golden-set remove` | `griot_golden_set_remove` | dialog, or `confirm` where nobody can be asked |
+| Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | dialog, or `confirm` where nobody can be asked |
 | Install Claude Code/opencode skills+agent | `assist install` | `griot_assist_install` | **human only** |
 | Add griot's block to the GLOBAL instructions file (`~/.claude/CLAUDE.md`) | `assist install --scope global` (asks; needs a terminal) | none, by design | CLI only |
 
@@ -315,8 +321,8 @@ over MCP, and under what mechanism.
 | Kind of operation | Over MCP | Mechanism |
 |---|---|---|
 | Read-only (`search`, `stats`, `repos list`, `profiles list`, `golden-set list`) | yes | plain tool |
-| State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | a confirmation dialog when the client can ask, `confirm=true` otherwise |
-| Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | a confirmation dialog only — `human_required=True`, no argument bypasses it |
+| State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | a confirmation dialog when the client can ask (then `confirm=true` is ignored and a decline is final), `confirm=true` otherwise |
+| Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | a confirmation dialog only — `human_required=True`, no argument bypasses it; plus the `anthropic/requiresUserInteraction` marker |
 | **Secrets** (`auth set/list/remove`) | **never** | MCP answers with the CLI command to run |
 
 The third row exists because confirmation protects against a *mistake*,
@@ -331,10 +337,26 @@ The secrets row is not a stricter version of the row above it. Confirmation
 does not make it safe to type a token into a chat — the problem is the
 channel, not the absence of a confirmation step.
 
-Relying on the host's own permission prompt instead of a confirmation dialog was
+Relying on the host's own permission prompt INSTEAD of a confirmation dialog was
 considered and rejected: `destructiveHint` is a hint a client MAY act on,
 and in Claude Code's auto mode there is no prompt at all — which is the
-mode this project is actually used in.
+mode this project is actually used in. The three human-only tools do carry
+`_meta["anthropic/requiresUserInteraction"]`, as an addition. Verified
+against Claude Code 2.1.285 run headless, with an allow rule and with
+`bypassPermissions`: the call was denied and the tool never reached the
+server. Its documentation says an interactive session prompts on every call;
+that was not observed here. The marker says nothing about the consequence of
+the call, so griot's own dialog stays: two confirmations for three rare
+operations, on purpose.
+
+**The same classification holds in the CLI.** `repos add` and
+`profiles delete` ask at an interactive terminal and have no `--yes`;
+`repos remove`, `golden-set remove` and `auth remove` ask and accept `--yes`.
+Without that, an agent told "this needs a person" by the MCP tool could run
+the equivalent command from its shell and nobody would be asked. It guards
+the easy path only: a process that can run arbitrary commands can fake a
+terminal or edit the files, and what an agent's shell may do is the agent
+host's permission system's job.
 
 ## Why none of this is scheduled
 

@@ -129,7 +129,9 @@ Platform tokens (only needed for `griot index platform`):
 griot profiles delete <profile>
 ```
 
-Permanently deletes that profile's on-disk collection. It refuses to delete
+Permanently deletes that profile's on-disk collection. It asks for
+confirmation at an interactive terminal and has no flag that answers instead,
+so the user runs it, not an agent. It refuses to delete
 the **active** profile (switch to a different one first with
 `GRIOT_EMBED_PROFILE`/`--profile`) and refuses a profile that was never
 indexed (nothing to delete). This is irreversible — there's no undo short

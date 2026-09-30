@@ -292,6 +292,19 @@ def delete_profile(profile_name: str, *, active_profile_name: str | None = None)
     still-running session, without a restart. service.delete_profile()
     passes its own live-resolved value here instead of trusting the
     default."""
+    collection = check_delete_profile(profile_name, active_profile_name=active_profile_name)
+    from griot import common
+    common.delete_collection(collection)  # raises ValueError when never indexed, or while indexing is running
+    return collection
+
+
+def check_delete_profile(profile_name: str, *, active_profile_name: str | None = None) -> str:
+    """Read-only half of delete_profile(): the collection it would delete.
+    Raises the same ValueError it would for an unknown profile, the active
+    one, one that was never indexed, or while an indexing run holds the
+    lock. Lets the CLI refuse before asking anyone to confirm. The delete
+    repeats the last check itself: a run can start between the question and
+    the answer."""
     from griot import common
 
     if profile_name not in common.EMBED_PROFILES:
@@ -300,11 +313,27 @@ def delete_profile(profile_name: str, *, active_profile_name: str | None = None)
     if profile_name == active:
         raise ValueError(f"'{profile_name}' is the active profile — switch to a different one first, then delete.")
     collection = common.collection_name_for(profile_name)
-    common.delete_collection(collection)  # raises ValueError when never indexed, or while indexing is running
+    if not common.collection_exists(collection):
+        raise ValueError(f"collection '{collection}' does not exist.")
+    if common.index_lock_status()["running"]:
+        raise ValueError("an indexing run is currently in progress — wait for it to finish, then try again.")
     return collection
 
 
 def _cmd_profiles_delete(args) -> int:
+    from griot import common
+
+    try:
+        check_delete_profile(args.profile)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    # No --yes on purpose: the vectors are gone for good and rebuilding them
+    # costs money (see common.confirm and griot_profiles_delete).
+    refused = common.confirm(f"Delete profile '{args.profile}' and its indexed vectors? This cannot be undone, "
+                             f"and rebuilding them costs whatever that profile charges to embed.", yes=None)
+    if refused:
+        return refused
     try:
         collection = delete_profile(args.profile)
     except ValueError as e:

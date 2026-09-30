@@ -46,6 +46,11 @@ profiles (OpenAI, Gemini) only send data when you explicitly select them.
 griot repos add ~/code/my-app
 ```
 
+It asks you to confirm, and needs an interactive terminal to do so: there is
+no flag that answers for you, because a registered path is one whose contents
+may be sent to an embedding API. Run from a shell with no terminal, as an
+agent would, it exits with status 2 and changes nothing: this step is yours.
+
 This adds the resolved path to `<config>/repos.json`, the list `griot index
 all` (without `--path`) walks. You can register as many repos as you want;
 `griot repos list` shows what's registered and flags any path that no

@@ -48,22 +48,41 @@ def repo_status() -> list[dict]:
     ]
 
 
-def add_repo(path: str) -> str:
-    """Write half of repo_status() for adding one repo.
-    Returns the resolved path that was added. Raises ValueError (message
-    with no "Error: " prefix — that's the CLI's job, see cmd_add()) on an
-    invalid or already-registered path; never touches the file in that case."""
+def check_add(path: str) -> str:
+    """Read-only half of add_repo(): the resolved path it would register.
+    Raises the same ValueError it would. Lets the CLI refuse a bad path
+    before asking anyone to confirm it."""
     repo_path = Path(path)
     if not repo_path.is_dir():
         raise ValueError(f"'{path}' doesn't exist or isn't a directory.")
 
     resolved = str(repo_path.resolve())
-    paths = _load()
-    if resolved in paths:
+    if resolved in _load():
         raise ValueError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
+    return resolved
 
+
+def add_repo(path: str) -> str:
+    """Write half of repo_status() for adding one repo.
+    Returns the resolved path that was added. Raises ValueError (message
+    with no "Error: " prefix — that's the CLI's job, see cmd_add()) on an
+    invalid or already-registered path; never touches the file in that case."""
+    resolved = check_add(path)
+    paths = _load()
     paths.append(resolved)
     _save(paths)
+    return resolved
+
+
+def check_remove(path: str) -> str:
+    """Read-only half of remove_repo(): the resolved path it would remove.
+    Raises the same ValueError it would."""
+    resolved = str(Path(path).resolve())
+    paths = _load()
+    if not paths:
+        raise ValueError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
+    if resolved not in paths:
+        raise ValueError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
     return resolved
 
 
@@ -71,13 +90,8 @@ def remove_repo(path: str) -> str:
     """Write half of repo_status() for removing one repo.
     Returns the resolved path that was removed. Raises ValueError on a
     missing repos.json or an unregistered path."""
-    resolved = str(Path(path).resolve())
+    resolved = check_remove(path)
     paths = _load()
-    if not paths:
-        raise ValueError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
-    if resolved not in paths:
-        raise ValueError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
-
     paths.remove(resolved)
     _save(paths)
     return resolved
@@ -145,13 +159,31 @@ def main(argv=None) -> int:
 
     p_remove = sub.add_parser("remove", help="Removes a repo from the list")
     p_remove.add_argument("path")
+    p_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
 
     args = parser.parse_args(argv)
-    if args.action == "add":
-        return cmd_add(args.path)
     if args.action == "list":
         return cmd_list()
-    return cmd_remove(args.path)
+
+    # Confirmation lives here, in the command-line entry, and not in
+    # cmd_add()/cmd_remove(): those stay the plain operation. What is cheap
+    # to check is checked first, so nobody is asked about a path that was
+    # going to be refused anyway.
+    adding = args.action == "add"
+    try:
+        resolved = check_add(args.path) if adding else check_remove(args.path)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if adding:
+        # No --yes on purpose: registering widens what may be sent to the
+        # embedding API (see common.confirm and griot_repos_add).
+        refused = common.confirm(f"Register {resolved} as an indexable repo? "
+                                 f"Anything under it can then be sent to the embedding API.", yes=None)
+        return refused or cmd_add(args.path)
+    refused = common.confirm(f"Remove {resolved} from the indexed repos? Data already indexed is kept.",
+                             yes=args.yes)
+    return refused or cmd_remove(args.path)
 
 
 if __name__ == "__main__":

@@ -105,8 +105,10 @@ griot_index_repo(path="/abs/path/to/repo", sources=["commits"])  # a subset
 
 - `platform` (PRs/issues/releases) is **not** in the default sources. Pass
   it explicitly, and only if its token is configured (`griot_auth_guidance`).
-- The tool asks the user to confirm. Never pass `confirm=true` yourself
-  unless the user explicitly told you to skip confirmation.
+- The tool asks the user to confirm. Where the client can show that dialog,
+  the user's answer is the only thing that counts: `confirm=true` is ignored,
+  and a "no" is final. `confirm=true` only works in a client that cannot ask;
+  never pass it unless the user explicitly told you to.
 - It returns right away with `started`, `pid` or a `reason`. A `reason` is
   final: an unregistered path, an invalid repo, or a run already in progress.
   Relay it to the user; do not retry.
@@ -182,5 +184,7 @@ terminal (`griot auth set <provider>`), never through you.
 - Retry a run that failed because the collection is held without first
   changing what holds it. The retry fails the same way and adds another dead
   run to `griot stats`. (A `--dry-run` leaves no record either way.)
-- Pass `confirm=true` on the user's behalf, or run `griot profiles delete`
-  unasked.
+- Pass `confirm=true` on the user's behalf, or call a tool again after the
+  user declined it.
+- Try to get around a command that wants a terminal (`griot repos add`,
+  `griot profiles delete`): hand the command to the user instead.

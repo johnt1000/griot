@@ -307,12 +307,15 @@ def test_save_is_atomic_no_tmp_file_left_behind(tmp_path):
 # --- main() dispatch --------------------------------------------------------
 
 
-def test_main_dispatches_add_list_remove(tmp_path):
+def test_main_dispatches_add_list_remove(tmp_path, monkeypatch):
     repo = tmp_path / "my-repo"
     repo.mkdir()
+    # `add` is answered at a terminal (it has no --yes); see tests/test_cli_confirm.py.
+    monkeypatch.setattr(common, "is_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
     assert repos.main(["add", str(repo)]) == 0
     assert json.loads(common.REPOS_JSON_PATH.read_text()) == [str(repo.resolve())]
     assert repos.main(["list"]) == 0
-    assert repos.main(["remove", str(repo)]) == 0
+    assert repos.main(["remove", "--yes", str(repo)]) == 0
     assert json.loads(common.REPOS_JSON_PATH.read_text()) == []

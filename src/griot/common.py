@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -273,6 +274,47 @@ def _ensure_log_handler() -> None:
         os.chmod(log_path, 0o600)  # FileHandler creates with the default umask
         _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         _logger.addHandler(_handler)
+
+
+def is_interactive() -> bool:
+    """True when a person can be asked: both ends are a terminal."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def confirm(question: str, *, yes: bool | None = False) -> int:
+    """Asks a yes/no question before a CLI command destroys or widens
+    something. Returns 0 to proceed, otherwise the exit code the command
+    should end with: 1 when the person did not say yes, 2 when nobody could
+    be asked, 130 on Ctrl-C.
+
+    Only a typed "y" or "yes" proceeds; the default is no. `yes=True` is the
+    command's own --yes flag and skips the question. `yes=None` means the
+    command has no such flag on purpose: an operation that widens what may be
+    indexed, or destroys data for good, is answered by a person at a terminal,
+    so the plain command run from an agent's shell (which has no terminal)
+    changes nothing. That is a guard against the easy path, not a boundary: a
+    process that can run arbitrary commands can also fake a terminal or edit
+    the files directly."""
+    if yes:
+        return 0
+    if not is_interactive():
+        how = ("Run it in an interactive terminal: there is no flag that answers for you." if yes is None
+               else "Run it in an interactive terminal, or pass --yes.")
+        print(f"Error: this needs a confirmation and there is no terminal to ask on. "
+              f"Nothing was changed. {how}", file=sys.stderr)
+        return 2
+    try:
+        answer = input(f"{question} [y/N] ")
+    except EOFError:
+        answer = ""
+        print(file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nAborted, nothing changed.", file=sys.stderr)
+        return 130
+    if answer.strip().lower() in ("y", "yes"):
+        return 0
+    print("Aborted, nothing changed.", file=sys.stderr)
+    return 1
 
 
 def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:

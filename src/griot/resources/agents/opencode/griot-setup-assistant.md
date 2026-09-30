@@ -36,18 +36,24 @@ If repos are already registered, note which ones exist on disk (the
 command marks missing ones with `✗ doesn't exist`) and ask the user whether
 they want to index those, register a new one, or both — don't assume.
 
-If nothing is registered yet, register the repo(s) the user wants indexed:
+If nothing is registered yet, the USER registers the repo(s) they want
+indexed. This step is theirs: `griot repos add` asks for confirmation at an
+interactive terminal and has no flag that answers instead, because
+registering a path is what allows its contents to be sent to an embedding
+API. Run from a shell with no terminal it exits with status 2 and changes
+nothing; do not try to get around that. Give the user the exact command to
+run in their own terminal:
 
 ```bash
 griot repos add <path>
 ```
 
-Use an absolute path if the user gave a relative one and you're not certain
-of the current working directory. `griot repos add` resolves and stores the
-absolute path either way, and warns (non-fatally) if the target has no
-`.git` — mention that warning to the user if it fires, since it means
-commit/tag/branch history won't be indexable for that path even though code
-still will be.
+Give an absolute path if the user gave a relative one and you're not certain
+of the current working directory. Then wait, and confirm with
+`griot repos list` that the path is there before going on. The command warns
+(non-fatally) if the target has no `.git`; ask the user whether that warning
+appeared, since it means commit/tag/branch history won't be indexable for
+that path even though code still will be.
 
 ## 3. Pick an embedding profile
 

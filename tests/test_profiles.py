@@ -271,6 +271,9 @@ def test_cmd_profiles_delete_happy_path(monkeypatch, capsys):
     path = common._collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
     (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    # Answered at a terminal (there is no --yes); see tests/test_cli_confirm.py.
+    monkeypatch.setattr(common, "is_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
     rc = cli.main(["profiles", "delete", non_active])
 

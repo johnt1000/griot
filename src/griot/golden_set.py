@@ -122,11 +122,20 @@ def remove_case(index: int) -> dict:
     an out-of-range index — an empty set is just the (1-0) special case of
     that, no separate check needed."""
     cases = _load()
-    if not (1 <= index <= len(cases)):
-        raise ValueError(f"index {index} out of range (1-{len(cases)}).")
+    get_case(index, cases)
     removed = cases.pop(index - 1)
     _save(cases)
     return removed
+
+
+def get_case(index: int, cases: list[dict] | None = None) -> dict:
+    """The case `golden-set remove <index>` would remove, by the same 1-to-N
+    index. Raises the same ValueError remove_case() does, without changing
+    anything."""
+    cases = _load() if cases is None else cases
+    if not (1 <= index <= len(cases)):
+        raise ValueError(f"index {index} out of range (1-{len(cases)}).")
+    return cases[index - 1]
 
 
 def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int = 10) -> int:
@@ -249,6 +258,7 @@ def main(argv=None) -> int:
 
     p_remove = sub.add_parser("remove", help="Removes a case by number (see `list`)")
     p_remove.add_argument("index", type=int)
+    p_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
 
     args = parser.parse_args(argv)
     if args.action == "suggest":
@@ -257,7 +267,16 @@ def main(argv=None) -> int:
         return cmd_add(args.query, limit=args.limit)
     if args.action == "list":
         return cmd_list()
-    return cmd_remove(args.index)
+    # Checked before asking, and the question shows WHICH case: a number
+    # alone is easy to get wrong after an earlier removal shifted the list.
+    try:
+        case = get_case(args.index)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    refused = common.confirm(f"Remove golden-set case #{args.index} ({str(case.get('query', ''))[:80]!r})? "
+                             f"The indexed data is not touched.", yes=args.yes)
+    return refused or cmd_remove(args.index)
 
 
 if __name__ == "__main__":

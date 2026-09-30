@@ -29,7 +29,7 @@ Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads
 ## Quickstart
 
 ```bash
-# 1. register the repos you want to index
+# 1. register the repos you want to index (asks you to confirm, in a terminal)
 griot repos add ~/code/my-app
 griot repos add ~/code/my-lib
 
@@ -62,7 +62,7 @@ Each profile gets its own collection (vectors from different models aren't compa
 | `openai-small` | OpenAI API | paid | needs `GRIOT_OPENAI_API_KEY` |
 | `gemini` | Gemini API | paid | needs `GEMINI_TOKEN` |
 
-`griot profiles list` shows every profile with RAM estimates and credential status. `griot profiles delete <profile>` permanently deletes that profile's on-disk collection to reclaim disk space (refuses the active profile and any profile currently being indexed).
+`griot profiles list` shows every profile with RAM estimates and credential status. `griot profiles delete <profile>` permanently deletes that profile's on-disk collection to reclaim disk space (refuses the active profile and any profile currently being indexed). It asks for confirmation at an interactive terminal and has no `--yes`.
 
 ## Chat profiles (`griot ask` only)
 
@@ -82,7 +82,7 @@ griot never assumes an unverified price: `openai`/`deepseek` refuse to run until
 ```bash
 griot auth set openai      # hidden input; OS keychain when available, else <config>/.env at 0600
 griot auth list            # status per provider, keys always masked
-griot auth remove openai
+griot auth remove openai   # asks first; --yes skips the question
 griot auth migrate         # moves every credential already in the plaintext file into the keychain
 ```
 
@@ -127,7 +127,7 @@ Four prompts, which clients surface as slash commands:
 
 A prompt injects text; the work is still a tool call, so nothing here runs in the background or spends anything on its own.
 
-Tools that change something: `griot_repos_add`, `griot_repos_remove`, `griot_profiles_delete`, `griot_golden_set_add`, `griot_golden_set_remove`, `griot_assist_install` (below), and `griot_index_repo` (**off by default** — it can spend money on paid profiles; enable with `GRIOT_MCP_ENABLE_INDEX=true`, and even then it only accepts paths registered via `griot repos add` or under `GRIOT_MCP_INDEX_ROOTS`). None of them act unasked. Where your client supports elicitation they ask you to confirm; where it does not, they refuse and hand back the equivalent `griot` command, and an explicit `confirm=true` argument re-runs them — which means an agent that passes `confirm=true` up front executes without a human. That fallback is deliberate: it is the only thing that works on a client that cannot prompt. **Registering a new repo, deleting a profile, and installing assist skills/agents do not have it** — those accept nothing but a real human answer, because they widen what may be indexed, destroy data irreversibly, or install files a future AI session will auto-load and follow, and `confirm` is an argument the agent supplies to itself. (Full policy table: [docs/mcp-capability-coverage.md § The management surface](docs/mcp-capability-coverage.md#the-management-surface).)
+Tools that change something: `griot_repos_add`, `griot_repos_remove`, `griot_profiles_delete`, `griot_golden_set_add`, `griot_golden_set_remove`, `griot_assist_install` (below), and `griot_index_repo` (**off by default** — it can spend money on paid profiles; enable with `GRIOT_MCP_ENABLE_INDEX=true`, and even then it only accepts paths registered via `griot repos add` or under `GRIOT_MCP_INDEX_ROOTS`). None of them act unasked. Where your client can show a confirmation dialog they ask you, and only your answer counts: a `confirm=true` argument from the agent is ignored there, and a "no" is final. Where the client cannot ask, they refuse and hand back the equivalent `griot` command, and an explicit `confirm=true` argument re-runs them — which means that on such a client an agent that passes `confirm=true` up front executes without a human. That fallback is deliberate: it is the only thing that works on a client that cannot prompt. **Registering a new repo, deleting a profile, and installing assist skills/agents do not have it** — those accept nothing but a real human answer, because they widen what may be indexed, destroy data irreversibly, or install files a future AI session will auto-load and follow, and `confirm` is an argument the agent supplies to itself. Those three are also marked as requiring user interaction, which Claude Code honors: run headless, it denies the call before it reaches griot, even with an allow rule for the tool. (Full policy table: [docs/mcp-capability-coverage.md § The management surface](docs/mcp-capability-coverage.md#the-management-surface).)
 
 ### Claude Code / opencode skills and agent
 
