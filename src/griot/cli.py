@@ -40,6 +40,7 @@ _MODULES = {
     "repos": "griot.repos",
     "golden-set": "griot.golden_set",
     "assist": "griot.harnesses",
+    "audit": "griot.redaction",
 }
 
 
@@ -190,12 +191,12 @@ def _cmd_search(args) -> int:
         return 0
     for r in results:
         payload = r.payload or {}
-        print(f"[{r.score:.3f}] {ask.source_label(payload)}")
-        content = (payload.get("content") or "").strip()
+        print(f"[{r.score:.3f}] {common.shown(ask.source_label(payload))}")
+        content = common.stored_text(payload).strip()
         if content:
             # one-line preview — the full result is ask/MCP's job
             first_line = content.splitlines()[0]
-            print(f"        {first_line[:200]}")
+            print(f"        {common.printable(first_line[:200])}")
     return 0
 
 
@@ -442,6 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("repos", "Manages the list of repos indexed in bulk (add/list/remove)"),
         ("golden-set", "Manages the curated golden set for quality-check (suggest/add/list/remove)"),
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
+        ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal

@@ -197,6 +197,14 @@ griot golden-set add "query"     # curate a case from a real search
 
 `griot quality-check` scores retrieval against your curated golden set — useful before/after switching embedding profiles.
 
+### Credentials in indexed content
+
+```bash
+griot audit                      # where the index holds credential-looking values (never the values)
+```
+
+Text is scanned for credential-shaped values (private keys, a list of provider token formats, JWTs, passwords in URLs, random-looking values assigned to names like `API_KEY`) before it is embedded and stored, and they are replaced with a marker; the run tells you where. `griot audit` looks for the same shapes in what is already indexed. What this can and cannot find is in [SECURITY.md](SECURITY.md#credentials-in-what-is-indexed).
+
 ## Development
 
 ```bash

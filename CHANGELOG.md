@@ -58,6 +58,23 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **Credential-looking values are no longer embedded, stored or returned.**
+  Indexed text used to go to the embedding provider and into the index as it
+  was, and search returned it verbatim: a token in a tracked file, a commit
+  message or a pull request body travelled both ways. Every text now goes
+  through detectors (private key material, a list of provider token formats,
+  JWTs, passwords in URLs, authorization headers, random-looking values
+  assigned to names like `API_KEY`) before it is chunked and embedded; a match
+  is replaced with `[REDACTED:<rule>]` and the run lists where. The same
+  replacement is applied to what search, `griot ask` and the quality check
+  read from the store, and to the names shown for a result, which covers most
+  of what an older version indexed until that repository is indexed again.
+  `griot audit` lists where the index still holds such values. It does not
+  find passwords in prose, short passwords, personal data or formats that are
+  not on the list, and a search query is not scanned.
+- A remote URL is no longer printed with the credentials in it, and the names
+  of results and findings (search, `ask --show-sources`, the run report,
+  `griot audit`) are printed without control characters.
 - **Symlinks in a repository are not followed.** A repository could ship
   `notes.md -> ~/.aws/credentials` and have the target indexed, and on a paid
   profile sent to the embedding API. The file and the directories on the way

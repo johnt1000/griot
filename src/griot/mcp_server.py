@@ -736,7 +736,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                 "source_label": ask.source_label(r.payload or {}),
                 "repo": (r.payload or {}).get("repo", "?"),
                 "source_type": (r.payload or {}).get("source_type", "code"),
-                "content": (r.payload or {}).get("content", ""),
+                "content": common.stored_text(r.payload),
                 "score": r.score,
             }
             for r in results

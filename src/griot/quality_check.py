@@ -121,7 +121,7 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
         scores = []
 
         for point in samples:
-            content = point.payload.get("content", "")
+            content = common.stored_text(point.payload)
             if not content.strip():
                 continue
             results = common.search(content, limit=5)

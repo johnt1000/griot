@@ -124,7 +124,7 @@ def discover_files(repo_path: Path) -> list[Path]:
         found.append(path)
 
     if too_large:
-        shown = ", ".join(str(p.relative_to(repo_path)) for p in sorted(too_large)[:5])
+        shown = ", ".join(common.shown(str(p.relative_to(repo_path))) for p in sorted(too_large)[:5])
         more = f" and {len(too_large) - 5} more" if len(too_large) > 5 else ""
         print(f"Skipped {len(too_large)} file(s) larger than {MAX_FILE_BYTES // 1_000_000} MB in {repo_path.name}: {shown}{more}")
     return sorted(found)
@@ -193,7 +193,7 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
             if not content.strip():
                 continue
             rel_path = str(file_path.relative_to(repo_path))
-            chunks = common.chunk_text(content)
+            chunks = common.chunk_text(content, where=f"{repo_path.name}/{rel_path}")
             for i, chunk in enumerate(chunks):
                 documents.append({
                     "id": f"{key}:code:{rel_path}:{i}",
@@ -266,10 +266,12 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents)
         print(f"\n[dry-run] {pending} chunks would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.report_redactions()
         common.prune_orphans(all_documents, dry_run=True, **prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents)
+    redacted = common.report_redactions()
     pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
@@ -277,7 +279,7 @@ def main(argv=None):
     print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
     common.log_run_summary(
         script="index_code.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed, pruned=pruned,
+        indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —

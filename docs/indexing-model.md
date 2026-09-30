@@ -84,6 +84,14 @@ commits and PRs. It is off by default: repeated hits on one file are
 *different* chunks, not redundancy, so grouping trades depth for breadth
 rather than removing waste.
 
+## What is stored is not always what was read
+
+Credential-looking values are replaced before chunking and before the
+content hash is taken (`common.chunk_text`, `common._split_pending`), so the
+hash is of the stored text. A point written by a version that did not do this
+has the hash of the raw text: the next run sees it as changed, embeds the
+replaced text and overwrites it. Readers go through `common.stored_text`.
+
 ## Stale points
 
 A run upserts what it read and then removes, per repository and source, the

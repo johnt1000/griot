@@ -151,10 +151,12 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents, desc="Checking branches")
         print(f"\n[dry-run] {pending} branches would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.report_redactions()
         common.prune_orphans(all_documents, dry_run=True, **prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing branches")
+    redacted = common.report_redactions()
     pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
@@ -162,7 +164,7 @@ def main(argv=None):
     print(f"Total: {indexed} branches indexed, {skipped} unchanged (skipped), {failed} failed.")
     common.log_run_summary(
         script="index_branches.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed, pruned=pruned,
+        indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —

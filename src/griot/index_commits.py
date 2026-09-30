@@ -67,7 +67,7 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
         # break stable_id()-based idempotency for every commit ever
         # indexed before this fix, which is exactly the class of bug this
         # investigation started from (see jobs.py's --repo/--path fix).
-        chunks = common.chunk_text(text)
+        chunks = common.chunk_text(text, where=f"{repo_path.name} commit {commit['hash'][:12]}")
         for i, chunk in enumerate(chunks):
             doc_id = f"{key}:commit:{commit['hash']}" if len(chunks) == 1 else f"{key}:commit:{commit['hash']}:{i}"
             documents.append({
@@ -135,10 +135,12 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents, desc="Checking commits")
         print(f"\n[dry-run] {pending} commits would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.report_redactions()
         common.prune_orphans(all_documents, dry_run=True, **prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing commits")
+    redacted = common.report_redactions()
     pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
@@ -146,7 +148,7 @@ def main(argv=None):
     print(f"Total: {indexed} commits indexed, {skipped} unchanged (skipped), {failed} failed.")
     common.log_run_summary(
         script="index_commits.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed, pruned=pruned,
+        indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —

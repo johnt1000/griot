@@ -17,7 +17,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from fastembed import TextEmbedding
 from tqdm import tqdm
 
-from griot import logdb
+from griot import logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -1698,7 +1698,76 @@ def chat_completion(prompt: str, model: str | None = None) -> str:
     return body["candidates"][0]["content"]["parts"][0]["text"]
 
 
-def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200) -> list[str]:
+# What this process replaced since it was last asked: (where, rule). Kept per
+# process, not per call, because a source cuts all its text first and indexes
+# afterwards; the indexer takes the list when its run ends.
+_redactions: list[tuple[str, str]] = []
+
+
+def _without_credentials(text: str, where: str | None) -> str:
+    """`text` with credential-looking values replaced (see redaction.py), and
+    each replacement recorded against `where` for the run's report."""
+    cleaned, rules = redaction.redact(text)
+    _redactions.extend((where or "(unnamed text)", rule) for rule in rules)
+    return cleaned
+
+
+def printable(text: str) -> str:
+    """`text` as it may be written to a terminal. File, branch and tag names
+    and indexed text come from the repository; a name can hold a line break
+    or an escape sequence, which would forge lines or drive the terminal."""
+    return "".join(ch if ch.isprintable() else "?" for ch in text)
+
+
+def shown(name: str) -> str:
+    """A name that comes from a repository (a path, a branch, a tag, a label
+    built from them), as the CLI may print it: a credential-shaped part is
+    replaced and nothing in it can drive the terminal."""
+    return printable(redaction.redact(name)[0])
+
+
+def take_redactions() -> list[tuple[str, str]]:
+    """What was replaced since the last call, and forgets it."""
+    taken = list(_redactions)
+    _redactions.clear()
+    return taken
+
+
+def report_redactions() -> int:
+    """Prints where credential-looking values were replaced in this run and
+    returns how many. Locations and rule names only: the point of replacing a
+    value is that it is written nowhere, a terminal included."""
+    taken = take_redactions()
+    if not taken:
+        return 0
+    places: dict[str, list[str]] = {}
+    for where, rule in taken:
+        places.setdefault(where, []).append(rule)
+    print(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):")
+    for where, rules in list(places.items())[:20]:
+        # The place is named by a path, a branch, a tag: a name can hold the
+        # very kind of value this report is about, and control characters.
+        print(f"  {shown(where)} ({', '.join(sorted(set(rules)))})")
+    if len(places) > 20:
+        print(f"  ... and {len(places) - 20} more place(s)")
+    print("They are not in the index. If one is real, it is still in that file or history: rotate it.")
+    return len(taken)
+
+
+def stored_text(payload: dict | None) -> str:
+    """The text of a stored point, as it may leave griot. What an older
+    version indexed raw is still in the store until its repository is indexed
+    again; every reader goes through here so that it is replaced on the way
+    out, to an agent, a terminal, a chat model or an embedding API."""
+    return redaction.redact((payload or {}).get("content") or "")[0]
+
+
+def chunk_text(text: str, max_chars: int = 1500, overlap: int = 200, *, where: str | None = None) -> list[str]:
+    """Cuts `text` into overlapping chunks for indexing. Credential-looking
+    values are replaced FIRST: cut in two by a chunk boundary, a value would
+    match no detector and both halves would be embedded and stored. `where`
+    names the source for the run's report."""
+    text = _without_credentials(text, where)
     if overlap >= max_chars:
         raise ValueError(f"overlap ({overlap}) must be smaller than max_chars ({max_chars}), otherwise the cursor never advances")
     chunks = []
@@ -1773,6 +1842,11 @@ def _split_pending(batch: list[dict], client: "qe.EdgeShard") -> list[dict]:
     the rest of the payload) and omits missing IDs from the result instead
     of raising an error — same contract as before."""
     for doc in batch:
+        # The net under chunk_text(): a document that was never chunked (a
+        # tag, a branch, a source written later) passes here all the same.
+        # Before the hash, so the hash is of what is stored; text that was
+        # already replaced is left as it is and recorded once.
+        doc["content"] = _without_credentials(doc["content"], doc["id"])
         doc["_point_id"] = stable_id(doc["id"])
         doc["_content_hash"] = hashlib.md5(doc["content"].encode()).hexdigest()
 

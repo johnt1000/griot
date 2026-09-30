@@ -111,6 +111,18 @@ if you switch back. The same goes for a sparse checkout: files that are not
 on disk are gone as far as the run can tell. Below 100 points, or below half
 of a repository, nothing holds the removal back.
 
+## Credentials
+
+Before indexed text is embedded, credential-shaped values (private keys,
+provider tokens, JWTs, passwords inside URLs, random-looking values assigned
+to names like `API_KEY`) are replaced with `[REDACTED:<rule>]`, and the run
+prints where (a file, a commit, a branch). A search QUERY is not scanned:
+never put a credential in one. Tell the user
+when that happens: a replaced value is not in the index, but if it is real it
+is still in the file or the history and should be rotated. `griot audit`
+checks what is already indexed. Neither finds a password written in prose or
+personal data; a file with those belongs in `.gitignore`.
+
 ## Choosing an embedding profile
 
 ```bash
