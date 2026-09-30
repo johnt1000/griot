@@ -255,6 +255,7 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 | Remove a case | `golden-set remove` | `griot_golden_set_remove` | elicit or `confirm` |
 | Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | elicit or `confirm` |
 | Install Claude Code/opencode skills+agent | `assist install` | `griot_assist_install` | **human only** |
+| Add griot's block to the GLOBAL instructions file (`~/.claude/CLAUDE.md`) | `assist install --scope global` (asks; needs a terminal) | none, by design | CLI only |
 
 ### CLI only — and why each one stays there
 

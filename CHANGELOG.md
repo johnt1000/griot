@@ -16,6 +16,18 @@ between minor versions. Breaking changes are called out explicitly.
   `WouldBlock`, when to use `griot_index_repo` instead, and how to find
   which process holds the collection.
 
+### Added
+
+- **`griot assist install --scope global` offers to add griot's instructions to your
+  global agent instructions file** (`~/.claude/CLAUDE.md` for Claude Code): a short
+  block telling agents in every project when to use `griot_search`. It shows the exact
+  text and the file, and writes only when you type `y` at the prompt; with no interactive
+  terminal it writes nothing, and there is no flag that answers for you. `--no-instructions` skips
+  the question. The block sits between `griot:begin` and `griot:end` markers, text
+  outside them is never touched, a symlinked file is written through, and re-running the
+  command updates the block in place. The MCP tool `griot_assist_install` never touches
+  this file.
+
 ### Changed
 
 - **`griot_search` returns 8 results by default** (it was 5). Agents overrode the

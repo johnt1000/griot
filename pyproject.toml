@@ -86,7 +86,7 @@ where = ["src"]
 # install griot` outside this dev checkout would ship `griot assist install`
 # with nothing to install.
 [tool.setuptools.package-data]
-griot = ["resources/skills/**/*.md", "resources/agents/**/*.md"]
+griot = ["resources/skills/**/*.md", "resources/agents/**/*.md", "resources/instructions/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
