@@ -52,6 +52,50 @@ def _run_module(module_name: str, argv: list) -> int:
     return 0 if rc is None else rc
 
 
+def _is_dry_run(rest: list) -> bool:
+    """True when the forwarded argv makes the source module's parser set
+    --dry-run. argparse accepts any unambiguous prefix (`--dry`, `--dr`), so
+    this cannot be a literal match: a prefix run would slip through as a real
+    one. None of the index_* parsers has another --d* option, so a prefix of
+    --dry-run is unambiguous; where it would be, the module's own parser
+    rejects the argv (SystemExit) and nothing is recorded anyway."""
+    for token in rest:
+        flag = token.split("=", 1)[0]
+        if len(flag) >= 3 and flag.startswith("--d") and "--dry-run".startswith(flag):
+            return True
+    return False
+
+
+def _is_collection_busy(exc: BaseException) -> bool:
+    """common is imported lazily, and the exception can only exist once it
+    has been, so look it up instead of importing it (and its heavy imports)
+    on the --help path."""
+    common = sys.modules.get("griot.common")
+    return common is not None and isinstance(exc, common.CollectionBusyError)
+
+
+def _busy_message(exc) -> str:
+    from griot import common
+
+    holders = common.find_collection_holders(exc.path)
+    who = "; ".join(
+        f"PID {h['pid']}" + (f" ({h['command']}" + (f", started {h['started']}" if h["started"] else "") + ")"
+                             if h["command"] else "")
+        for h in holders)
+    head = f"Another griot process holds the collection '{exc.collection}'." + (f" Holder: {who}." if who else "")
+    roles = {h.get("role") for h in holders}
+    if "mcp" in roles:
+        idle = f"{common.IDLE_RELEASE_SECONDS:g}"
+        tail = (f"That is a griot MCP server. It lets go of the collection after {idle} seconds without a tool call "
+                f"(or when its session ends, if it runs in single mode). Wait and run the command again, close that "
+                f"session, or, from inside a Claude Code session, index through the griot_index_repo tool.")
+    elif "index" in roles:
+        tail = "That is an indexing run. Wait for it to finish (`griot stats` shows the last run), then run the command again."
+    else:
+        tail = "Wait for it to finish or close it, then run the command again."
+    return f"{head}\n{tail}"
+
+
 def _run_index_source(source: str, rest: list) -> int:
     """Runs one index source, recording a FAILED run if it dies.
 
@@ -79,6 +123,11 @@ def _run_index_source(source: str, rest: list) -> int:
     except SystemExit:
         raise
     except BaseException as e:
+        # A dry-run writes nothing when it succeeds, so a dead one must not
+        # leave a record either: it would count as a failed indexing run in
+        # `griot stats` and shadow the last real run in griot_index_status.
+        if _is_dry_run(rest):
+            raise
         common.log_run_summary(
             script=f"index_{source}.py",
             # Genuinely unknown — a died run never counted anything. None,
@@ -117,6 +166,8 @@ def _cmd_index(args) -> int:
         except SystemExit as e:
             rc = e.code if isinstance(e.code, int) else 1
         except Exception as e:
+            if _is_collection_busy(e):
+                raise  # main() explains it once, with who holds the collection
             print(f"Error: 'griot index {source}' failed: {e}", file=sys.stderr)
             return 1
         if rc != 0:
@@ -388,6 +439,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    try:
+        return _main(argv)
+    except Exception as e:
+        if not _is_collection_busy(e):
+            raise
+        print(_busy_message(e), file=sys.stderr)
+        return 1
+
+
+def _main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     argv, profile = _extract_profile_override(argv)
     if profile is not None:

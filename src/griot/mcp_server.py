@@ -411,6 +411,10 @@ def _release_if_idle(now: float | None = None) -> None:
             common.release_client()
 
 
+def _reaper_interval() -> float:
+    return max(0.5, min(1.0, common.IDLE_RELEASE_SECONDS / 2))
+
+
 def _start_idle_reaper(interval: float | None = None) -> threading.Event | None:
     """Runs _release_if_idle() in a daemon thread for the server's lifetime.
     Only the MCP server starts it: a CLI process in multi mode (the setting can
@@ -419,7 +423,7 @@ def _start_idle_reaper(interval: float | None = None) -> threading.Event | None:
     if common.CONCURRENCY_MODE != "multi":
         return None
     if interval is None:
-        interval = max(0.5, min(5.0, common.IDLE_RELEASE_SECONDS / 2))
+        interval = _reaper_interval()
     stop = threading.Event()
 
     def _loop():

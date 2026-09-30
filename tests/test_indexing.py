@@ -611,3 +611,225 @@ def test_index_documents_repairs_permissions_after_writing(monkeypatch):
         assert (os.stat(root).st_mode & 0o777) == 0o700
         for f in files:
             assert (os.stat(os.path.join(root, f)).st_mode & 0o777) == 0o600
+
+
+# --- a held collection is a typed condition ----------------------------------
+
+
+def _held_load(monkeypatch, exc):
+    common.get_client()
+    common.release_client()  # marker on disk, so the next get_client() LOADS
+
+    def load(path):
+        raise exc
+
+    monkeypatch.setattr(qe.EdgeShard, "load", load)
+
+
+def test_single_mode_turns_the_engines_lock_error_into_collection_busy(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
+    _held_load(monkeypatch, RuntimeError("Service runtime error: failed to open WAL: Kind(WouldBlock)"))
+
+    with pytest.raises(common.CollectionBusyError) as info:
+        common.get_client()
+
+    assert info.value.collection == common.COLLECTION_NAME
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
+def test_single_mode_leaves_any_other_load_failure_untouched(monkeypatch):
+    # Telling someone "another process has it" about a corrupt shard would send them the wrong way.
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
+    _held_load(monkeypatch, ValueError("segment header is corrupt"))
+
+    with pytest.raises(ValueError, match="corrupt"):
+        common.get_client()
+
+
+def test_a_status_read_reports_a_held_collection_as_collection_busy_without_waiting(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
+    _held_load(monkeypatch, RuntimeError("failed to open WAL: Kind(WouldBlock)"))
+    slept = []
+    monkeypatch.setattr(common.time, "sleep", lambda s: slept.append(s))
+
+    with pytest.raises(common.CollectionBusyError):
+        common.get_client(wait=False)
+
+    assert slept == []
+
+
+def test_multi_mode_exhausting_its_retries_raises_collection_busy(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
+    _held_load(monkeypatch, RuntimeError("another process has the WAL open"))
+    monkeypatch.setattr(common.time, "sleep", lambda s: None)
+
+    with pytest.raises(common.CollectionBusyError, match="Could not open collection") as info:
+        common.get_client()
+
+    assert isinstance(info.value, RuntimeError)  # callers that caught RuntimeError still do
+
+
+# --- who holds it ------------------------------------------------------------
+
+
+def _fake_lsof(monkeypatch, stdout="", exc=None):
+    def run(cmd, **kwargs):
+        assert cmd[0] == "lsof" and kwargs.get("timeout")  # a hung lsof must never hang griot
+        if exc:
+            raise exc
+        return type("R", (), {"stdout": stdout, "returncode": 0})()
+
+    monkeypatch.setattr(common.subprocess, "run", run)
+
+
+def _sleeper():
+    import subprocess
+    import sys
+
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+
+def test_holders_exclude_this_process_and_describe_the_others(monkeypatch, tmp_path):
+    other = _sleeper()
+    try:
+        _fake_lsof(monkeypatch, f"{os.getpid()}\n{other.pid}\n")
+
+        holders = common.find_collection_holders(tmp_path)
+
+        assert [h["pid"] for h in holders] == [other.pid]
+        assert holders[0]["started"] is not None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_holders_show_a_non_griot_processs_name_but_never_its_arguments(monkeypatch, tmp_path):
+    # An unrelated process (a backup tool with a password on its command line) must not be echoed into a terminal or an agent's context.
+    import subprocess
+    import sys
+
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "--password=hunter2"])
+    try:
+        _fake_lsof(monkeypatch, f"{other.pid}\n")
+
+        holders = common.find_collection_holders(tmp_path)
+
+        assert "hunter2" not in str(holders)
+        assert holders[0]["command"]
+    finally:
+        other.kill()
+        other.wait()
+
+
+@pytest.mark.parametrize("argv", [
+    ["/Users/j/.local/bin/griot", "mcp"],
+    ["/opt/homebrew/Cellar/python@3.14/Resources/Python.app/Contents/MacOS/Python", "/Users/j/.local/bin/griot", "mcp"],
+    ["python", "-m", "griot.cli", "index", "all"],
+    ["python3.14", "-u", "-m", "griot.mcp_server"],
+])
+def test_a_griot_command_line_is_recognised(argv):
+    assert common._is_griot_command(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    # the interpreter lives under a checkout called griot: the word is in the path, not in what runs
+    ["/Users/j/Development/projects/griot/.venv/bin/python", "-c", "import time", "--password=x"],
+    ["/Users/j/Development/projects/griot/.venv/bin/python", "backup.py", "--token=x"],
+    ["rsync", "-a", "--password-file=p", "/data/griot", "/backup"],
+    ["python", "-c", "print(1)", "griot"],
+    ["python", "-m", "notgriot"],
+    ["python", "-m", "griotx"],
+    ["python", "other.py", "griot"],
+    [],
+])
+def test_a_command_line_that_only_mentions_griot_is_not_recognised(argv):
+    assert not common._is_griot_command(argv)
+
+
+@pytest.mark.parametrize("argv, role", [
+    (["/Users/j/.local/bin/griot", "mcp"], "mcp"),
+    (["Python", "/Users/j/.local/bin/griot", "mcp"], "mcp"),
+    (["python", "-m", "griot.mcp_server"], "mcp"),
+    (["python", "-m", "griot.cli", "index", "all", "--repo", "x"], "index"),
+    (["python", "-m", "griot.index_code", "--dry-run"], "index"),
+    (["griot", "--profile", "openai-small", "index", "all"], "index"),
+    (["griot", "index", "all", "--repo", "mcp-gateway"], "index"),  # "mcp" is a repo name here, not what runs
+    (["griot", "--chat-profile", "groq", "ask", "why"], "other"),
+    (["griot", "--version"], "other"),
+    (["python", "-W", "ignore", "-m", "griot.mcp_server"], "mcp"),  # interpreter options that take a value
+    (["python", "-X", "dev", "-m", "griot.cli", "index", "all"], "index"),
+])
+def test_a_griot_process_is_classified_by_what_it_runs(argv, role):
+    assert common._griot_role(argv) == role
+
+
+def test_an_interpreter_option_value_is_not_mistaken_for_the_script():
+    assert common._griot_role(["python", "-W", "ignore", "/opt/tools/backup.py", "griot"]) is None
+    assert common._griot_role(["python", "-X", "dev", "-m", "notgriot"]) is None
+
+
+def test_a_process_that_is_not_griot_has_no_role():
+    assert common._griot_role(["mcp-proxy", "--listen", "9000"]) is None
+    assert common._griot_role(["python", "/opt/tools/mcp-proxy.py", "index"]) is None
+
+
+def test_holders_carry_the_role_of_what_they_run(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    script = tmp_path / "griot"
+    script.write_text("import time; time.sleep(60)\n")
+    other = tmp_path / "mcp-proxy"
+    other.write_text("import time; time.sleep(60)\n")
+    a = subprocess.Popen([sys.executable, str(script), "index", "all", "--repo", "mcp-gateway"])
+    b = subprocess.Popen([sys.executable, str(other)])
+    try:
+        _fake_lsof(monkeypatch, f"{a.pid}\n{b.pid}\n")
+
+        by_pid = {h["pid"]: h for h in common.find_collection_holders(tmp_path)}
+
+        assert by_pid[a.pid]["role"] == "index"
+        assert by_pid[b.pid]["role"] is None
+    finally:
+        for p in (a, b):
+            p.kill()
+            p.wait()
+
+
+def test_holders_show_the_full_command_of_a_griot_process(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    script = tmp_path / "griot"  # the shape a pipx install has: interpreter + a script called griot
+    script.write_text("import time; time.sleep(60)\n")
+    other = subprocess.Popen([sys.executable, str(script), "mcp"])
+    try:
+        _fake_lsof(monkeypatch, f"{other.pid}\n")
+
+        assert "griot mcp" in common.find_collection_holders(tmp_path)[0]["command"]
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_holder_that_vanished_is_still_reported_by_pid(monkeypatch, tmp_path):
+    _fake_lsof(monkeypatch, "999999\n")
+
+    holders = common.find_collection_holders(tmp_path)
+
+    assert holders == [{"pid": 999999, "command": None, "started": None, "role": None}]
+
+
+@pytest.mark.parametrize("exc", [FileNotFoundError("no lsof"), OSError("denied")])
+def test_holders_are_empty_when_lsof_is_unavailable(monkeypatch, tmp_path, exc):
+    _fake_lsof(monkeypatch, exc=exc)
+
+    assert common.find_collection_holders(tmp_path) == []
+
+
+def test_holders_are_empty_when_lsof_hangs(monkeypatch, tmp_path):
+    import subprocess
+
+    _fake_lsof(monkeypatch, exc=subprocess.TimeoutExpired("lsof", 5))
+
+    assert common.find_collection_holders(tmp_path) == []

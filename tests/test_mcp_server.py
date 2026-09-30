@@ -2297,3 +2297,13 @@ def test_every_registered_tool_goes_through_records_call():
 
     assert seen >= 16, "the scan found too few tools to be trusted"
     assert unwrapped == []
+
+
+@pytest.mark.parametrize("idle, expected", [(30.0, 1.0), (1.0, 0.5), (0.4, 0.5), (600.0, 1.0)])
+def test_the_reaper_checks_often_enough_that_the_idle_window_is_what_you_wait(monkeypatch, idle, expected):
+    # The documented wait is the idle window itself; a coarse tick (it was up
+    # to 5s) let a shell command that waited out ~12s miss the release by a
+    # hair. The floor keeps a tiny test window from turning into a busy loop.
+    monkeypatch.setattr(common, "IDLE_RELEASE_SECONDS", idle)
+
+    assert mcp_server._reaper_interval() == expected
