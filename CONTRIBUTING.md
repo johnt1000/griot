@@ -30,7 +30,17 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   CI scans the full history with [gitleaks](https://github.com/gitleaks/gitleaks)
   using `.gitleaks.toml`; before you push, run `gitleaks dir --config
   .gitleaks.toml .` on your working tree and `gitleaks git --config
-  .gitleaks.toml .` on the history, and you will see what it will see. A commit's author name and email
+  .gitleaks.toml .` on the history, and you will see what it will see.
+  `scripts/install-git-hooks.sh` does this for you on every commit: it enables
+  a `pre-commit` hook that scans what you staged with gitleaks, refuses files
+  that never belong in the repository (`.env`, databases, logs, collection
+  data) and, if you list them in `.git/sensitive-terms.txt`, private names of
+  your own, plus a `commit-msg` hook that applies the same list to the message.
+  The list lives inside `.git`, so it is never committed. It is matched
+  against file contents and against file and directory names, but not against
+  binary files (gitleaks cannot read those either), and a missing list only
+  prints a warning. The hooks need gitleaks installed and block the commit
+  when it is missing. A commit's author name and email
   are public once the repository is, so check `git config user.email` too.
 - **No new runtime dependency without discussing it first.** griot installs
   with `pip` and runs with no services; each dependency is a constraint on

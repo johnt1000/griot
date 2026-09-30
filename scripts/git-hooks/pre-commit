@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# pre-commit. This repository is public, so nothing sensitive may enter a
+# commit. Enable it for your clone with scripts/install-git-hooks.sh.
+#
+# Blocks the commit on any of:
+#   1. a secret in the staged changes (gitleaks, same config as CI)
+#   2. a staged file that never belongs in the repository (.env, databases,
+#      logs, collection data)
+#   3. a private term anywhere in the staged tree, in file contents AND in
+#      file or directory names: names a scanner cannot know, read from
+#      .git/sensitive-terms.txt (local, never committed). Binary files are not
+#      searched (gitleaks cannot read them either).
+#
+# Fails CLOSED: if gitleaks cannot be found the commit is blocked, because a
+# check that silently does not run is worse than no check. Set GITLEAKS_BIN to
+# use a gitleaks in an unusual place.
+set -u
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+failed=0
+
+say() { printf 'pre-commit: %s\n' "$*" >&2; }
+
+# --- 1. secrets ---------------------------------------------------------------
+gitleaks_bin=${GITLEAKS_BIN:-}
+if [ -z "$gitleaks_bin" ]; then
+  for candidate in "$(command -v gitleaks 2>/dev/null)" /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      gitleaks_bin=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$gitleaks_bin" ] || [ ! -x "$gitleaks_bin" ]; then
+  say "gitleaks not found, so secrets cannot be checked. Install it (brew install gitleaks) or set GITLEAKS_BIN."
+  exit 1
+fi
+
+if [ -f "$root/.gitleaks.toml" ]; then
+  "$gitleaks_bin" git --staged --no-banner --redact --config "$root/.gitleaks.toml" . >&2
+else
+  "$gitleaks_bin" git --staged --no-banner --redact . >&2
+fi
+if [ $? -ne 0 ]; then
+  say "gitleaks reported a finding in the staged changes, or failed to run (see above)."
+  failed=1
+fi
+
+# --- 2. files that never belong -------------------------------------------------
+bad_paths=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR \
+  | grep -i -E '(^|/)\.env(rc)?($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.griot\.lock$' \
+  | grep -v -i -E '\.env\.example$')
+if [ -n "$bad_paths" ]; then
+  say "these staged files never belong in the repository:"
+  printf '%s\n' "$bad_paths" | sed 's/^/  /' >&2
+  failed=1
+fi
+
+# --- 3. private terms -------------------------------------------------------------
+common_dir=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd)
+terms_file="$common_dir/sensitive-terms.txt"
+if [ -f "$terms_file" ]; then
+  patterns=$(mktemp) || exit 1
+  trap 'rm -f "$patterns"' EXIT
+  # A blank line in a pattern file matches EVERY line, so blanks and comments are dropped first.
+  grep -v -E '^[[:space:]]*(#|$)' "$terms_file" > "$patterns"
+  if [ -s "$patterns" ]; then
+    hits=$(git grep --cached -I -n -i -F -f "$patterns" -- . 2>/dev/null | cut -d: -f1,2)
+    if [ -n "$hits" ]; then
+      say "private terms from sensitive-terms.txt found in file contents (file:line):"
+      printf '%s\n' "$hits" | sed 's/^/  /' >&2
+      failed=1
+    fi
+    name_hits=$(git -c core.quotepath=off ls-files | grep -i -F -f "$patterns")
+    if [ -n "$name_hits" ]; then
+      say "private terms from sensitive-terms.txt found in file or directory names:"
+      printf '%s\n' "$name_hits" | sed 's/^/  /' >&2
+      failed=1
+    fi
+  fi
+else
+  say "warning: $terms_file is missing, so private names are NOT being checked (scripts/install-git-hooks.sh creates it)."
+fi
+
+if [ "$failed" -ne 0 ]; then
+  say "commit blocked. Fix what is listed above and stage again. A real false positive belongs in .gitleaks.toml (secrets) or sensitive-terms.txt (terms)."
+  exit 1
+fi
+exit 0
