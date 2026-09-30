@@ -199,6 +199,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
 
     return {
         "points_count": index_status.get("points_count"),
+        "points_error": index_status.get("points_error"),
         "embed_profile": index_status.get("embed_profile"),
         "num_runs": len(runs),
         "total_indexed": total_indexed,
@@ -312,7 +313,13 @@ def format_stats(s: dict, days: int) -> str:
     # replaced it.
     points = s["points_count"]
     profile = s["embed_profile"]
-    count = f"{points} points" if points is not None else "point count unavailable (collection in use)"
+    if points is not None:
+        count = f"{points} points"
+    elif (s.get("points_error") or "").startswith("unreadable"):
+        # Not the routine "busy": the collection could not be opened at all.
+        count = f"point count unavailable, the collection could not be read ({s['points_error'][len('unreadable: '):][:120]})"
+    else:
+        count = "point count unavailable (collection in use)"
     lines.append(f"Index:       {count} · profile {profile}")
 
     reuse = f"{s['reuse_rate'] * 100:.1f}% reused" if s["reuse_rate"] is not None else "no reuse data"

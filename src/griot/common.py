@@ -373,6 +373,12 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
     return 1
 
 
+# Where log_and_print() echoes. None is the terminal's stdout. The MCP server
+# points it at stderr for its whole life: there, stdout IS the JSON-RPC
+# stream, and one stray line in it corrupts what the client is reading.
+_echo_stream = None
+
+
 def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
     from tqdm import tqdm as _tqdm
     _ensure_log_handler()
@@ -381,7 +387,7 @@ def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
     # --json`, whose stdout contract is "JSON payload only" (jobs.py's
     # subprocess caller parses it as such; any stray line would break that).
     if echo:
-        _tqdm.write(msg)
+        _tqdm.write(msg, file=_echo_stream)
     getattr(_logger, level)(msg)
 
 
@@ -1265,6 +1271,12 @@ def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
         try:
             return qe.EdgeShard.load(str(path))
         except Exception as e:
+            # Only what is recognisably a lock collision is worth waiting
+            # for. A damaged collection fails the same way on every attempt:
+            # retrying it and then saying "another process has it open" sent
+            # people waiting for a process that does not exist.
+            if _LOCK_COLLISION_SIGNATURE not in str(e):
+                raise
             if i == attempts - 1:
                 raise CollectionBusyError(
                     COLLECTION_NAME, path,
@@ -1572,6 +1584,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
         )
     except DirectAPIUnavailable as e:
         log_and_print(f"Error in the embedding batch ({ACTIVE_PROFILE_NAME}): {e}", level="warning")
+        _note_embedding_failure(str(e))
         return [None] * len(texts)
 
     tokens = data.get("usage", {}).get("total_tokens", 0)
@@ -1579,6 +1592,9 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     # index guarantees correspondence with the input even if data[] comes
     # back out of order — unlike Gemini's batchEmbedContents, which has no index.
     by_index = {item["index"]: item["embedding"] for item in data["data"]}
+    missing = sum(1 for i in range(len(texts)) if i not in by_index)
+    if missing:
+        _note_embedding_failure(f"the embedding API returned no vector for {missing} of {len(texts)} text(s)")
     return [by_index.get(i) for i in range(len(texts))]
 
 
@@ -1587,6 +1603,9 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
     or local). Returns None for any item that fails (only possible on the
     "direct" backend, due to a network error — the call is all-or-nothing
     per batch, Google's API doesn't expose per-item failure)."""
+    # The reason kept for a caller is the reason of THIS call. A server runs
+    # for days: yesterday's rate limit must not explain today's failure.
+    _note_embedding_failure(None)
     if ACTIVE_PROFILE["backend"] == "local":
         # Sort by length before embedding: fastembed pads each batch up to
         # its longest text (enable_padding() without a length — plan
@@ -1622,6 +1641,7 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
         )
     except GeminiUnavailable as e:
         log_and_print(f"Error in the embedding batch: {e}", level="warning")
+        _note_embedding_failure(str(e))
         return [None] * len(texts)
 
     tokens = body.get("usageMetadata", {}).get("promptTokenCount", 0)
@@ -1629,7 +1649,13 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
     # batchEmbedContents doesn't return a per-item id/index (unlike the
     # OpenAI-style format the proxy call used to use) — the response order
     # matches the order of the sent request list.
-    return [e["values"] for e in body["embeddings"]]
+    embeddings = body.get("embeddings") or []
+    if len(embeddings) != len(texts):
+        # With no index to match on, a short list cannot be lined up with
+        # the texts: none of it is trusted.
+        _note_embedding_failure(f"the embedding API returned {len(embeddings)} vector(s) for {len(texts)} text(s)")
+        return [None] * len(texts)
+    return [e["values"] for e in embeddings]
 
 
 def _chat_completion_openai_compatible(prompt: str, model: str | None = None) -> str:
@@ -1752,6 +1778,19 @@ def report_redactions() -> int:
         print(f"  ... and {len(places) - 20} more place(s)")
     print("They are not in the index. If one is real, it is still in that file or history: rotate it.")
     return len(taken)
+
+
+_last_embedding_failure: str | None = None
+
+
+def _note_embedding_failure(reason: str | None) -> None:
+    global _last_embedding_failure
+    _last_embedding_failure = reason
+
+
+def last_embedding_failure() -> str | None:
+    """Why the most recent embedding call gave up, in the provider's words."""
+    return _last_embedding_failure
 
 
 def stored_text(payload: dict | None) -> str:
@@ -2289,6 +2328,19 @@ def delete_collection(collection: str) -> None:
     shutil.rmtree(_collection_path(collection))
 
 
+def _points_error(collection: str, error: Exception) -> str:
+    """Says which of the two very different things went wrong, in the log and
+    to the caller: a collection that is busy is normal and passes; one that
+    cannot be read is damage, and calling it busy hides that."""
+    if isinstance(error, CollectionBusyError) or _LOCK_COLLISION_SIGNATURE in str(error):
+        log_and_print(f"Warning: could not check points_count for '{collection}': "
+                      f"held by another process ({error})", level="warning")
+        return "busy"
+    log_and_print(f"Warning: could not check points_count for '{collection}': "
+                  f"the collection could not be opened ({error})", level="warning")
+    return f"unreadable: {error}"
+
+
 def get_index_status(collection: str | None = None, *, reuse_active_handle: bool = True) -> dict:
     """Snapshot of state for "does this collection have data? when was it
     last indexed? is any indexing running right now?" (section 2.4 of the
@@ -2321,6 +2373,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
     # handle; another collection is opened separately, read-only, and NEVER
     # created here — checking status must not have the side effect of
     # materializing an empty collection out of nowhere.
+    points_error = None
     if reuse_active_handle and collection == COLLECTION_NAME:
         # [real finding, 2026-08-20] this branch used to let the lock
         # exception propagate raw — unlike the other-collection branch just
@@ -2332,12 +2385,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         try:
             points_count = get_client(wait=False).info().points_count
         except Exception as e:
-            log_and_print(
-                f"Warning: could not check points_count for '{collection}' "
-                f"(likely locked open by another process): {e}",
-                level="warning",
-            )
-            points_count = None
+            points_count, points_error = None, _points_error(collection, e)
     elif (_collection_path(collection) / _EDGE_CONFIG_MARKER).exists():
         # [review] EdgeShard.load() on a collection that another process
         # has open at this exact moment (e.g. a running indexer) raises a
@@ -2356,12 +2404,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             finally:
                 other_shard.close()
         except Exception as e:
-            log_and_print(
-                f"Warning: could not check points_count for '{collection}' "
-                f"(likely locked open by another process): {e}",
-                level="warning",
-            )
-            points_count = None
+            points_count, points_error = None, _points_error(collection, e)
     else:
         points_count = 0
 
@@ -2393,6 +2436,10 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
 
     return {
         "points_count": points_count,
+        # Why points_count is None when it is: "busy" (another process holds
+        # the collection, routine with `griot mcp` running) or "unreadable:
+        # <reason>" (it could not be opened at all). None when there is a count.
+        "points_error": points_error,
         "collection": collection,
         "embed_profile": ACTIVE_PROFILE_NAME,
         "running": running,
@@ -2455,6 +2502,14 @@ def search(query: str, limit: int = 5, group_by_document: bool = False) -> list:
     does this live", wrong when one document IS the answer."""
     client = get_client()
     query_vector = embed_texts([query])[0]
+    if query_vector is None:
+        # embed_texts() answers None for what it could not embed, which is
+        # right for a batch being indexed (the rest of the batch goes on). A
+        # search has one text and nothing to go on with: say what happened,
+        # or the None becomes a type error from the vector store.
+        raise RuntimeError(
+            f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
+            f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
     fetch = limit * _GROUPING_OVERFETCH if group_by_document else limit
     hits = client.query(
         qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True)

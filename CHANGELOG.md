@@ -56,6 +56,44 @@ between minor versions. Breaking changes are called out explicitly.
   the `anthropic/requiresUserInteraction` marker. Claude Code run headless
   denies a marked call before it reaches griot, even with an allow rule.
 
+### Fixed
+
+- **A search whose query could not be embedded says why.** A failed embedding
+  call (a bad key, a rate limit, no network) surfaced as a type error about
+  vector kinds, in the terminal, to an agent and in the usage log. It now
+  says the query could not be embedded and gives the provider's reason.
+- **The MCP server no longer writes notices into its own protocol stream.**
+  Warnings that a terminal run prints (a collection held by another process,
+  an embedding call being retried) went to stdout, which over stdio is the
+  JSON-RPC stream. They go to stderr.
+- **Indexers exit with an error when they cannot start.** A repository name
+  that matches nothing, a missing or empty `repos.json`, or a registry in
+  which no path is a directory any more, printed a line and exited with
+  status 0; `griot index all` then announced that every source had
+  completed. Both now exit with status 1 and write to stderr, also when
+  an indexer is run as `python -m griot.index_<source>`.
+- **A quality check over nothing no longer passes.** "0 of 0 samples
+  recovered" was reported as "Quality OK" with exit status 0 by
+  `griot quality-check`, and as zeros with no error by the MCP tool
+  `griot_quality_check`, which also created the empty collection it was
+  checking. Both now say that nothing was measured; the tool returns an error.
+- **A damaged collection is no longer reported as "in use".** It was retried
+  for several seconds and then blamed on another process. It now fails at
+  once with the real error, and `griot stats` and `griot_index_status` say the
+  collection could not be read (`points_error`) instead of "in use".
+- **`--path .` names the repository.** A relative path gave the repository an
+  empty name in its points, its ids and its labels. The path is now resolved
+  first, so a repository indexed through a symlink with `--path` is named
+  after the real directory from now on: its next run embeds it again under
+  the new name, and the points under the old name stay until the collection
+  is deleted.
+- **Two registered repositories can no longer share a directory name.**
+  `griot repos add` refuses the second one: both wrote the same ids, so each
+  run overwrote the other's points and embedded them again.
+- The CLI command suggested when `griot_index_repo` is refused now indexes a
+  registered repository by name. With `--path` it would have embedded
+  everything again under different ids.
+
 ### Security
 
 - **Credential-looking values are no longer embedded, stored or returned.**

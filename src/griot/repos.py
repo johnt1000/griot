@@ -57,8 +57,19 @@ def check_add(path: str) -> str:
         raise ValueError(f"'{path}' doesn't exist or isn't a directory.")
 
     resolved = str(repo_path.resolve())
-    if resolved in _load():
+    registered = _load()
+    if resolved in registered:
         raise ValueError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
+    # The directory name is what a repository's points and ids are keyed on.
+    # Two registered repositories with the same one overwrite each other's
+    # points on every run, re-embed them each time, and both report success.
+    name = Path(resolved).name
+    same_name = [p for p in registered if Path(p).name == name]
+    if same_name:
+        raise ValueError(
+            f"another registered repository is already named '{name}' ({same_name[0]}). griot tells "
+            f"repositories apart by directory name: rename one of the directories, or index this one "
+            f"on its own with `griot index all --path`.")
     return resolved
 
 

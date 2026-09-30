@@ -264,9 +264,14 @@ def main(argv=None):
         echo=not args.json,  # [--json stdout contract] audit trail (griot.log) still gets the entry — only stdout is suppressed
     )
 
-    ok = self_check["failed"] == 0 and (golden_check is None or golden_check["failed"] == 0)
+    # A check that sampled nothing measured nothing. It used to pass ("0/0
+    # samples self-recovered"), which is how an empty index got a green gate.
+    measured = self_check["sampled"] > 0
+    ok = measured and self_check["failed"] == 0 and (golden_check is None or golden_check["failed"] == 0)
     if args.json:
         print(json.dumps({"collection": collection, "self_check": self_check, "golden_check": golden_check, "ok": ok}))
+    elif not measured:
+        print(f"\nQuality NOT measured: collection '{collection}' has nothing to sample. Index a repository first.")
     else:
         print("\nQuality OK." if ok else "\nQuality FAILED — see failures above.")
     if not ok:

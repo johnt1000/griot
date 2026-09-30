@@ -22,9 +22,16 @@ def _fake_embed(monkeypatch):
 
 
 def _register(tmp_path, name="proj", parent="a"):
+    """Written straight into repos.json: add_repo() refuses a second
+    repository with the same directory name, but a file edited by hand or
+    written by an older version can still hold one, and that is what the
+    ambiguity tests need."""
+    import json
     path = tmp_path / parent / name
     path.mkdir(parents=True)
-    repos.add_repo(str(path))
+    common.secure_mkdir(common.REPOS_JSON_PATH.parent)
+    existing = json.loads(common.REPOS_JSON_PATH.read_text()) if common.REPOS_JSON_PATH.exists() else []
+    common.REPOS_JSON_PATH.write_text(json.dumps(existing + [str(path.resolve())]))
     return path
 
 
