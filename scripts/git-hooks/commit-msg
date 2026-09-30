@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# commit-msg. A commit message becomes public together with the history, so the
+# private terms the pre-commit hook refuses in files are refused here too.
+# Terms come from .git/sensitive-terms.txt (local, never committed).
+root=$(git rev-parse --show-toplevel) || exit 1
+common_dir=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd)
+terms_file="$common_dir/sensitive-terms.txt"
+[ -f "$terms_file" ] || exit 0
+
+patterns=$(mktemp) || exit 1
+trap 'rm -f "$patterns"' EXIT
+grep -v -E '^[[:space:]]*(#|$)' "$terms_file" > "$patterns"
+[ -s "$patterns" ] || exit 0
+
+# Lines starting with # are git's own template comments, not part of the message.
+if grep -v '^#' "$1" | grep -q -i -F -f "$patterns"; then
+  printf 'commit-msg: the commit message contains a private term from sensitive-terms.txt. Reword it: messages become public with the history.\n' >&2
+  exit 1
+fi
+exit 0

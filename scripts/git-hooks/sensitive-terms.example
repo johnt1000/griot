@@ -1,0 +1,14 @@
+# Private terms the commit hooks refuse in the staged tree and in commit messages.
+# scripts/install-git-hooks.sh copies this file to .git/sensitive-terms.txt the
+# first time; edit THAT copy. It lives inside .git, so it is never committed or
+# pushed, which is the point: a list of private names cannot itself be public.
+#
+# One term per line, matched as plain text ignoring case. Blank lines and lines
+# starting with # are ignored. Add anything a scanner cannot know is private,
+# for example (remove the leading # to activate):
+#
+# your-employer-name
+# your-client-name
+# internal-hostname.example
+# /Users/your-username
+# /home/your-username
