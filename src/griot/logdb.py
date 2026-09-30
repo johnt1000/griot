@@ -331,6 +331,33 @@ def read_since(log_dir: Path, table: str, days: int, now: datetime | None = None
     return [json.loads(row["data"]) for row in rows]
 
 
+# table -> whether its rows say which collection they are about
+_RECENT_TABLES = {"runs": True, "queries": False, "quality_checks": True}
+
+
+def read_recent(log_dir: Path, table: str, *, collection: str | None = None, limit: int = 1) -> list[dict]:
+    """The `limit` most recently written records of `table`, newest first,
+    optionally only those of one collection. Not bounded by a time window:
+    it answers "when was the last one", which a report over the last N days
+    cannot. By insertion order, like most_recent_run_for_collection()."""
+    if table not in _RECENT_TABLES:
+        raise ValueError(f"unknown table {table!r}")
+    if collection is not None and not _RECENT_TABLES[table]:
+        raise ValueError(f"{table} records are not tied to a collection")
+    where, args = ("WHERE collection = ? ", (collection,)) if collection is not None else ("", ())
+    conn = _connect(log_dir)
+    try:
+        rows = conn.execute(f"SELECT data FROM {table} {where}ORDER BY id DESC LIMIT ?", (*args, int(limit))).fetchall()
+    finally:
+        conn.close()
+    return [json.loads(row["data"]) for row in rows]
+
+
+def read_latest(log_dir: Path, table: str, *, collection: str | None = None) -> dict | None:
+    """The most recent record of `table` (see read_recent), or None."""
+    return next(iter(read_recent(log_dir, table, collection=collection, limit=1)), None)
+
+
 def most_recent_run_for_collection(log_dir: Path, collection: str) -> dict | None:
     """get_index_status()'s read — ordered by id (insertion order), not
     timestamp, matching the original runs.jsonl invariant this replaces

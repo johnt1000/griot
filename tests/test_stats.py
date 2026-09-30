@@ -419,7 +419,10 @@ def test_format_stats_shows_the_quality_trend_that_was_orphaned():
     assert any(level in text for level in stats._SPARK_LEVELS)
 
 
-def test_format_stats_omits_quality_when_never_checked():
+def test_format_stats_omits_quality_when_nobody_looked():
+    """Without the state (stats.load_state()), "never checked" would be a
+    claim nobody verified: the section stays out. With it, never checked is
+    a line of its own: see tests/test_stats_state.py."""
     result = stats.compute_stats([], [], _INDEX_STATUS, quality_checks=[])
     assert "Quality:" not in stats.format_stats(result, days=30)
 

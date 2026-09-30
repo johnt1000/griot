@@ -69,9 +69,129 @@ def _filter_by_days(records: list[dict], days: int, now_iso: str | None = None) 
     return kept
 
 
+def _when(timestamp) -> datetime | None:
+    """The moment a record was written, or None for anything that cannot be
+    placed in time: not a string, not a date, or a date without a timezone
+    (it cannot be compared with one that has it)."""
+    if not timestamp or not isinstance(timestamp, str):
+        return None
+    try:
+        when = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
+
+
+def _ago(timestamp, now: datetime | None = None) -> str | None:
+    """How long ago, in the unit a person would use. None when unknown."""
+    when = _when(timestamp)
+    if when is None:
+        return None
+    seconds = ((now or datetime.now(timezone.utc)) - when).total_seconds()
+    if seconds < 60:
+        return "just now"
+    for unit, size, limit in (("minute", 60, 3600), ("hour", 3600, 86400), ("day", 86400, None)):
+        if limit is None or seconds < limit:
+            n = int(seconds // size)
+            return f"{n} {unit}{'s' if n != 1 else ''} ago"
+
+
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    """Linear interpolation between the two nearest ranks; with one value,
+    that value."""
+    position = (len(sorted_values) - 1) * fraction
+    low = int(position)
+    high = min(low + 1, len(sorted_values) - 1)
+    return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * (position - low)
+
+
+# How far back load_state() looks for "the last run that changed the index"
+# and "the last check that ran the golden set". Far more than the runs of a
+# few `griot index all` (five each) or a few checks; bounded so that a long
+# history is not read whole for one line of a report.
+_STATE_LOOKBACK = 200
+
+
+def _golden_set_state() -> tuple[dict | None, str | None]:
+    """(what the curated file holds, why it could not be read). A file that
+    is there and cannot be used is NOT the same as no file: the first is
+    something to fix, and saying nothing about it would read as "no golden
+    set", which is how a broken one went unnoticed."""
+    from pathlib import Path
+
+    from griot import golden_set
+
+    if not common.GOLDEN_SET_PATH.exists():
+        return None, None
+    try:
+        cases = golden_set.list_cases()
+        if not isinstance(cases, list):
+            raise ValueError("it is not a list of cases")
+        expected = set()
+        for case in cases:
+            for exp in case["must_include"]:
+                if isinstance(exp.get("repo"), str) and exp["repo"]:
+                    expected.add(exp["repo"])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+        return None, f"{type(e).__name__}: {e}"[:200]
+    # Compared with repos.json, not with the index: asking the index costs a
+    # scan per name and needs the collection, which another process may
+    # hold. `griot quality-check` asks the index itself. When repos.json
+    # cannot be read there is nothing to compare with, and nothing is claimed.
+    try:
+        registered = {Path(p).name for p in common.load_repos()}
+    except (OSError, ValueError):
+        return {"cases": len(cases), "unregistered_repos": []}, None
+    return {"cases": len(cases), "unregistered_repos": sorted(expected - registered)}, None
+
+
+def load_state() -> dict:
+    """What is true NOW, whatever window the report covers: when the index
+    was last searched, when it last changed, the last quality check and the
+    last run of the golden set, and the curated golden set itself. A window
+    of activity cannot say any of it: two reports a week apart printed the
+    same lines, and a golden set nobody had run in a month did not appear.
+
+    Everything about a collection is about the ACTIVE one: with two
+    profiles, a check of the other collection says nothing about this one.
+    Reads only, and never opens the collection."""
+    collection = common.COLLECTION_NAME
+    last_query = logdb.read_latest(common.LOG_DIR, "queries")
+
+    last_quality = last_golden = None
+    for record in logdb.read_recent(common.LOG_DIR, "quality_checks", collection=collection, limit=_STATE_LOOKBACK):
+        self_check = record.get("self_check") or {}
+        golden_check = record.get("golden_check") or {}
+        if last_quality is None:
+            sampled = self_check.get("sampled") or 0
+            last_quality = {
+                "timestamp": record.get("timestamp"),
+                "pass_rate": round((self_check.get("passed") or 0) / sampled, 4) if sampled else None,
+            }
+        # The background check and `--skip-golden-set` record a check with
+        # no golden part: the golden set's last result is in an older record.
+        if last_golden is None and golden_check.get("total") is not None:
+            last_golden = {"timestamp": record.get("timestamp"), "passed": golden_check.get("passed"),
+                           "total": golden_check.get("total")}
+        if last_quality and last_golden:
+            break
+
+    # The last run that wrote or removed something. Not simply the last run:
+    # the last source of `griot index all` usually changes nothing.
+    last_change = next((r.get("timestamp") for r in logdb.read_recent(
+        common.LOG_DIR, "runs", collection=collection, limit=_STATE_LOOKBACK)
+        if r.get("indexed") or r.get("pruned")), None)
+
+    curated, unreadable = _golden_set_state()
+    return {"last_query_at": (last_query or {}).get("timestamp"), "last_index_change_at": last_change,
+            "last_quality_check": last_quality, "last_golden_check": last_golden,
+            "golden_set": curated, "golden_set_error": unreadable}
+
+
 def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                   quality_checks: list[dict] | None = None,
-                  tool_calls: list[dict] | None = None) -> dict:
+                  tool_calls: list[dict] | None = None, *,
+                  state: dict | None = None, now: datetime | None = None) -> dict:
     """Pure aggregation logic — no I/O, testable on its own. `runs`/`queries`
     should already come filtered by the desired day window (see main()).
 
@@ -83,7 +203,13 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
 
     quality_checks is optional (defaults to none) so existing callers keep
     working unchanged: each entry is {timestamp, collection, pass_rate} as
-    stored since an earlier decision."""
+    stored since an earlier decision.
+
+    state is what load_state() returns: facts that do not depend on the
+    window. Without it the result simply lacks those keys (last_query_at,
+    last_quality_check_at, last_quality_pass_rate,
+    quality_is_older_than_index, golden_set): absent means "not looked at",
+    which is not the same as None, "looked and there is none"."""
     # `or 0`, not just the get() default: that decisionrecords a run that died
     # before finishing with counts set to None ON PURPOSE (0 would read as "it
     # ran and did nothing", a different fact that would distort these totals).
@@ -150,20 +276,64 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         ts = r.get("timestamp")
         if spend is None or not ts:
             continue
-        # ts[:10] is textual slicing of the ISO string, not timezone parsing —
-        # it's only safe because common.log_run_summary() always writes with
-        # datetime.now(timezone.utc) (same timezone for everyone). If some day
-        # a source writes a local timestamp without normalizing to UTC first,
-        # two records from the same instant could fall into different
-        # "calendar days" here.
-        date = ts[:10]
+        # The LOCAL date, because that is the day the breaker counts:
+        # spend_today_usd resets at local midnight (common._today()). This
+        # used to take the UTC date from the text of the timestamp, so one
+        # local evening that crossed midnight UTC put the same growing total
+        # under two dates and the sum counted it twice.
+        when = _when(ts)
+        if when is None:
+            continue
+        date = when.astimezone().date().isoformat()
         spend_by_date[date] = max(spend_by_date.get(date, 0.0), spend)
     total_spend_usd = round(sum(spend_by_date.values()), 4)
 
     num_queries = len(queries)
-    avg_query_latency_seconds = (
-        round(sum(q.get("duration_seconds", 0) for q in queries) / num_queries, 2) if num_queries else None
-    )
+    # Only durations that are numbers: a record with none (null, or text
+    # from a hand edit) used to take the whole report down in the average.
+    durations = sorted(q["duration_seconds"] for q in queries
+                       if isinstance(q.get("duration_seconds"), (int, float))
+                       and not isinstance(q.get("duration_seconds"), bool))
+    avg_query_latency_seconds = round(sum(durations) / len(durations), 2) if durations else None
+    # What is typical and what is slow. The average answers neither: one
+    # search that waited twenty seconds for a busy collection moves it more
+    # than forty ordinary ones.
+    latency_p50 = round(_percentile(durations, 0.5), 2) if durations else None
+    latency_p90 = round(_percentile(durations, 0.9), 2) if durations else None
+
+    # --- what is true now, whatever the window -----------------------------
+    state_known, state = state is not None, state or {}
+    last_indexed = index_status.get("last_indexed") or {}
+    last_indexed_at = last_indexed.get("timestamp")
+    last_quality = state.get("last_quality_check") or None
+    last_quality_at = (last_quality or {}).get("timestamp")
+
+    # "Checked before the index last changed": the last run that wrote or
+    # removed something (load_state() finds it, whatever the window) is
+    # newer than the last check.
+    checked, changed = _when(last_quality_at), _when(state.get("last_index_change_at"))
+    changed_after_check = checked is not None and changed is not None and changed > checked
+
+    attention = []
+    if last_indexed.get("error"):
+        attention.append(f"the last indexing run did not finish: {last_indexed['error']}")
+    if index_status.get("spend_ceiling_exceeded"):
+        attention.append("today's spend reached the daily ceiling: paid calls are refused until "
+                         "tomorrow, or until the ceiling is raised")
+    if (index_status.get("points_error") or "").startswith("unreadable"):
+        attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
+
+    if state.get("golden_set_error"):
+        attention.append(f"the golden set file could not be read ({state['golden_set_error']}): fix or delete "
+                         f"{common.GOLDEN_SET_PATH.name}, then curate again with `griot golden-set add`")
+
+    curated = state.get("golden_set") or None
+    golden = None
+    if curated:
+        last_golden = state.get("last_golden_check") or {}
+        golden = {"cases": curated.get("cases"), "unregistered_repos": list(curated.get("unregistered_repos") or []),
+                  "last_passed": last_golden.get("passed"), "last_total": last_golden.get("total"),
+                  "last_run_at": last_golden.get("timestamp")}
 
     # [MCP validation] Which surface asked — the question "is the MCP path
     # actually being used, and does it work?" needs the split, not a single
@@ -197,7 +367,27 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
             kind = _classify_source_label(label)
             source_breakdown[kind] = source_breakdown.get(kind, 0) + 1
 
+    known = {
+        "last_query_at": state.get("last_query_at"),
+        "last_quality_check_at": last_quality_at,
+        "last_quality_pass_rate": (last_quality or {}).get("pass_rate"),
+        "quality_is_older_than_index": changed_after_check,
+        "golden_set": golden,
+    } if state_known else {}
     return {
+        # First, and not tied to the window: what someone has to act on.
+        "attention": attention,
+        "last_indexed_at": last_indexed_at,
+        # The last run is the last ATTEMPT: one that died wrote nothing.
+        "last_indexed_error": last_indexed.get("error") or None,
+        **known,
+        # Rendering needs "now" to say how long ago; kept with the facts so
+        # that the text and the numbers cannot be about two different moments.
+        "generated_at": (now or datetime.now(timezone.utc)).isoformat(),
+        "total_pruned": sum(r.get("pruned") or 0 for r in runs),
+        "total_redacted": sum(r.get("redacted") or 0 for r in runs),
+        "query_latency_p50_seconds": latency_p50,
+        "query_latency_p90_seconds": latency_p90,
         "points_count": index_status.get("points_count"),
         "points_error": index_status.get("points_error"),
         "embed_profile": index_status.get("embed_profile"),
@@ -303,6 +493,13 @@ def format_stats(s: dict, days: int) -> str:
         f"griot — report (last {days} days)",
         "═" * 38,
     ]
+    now = _when(s.get("generated_at"))
+
+    # Before everything else, and whatever the window: what needs someone.
+    for i, item in enumerate(s.get("attention") or []):
+        lines.append(f"{'Attention:' if i == 0 else '':<13}{item}")
+    if s.get("attention"):
+        lines.append("")
 
     # [real output, 2026-08-22] None is neither zero nor an error here: it
     # means the count could not be read because another process holds the
@@ -321,6 +518,18 @@ def format_stats(s: dict, days: int) -> str:
     else:
         count = "point count unavailable (collection in use)"
     lines.append(f"Index:       {count} · profile {profile}")
+    # State, not activity: the same whatever window was asked for. A report
+    # that only counted what happened in the window looked the same a week
+    # later, and said nothing of an index nobody had refreshed in a month.
+    if "last_indexed_at" in s:
+        indexed_ago = _ago(s["last_indexed_at"], now)
+        # "Indexed" only for a run that finished: one that died is an attempt.
+        wrote = "last indexing attempt" if s.get("last_indexed_error") else "last indexed"
+        recency = [f"{wrote} {indexed_ago}" if indexed_ago else "never indexed"]
+        if "last_query_at" in s:  # absent when the caller did not look (see compute_stats)
+            searched_ago = _ago(s["last_query_at"], now)
+            recency.append(f"last search {searched_ago}" if searched_ago else "never searched")
+        lines.append(f"             {' · '.join(recency)}")
 
     reuse = f"{s['reuse_rate'] * 100:.1f}% reused" if s["reuse_rate"] is not None else "no reuse data"
     lines.append("")
@@ -331,6 +540,14 @@ def format_stats(s: dict, days: int) -> str:
         # and that is exactly the one worth chasing.
         for reason, count in sorted((s.get("failure_reasons") or {}).items(), key=lambda kv: -kv[1]):
             lines.append(f"               {count}× {reason}")
+
+    cleaned = []
+    if s.get("total_pruned"):
+        cleaned.append(f"{s['total_pruned']} stale points removed")
+    if s.get("total_redacted"):
+        cleaned.append(f"{s['total_redacted']} credential-looking values replaced")
+    if cleaned:
+        lines.append(f"             {' · '.join(cleaned)}")
 
     # Reuse is the number that justifies incremental indexing existing at
     # all, so it gets a sentence rather than a bare percentage. A LOW rate
@@ -396,7 +613,11 @@ def format_stats(s: dict, days: int) -> str:
 
     lines.append("")
     if s["num_queries"]:
-        lines.append(f"Queries:     {s['num_queries']} · avg latency {s['avg_query_latency_seconds']}s")
+        if s.get("query_latency_p50_seconds") is not None:
+            latency = f"latency p50 {s['query_latency_p50_seconds']}s · p90 {s['query_latency_p90_seconds']}s"
+        else:
+            latency = f"avg latency {s['avg_query_latency_seconds']}s"  # a result computed before the percentiles
+        lines.append(f"Queries:     {s['num_queries']} · {latency}")
         by_surface = s.get("queries_by_surface") or {}
         if by_surface:
             # Ordered by volume: the dominant surface is the one worth
@@ -457,6 +678,37 @@ def format_stats(s: dict, days: int) -> str:
             direction = "down" if rates[-1] < baseline else "up" if rates[-1] > baseline else "flat"
             lines.append(f"             {_sparkline(rates)} trend {direction} "
                          f"(median of earlier checks: {baseline * 100:.0f}%)")
+    elif "last_quality_check_at" in s:
+        # Nothing in the window is not the same as nothing ever, and both
+        # are worth a line: the section used to vanish, which read as "fine".
+        lines.append("")
+        checked_ago = _ago(s.get("last_quality_check_at"), now)
+        if checked_ago:
+            rate = s.get("last_quality_pass_rate")
+            measured = f" ({rate * 100:.0f}% of sampled points self-retrieved)" if rate is not None else ""
+            lines.append(f"Quality:     last checked {checked_ago}{measured}")
+        else:
+            lines.append("Quality:     never checked (`griot quality-check`)")
+    if s.get("quality_is_older_than_index"):
+        lines.append("             checked before the index last changed: it describes an older index")
+
+    golden = s.get("golden_set")
+    if golden:
+        n = golden.get("cases") or 0
+        if golden.get("last_total") is not None:
+            ran = f"last run: {golden['last_passed']} of {golden['last_total']} passed"
+            ran_ago = _ago(golden.get("last_run_at"), now)
+            ran += f" ({ran_ago})" if ran_ago else ""
+        else:
+            ran = "never run (`griot quality-check`)"
+        lines.append("")
+        lines.append(f"Golden set:  {n} case{'s' if n != 1 else ''} · {ran}")
+        if golden.get("unregistered_repos"):
+            names = ", ".join(common.shown(name) for name in golden["unregistered_repos"])
+            # repos.json, not the index: a repository indexed with --path is
+            # not in it and its cases can pass.
+            lines.append(f"             cases expect a repository that is not in repos.json ({names}): "
+                         f"unless it was indexed with --path, they can only fail")
 
     return "\n".join(lines)
 
@@ -526,7 +778,8 @@ def main(argv=None) -> int:
 
     result = compute_stats(runs, queries, index_status,
                            quality_checks=load_quality_window(args.days),
-                           tool_calls=load_tool_calls(args.days))
+                           tool_calls=load_tool_calls(args.days),
+                           state=load_state())
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False))

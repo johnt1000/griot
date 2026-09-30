@@ -647,8 +647,40 @@ class QualityPoint(TypedDict):
     pass_rate: float
 
 
+class GoldenSetState(TypedDict):
+    cases: int | None
+    # Repository names the curated cases expect and repos.json does not
+    # have: those cases can only fail.
+    unregistered_repos: list[str]
+    # The last time the golden set was run (`griot quality-check` in a
+    # terminal), or nulls. A PAST run: last_run_at says when.
+    last_passed: int | None
+    last_total: int | None
+    last_run_at: str | None
+
+
 class StatsOutput(TypedDict):
     days: int
+    # What is true now, whatever `days` is. `attention` is what someone has
+    # to act on (a last run that died, a reached spend ceiling, a collection
+    # that cannot be read); empty when there is nothing.
+    attention: list[str]
+    # The last indexing RUN, which may have died: then last_indexed_error
+    # says why, and nothing was written at that time.
+    last_indexed_at: str | None
+    last_indexed_error: str | None
+    last_query_at: str | None
+    last_quality_check_at: str | None
+    last_quality_pass_rate: float | None
+    # True when something was indexed or removed after the last quality
+    # check: that check describes an older index.
+    quality_is_older_than_index: bool
+    golden_set: GoldenSetState | None
+    generated_at: str
+    total_pruned: int
+    total_redacted: int
+    query_latency_p50_seconds: float | None
+    query_latency_p90_seconds: float | None
     points_count: int | None
     # Why points_count is null when it is: "busy" or "unreadable: <reason>".
     points_error: NotRequired[str | None]
@@ -1223,6 +1255,10 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
     healthy and worth trusting", which needs several of those signals
     together.
 
+    Read `attention` first: it holds what someone has to act on, whatever
+    the window. `last_indexed_at`, `last_query_at`, `last_quality_check_at`
+    and `golden_set` are likewise about now, not about the last `days` days.
+
     Reuse deserves attention: `reuse_rate` averages the whole window, so a
     window spanning a fix holds two eras whose average describes neither.
     `recent_reuse_rate` is the trailing-runs figure — prefer it when the
@@ -1235,7 +1271,8 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
                                  # [review finding] was omitted, so tool_calls
                                  # came back empty even where the schema asked
                                  # for it.
-                                 tool_calls=stats.load_tool_calls(days))
+                                 tool_calls=stats.load_tool_calls(days),
+                                 state=stats.load_state())
     # The window is part of the answer: every number above is meaningless
     # without knowing what period it covers, and an agent that asked for a
     # non-default window shouldn't have to remember which it asked for.
@@ -1285,12 +1322,16 @@ def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
         f"Call the griot_stats tool with days={days} and summarize griot's index health "
         "for me.\n\n"
         "Lead with whether the index is worth trusting right now, then the numbers "
-        "that support it. Points worth calling out:\n"
+        "that support it. Start from what does not depend on the window: anything in "
+        "attention, how long ago last_indexed_at and last_query_at were, and whether "
+        "quality_is_older_than_index. Points worth calling out:\n"
         "- If recent_reuse_rate disagrees with reuse_rate, trust the recent one and say "
         "so — a window spanning a fix averages two eras into a figure describing neither.\n"
         "- A falling quality_trend is an index-regression signal; a flat high one is "
         "healthy.\n"
         "- Put spend against the daily ceiling rather than as a bare number.\n"
+        "- golden_set holds the curated cases' last result, from a past run: give its "
+        "age, and say so if it was never run.\n"
         "- Say plainly if the window holds too little activity to conclude anything."
     )
 
@@ -1386,8 +1427,11 @@ def griot_health_report() -> str:
         "- griot_golden_set_list returns the curated CASES, not a result of running "
         "them. It tells you what someone decided this index must be able to answer, "
         "and nothing about whether it still does. Do NOT report the golden set as "
-        "passing or failing — you did not run it. To run it, tell me to use "
-        "`griot quality-check` in a terminal, which executes both halves.\n"
+        "passing or failing now — you did not run it. griot_stats has the result of "
+        "the LAST time someone did (golden_set: last_passed of last_total, at "
+        "last_run_at): report that as a past run, with its age, never as a fresh "
+        "measurement. To run it, tell me to use `griot quality-check` in a terminal, "
+        "which executes both halves.\n"
         "- An empty golden set is itself worth reporting. It means nothing has ever "
         "measured whether this index answers a real question, and the self-check "
         "cannot substitute for that — it would pass on an index full of the wrong "

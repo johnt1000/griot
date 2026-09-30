@@ -343,6 +343,9 @@ def test_golden_set_counts_a_case_with_no_real_constraint_as_failed(monkeypatch)
     leave that gate open; failing closes it and names the case to fix."""
     monkeypatch.setattr(quality_check.common, "search",
                         lambda query, limit=5: [_Hit(0.9, {"repo": "alpha", "source_type": "code"})])
+    # The search is faked, so the index is too: `alpha` is there.
+    monkeypatch.setattr(quality_check.common, "get_client", lambda: None)
+    monkeypatch.setattr(quality_check.common, "repository_is_indexed", lambda client, repo: True)
 
     result = quality_check.run_golden_set([
         {"query": "vacuous", "must_include": [{"bogus": None}]},
