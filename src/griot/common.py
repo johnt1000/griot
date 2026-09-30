@@ -167,6 +167,9 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
+    # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
+    # it would name EVERY project the same, so it stays commented out here.
+    ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
     ("GRIOT_MCP_ENABLE_INDEX", "false", "set to true to enable the griot_index_repo MCP tool (can spend money on a paid profile)", False),
     ("GRIOT_MCP_INDEX_ROOTS", "", "':'-separated directory prefixes allowed for MCP indexing, e.g. /Users/you/code — empty means only repos.json entries are allowed", False),
     # Commented on purpose: a default written out explicitly is an override in
@@ -312,6 +315,46 @@ def log_questions_enabled() -> bool:
     return os.getenv("GRIOT_LOG_QUESTIONS", "true").lower() not in ("0", "false")
 
 
+def _clean_project(name: str) -> str | None:
+    """A project name fit for a log line: printable characters only (a directory
+    name can hold a newline or an escape), at most 100 of them, None if nothing is left."""
+    cleaned = "".join(ch for ch in name if ch.isprintable()).strip()
+    return cleaned[:100] or None
+
+
+def current_project() -> str | None:
+    """The project this process is serving, for the usage logs: GRIOT_PROJECT if set,
+    else the folder named by CLAUDE_PROJECT_DIR, else the working directory's name.
+    Only the folder NAME is used, never the path (GRIOT_PROJECT is the exception: it
+    is logged exactly as you set it). None when it cannot be worked out,
+    including when the directory is the home directory: running the CLI from ~ would
+    otherwise write the account's user name into the log.
+
+    Without this the logs cannot say who used griot: usage per project could only be
+    guessed by matching timestamps against session transcripts that get deleted."""
+    explicit = os.getenv("GRIOT_PROJECT", "").strip()
+    if explicit:
+        return _clean_project(explicit)
+    directory = os.getenv("CLAUDE_PROJECT_DIR", "").strip()
+    if not directory:
+        try:
+            directory = os.getcwd()
+        except OSError:  # the working directory was deleted under us
+            return None
+    path = Path(directory)
+    home = Path.home()
+    try:
+        if os.path.samefile(path, home):  # identity: holds for symlinks and for case-insensitive filesystems
+            return None
+    except OSError:  # one of them does not exist
+        try:
+            if path.resolve() == home.resolve():
+                return None
+        except (OSError, RuntimeError):
+            pass
+    return _clean_project(path.name)
+
+
 def log_query(**fields) -> None:
     """Same idea as log_run_summary(), but for ask.py queries (not
     indexing) — a separate table (logs/logs.db's `queries` table) so as
@@ -321,6 +364,7 @@ def log_query(**fields) -> None:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "profile": ACTIVE_PROFILE_NAME,
         "collection": COLLECTION_NAME,
+        "project": current_project(),
         **fields,
     }
     secure_mkdir(LOG_DIR)

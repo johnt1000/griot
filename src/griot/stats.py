@@ -175,6 +175,13 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         surface = q.get("via") or "unknown"
         queries_by_surface[surface] = queries_by_surface.get(surface, 0) + 1
 
+    # Which project asked. Records from before the field existed carry none, and a null
+    # one means it could not be worked out: both are "unknown", counted and not dropped.
+    queries_by_project: dict[str, int] = {}
+    for q in queries:
+        project = q.get("project") or "unknown"
+        queries_by_project[project] = queries_by_project.get(project, 0) + 1
+
     # Whether searches FIND anything, which a count of searches cannot say.
     # Median rather than mean: one lucky 0.98 shouldn't paper over a run of
     # mediocre retrievals. Searches that returned nothing are counted apart
@@ -216,6 +223,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         "num_queries": num_queries,
         "avg_query_latency_seconds": avg_query_latency_seconds,
         "queries_by_surface": queries_by_surface,
+        "queries_by_project": queries_by_project,
         "dead_runs": len(dead),
         "last_error": last_error,
         "median_top_score": median_top_score,
@@ -389,6 +397,10 @@ def format_stats(s: dict, days: int) -> str:
             # answers the question by itself.
             split = " · ".join(f"{k} {v}" for k, v in sorted(by_surface.items(), key=lambda kv: -kv[1]))
             lines.append(f"             by surface: {split}")
+        by_project = s.get("queries_by_project") or {}
+        if any(name != "unknown" for name in by_project):  # all-unknown is noise, not information
+            split = " · ".join(f"{k} {v}" for k, v in sorted(by_project.items(), key=lambda kv: -kv[1]))
+            lines.append(f"             by project: {split}")
         if s.get("median_top_score") is not None:
             found = f"median top score {s['median_top_score']:.2f}"
             if s.get("empty_searches"):

@@ -27,6 +27,12 @@ between minor versions. Breaking changes are called out explicitly.
   outside them is never touched, a symlinked file is written through, and re-running the
   command updates the block in place. The MCP tool `griot_assist_install` never touches
   this file.
+- **The project a search or tool call came from is now recorded**: the name of the folder
+  griot runs in (never a path), or exactly what you set in `GRIOT_PROJECT`; the home directory counts as unknown.
+  `griot stats` shows `by project: ...` under the query count, `griot stats --json` and the
+  `griot_stats` tool carry `queries_by_project`, and `tool_calls` gained a `project` column
+  that is added in place to an existing `logs.db`, history kept. Records from before are
+  counted as `unknown`.
 
 ### Changed
 

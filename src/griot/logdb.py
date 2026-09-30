@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     tool TEXT NOT NULL,
     ok INTEGER NOT NULL,
     duration_seconds REAL,
-    error TEXT
+    error TEXT,
+    project TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_timestamp ON tool_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
@@ -174,6 +175,31 @@ def _ensure_migrated(conn: sqlite3.Connection, log_dir: Path) -> None:
             pass
 
 
+def _has_project_column(conn: sqlite3.Connection) -> bool:
+    return any(row["name"] == "project" for row in conn.execute("PRAGMA table_info(tool_calls)"))
+
+
+def _ensure_tool_calls_project_column(conn: sqlite3.Connection) -> bool:
+    """CREATE TABLE IF NOT EXISTS leaves an existing tool_calls table as it was, so a
+    logs.db created before the `project` column gets it added in place, history kept.
+    True when the column is there afterwards. False when the database cannot be
+    written (a read-only file system): it could be READ before this column existed
+    and still can, so that is not an error."""
+    if _has_project_column(conn):
+        return True
+    try:
+        with conn:
+            conn.execute("ALTER TABLE tool_calls ADD COLUMN project TEXT")
+    except sqlite3.OperationalError as e:
+        message = str(e).lower()
+        if "duplicate column" in message:  # another griot process added it first
+            return True
+        if "readonly" in message or "read-only" in message:
+            return False
+        raise
+    return True
+
+
 def _connect(log_dir: Path) -> sqlite3.Connection:
     # [real bug, found via a subprocess integration test] read paths
     # (get_index_status(), stats.load_window()) never call secure_mkdir()
@@ -202,6 +228,7 @@ def _connect(log_dir: Path) -> sqlite3.Connection:
     # connect, not just at creation.
     os.chmod(db_path, 0o600)
     conn.executescript(_SCHEMA)
+    _ensure_tool_calls_project_column(conn)
     _ensure_migrated(conn, log_dir)
     return conn
 
@@ -435,7 +462,7 @@ def migrate_legacy_spend_file(log_dir: Path, legacy_path: Path, today: str) -> N
 
 
 def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: float | None = None,
-                    error: str | None = None, timestamp: str | None = None) -> None:
+                    error: str | None = None, timestamp: str | None = None, project: str | None = None) -> None:
     """Records one MCP tool invocation. Deliberately narrow: which tool,
     whether it worked, how long, and why not — never the arguments or the
     result. Arguments can carry the user's own question text and results
@@ -445,27 +472,33 @@ def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: flo
     try:
         with conn:
             conn.execute(
-                "INSERT INTO tool_calls (timestamp, tool, ok, duration_seconds, error) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO tool_calls (timestamp, tool, ok, duration_seconds, error, project) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (timestamp or datetime.now(timezone.utc).isoformat(), tool, 1 if ok else 0,
-                 duration_seconds, error),
+                 duration_seconds, error, project),
             )
     finally:
         conn.close()
+
+
+def _tool_call_rows(conn: sqlite3.Connection, cutoff: datetime) -> list[sqlite3.Row]:
+    project = "project" if _has_project_column(conn) else "NULL AS project"  # a database we could not migrate
+    return conn.execute(
+        f"SELECT timestamp, tool, ok, duration_seconds, error, {project} FROM tool_calls "
+        "WHERE timestamp >= ? ORDER BY timestamp",
+        (cutoff.isoformat(),),
+    ).fetchall()
 
 
 def read_tool_calls(log_dir: Path, days: int, now: datetime | None = None) -> list[dict]:
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
     conn = _connect(log_dir)
     try:
-        rows = conn.execute(
-            "SELECT timestamp, tool, ok, duration_seconds, error FROM tool_calls "
-            "WHERE timestamp >= ? ORDER BY timestamp",
-            (cutoff.isoformat(),),
-        ).fetchall()
+        rows = _tool_call_rows(conn, cutoff)
     finally:
         conn.close()
     return [
         {"timestamp": r["timestamp"], "tool": r["tool"], "ok": bool(r["ok"]),
-         "duration_seconds": r["duration_seconds"], "error": r["error"]}
+         "duration_seconds": r["duration_seconds"], "error": r["error"], "project": r["project"]}
         for r in rows
     ]
