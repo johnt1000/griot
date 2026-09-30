@@ -13,6 +13,7 @@ tested via module reload (see fixture `mcp_server_with_index_enabled`)."""
 import importlib
 import json
 import subprocess
+from datetime import datetime, timezone
 
 import pytest
 
@@ -1168,7 +1169,7 @@ def test_griot_stats_honors_the_days_window(monkeypatch):
 def test_griot_stats_includes_the_quality_trend(monkeypatch):
     monkeypatch.setattr(common, "get_index_status", lambda: {"points_count": 0, "embed_profile": "jina-code"})
     logdb.write_quality_check(common.LOG_DIR, {
-        "timestamp": "2026-08-21T10:00:00+00:00", "collection": "c",
+        "timestamp": datetime.now(timezone.utc).isoformat(), "collection": "c",
         "self_check": {"sampled": 10, "passed": 8, "failed": 2, "failures": [], "avg_score": 0.7},
     })
 

@@ -5,6 +5,7 @@ missing/corrupted logs.
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -587,7 +588,7 @@ def test_legacy_quality_file_is_imported_by_the_reader():
     pattern the runs/queries migration already uses."""
     common.secure_mkdir(common.DATA_DIR)
     (common.DATA_DIR / "last_quality_check.json").write_text(json.dumps({
-        "timestamp": "2026-08-20T00:00:00+00:00", "collection": "codebase__legacy",
+        "timestamp": datetime.now(timezone.utc).isoformat(), "collection": "codebase__legacy",
         "self_check": {"sampled": 4, "passed": 3, "failed": 1, "failures": [], "avg_score": 0.6},
     }))
 
@@ -706,7 +707,7 @@ def test_load_quality_window_reads_what_the_quality_check_actually_wrote():
     unit tests above all hand-build the reduced dicts, so nothing else
     proves the two halves agree on the record's actual shape."""
     logdb.write_quality_check(common.LOG_DIR, {
-        "timestamp": "2026-08-21T10:00:00+00:00",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "collection": "codebase__jina-code",
         "self_check": {"sampled": 10, "passed": 8, "failed": 2, "failures": [], "avg_score": 0.7},
     })
@@ -719,8 +720,9 @@ def test_load_quality_window_reads_what_the_quality_check_actually_wrote():
 
 
 def test_load_quality_window_drops_a_check_that_sampled_nothing():
+    # A timestamp outside the window would make this pass for the wrong reason.
     logdb.write_quality_check(common.LOG_DIR, {
-        "timestamp": "2026-08-21T10:00:00+00:00",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "collection": "c",
         "self_check": {"sampled": 0, "passed": 0, "failed": 0, "failures": [], "avg_score": None},
     })
