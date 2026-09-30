@@ -186,6 +186,14 @@ def cmd_list() -> int:
     return 0
 
 
+def _has_stored_key(provider: str) -> bool:
+    """Read-only twin of remove_provider_key()'s return value: whether a key
+    is stored in the keychain or in the file, the two places it removes from."""
+    env_var = _providers()[provider]
+    in_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
+    return bool(in_file or common._keychain_get(env_var))
+
+
 def cmd_remove(provider: str) -> int:
     providers = _providers()
     if provider not in providers:
@@ -249,6 +257,7 @@ def main(argv=None) -> int:
 
     p_remove = sub.add_parser("remove", help="Removes a provider's key")
     p_remove.add_argument("provider")
+    p_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
 
     sub.add_parser(
         "migrate",
@@ -262,6 +271,15 @@ def main(argv=None) -> int:
         return cmd_list()
     if args.action == "migrate":
         return cmd_migrate()
+    # Asked only when there is something to lose: an unknown provider or one
+    # with nothing stored goes straight to cmd_remove(), which says so. The
+    # question names the provider and the variable, never the key.
+    providers = _providers()
+    if args.provider in providers and _has_stored_key(args.provider):
+        refused = common.confirm(f"Remove the stored key for {args.provider} ({providers[args.provider]})? "
+                                 f"You will need the key again to use that provider.", yes=args.yes)
+        if refused:
+            return refused
     return cmd_remove(args.provider)
 
 

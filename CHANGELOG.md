@@ -8,6 +8,32 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: CLI commands that destroy or widen something now ask first.**
+  `griot repos add` and `griot profiles delete` ask `[y/N]` at an interactive
+  terminal and have no flag that answers instead: run without a terminal they
+  exit with status 2 and change nothing. `griot repos remove`,
+  `griot golden-set remove` and `griot auth remove` ask the same way and accept
+  `--yes` for scripts. Anything that would be refused anyway (a bad path, an
+  unknown profile, an index out of range) is reported before the question.
+- **MCP confirmations reach the person in Claude Code.** The state-changing
+  tools ask through the SDK's resolver mechanism, which works on the protocol
+  revision Claude Code negotiates; before, the question never arrived and the
+  tools fell back to `confirm=true`. Where a client can ask, `confirm=true` is
+  now ignored and a decline is final; it still works in a client that cannot
+  ask. Questions state the consequence and whether it can be undone.
+- `griot_repos_add`, `griot_profiles_delete` and `griot_assist_install` carry
+  the `anthropic/requiresUserInteraction` marker. Claude Code run headless
+  denies a marked call before it reaches griot, even with an allow rule.
+
+### Security
+
+- The CLI command suggested in an MCP refusal is quoted for the shell and for
+  the CLI's own parser, and is withheld when a value contains non-printable
+  characters. Values chosen by the agent are shown escaped and truncated in the
+  question a person reads.
+
 ### Added
 
 - **`griot-operations` skill** in the `griot assist install` bundle — a

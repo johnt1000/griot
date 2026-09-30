@@ -309,7 +309,7 @@ def test_main_dispatches_set_list_remove(monkeypatch):
     assert auth.main(["set", "openai"]) == 0
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == "sk-via-main-1234"
     assert auth.main(["list"]) == 0
-    assert auth.main(["remove", "openai"]) == 0
+    assert auth.main(["remove", "--yes", "openai"]) == 0
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
 
 

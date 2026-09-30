@@ -298,6 +298,16 @@ def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = No
     return shlex.join(argv)
 
 
+# Marks a tool as one a person must approve. Verified against Claude Code
+# 2.1.285 run headless: the call was denied before it reached this server, with
+# an allow rule for the tool and with bypassPermissions. What an interactive
+# session shows was NOT observed here; Claude Code's documentation says it
+# prompts on every call. Other clients ignore the key. It is set on exactly the
+# tools that pass human_required=True, and it is an ADDITION: the server still
+# asks through its own dialog, which states the consequence.
+_HUMAN_ONLY_META = {"anthropic/requiresUserInteraction": True}
+
+
 class _Ask(BaseModel):
     # No fields on purpose: this asks a person to confirm, never to supply
     # data (anything that needs a VALUE is a tool argument or, if it is a
@@ -329,11 +339,12 @@ def _resolve_ask(ctx, question: str, *, confirm: bool, human_required: bool):
     to `confirm=true`. `Elicit` uses the round trip each protocol version
     supports.
 
-    Not asking is decided here, before the human is bothered: a call whose
-    `confirm=true` already authorizes it (ordinary operations only), and a
-    client that never declared the capability."""
-    if confirm and not human_required:
-        return _NO_CHANNEL
+    A client that can ask is ALWAYS asked, whatever `confirm` says: that
+    argument comes from the agent, and an agent that was just told no could
+    otherwise call again with confirm=true and have it done. `confirm` only
+    counts where nobody can be asked (see _confirmed). The two parameters are
+    kept in the signature because every `_ask_*` resolver passes them, and so
+    the rule is stated here, in one place, rather than implied by an omission."""
     if not getattr(getattr(ctx, "client_capabilities", None), "elicitation", None):
         return _NO_CHANNEL
     return Elicit(question, _Ask)
@@ -354,11 +365,11 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
     2. `answer` — a real human answer, the strongest guarantee available,
        collected by the tool's `Resolve` parameter (see `_resolve_ask`).
        Absent when the client cannot ask, so it cannot stand alone.
-    3. An explicit `confirm` argument — works in every client. The first
-       call returns exactly what would happen; a caller that still wants it
-       calls again with confirm=true. Weaker than (2) — it proves a
-       deliberate second call, not a human — but it is the only layer that
-       never leaves management unusable.
+    3. An explicit `confirm` argument, counted ONLY where nobody can be
+       asked. The first call returns exactly what would happen; a caller
+       that still wants it calls again with confirm=true. Weaker than (2) —
+       it proves a deliberate second call, not a human — but it is the only
+       layer that keeps management usable in a client that cannot ask.
 
     What an answer means: only an ACCEPT whose data is an `_Ask` authorizes.
     A decline or a dismissal is an explicit no: nothing changes, and the
@@ -377,35 +388,39 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
     that WIDENS A SECURITY BOUNDARY the distinction is decisive — see
     griot_repos_add, where the fallback would have handed an agent the
     ability to authorize indexing any directory on the machine."""
-    if isinstance(answer, AcceptedElicitation) and isinstance(answer.data, _Ask):
-        return True, None
-    if isinstance(answer, DeclinedElicitation):
-        return False, "Declined. Nothing was changed."
-    if isinstance(answer, CancelledElicitation):
-        return False, "Dismissed without an answer. Nothing was changed."
-
-    if confirm and not human_required:
-        return True, None
-
     # The command goes on its own line after a fixed marker, never inside the
     # question's line, so nothing an agent puts in a path or a query can move
     # or imitate it. No command at all when the value could not be quoted.
     if cli_hint is None:
-        run = ("Ask the user to do it from a terminal by hand: a value contains control characters, "
+        run = ("ask the user to do it from a terminal by hand: a value contains control characters, "
                "so there is no command to paste.")
     else:
         run = f"ask the user to run:\n{cli_hint}" + (f"\n{cli_note}" if cli_note else "")
+
+    if isinstance(answer, AcceptedElicitation) and isinstance(answer.data, _Ask):
+        return True, None
+    # A person was asked, so `confirm` is not consulted below either of these:
+    # it is the agent's argument, and it must not outrank the person's answer.
+    if isinstance(answer, DeclinedElicitation):
+        return False, "Declined. Nothing was changed."
+    if isinstance(answer, CancelledElicitation):
+        # Nobody answered: a person closed the dialog, or the client dismissed
+        # it by itself (Claude Code does, when run headless). Unlike a decline
+        # this says nothing about what the person wants, so the terminal is
+        # offered; confirm=true is not, or dismissing would be a way to yes.
+        return False, (f"Dismissed without an answer. Nothing was changed. "
+                       f"If the user wants it done, {run}")
+
+    if confirm and not human_required:
+        return True, None
+
     if human_required:
-        if cli_hint is not None:
-            run = run[0].upper() + run[1:]
         return False, (
             f"{question}\n"
             f"Nothing was changed: this needs a person, and no confirmation reached the user. "
-            f"No argument authorizes it, on purpose. {run}"
+            f"No argument authorizes it, on purpose. {run[0].upper() + run[1:]}"
         )
 
-    if cli_hint is None:
-        run = run[0].lower() + run[1:]
     return False, (
         f"{question}\n"
         f"Nothing was changed: this client cannot ask the user to confirm. "
@@ -851,7 +866,8 @@ def _ask_repos_add(ctx: Context, path: str, confirm: bool = False):
     return _resolve_ask(ctx, _repos_add_question(path), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+          meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
                           answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_repos_add)] = None,
@@ -930,7 +946,8 @@ def _ask_profiles_delete(ctx: Context, profile: str, confirm: bool = False):
     return _resolve_ask(ctx, _profiles_delete_question(profile), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+          meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Context = None,
                                 answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_profiles_delete)] = None,
@@ -1354,7 +1371,8 @@ def _ask_assist_install(ctx: Context, harness: str = "all", scope: str = "local"
     return _resolve_ask(ctx, _assist_install_question(harness, scope), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+          meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_assist_install(harness: str = "all", scope: str = "local",
                                confirm: bool = False, ctx: Context = None,

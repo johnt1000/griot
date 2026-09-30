@@ -66,6 +66,16 @@ async def test_a_dismissed_answer_is_distinct_from_a_decline():
     assert ok is False
     assert "Dismissed" in refusal and "Nothing was changed" in refusal
     assert "confirm=true" not in refusal
+    lines = refusal.split("\n")
+    assert lines[-1] == "griot x" and lines[-2].endswith("to run:"), (
+        "nobody answered (a headless client dismisses by itself), so the terminal is the way left")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("answer", [DeclinedElicitation(), CancelledElicitation()], ids=["decline", "cancel"])
+async def test_confirm_does_not_override_a_person_who_was_asked(answer):
+    ok, _ = await mcp_server._confirmed(None, "Do it?", confirm=True, cli_hint="griot x", answer=answer)
+    assert ok is False
 
 
 @pytest.mark.anyio
@@ -119,9 +129,12 @@ def test_resolver_does_not_ask_a_client_that_cannot():
     assert out is mcp_server._NO_CHANNEL
 
 
-def test_resolver_does_not_bother_the_human_when_confirm_already_authorizes():
+def test_resolver_asks_a_client_that_can_ask_even_when_confirm_is_passed():
+    """`confirm` is an argument the agent supplies. Where a person can be
+    asked, the person decides: otherwise an agent that was just told no could
+    call again with confirm=true and have it done."""
     out = mcp_server._resolve_ask(_Ctx(elicitation=object()), "Do it?", confirm=True, human_required=False)
-    assert out is mcp_server._NO_CHANNEL
+    assert isinstance(out, Elicit)
 
 
 def test_resolver_still_asks_a_human_only_operation_even_with_confirm():
@@ -289,3 +302,41 @@ def test_index_repo_is_not_asked_about_a_path_that_would_be_refused(monkeypatch)
     assert mcp_server._ask_index_repo(ctx, path="/tmp/x") is mcp_server._NO_CHANNEL
     monkeypatch.setattr(mcp_server.jobs, "index_job_refusal", lambda p: None)
     assert isinstance(mcp_server._ask_index_repo(ctx, path="/tmp/x"), Elicit)
+
+
+# --- where a person can be asked, confirm=true is not a way around them ---------
+
+ORDINARY = [t for t in TOOLS if not t[3]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+@pytest.mark.parametrize("name,args,effect,human", ORDINARY, ids=[t[0] for t in ORDINARY])
+async def test_confirm_true_cannot_undo_a_no_from_the_person(mode, action, name, args, effect, human, monkeypatch):
+    calls, out = await _call(mode, name, {**args, "confirm": True}, action, monkeypatch)
+    assert calls == [], out
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("name,args,effect,human", ORDINARY, ids=[t[0] for t in ORDINARY])
+async def test_confirm_true_still_works_where_nobody_can_be_asked(mode, name, args, effect, human, monkeypatch):
+    calls, out = await _call(mode, name, {**args, "confirm": True}, "accept", monkeypatch, with_callback=False)
+    assert calls == [effect], out
+
+
+# --- the Claude Code marker follows the same rule as human_required -------------
+
+MARKER = "anthropic/requiresUserInteraction"
+
+
+@pytest.mark.anyio
+async def test_exactly_the_human_only_tools_carry_the_user_interaction_marker():
+    """Claude Code prompts on every call of a marked tool, in every permission
+    mode, and denies it where nobody can answer. The set is derived from
+    behaviour (the tools that refuse confirm=true), not listed twice."""
+    async with Client(mcp_server.mcp) as client:
+        tools = (await client.list_tools()).tools
+    marked = {t.name for t in tools if (t.meta or {}).get(MARKER) is True}
+    assert marked == {t[0] for t in TOOLS if t[3]}

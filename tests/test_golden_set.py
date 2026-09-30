@@ -359,7 +359,7 @@ def test_main_dispatches_suggest_add_list_remove(git_repo, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: "1")
     assert golden_set.main(["add", "question"]) == 0
 
-    assert golden_set.main(["remove", "1"]) == 0
+    assert golden_set.main(["remove", "--yes", "1"]) == 0
 
 
 def test_add_case_rejects_an_entry_whose_values_are_all_none():

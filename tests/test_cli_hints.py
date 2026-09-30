@@ -7,7 +7,7 @@ import shlex
 
 import pytest
 
-from griot import cli, golden_set, mcp_server, repos
+from griot import cli, common, golden_set, mcp_server, repos
 
 HOSTILE = [
     "/tmp/my repo",
@@ -68,6 +68,9 @@ def test_repos_add_hint_reads_an_option_like_path_as_a_path(monkeypatch, value):
     """`--` ends option parsing, so the real `griot repos add` sees data."""
     seen = []
     monkeypatch.setattr(repos, "cmd_add", lambda path: seen.append(path) or 0)
+    # Only the parsing is under test: skip the path check and the question.
+    monkeypatch.setattr(repos, "check_add", lambda path: path)
+    monkeypatch.setattr(common, "confirm", lambda question, **kw: 0)
     argv = shlex.split(mcp_server._cli_command("repos", "add", positional=[value]))[2:]
     assert repos.main(argv) == 0
     assert seen == [value]
