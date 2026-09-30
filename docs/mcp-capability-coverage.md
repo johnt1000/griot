@@ -49,7 +49,7 @@ is set — it is registered conditionally.)
 | Resource templates | yes | no | Follows from resources |
 | Progress (`ctx.report_progress`) | yes | no | Gap worth revisiting |
 | Client-side logging (`ctx.log`) | yes | no | Minor |
-| Elicitation — form (`ctx.elicit`) | yes | **yes** (`_confirmed`) | Covered |
+| Elicitation — form (via `Resolve`/`Elicit`) | yes | **yes** (`_confirmed`) | Covered |
 | Elicitation — URL (`ctx.elicit_url`) | yes | no | Registered; not the right fit today |
 | Change notifications (`ctx.notify_*_changed`) | yes | no | Does not apply |
 | Argument completion (`@mcp.completion`) | yes | no | Marginal |
@@ -105,39 +105,58 @@ that last segment is ours to choose — which is why a shape like
 
 ### Elicitation (form) — how critical operations are confirmed
 
-MCP has no "confirm" primitive, but `ctx.elicit()` is the mechanism: the
-server asks the client to collect an answer, and the tool blocks until it
-arrives. It is what lets griot expose state-changing operations
+MCP has no "confirm" primitive. griot asks through an elicitation: the
+server puts a question to the client, the client shows it to the person, and
+the answer decides. It is what lets griot expose state-changing operations
 (`repos add/remove`, `profiles delete`, `golden-set add/remove`,
 `index`, `assist install`) over MCP without executing them unasked.
 
-**Verified empirically on 2026-08-22**, over a real stdio transport:
+**Not through `ctx.elicit()`.** That call sends a server-to-client request in
+the middle of the tool call, and the protocol revision Claude Code negotiates
+(2026-07-28) has no place for one: it raised `NoBackChannelError`, so every
+confirmed tool silently fell back to `confirm=true`. Each confirmed tool
+instead declares a `Resolve` parameter (`answer`) that the SDK fills before
+the body runs, using whichever round trip the negotiated protocol supports.
+That parameter is not part of the tool's input schema, so an agent cannot
+supply it.
 
-| Scenario | Result |
+**Verified against the SDK, both protocol revisions** (legacy and
+2026-07-28), and against Claude Code itself:
+
+| Scenario | What the tool receives |
 |---|---|
-| Client supports elicitation, user accepts | works — `action=accept` |
-| Client does NOT support it | `MCPError: Elicitation not supported` — **the tool fails** |
-| In-memory client (what the test suite uses) | `NoBackChannelError` — no back-channel at all |
+| Person accepts | an accept whose data is the confirmation model |
+| Person declines | a decline: nothing changes, no CLI hint, no `confirm=true` hint |
+| Person dismisses the dialog | a cancel: same, worded differently |
+| Client never declared the capability | an accept **whose data is not the confirmation model** |
+| Claude Code in `-p` mode (nobody to ask) | a cancel |
+
+The fourth row is the dangerous one. The SDK wraps whatever a resolver returns
+as an *accepted* outcome, and "nobody can be asked" is returned by the
+resolver, so it reaches the tool looking like a yes. `_confirmed()` therefore
+authorizes only an accept whose data is a `_Ask`, never merely an accept.
 
 Two consequences that shape any design here:
 
-1. **It does not degrade.** On a client without support the tool breaks
-   rather than proceeding unconfirmed. Safe (fails closed) but unusable.
-2. **Branch on declared capability, not on client identity.**
+1. **Branch on declared capability, not on client identity.**
    `ctx.client_capabilities.elicitation` is `None` when unsupported and an
-   `ElicitationCapability(form=…, url=…)` when supported — verified both
-   ways. A capability check needs no registry of client names and keeps
-   working for clients that do not exist yet.
+   `ElicitationCapability(form=…, url=…)` when supported. No registry of
+   client names, and it keeps working for clients that do not exist yet.
+2. **Ask last.** The resolver runs before the tool body, so it repeats the
+   cheap validation (an unknown harness, a path that would be refused, an
+   invalid limit) and skips the question when the call cannot succeed. A
+   confirmation whose answer cannot change the outcome only teaches people to
+   click through.
 
-The shape that follows, implemented in `_confirmed()`: read the
-capability; confirm when present; when absent, fall back to an explicit
-`confirm=true` argument — *except* where the operation widens a security
-boundary, which refuses outright with the equivalent CLI command, because
+The shape that follows, implemented in `_confirmed()`: when the client can
+ask, ask; when it cannot, fall back to an explicit `confirm=true` argument,
+*except* where the operation widens a security boundary or destroys data
+irreversibly, which refuses outright with the equivalent CLI command, because
 an argument the agent supplies is not a human answer.
 
-Anything relying on the `elicit()` path itself needs tests over **real
-stdio** — the in-memory client the suite uses has no back-channel, so
-unit tests exercise the fallback and the refusal, not the elicitation.
+Tests for this live in `tests/test_confirmation.py` and drive a real MCP
+client on both protocol revisions, since the resolver path is invisible to
+unit tests that call the tool function directly.
 
 ## Gaps worth revisiting
 
@@ -188,7 +207,7 @@ This matters because the alternatives are actively unsafe for a token:
   conversation by design, so the secret would reach the model provider,
   land in the session transcript on disk, and can resurface in later
   context windows and summaries.
-- **`ctx.elicit()` (form) is also in-band**: the value returns through the
+- **Form elicitation is also in-band**: the value returns through the
   MCP client and the orchestrating agent sees the tool result.
 
 **Why griot does not use it today.** `elicit_url` needs a URL that actually
@@ -296,8 +315,8 @@ over MCP, and under what mechanism.
 | Kind of operation | Over MCP | Mechanism |
 |---|---|---|
 | Read-only (`search`, `stats`, `repos list`, `profiles list`, `golden-set list`) | yes | plain tool |
-| State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | `elicit()` when available, `confirm=true` otherwise |
-| Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | `elicit()` only — `human_required=True`, no argument bypasses it |
+| State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | a confirmation dialog when the client can ask, `confirm=true` otherwise |
+| Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | a confirmation dialog only — `human_required=True`, no argument bypasses it |
 | **Secrets** (`auth set/list/remove`) | **never** | MCP answers with the CLI command to run |
 
 The third row exists because confirmation protects against a *mistake*,
@@ -312,7 +331,7 @@ The secrets row is not a stricter version of the row above it. Confirmation
 does not make it safe to type a token into a chat — the problem is the
 channel, not the absence of a confirmation step.
 
-Relying on the host's own permission prompt instead of `elicit()` was
+Relying on the host's own permission prompt instead of a confirmation dialog was
 considered and rejected: `destructiveHint` is a hint a client MAY act on,
 and in Claude Code's auto mode there is no prompt at all — which is the
 mode this project is actually used in.
