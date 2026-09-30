@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from mcp.client.client import Client
+from mcp.server.elicitation import AcceptedElicitation
+from mcp_types import ElicitResult
+
 from griot import common, golden_set, harnesses, jobs, logdb, mcp_server, quality_check, repos
 
 
@@ -238,9 +242,9 @@ def test_a_corrupted_repos_file_is_never_silently_overwritten():
 # Three layers, because no single one is sufficient:
 #   1. destructiveHint — honest metadata; clients that prompt will prompt,
 #      but it is a HINT (and Claude Code's auto mode prompts for nothing).
-#   2. elicit() — a real human answer, but only where the client supports
-#      it; verified 2026-08-22 to raise "Elicitation not supported"
-#      otherwise, so it cannot stand alone.
+#   2. a real human answer, collected through the SDK's resolver mechanism
+#      (`Resolve`/`Elicit`), but only where the client can ask; a client that
+#      cannot must never read as a yes (see tests/test_confirmation.py).
 #   3. an explicit confirm argument — works in EVERY client and makes the
 #      caller act twice, having seen what the first call warned about.
 # Secrets are outside this ladder entirely: confirmation does not make a
@@ -253,45 +257,18 @@ class _FakeCaps:
 
 
 class _FakeCtx:
-    """Stands in for the MCP Context so both confirmation branches are
-    testable without a real transport — the in-memory client the rest of
-    this file uses has no back-channel for server-initiated requests."""
+    """Stands in for the MCP Context. The human's answer no longer travels
+    through it: the framework collects it in the tool's Resolve parameter and
+    hands it over as `answer=`, so tests supply `answer=_accepted()` (or omit
+    it for a client that could not ask). tests/test_confirmation.py covers the
+    same flow through a real client on both protocol versions."""
 
-    def __init__(self, elicitation=None, answer=None):
+    def __init__(self, elicitation=None):
         self.client_capabilities = _FakeCaps(elicitation)
-        self._answer = answer
-        self.asked = None
-
-    async def elicit(self, message, schema):
-        self.asked = message
-        return self._answer
 
 
-class _Answer:
-    def __init__(self, action, confirmed=None):
-        self.action = action
-        self.data = type("D", (), {"confirmed": confirmed})()
-
-
-@pytest.mark.anyio
-async def test_confirmation_uses_elicit_when_the_client_supports_it():
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
-
-    ok, refusal = await mcp_server._confirmed(ctx, "Delete profile 'x'?", confirm=False,
-                                              cli_hint="griot profiles delete x")
-
-    assert ok is True and refusal is None
-    assert "Delete profile 'x'?" in ctx.asked
-
-
-@pytest.mark.anyio
-async def test_confirmation_respects_a_declined_elicit():
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("decline"))
-
-    ok, refusal = await mcp_server._confirmed(ctx, "Delete?", confirm=False, cli_hint="griot x")
-
-    assert ok is False
-    assert "cancel" in refusal.lower()
+def _accepted():
+    return AcceptedElicitation(data=mcp_server._Ask())
 
 
 @pytest.mark.anyio
@@ -317,22 +294,6 @@ async def test_confirm_argument_authorizes_without_elicitation():
     ok, refusal = await mcp_server._confirmed(ctx, "Delete?", confirm=True, cli_hint="griot x")
 
     assert ok is True and refusal is None
-
-
-@pytest.mark.anyio
-async def test_an_elicitation_failure_falls_back_instead_of_breaking():
-    """A client that ADVERTISES elicitation but fails on the call must not
-    take the tool down with it — verified failure mode: MCPError
-    'Elicitation not supported'."""
-    class _Broken(_FakeCtx):
-        async def elicit(self, message, schema):
-            raise RuntimeError("Elicitation not supported")
-
-    ok, refusal = await mcp_server._confirmed(_Broken(elicitation=object()), "Delete?",
-                                              confirm=False, cli_hint="griot x")
-
-    assert ok is False
-    assert "confirm=true" in refusal
 
 
 # --- griot_profiles_list -----------------------------------------------------
@@ -460,9 +421,9 @@ async def test_repos_add_accepts_a_real_human_confirmation(monkeypatch, tmp_path
     """Where the client can actually ask a person, a person can authorize
     it — that is a real boundary, unlike an argument the agent supplies."""
     monkeypatch.setattr(repos, "add_repo", lambda p: p)
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx)
+    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx, answer=_accepted())
 
     assert result["changed"] is True
 
@@ -497,9 +458,9 @@ async def test_repos_add_does_nothing_until_confirmed(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_repos_add_registers_once_confirmed(monkeypatch, tmp_path):
     monkeypatch.setattr(repos, "add_repo", lambda p: p)
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx)
+    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx, answer=_accepted())
 
     assert result["changed"] is True
     assert str(tmp_path) in result["message"]
@@ -556,9 +517,9 @@ async def test_profiles_delete_resolves_the_active_profile_live(monkeypatch):
                         lambda name, **kw: seen.update(kw) or "deleted")
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     monkeypatch.setenv("GRIOT_EMBED_PROFILE", "bge-m3")
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    await mcp_server.griot_profiles_delete("bge-small", ctx=ctx)
+    await mcp_server.griot_profiles_delete("bge-small", ctx=ctx, answer=_accepted())
 
     assert seen["active_profile_name"] == "bge-m3"
 
@@ -574,9 +535,9 @@ async def test_profiles_delete_falls_back_when_the_env_names_no_real_profile(mon
                         lambda name, **kw: seen.update(kw) or "deleted")
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     monkeypatch.setenv("GRIOT_EMBED_PROFILE", "not-a-profile")
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    await mcp_server.griot_profiles_delete("bge-small", ctx=ctx)
+    await mcp_server.griot_profiles_delete("bge-small", ctx=ctx, answer=_accepted())
 
     assert seen["active_profile_name"] == "jina-code"
 
@@ -584,9 +545,9 @@ async def test_profiles_delete_falls_back_when_the_env_names_no_real_profile(mon
 @pytest.mark.anyio
 async def test_profiles_delete_runs_when_confirmed(monkeypatch):
     monkeypatch.setattr(mcp_server.cli, "delete_profile", lambda name, **kw: f"deleted {name}")
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_profiles_delete("bge-small", ctx=ctx)
+    result = await mcp_server.griot_profiles_delete("bge-small", ctx=ctx, answer=_accepted())
 
     assert result["changed"] is True
 
@@ -598,8 +559,8 @@ async def test_a_failed_management_call_reports_instead_of_raising(monkeypatch, 
     monkeypatch.setattr(repos, "add_repo",
                         lambda p: (_ for _ in ()).throw(ValueError("already registered")))
 
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
-    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx)
+    ctx = _FakeCtx()
+    result = await mcp_server.griot_repos_add(str(tmp_path), ctx=ctx, answer=_accepted())
 
     assert result["changed"] is False
     assert "already registered" in result["message"]
@@ -682,9 +643,9 @@ async def test_assist_install_runs_for_explicit_harness_once_confirmed(monkeypat
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_assist_install(harness="opencode", scope="global", ctx=ctx)
+    result = await mcp_server.griot_assist_install(harness="opencode", scope="global", ctx=ctx, answer=_accepted())
 
     assert recorded["targets"] == ["opencode"]
     assert recorded["scope"] == "global"
@@ -711,9 +672,9 @@ async def test_assist_install_all_detects_and_installs_present_harnesses(monkeyp
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_assist_install(ctx=ctx)
+    result = await mcp_server.griot_assist_install(ctx=ctx, answer=_accepted())
 
     assert recorded["targets"] == ["claude-code"]
     assert result["changed"] is False  # nothing created/updated
@@ -725,9 +686,9 @@ async def test_assist_install_all_with_nothing_detected_reports_clearly(monkeypa
     monkeypatch.setattr(harnesses, "detect_harnesses", lambda: [])
     called = []
     monkeypatch.setattr(harnesses, "install_many", lambda targets, scope, **kw: called.append(1) or [])
-    ctx = _FakeCtx(elicitation=object(), answer=_Answer("accept", confirmed=True))
+    ctx = _FakeCtx()
 
-    result = await mcp_server.griot_assist_install(ctx=ctx)
+    result = await mcp_server.griot_assist_install(ctx=ctx, answer=_accepted())
 
     assert called == []
     assert result["changed"] is False
@@ -2323,3 +2284,75 @@ async def test_the_search_limit_default_agents_see_in_the_schema_is_eight():
 
 def test_the_search_limit_default_sits_inside_the_cap():
     assert 1 <= mcp_server.SEARCH_LIMIT_DEFAULT <= mcp_server.SEARCH_LIMIT_MAX
+
+
+# --- griot_index_repo: the human is asked through a real client -------------------
+# The other tools have this matrix in tests/test_confirmation.py; this one
+# lives here because it needs the module-reload fixture above.
+
+
+def _git_repo(path):
+    """A real git repository: index_job_refusal() rejects anything else
+    before a human is asked, which is the behaviour under test elsewhere."""
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return str(path)
+
+
+async def _index_via_client(srv, mode, path, action, monkeypatch, with_callback=True):
+    started, asked = [], []
+    monkeypatch.setattr(srv.jobs, "start_index_job",
+                        lambda p, sources=None: started.append(p) or {"started": True, "path": p, "pid": 1,
+                                                                       "sources": ["code"], "reason": None})
+
+    async def callback(ctx, params):
+        asked.append(params.message)
+        return ElicitResult(action=action, content={})
+
+    kwargs = {"mode": mode}
+    if with_callback:
+        kwargs["elicitation_callback"] = callback
+    async with Client(srv.mcp, **kwargs) as client:
+        result = await client.call_tool("griot_index_repo", {"path": path})
+    return started, asked, result.structured_content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_index_repo_starts_only_on_a_human_accept(mcp_server_with_index_enabled, monkeypatch, tmp_path, mode):
+    srv = mcp_server_with_index_enabled
+    started, asked, _ = await _index_via_client(srv, mode, _git_repo(tmp_path), "accept", monkeypatch)
+    assert started == [str(tmp_path)] and len(asked) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+async def test_index_repo_does_not_start_on_a_no(mcp_server_with_index_enabled, monkeypatch, tmp_path, mode, action):
+    srv = mcp_server_with_index_enabled
+    started, _, out = await _index_via_client(srv, mode, _git_repo(tmp_path), action, monkeypatch)
+    assert started == [] and out["started"] is False
+    assert "Nothing was changed" in out["reason"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_index_repo_never_reads_a_client_that_cannot_ask_as_a_yes(mcp_server_with_index_enabled, monkeypatch, tmp_path, mode):
+    srv = mcp_server_with_index_enabled
+    started, _, out = await _index_via_client(srv, mode, _git_repo(tmp_path), "accept", monkeypatch, with_callback=False)
+    assert started == [] and "confirm=true" in out["reason"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_index_repo_asks_nobody_about_a_path_it_will_refuse(mcp_server_with_index_enabled, monkeypatch, mode):
+    srv = mcp_server_with_index_enabled
+    monkeypatch.delenv("GRIOT_MCP_INDEX_ROOTS", raising=False)
+    started, asked, out = await _index_via_client(srv, mode, "/definitely/not/allowed", "accept", monkeypatch)
+    assert asked == [] and started == [] and out["started"] is False
+
+
+@pytest.mark.anyio
+async def test_index_repo_answer_parameter_is_not_in_the_schema(mcp_server_with_index_enabled):
+    async with Client(mcp_server_with_index_enabled.mcp) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert set(tools["griot_index_repo"].input_schema["properties"]) == {"path", "sources", "confirm"}
