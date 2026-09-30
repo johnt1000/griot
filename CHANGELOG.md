@@ -56,6 +56,15 @@ between minor versions. Breaking changes are called out explicitly.
   the `anthropic/requiresUserInteraction` marker. Claude Code run headless
   denies a marked call before it reaches griot, even with an allow rule.
 
+### Performance
+
+- **griot starts in less than half the time.** The local embedding library
+  (fastembed, with onnxruntime under it) was imported by every command and
+  every MCP server start: about 0.45 s of the 0.7 s that importing griot took
+  on the machine it was measured on, 0.3 s without it. It is now loaded when
+  a local model is first used; `griot stats`, `griot repos list`
+  and anything on an API profile never load it.
+
 ### Fixed
 
 - **A search whose query could not be embedded says why.** A failed embedding

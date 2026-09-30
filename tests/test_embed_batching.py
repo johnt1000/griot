@@ -108,7 +108,7 @@ def test_get_embed_model_uses_data_dir_for_cache(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(common, "TextEmbedding", FakeTextEmbedding)
+    monkeypatch.setattr(common, "_text_embedding_class", lambda: FakeTextEmbedding)
 
     common.get_embed_model()
 
