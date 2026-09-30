@@ -94,6 +94,19 @@ The first time you run any `griot` command, `<config>/.env` is generated for you
 
 ## MCP server
 
+The server has to be registered with your agent before its tools exist in a session. The installer can do it for you:
+
+```bash
+griot assist install --scope global       # asks whether to register the server for every project
+griot assist install                      # asks whether to register it for this project only
+```
+
+It shows the exact command and runs it only after you type `y` (`--mcp` answers yes and makes the command fail if the registration does, `--no-mcp` skips the question). For Claude Code that command is `claude mcp add --scope user griot -- <path to griot> mcp`, and the way back is `claude mcp remove --scope user griot` (`--scope local` for a per-project registration); the installer prints it. Install griot as a tool first (`pipx` or `uv tool`): what gets registered is the path of the griot you ran, and one inside a project's virtual environment stops working when that environment goes.
+
+Registered for every project, each open session starts its own griot server. With a paid embedding profile that is light. With a local one each server loads the model on its first search, from about 100 MB to a few GB depending on the profile (`griot profiles list` shows each profile's estimate). What may be indexed does not change with where the server is registered: that is decided by `repos.json` and `GRIOT_MCP_INDEX_ROOTS`.
+
+To register it yourself, per project:
+
 ```bash
 claude mcp add --transport stdio griot --scope project -- griot mcp
 ```
