@@ -1203,7 +1203,12 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     destructive, but it writes instructions a FUTURE Claude Code/opencode
     session in that location will load and follow automatically, unreviewed
     by a person. `confirm` is an argument the AGENT supplies, so it guards
-    against mistakes and not at all against a compromised one."""
+    against mistakes and not at all against a compromised one.
+
+    It never touches the harness's GLOBAL instructions file (~/.claude/
+    CLAUDE.md): `griot assist install --scope global` offers that only at an
+    interactive prompt of the CLI, because that file is loaded into every
+    project."""
     if scope not in ("local", "global"):
         return {"changed": False, "message": f"scope must be 'local' or 'global', got {scope!r}.", "results": []}
     known_ids = [h.id for h in harnesses.HARNESSES]
