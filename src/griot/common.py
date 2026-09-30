@@ -2669,6 +2669,13 @@ def _filter_names(name: str, values) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+def repository_is_indexed(client, repo: str) -> bool:
+    """Whether any point carries this repository name. One scan of the
+    collection: there is no payload index to ask."""
+    one = qe.Filter(must=[qe.FieldCondition(key="repo", match=qe.MatchValue(value=repo))])
+    return bool(client.count(qe.CountRequest(exact=True, filter=one)))
+
+
 def _checked_filters(repos, source_types) -> tuple[list[str], list[str]]:
     """Both filters as lists, after everything that can be checked without
     the index: opening a collection another process holds waits for it, and
@@ -2693,8 +2700,7 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
     repos.json. A point with no `source_type` at all would be left out by a
     kind filter; every indexer has always written one."""
     for repo in repos:
-        one = qe.Filter(must=[qe.FieldCondition(key="repo", match=qe.MatchValue(value=repo))])
-        if not client.count(qe.CountRequest(exact=True, filter=one)):
+        if not repository_is_indexed(client, repo):
             try:
                 registered = sorted({Path(p).name for p in load_repos()})
             except (OSError, ValueError):

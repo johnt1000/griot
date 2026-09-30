@@ -152,9 +152,17 @@ def _matches(payload: dict, expected: dict) -> bool:
 def run_golden_set(golden_set: list) -> dict:
     """Level 2 (curated): real semantic questions with what SHOULD appear in
     the top-K — tests actual search quality (not just "the pipeline didn't
-    break"). Cases in quality_golden_set.json, manually validated against the
+    break"). Always against the ACTIVE collection: common.search() has no
+    other, whatever --collection the self-check was given. Cases in quality_golden_set.json, manually validated against the
     full corpus before becoming a golden case (see griot's README.md)."""
     results = []
+    indexed: dict[str, bool] = {}
+
+    def is_indexed(repo: str) -> bool:
+        if repo not in indexed:
+            indexed[repo] = common.repository_is_indexed(common.get_client(), repo)
+        return indexed[repo]
+
     for case in golden_set:
         # [review finding] add_case() guards the two write paths that go
         # through it, but cmd_suggest() writes via _save() directly, the file
@@ -176,6 +184,27 @@ def run_golden_set(golden_set: list) -> dict:
                 "reason": ("must_include entries that constrain nothing — every value is null, "
                            "so this case matches any result and can never fail. Re-curate it with "
                            "`griot golden-set remove` then `griot golden-set add`."),
+                "top_results": [],
+            })
+            continue
+        # "Search did not find it" and "there is nothing to find" are
+        # different findings. Curated cases that expect a repository nobody
+        # indexed (renamed, removed, never indexed with this profile) read as
+        # "search quality is 0 of N" when the search was never at fault.
+        # Still FAILED, for the same reason as above: the gate stays closed;
+        # what changes is that the case says what to do. Asked before the
+        # search, so a case that cannot pass does not pay for an embedding.
+        nowhere = [exp for exp in case["must_include"]
+                   if isinstance(exp.get("repo"), str) and exp["repo"] and not is_indexed(exp["repo"])]
+        if nowhere:
+            names = ", ".join(sorted({common.shown(exp["repo"]) for exp in nowhere}))
+            results.append({
+                "query": case["query"],
+                "passed": False,
+                "missing": nowhere,
+                "reason": (f"nothing is indexed for {names} with profile '{common.ACTIVE_PROFILE_NAME}': "
+                           f"this case cannot pass until that repository is indexed. If it is gone for "
+                           f"good, remove the case with `griot golden-set remove`."),
                 "top_results": [],
             })
             continue
@@ -250,7 +279,9 @@ def main(argv=None):
                 for case in golden_check["cases"]:
                     status = "OK" if case["passed"] else "FAILED"
                     print(f"  [{status}] {case['query']!r}")
-                    if not case["passed"]:
+                    if not case["passed"] and case.get("reason"):
+                        print(f"        {case['reason']}")
+                    elif not case["passed"]:
                         print(f"        expected and not found: {case['missing']}")
                         print(f"        top results: {case['top_results']}")
                 print(f"\n{golden_check['passed']}/{golden_check['total']} golden set questions passed")

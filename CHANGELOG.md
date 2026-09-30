@@ -75,6 +75,16 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **`griot stats` no longer counts an evening's spend twice.** The daily
+  total resets at local midnight and the report grouped it by UTC date, so a
+  local day that crossed midnight UTC was summed under two dates. Spend is
+  grouped by the local day. A search recorded without a duration no longer
+  breaks the report.
+- **A golden-set case that cannot pass says so.** A case expecting a
+  repository with nothing indexed was reported as "expected and not found",
+  which read as a search failure. `griot quality-check` now names the
+  repository and says the case cannot pass until it is indexed (it still
+  counts as failed), and does not embed the query for it.
 - **A search whose query could not be embedded says why.** A failed embedding
   call (a bad key, a rate limit, no network) surfaced as a type error about
   vector kinds, in the terminal, to an agent and in the usage log. It now
@@ -172,6 +182,20 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot stats` reports the state of the index, not only activity in a
+  window.** It opens with an `Attention:` block when something needs someone
+  (the last indexing run died, today's spend reached the ceiling, the
+  collection cannot be read) and says how long ago the index was last
+  written and last searched, whatever `--days` is. Quality is a line even
+  when it was never checked, and says when it was checked before the index
+  last changed (for the active profile's collection). The golden set appears
+  with its size, the result and age of its last run, and the cases that
+  expect a repository that is not in `repos.json`; a golden set file that
+  cannot be read is reported instead of being taken for none. Indexing shows
+  how many stale points were removed and credential-looking values replaced,
+  and latency is given as p50 and p90 instead of an average. `griot_stats`
+  returns the same fields (`attention`, `last_indexed_at`, `last_query_at`,
+  `golden_set` and the rest), and the `stats` prompt starts from them.
 - **A search result says where, when and who.** Each `griot_search` result
   carries `metadata`, what was stored with the source: the path and chunk
   number of a file, the whole hash, author and date of a commit, the

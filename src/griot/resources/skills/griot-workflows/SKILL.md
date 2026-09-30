@@ -128,8 +128,17 @@ griot stats --days 7
 griot stats --json        # raw JSON instead of the formatted report
 ```
 
-Reports indexing runs (embedded/skipped/failed, reuse rate), API spend
-against the daily ceiling, query volume and latency, which source types
-answered most queries, and — if any quality checks have been run — a
-pass-rate trend. If you're an agent, `griot_stats` (or the `stats`/`history`
+It opens with what does not depend on the window: an `Attention:` block
+when something needs someone (the last indexing run died, today's spend
+reached the ceiling, the collection cannot be read), and how long ago the
+index was last written and last searched. Then, for the window: indexing
+runs (embedded/skipped/failed, reuse rate, stale points removed,
+credential-looking values replaced), API spend against the daily ceiling,
+query volume and latency (p50 and p90), which source types answered most
+queries, and the quality-check trend. Quality says so when it was never
+checked, or was checked before the index last changed; the golden set shows
+its size, the result and age of its last run, and cases that expect a
+repository that is not in `repos.json` (unless it was indexed with `--path`
+they can only fail: `griot quality-check` checks the index and says so case
+by case). If you're an agent, `griot_stats` (or the `stats`/`history`
 prompts above) gives you the same data without shelling out.
