@@ -64,7 +64,7 @@ import os
 import shlex
 import threading
 import time
-from typing import Literal
+from typing import Annotated, Literal
 
 # TypedDict from typing_extensions, not typing: pydantic (which the MCP SDK
 # builds every tool's schema with) rejects a typing.TypedDict on Python < 3.12,
@@ -77,7 +77,14 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel
 
+from mcp.server.elicitation import (
+    AcceptedElicitation,
+    CancelledElicitation,
+    DeclinedElicitation,
+    ElicitationResult,
+)
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 
 from griot import ask, auth, cli, common, golden_set, harnesses, jobs, logdb, quality_check, repos, stats
@@ -267,16 +274,50 @@ def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = No
     return shlex.join(argv)
 
 
-class _Confirmation(BaseModel):
-    """Schema for the elicited answer. One boolean: this asks a person to
-    confirm, never to supply data — anything that needs a VALUE from the
-    user is either a tool argument or, if it is a secret, not an MCP
-    operation at all (see griot_auth_guidance)."""
-    confirmed: bool
+class _Ask(BaseModel):
+    # No fields on purpose: this asks a person to confirm, never to supply
+    # data (anything that needs a VALUE is a tool argument or, if it is a
+    # secret, not an MCP operation at all: see griot_auth_guidance). The
+    # client shows the question with Accept and Decline. Deliberately no
+    # docstring either: pydantic would publish it as the schema description.
+    pass
+
+
+class _NoChannel(BaseModel):
+    # What a resolver returns when there is nobody to ask. The SDK wraps any
+    # non-question return value as an ACCEPTED outcome, so this is how a
+    # client that cannot ask reaches the tool: _confirmed() authorizes only
+    # an accept whose data is an _Ask, never this.
+    pass
+
+
+_NO_CHANNEL = _NoChannel()
+
+
+def _resolve_ask(ctx, question: str, *, confirm: bool, human_required: bool):
+    """Resolver body shared by every confirmed tool: ask the person, or say
+    there is nobody to ask.
+
+    It asks through the SDK's resolver mechanism (`Elicit`) rather than
+    `ctx.elicit()`: the legacy call needs a server-to-client request in the
+    middle of the tool call, which the protocol Claude Code negotiates
+    (2026-07-28) does not allow, so it raised and the tool always fell back
+    to `confirm=true`. `Elicit` uses the round trip each protocol version
+    supports.
+
+    Not asking is decided here, before the human is bothered: a call whose
+    `confirm=true` already authorizes it (ordinary operations only), and a
+    client that never declared the capability."""
+    if confirm and not human_required:
+        return _NO_CHANNEL
+    if not getattr(getattr(ctx, "client_capabilities", None), "elicitation", None):
+        return _NO_CHANNEL
+    return Elicit(question, _Ask)
 
 
 async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str,
-                     human_required: bool = False) -> tuple[bool, str | None]:
+                     human_required: bool = False,
+                     answer=None) -> tuple[bool, str | None]:
     """Gate for any operation that changes state or spends money.
 
     Returns (authorized, refusal_message). Three layers, because no single
@@ -286,23 +327,25 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str,
        honest metadata, but a HINT the client MAY act on. Claude Code's
        auto mode, which is how this project is actually used, prompts for
        nothing.
-    2. `ctx.elicit()` — a real human answer, and the strongest guarantee
-       available. But verified on 2026-08-22: a client without the
-       capability answers "Elicitation not supported" and the tool FAILS,
-       so it cannot stand alone.
+    2. `answer` — a real human answer, the strongest guarantee available,
+       collected by the tool's `Resolve` parameter (see `_resolve_ask`).
+       Absent when the client cannot ask, so it cannot stand alone.
     3. An explicit `confirm` argument — works in every client. The first
        call returns exactly what would happen; a caller that still wants it
        calls again with confirm=true. Weaker than (2) — it proves a
        deliberate second call, not a human — but it is the only layer that
        never leaves management unusable.
 
-    Branching is on the DECLARED capability, not on client identity: no
-    registry of client names to maintain, and it keeps working for clients
-    that do not exist yet.
+    What an answer means: only an ACCEPT whose data is an `_Ask` authorizes.
+    A decline or a dismissal is an explicit no: nothing changes, and the
+    message neither offers the terminal nor teaches the caller to retry with
+    confirm=true, because the person just refused. Anything else (no answer,
+    or the `_NO_CHANNEL` a resolver returns for a client that cannot ask)
+    means nobody was asked, and falls through to the confirm argument.
 
-    Every refusal carries the equivalent CLI command. The terminal is
-    always a complete path — the MCP surface is a convenience over it, not
-    a replacement.
+    Every refusal that means "nobody was asked" carries the equivalent CLI
+    command. The terminal is always a complete path — the MCP surface is a
+    convenience over it, not a replacement.
 
     `human_required=True` disables layer (3) entirely. Confirmation guards
     against MISTAKES; it is no guard at all against a compromised agent,
@@ -310,19 +353,15 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str,
     that WIDENS A SECURITY BOUNDARY the distinction is decisive — see
     griot_repos_add, where the fallback would have handed an agent the
     ability to authorize indexing any directory on the machine."""
+    if isinstance(answer, AcceptedElicitation) and isinstance(answer.data, _Ask):
+        return True, None
+    if isinstance(answer, DeclinedElicitation):
+        return False, "Declined. Nothing was changed."
+    if isinstance(answer, CancelledElicitation):
+        return False, "Dismissed without an answer. Nothing was changed."
+
     if confirm and not human_required:
         return True, None
-
-    if getattr(getattr(ctx, "client_capabilities", None), "elicitation", None):
-        try:
-            answer = await ctx.elicit(question, _Confirmation)
-        except Exception as e:  # noqa: BLE001 — a client that advertises but fails must not break the tool
-            common.log_and_print(f"Warning: elicitation failed, falling back to confirm=true: {e}",
-                                 level="warning", echo=False)
-        else:
-            if answer.action == "accept" and getattr(answer.data, "confirmed", False):
-                return True, None
-            return False, f"Cancelled — not confirmed. To do it from a terminal: {cli_hint}"
 
     if human_required:
         return False, (
@@ -769,9 +808,20 @@ def griot_profiles_list() -> ProfilesListOutput:
     return {"profiles": profiles, "active": active}
 
 
+def _repos_add_question(path: str) -> str:
+    return (f"Register {path!r} as indexable? "
+            f"Anything under it could then be sent to the embedding API.")
+
+
+def _ask_repos_add(ctx: Context, path: str, confirm: bool = False):
+    return _resolve_ask(ctx, _repos_add_question(path), confirm=confirm, human_required=True)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 @_records_call
-async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None) -> ManagementOutput:
+async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
+                          answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_repos_add)] = None,
+                          ) -> ManagementOutput:
     """Registers a repository for bulk indexing (repos.json).
 
     Changes state, so it does nothing on the first call: it reports what
@@ -791,10 +841,9 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None)
     AGENT supplies, so it guards against mistakes and not at all against a
     compromised one. Widening this boundary takes a person: a real
     elicitation, or the terminal."""
-    ok, refusal = await _confirmed(ctx, f"Register {path!r} as indexable? "
-                                        f"Anything under it could then be sent to the embedding API.",
+    ok, refusal = await _confirmed(ctx, _repos_add_question(path),
                                    confirm=confirm, cli_hint=_cli_command("repos", "add", positional=[path]),
-                                   human_required=True)
+                                   human_required=True, answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -807,16 +856,27 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None)
     return {"changed": True, "message": f"Registered {resolved}"}
 
 
+def _repos_remove_question(path: str) -> str:
+    return f"Unregister {path!r}? (already-indexed data is kept)"
+
+
+def _ask_repos_remove(ctx: Context, path: str, confirm: bool = False):
+    return _resolve_ask(ctx, _repos_remove_question(path), confirm=confirm, human_required=False)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
 @_records_call
-async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = None) -> ManagementOutput:
+async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = None,
+                             answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_repos_remove)] = None,
+                             ) -> ManagementOutput:
     """Removes a repository from repos.json.
 
     Only unregisters it: nothing already indexed is deleted, and the files
     on disk are untouched. Requires confirmation like every state change
     here."""
-    ok, refusal = await _confirmed(ctx, f"Unregister {path!r}? (already-indexed data is kept)",
-                                   confirm=confirm, cli_hint=_cli_command("repos", "remove", positional=[path]))
+    ok, refusal = await _confirmed(ctx, _repos_remove_question(path),
+                                   confirm=confirm, cli_hint=_cli_command("repos", "remove", positional=[path]),
+                                   answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -826,9 +886,20 @@ async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = No
     return {"changed": True, "message": f"Unregistered {resolved}"}
 
 
+def _profiles_delete_question(profile: str) -> str:
+    return (f"PERMANENTLY delete profile {profile!r}? Its indexed vectors are lost and "
+            f"re-creating them costs whatever that profile charges to embed.")
+
+
+def _ask_profiles_delete(ctx: Context, profile: str, confirm: bool = False):
+    return _resolve_ask(ctx, _profiles_delete_question(profile), confirm=confirm, human_required=True)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False))
 @_records_call
-async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Context = None) -> ManagementOutput:
+async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Context = None,
+                                answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_profiles_delete)] = None,
+                                ) -> ManagementOutput:
     """PERMANENTLY deletes an embedding profile's on-disk collection.
 
     Irreversible: the vectors are gone and rebuilding them costs whatever
@@ -845,11 +916,9 @@ async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Contex
     was about confidentiality, this is about destruction — both outrank
     keeping the tool usable in a client that cannot ask a person."""
     ok, refusal = await _confirmed(
-        ctx,
-        f"PERMANENTLY delete profile {profile!r}? Its indexed vectors are lost and "
-        f"re-creating them costs whatever that profile charges to embed.",
+        ctx, _profiles_delete_question(profile),
         confirm=confirm, cli_hint=_cli_command("profiles", "delete", positional=[profile]),
-        human_required=True)
+        human_required=True, answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -888,10 +957,22 @@ def griot_golden_set_list() -> GoldenSetListOutput:
     return {"note": GOLDEN_SET_NOTE, "cases": cases, "count": len(cases)}
 
 
+def _golden_set_add_question(query: str) -> str:
+    return f"Add {query!r} to the golden set?"
+
+
+def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, confirm: bool = False):
+    if limit < 1:
+        return _NO_CHANNEL
+    return _resolve_ask(ctx, _golden_set_add_question(query), confirm=confirm, human_required=False)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 @_records_call
 async def griot_golden_set_add(query: str, must_include: list[dict], limit: int = 5,
-                               confirm: bool = False, ctx: Context = None) -> ManagementOutput:
+                               confirm: bool = False, ctx: Context = None,
+                               answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_golden_set_add)] = None,
+                               ) -> ManagementOutput:
     """Curates one case: a question, and the results that must come back.
 
     `must_include` describes the results YOU judged correct — get them from
@@ -900,19 +981,22 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     Confirmed like every state change, but with the confirm= fallback
     intact: curating widens no security boundary and destroys no indexed
     data, so a deliberate second call is proportionate here."""
-    ok, refusal = await _confirmed(ctx, f"Add {query!r} to the golden set?",
-                                   confirm=confirm, cli_hint=_cli_command("golden-set", "add", positional=[query]))
-    if not ok:
-        return {"changed": False, "message": refusal}
     # [review finding] Capped like griot_search's, and for a stronger reason:
     # this value is PERSISTED and spent later by a `griot quality-check` the
     # agent never ran — common.search() passes limit straight to the vector
     # store. A curated case is durable, so an absurd value degrades a surface
-    # this tool does not own.
+    # this tool does not own. Checked BEFORE asking anyone: the answer to a
+    # question about a call that cannot succeed is irrelevant either way
+    # (_ask_golden_set_add skips the question on the same condition).
     if limit < 1:
         return {"changed": False,
                 "message": f"limit must be at least 1 (got {limit}) — a case that retrieves "
                            f"nothing reports every expected result as missing, forever."}
+    ok, refusal = await _confirmed(ctx, _golden_set_add_question(query),
+                                   confirm=confirm, cli_hint=_cli_command("golden-set", "add", positional=[query]),
+                                   answer=answer)
+    if not ok:
+        return {"changed": False, "message": refusal}
     limit = min(limit, SEARCH_LIMIT_MAX)
     try:
         case = golden_set.add_case(query=query, must_include=must_include, limit=limit)
@@ -924,17 +1008,28 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
                                         f"{len(case['must_include'])} required result(s)"}
 
 
+def _golden_set_remove_question(index: int) -> str:
+    return f"Remove golden-set case #{index}?"
+
+
+def _ask_golden_set_remove(ctx: Context, index: int, confirm: bool = False):
+    return _resolve_ask(ctx, _golden_set_remove_question(index), confirm=confirm, human_required=False)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False))
 @_records_call
 async def griot_golden_set_remove(index: int, confirm: bool = False,
-                                  ctx: Context = None) -> ManagementOutput:
+                                  ctx: Context = None,
+                                  answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_golden_set_remove)] = None,
+                                  ) -> ManagementOutput:
     """Removes one curated case by its number in griot_golden_set_list.
 
     Destructive only to curation — the indexed data is untouched, and the
     case can be curated again — so the confirm= fallback applies, unlike
     griot_profiles_delete."""
-    ok, refusal = await _confirmed(ctx, f"Remove golden-set case #{index}?",
-                                   confirm=confirm, cli_hint=_cli_command("golden-set", "remove", positional=[index]))
+    ok, refusal = await _confirmed(ctx, _golden_set_remove_question(index),
+                                   confirm=confirm, cli_hint=_cli_command("golden-set", "remove", positional=[index]),
+                                   answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -1201,10 +1296,26 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) ->
     return result
 
 
+def _assist_install_question(harness: str, scope: str) -> str:
+    targets_desc = "every detected harness" if harness == "all" else harness
+    return (f"Install griot's bundled skills/agents for {targets_desc} at {scope} scope? "
+            f"This writes files that a future AI coding session in that location will load and follow automatically.")
+
+
+def _ask_assist_install(ctx: Context, harness: str = "all", scope: str = "local", confirm: bool = False):
+    # Same cheap checks as the tool body: nobody is asked about an argument
+    # that is already known to be wrong.
+    if scope not in ("local", "global") or (harness != "all" and harness not in [h.id for h in harnesses.HARNESSES]):
+        return _NO_CHANNEL
+    return _resolve_ask(ctx, _assist_install_question(harness, scope), confirm=confirm, human_required=True)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
 @_records_call
 async def griot_assist_install(harness: str = "all", scope: str = "local",
-                               confirm: bool = False, ctx: Context = None) -> AssistInstallOutput:
+                               confirm: bool = False, ctx: Context = None,
+                               answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_assist_install)] = None,
+                               ) -> AssistInstallOutput:
     """Installs griot's bundled Claude Code/opencode Skill and Agent files
     into a harness's own config dir (.claude/, .opencode/, or their global
     equivalents) — the same files `griot assist install` writes from a
@@ -1239,13 +1350,10 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
             "results": [],
         }
 
-    targets_desc = "every detected harness" if harness == "all" else harness
     ok, refusal = await _confirmed(
-        ctx,
-        f"Install griot's bundled skills/agents for {targets_desc} at {scope} scope? "
-        f"This writes files that a future AI coding session in that location will load and follow automatically.",
+        ctx, _assist_install_question(harness, scope),
         confirm=confirm, cli_hint=_cli_command("assist", "install", "--scope", scope, "--harness", harness),
-        human_required=True)
+        human_required=True, answer=answer)
     if not ok:
         return {"changed": False, "message": refusal, "results": []}
 
@@ -1282,6 +1390,17 @@ class IndexRepoOutput(TypedDict):
     reason: str | None
 
 
+def _index_repo_question(path: str) -> str:
+    return f"Index {path!r}? This calls the embedding API and costs money on a paid profile."
+
+
+def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
+    # A path that will be refused is never worth a person's attention.
+    if jobs.index_job_refusal(path) is not None:
+        return _NO_CHANNEL
+    return _resolve_ask(ctx, _index_repo_question(path), confirm=confirm, human_required=False)
+
+
 if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     @_records_call
@@ -1290,6 +1409,7 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
         sources: list[Literal["code", "commits", "tags", "branches", "platform"]] | None = None,
         confirm: bool = False,
         ctx: Context = None,
+        answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_index_repo)] = None,
     ) -> IndexRepoOutput:
         """Triggers indexing of ONE local repository — code, commits, tags
         and branches by default; "platform" (GitHub/GitLab/Bitbucket/Azure
@@ -1329,8 +1449,9 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
         if blocked is not None:
             return {"started": False, "reason": blocked, "path": None, "pid": None, "sources": None}
         ok, refusal = await _confirmed(
-            ctx, f"Index {path!r}? This calls the embedding API and costs money on a paid profile.",
-            confirm=confirm, cli_hint=_cli_command("index", "all", option=("--path", path)))
+            ctx, _index_repo_question(path),
+            confirm=confirm, cli_hint=_cli_command("index", "all", option=("--path", path)),
+            answer=answer)
         if not ok:
             return {"started": False, "reason": refusal, "path": None, "pid": None, "sources": None}
         return jobs.start_index_job(path, sources)
