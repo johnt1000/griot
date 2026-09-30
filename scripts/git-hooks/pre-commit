@@ -16,6 +16,8 @@
 # use a gitleaks in an unusual place.
 set -u
 
+hooks_dir=$(cd "$(dirname "$0")" && pwd)
+. "$hooks_dir/common.sh"
 root=$(git rev-parse --show-toplevel) || exit 1
 cd "$root" || exit 1
 failed=0
@@ -23,16 +25,7 @@ failed=0
 say() { printf 'pre-commit: %s\n' "$*" >&2; }
 
 # --- 1. secrets ---------------------------------------------------------------
-gitleaks_bin=${GITLEAKS_BIN:-}
-if [ -z "$gitleaks_bin" ]; then
-  for candidate in "$(command -v gitleaks 2>/dev/null)" /opt/homebrew/bin/gitleaks /usr/local/bin/gitleaks; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      gitleaks_bin=$candidate
-      break
-    fi
-  done
-fi
-if [ -z "$gitleaks_bin" ] || [ ! -x "$gitleaks_bin" ]; then
+if ! gitleaks_bin=$(find_gitleaks); then
   say "gitleaks not found, so secrets cannot be checked. Install it (brew install gitleaks) or set GITLEAKS_BIN."
   exit 1
 fi
@@ -49,8 +42,8 @@ fi
 
 # --- 2. files that never belong -------------------------------------------------
 bad_paths=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR \
-  | grep -i -E '(^|/)\.env(rc)?($|\.)|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.griot\.lock$' \
-  | grep -v -i -E '\.env\.example$')
+  | grep -i -E "$FORBIDDEN_PATHS_RE" \
+  | grep -v -i -E "$ALLOWED_PATHS_RE")
 if [ -n "$bad_paths" ]; then
   say "these staged files never belong in the repository:"
   printf '%s\n' "$bad_paths" | sed 's/^/  /' >&2
@@ -58,14 +51,11 @@ if [ -n "$bad_paths" ]; then
 fi
 
 # --- 3. private terms -------------------------------------------------------------
-common_dir=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd)
-terms_file="$common_dir/sensitive-terms.txt"
+terms_file=$(terms_file_path) || exit 1
 if [ -f "$terms_file" ]; then
   patterns=$(mktemp) || exit 1
   trap 'rm -f "$patterns"' EXIT
-  # A blank line in a pattern file matches EVERY line, so blanks and comments are dropped first.
-  grep -v -E '^[[:space:]]*(#|$)' "$terms_file" > "$patterns"
-  if [ -s "$patterns" ]; then
+  if write_active_terms "$terms_file" "$patterns"; then
     hits=$(git grep --cached -I -n -i -F -f "$patterns" -- . 2>/dev/null | cut -d: -f1,2)
     if [ -n "$hits" ]; then
       say "private terms from sensitive-terms.txt found in file contents (file:line):"
