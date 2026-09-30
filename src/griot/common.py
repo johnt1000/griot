@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import stat
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -1075,6 +1076,41 @@ def get_embed_model() -> TextEmbedding:
     return _embed_model
 
 
+class CollectionBusyError(RuntimeError):
+    """The collection is open in another process. A normal condition on a
+    machine running `griot mcp`, so callers can tell it apart from a broken
+    collection and explain it instead of showing a traceback. A RuntimeError
+    because get_client() used to raise a plain one here."""
+
+    def __init__(self, collection: str, path: Path, message: str):
+        super().__init__(message)
+        self.collection = collection
+        self.path = path
+
+
+# The engine raises a bare exception for a lock collision, with no type to
+# catch (confirmed by introspection, see get_index_status()); the message is
+# all there is to recognise it by. If its wording ever changes, a held
+# collection goes back to surfacing as the raw error: worse output, not wrong.
+_LOCK_COLLISION_SIGNATURE = "WouldBlock"
+
+
+def _load_shard(path: Path, *, retry: bool) -> "qe.EdgeShard":
+    if retry:
+        return _load_shard_with_retry(path)
+    try:
+        return qe.EdgeShard.load(str(path))
+    except Exception as e:
+        # Only what is recognisably a lock collision: calling a corrupt shard
+        # "held by another process" would send the reader the wrong way.
+        if _LOCK_COLLISION_SIGNATURE in str(e):
+            raise CollectionBusyError(
+                COLLECTION_NAME, path,
+                f"Could not open collection '{COLLECTION_NAME}': another griot process has it open.",
+            ) from e
+        raise
+
+
 def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
     """[multi mode] EdgeShard.load() can collide with another process that
     hasn't released its handle yet (e.g. another griot mcp session that just
@@ -1088,9 +1124,10 @@ def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
             return qe.EdgeShard.load(str(path))
         except Exception as e:
             if i == attempts - 1:
-                raise RuntimeError(
+                raise CollectionBusyError(
+                    COLLECTION_NAME, path,
                     f"Could not open collection '{COLLECTION_NAME}' after {attempts} "
-                    f"attempts — another griot process still has it open."
+                    f"attempts — another griot process still has it open.",
                 ) from e
             time.sleep(_LOCK_RETRY_DELAYS[i])
 
@@ -1115,7 +1152,7 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     if _client is None:
         path = _collection_path(COLLECTION_NAME)
         if (path / _EDGE_CONFIG_MARKER).exists():
-            _client = _load_shard_with_retry(path) if CONCURRENCY_MODE == "multi" and wait else qe.EdgeShard.load(str(path))
+            _client = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
         else:
             path.mkdir(parents=True, exist_ok=True)
             cfg = qe.EdgeConfig(
@@ -1161,6 +1198,98 @@ def release_client() -> None:
         _client.close()
         _client = None
     _client_last_used_at = None
+
+
+# Options of the top-level `griot` command that take a value, so the value is
+# not mistaken for the subcommand (`griot --profile x index all`).
+_GRIOT_VALUE_OPTIONS = {"--profile", "--chat-profile", "--sources"}
+
+
+def _griot_role(argv: list[str]) -> str | None:
+    """What a process command line is running, as far as griot is concerned:
+    "mcp" (the MCP server), "index" (an indexing run), "other" (any other griot
+    command), or None when it is not griot at all.
+
+    Decided on WHAT is being run, never on the word "griot" or "mcp" appearing
+    somewhere in the arguments: a virtualenv inside a checkout called griot puts
+    that word in the interpreter's own path, and `griot index --repo mcp-gateway`
+    is an indexing run whatever the repo is called. Unsure means None."""
+    if not argv:
+        return None
+    exe = os.path.basename(argv[0]).lower()
+    if exe == "griot":
+        rest = argv[1:]
+    elif exe.startswith("python"):
+        args, rest = argv[1:], None
+        skip = False
+        for i, arg in enumerate(args):
+            if skip:  # the value of -W / -X, not a script
+                skip = False
+                continue
+            if arg in ("-W", "-X"):
+                skip = True
+                continue
+            if arg == "-m":
+                module = args[i + 1] if i + 1 < len(args) else ""
+                if module == "griot.mcp_server":
+                    return "mcp"
+                if module.startswith("griot.index_"):
+                    return "index"
+                if module != "griot" and not module.startswith("griot."):
+                    return None
+                rest = args[i + 2:]
+                break
+            if arg == "-c":
+                return None
+            if not arg.startswith("-"):
+                if os.path.basename(arg) != "griot":
+                    return None
+                rest = args[i + 1:]
+                break
+        if rest is None:
+            return None
+    else:
+        return None
+    tokens = iter(rest)
+    for token in tokens:
+        if token in _GRIOT_VALUE_OPTIONS:
+            next(tokens, None)
+        elif not token.startswith("-"):
+            return token if token in ("mcp", "index") else "other"
+    return "other"
+
+
+def _is_griot_command(argv: list[str]) -> bool:
+    return _griot_role(argv) is not None
+
+
+def find_collection_holders(path: Path) -> list[dict]:
+    """Best-effort: the OTHER processes that have files under `path` open,
+    as {"pid", "command", "started", "role"} (role: see _griot_role). Empty when `lsof` is missing, hangs or
+    finds nothing — the caller must be able to explain a held collection
+    without this.
+
+    A griot process (one with a role) is shown with its full command line,
+    anything else by name only: an unrelated process (a backup tool with a password among its
+    arguments) must not be echoed into a terminal or an agent's context."""
+    try:
+        out = subprocess.run(["lsof", "-t", "+D", str(path)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    holders = []
+    for pid in sorted({int(t) for t in out.stdout.split() if t.isdigit()} - {os.getpid()}):
+        info = {"pid": pid, "command": None, "started": None, "role": None}
+        try:
+            proc = psutil.Process(pid)
+            argv = proc.cmdline()
+            info["role"] = _griot_role(argv)
+            shown = " ".join([os.path.basename(argv[0]), *argv[1:]]) if info["role"] else proc.name()
+            info["command"] = shown[:200] or None
+            info["started"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(proc.create_time()))
+        except (psutil.Error, OSError):
+            pass
+        holders.append(info)
+    return holders
 
 
 def ensure_collection(client: "qe.EdgeShard") -> None:

@@ -10,11 +10,14 @@ messages quoted are the real ones the code raises, not paraphrases.
 
 ## Collection locked / "another griot process still has it open"
 
-**Symptom**: an indexing or search command fails complaining another griot
-process already has the collection open, or, after waiting about 12
-seconds for it to free up (the default `multi` concurrency mode),
-`Could not open collection '<name>' after N attempts — another griot
-process still has it open.`
+**Symptom**: an indexing or search command says `Another griot process holds
+the collection '<name>'`, usually followed by `Holder: PID ... (...)` naming
+the process and what to do about it. The CLI first waits about 12 seconds
+for the collection to free up (the default `multi` concurrency mode). An MCP
+tool that hits the same condition reports `Could not open collection '<name>'`
+followed by `after N attempts — another griot process still has it open` (it
+waited) or `another griot process has it open` (it did not). Older run
+records show the engine's raw `failed to open WAL ... Kind(WouldBlock)`.
 
 **Cause**: the vector store is embedded, not a server — only one OS process
 can hold a given collection's directory open at a time. If `griot mcp` is

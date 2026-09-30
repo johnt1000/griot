@@ -396,3 +396,193 @@ def test_module_mains_accept_argv():
                         "griot.auth", "griot.stats", "griot.repos", "griot.golden_set"]:
         sig = inspect.signature(importlib.import_module(module_name).main)
         assert "argv" in sig.parameters, module_name
+
+
+# --- a held collection and --dry-run ----------------------------------------
+# A dry-run writes nothing when it succeeds, so a dry-run that dies must not
+# leave a "died" record either: `griot stats` counted those as failed
+# indexing runs, and a colliding dry-run shadowed the last real run in
+# griot_index_status.
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--dry", "--dr"])
+def test_a_dry_run_that_dies_is_not_recorded_as_a_failed_run(monkeypatch, flag):
+    # argparse accepts any unambiguous prefix, so the flag cannot be matched literally.
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main",
+                        _broken_main(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError):
+        cli.main(["index", "code", flag])
+
+    assert logdb.read_since(common.LOG_DIR, "runs", days=1) == []
+
+
+def test_a_dry_run_inside_index_all_is_not_recorded_either(monkeypatch):
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main",
+                        _broken_main(RuntimeError("boom")))
+
+    assert cli.main(["index", "all", "--dry-run"]) == 1
+
+    assert logdb.read_since(common.LOG_DIR, "runs", days=1) == []
+
+
+@pytest.mark.parametrize("argv", [["--repo", "dry-run"], ["--drift"], ["--repo", "x"]])
+def test_only_a_real_dry_run_flag_skips_the_failed_run_record(monkeypatch, argv):
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main",
+                        _broken_main(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError):
+        cli.main(["index", "code", *argv])
+
+    assert len(logdb.read_since(common.LOG_DIR, "runs", days=1)) == 1
+
+
+def _busy(name="codebase__jina-code"):
+    return common.CollectionBusyError(name, common.QDRANT_PATH / name, f"Could not open collection '{name}'")
+
+
+def test_a_held_collection_prints_an_explanation_not_a_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    rc = cli.main(["index", "code", "--dry-run"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "holds the collection 'codebase__jina-code'" in err
+    assert "Traceback" not in err
+
+
+def test_a_held_collection_is_explained_for_every_command_not_just_index(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [])
+
+    def busy_search(*a, **kw):
+        raise _busy()
+
+    monkeypatch.setattr(common, "search", busy_search)
+
+    rc = cli.main(["search", "anything"])
+
+    assert rc == 1
+    assert "holds the collection" in capsys.readouterr().err
+
+
+def test_a_held_collection_inside_index_all_is_explained_once(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    rc = cli.main(["index", "all"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.count("holds the collection") == 1
+    assert "Traceback" not in err
+
+
+def test_a_real_run_killed_by_a_held_collection_is_still_recorded(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    assert cli.main(["index", "code"]) == 1
+
+    runs = logdb.read_since(common.LOG_DIR, "runs", days=1)
+    assert len(runs) == 1 and "Could not open collection" in runs[0]["error"]
+
+
+def test_the_explanation_names_an_mcp_server_holder_and_how_to_get_in(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [
+        {"pid": 4242, "command": "python /home/u/.local/bin/griot mcp", "started": "2026-09-24 01:00", "role": "mcp"}])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    cli.main(["index", "code"])
+
+    err = capsys.readouterr().err
+    assert "PID 4242" in err and "griot mcp" in err and "2026-09-24 01:00" in err
+    assert "without a tool call" in err and "griot_index_repo" in err
+
+
+def test_the_explanation_tells_you_to_wait_for_an_indexing_holder(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [
+        {"pid": 77, "command": "python -m griot.cli index all --repo x", "started": None, "role": "index"}])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    cli.main(["index", "code"])
+
+    err = capsys.readouterr().err
+    assert "PID 77" in err and "finish" in err
+    assert "griot_index_repo" not in err
+
+
+def test_an_indexing_holder_is_not_mistaken_for_an_mcp_server_by_a_repo_name(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [
+        {"pid": 78, "command": "python /x/griot index all --repo mcp-gateway", "started": None, "role": "index"}])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    cli.main(["index", "code"])
+
+    err = capsys.readouterr().err
+    assert "finish" in err and "griot_index_repo" not in err
+
+
+def test_an_mcp_server_among_several_holders_still_gets_the_mcp_advice(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [
+        {"pid": 5, "command": "Python", "started": None, "role": None},
+        {"pid": 6, "command": "python -m griot.mcp_server", "started": None, "role": "mcp"}])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    cli.main(["index", "code"])
+
+    err = capsys.readouterr().err
+    assert "PID 5" in err and "PID 6" in err and "griot_index_repo" in err
+
+
+def test_the_explanation_still_helps_when_the_holder_cannot_be_found(monkeypatch, capsys):
+    monkeypatch.setattr(common, "find_collection_holders", lambda path: [])
+    monkeypatch.setattr(importlib.import_module("griot.index_code"), "main", _broken_main(_busy()))
+
+    cli.main(["index", "code"])
+
+    err = capsys.readouterr().err
+    assert "PID" not in err and "run the command again" in err
+
+
+def test_a_real_held_collection_is_explained_end_to_end(tmp_path):
+    """The real thing: a second process holds the collection, a real CLI
+    process runs a dry-run against it. Unit tests here mock the holder and the
+    exception, so nothing else proves the pieces agree with the real engine."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import threading
+
+    env = {**os.environ, "GRIOT_CONFIG_DIR": str(tmp_path / "config"), "GRIOT_DATA_DIR": str(tmp_path / "data"),
+           "GRIOT_EMBED_PROFILE": "jina-code", "GRIOT_MCP_CONCURRENCY_MODE": "single"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (["init", "-q"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True)
+
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "from griot import common; import time; common.get_client(); print('ready', flush=True); time.sleep(120)"],
+        env=env, stdout=subprocess.PIPE, text=True)
+    watchdog = threading.Timer(90, holder.kill)  # a holder that never says "ready" must fail this test, not hang CI
+    watchdog.start()
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        proc = subprocess.run(
+            [sys.executable, "-m", "griot.cli", "index", "commits", "--path", str(repo), "--dry-run"],
+            env=env, capture_output=True, text=True, timeout=120)
+    finally:
+        watchdog.cancel()
+        holder.kill()
+        holder.wait()
+
+    assert proc.returncode == 1
+    assert "holds the collection" in proc.stderr
+    if shutil.which("lsof"):  # naming the holder is best-effort and needs lsof; everything else must hold without it
+        assert f"PID {holder.pid}" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not (tmp_path / "data" / "griot" / "logs").exists() or logdb.read_since(
+        tmp_path / "data" / "griot" / "logs", "runs", days=1) == []

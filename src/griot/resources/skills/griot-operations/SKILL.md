@@ -33,11 +33,17 @@ grep GRIOT_MCP_CONCURRENCY_MODE .mcp.json "${GRIOT_CONFIG_DIR:-$HOME/.config/gri
 
 So a `griot index ...` run through the shell **collides with your own MCP
 server**: until the idle window has passed in `multi` mode, until the
-session ends in `single` mode. The error:
+session ends in `single` mode. The CLI waits about 12 seconds in `multi` mode,
+then says so and names the holder:
 
 ```
-Service runtime error: failed to open WAL .../qdrant_data/codebase__<profile>/wal: Can't init WAL: Kind(WouldBlock)
+Another griot process holds the collection 'codebase__<profile>'. Holder: PID 4242 (Python -m griot.mcp_server, started 2026-09-24 01:00).
 ```
+
+That message is the whole diagnosis: it says who holds the collection and what
+to do. Read it before doing anything else. The engine's raw error
+(`failed to open WAL ... Kind(WouldBlock)`) only shows up in older run records
+and in `griot.log`.
 
 `griot index ... --dry-run` collides the same way: it reads the collection
 to compare content hashes. A server in *another* session — another project
@@ -135,8 +141,12 @@ griot index all --repo <name> --sources code,commits
 
 ## When a run fails
 
-**`failed to open WAL ... WouldBlock`**: another process has the
-collection open. Find it:
+**`Another griot process holds the collection ...`** (or, in a run record
+or a log, `failed to open WAL ... WouldBlock`, or `Could not open collection
+... another griot process still has it open` from an MCP tool): another
+process has the collection open. The CLI message already names the holder
+(`Holder: PID ...`). If it names none, `lsof` was unavailable or found
+nothing, so look yourself:
 
 ```bash
 lsof +D ~/.local/share/griot/qdrant_data/codebase__<profile> | awk 'NR>1{print $2}' | sort -u
@@ -169,8 +179,8 @@ terminal (`griot auth set <provider>`), never through you.
 - Kill a `griot mcp` or `griot index` process you did not start.
 - Delete a lock file whose PID is still alive, or delete anything under
   `qdrant_data/`.
-- Retry a run that failed with `WouldBlock` without first changing what
-  holds the collection. The retry fails the same way and adds another dead
-  run to `griot stats`.
+- Retry a run that failed because the collection is held without first
+  changing what holds it. The retry fails the same way and adds another dead
+  run to `griot stats`. (A `--dry-run` leaves no record either way.)
 - Pass `confirm=true` on the user's behalf, or run `griot profiles delete`
   unasked.

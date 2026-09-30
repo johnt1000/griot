@@ -31,8 +31,21 @@ between minor versions. Breaking changes are called out explicitly.
   `griot_index_status` never wait: a held collection is a normal answer for
   them (`point count unavailable`).
 
+- When the collection is held by another process, the CLI now prints one
+  explanation instead of a Python traceback: which process holds it (PID,
+  command, start time, found with `lsof` when available) and what to do. A
+  griot process is shown with its command line, any other process by name
+  only. The new `CollectionBusyError` (a `RuntimeError`) carries the
+  condition; only the engine's lock error is translated, so a corrupt
+  collection still surfaces as itself.
+
 ### Fixed
 
+- **`--dry-run` no longer leaves a failed run in the history.** A dry-run
+  writes nothing when it succeeds, but a dry-run that died on a held
+  collection was recorded as a failed indexing run: `griot stats` counted it,
+  and it could shadow the last real run in `griot_index_status`. Abbreviated
+  flags (`--dry`) count as dry-runs, as argparse treats them.
 - **`GRIOT_MCP_CONCURRENCY_MODE=multi` now actually releases an idle
   collection.** The idle check only ran on the server's next tool call,
   which reopened the collection at once, so an idle `griot mcp` held it
