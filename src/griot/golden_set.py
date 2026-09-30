@@ -186,7 +186,7 @@ def cmd_add(query: str, limit: int = 5) -> int:
     print(f'Results for "{query}":')
     for i, r in enumerate(results, start=1):
         payload = r.payload or {}
-        print(f"  [{i}] ({r.score:.3f}) {ask.source_label(payload)}")
+        print(f"  [{i}] ({r.score:.3f}) {common.shown(ask.source_label(payload))}")
 
     choice = input("Which are the right result(s) (must_include)? comma-separated numbers, or empty to cancel: ").strip()
     if not choice:

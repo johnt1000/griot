@@ -4,6 +4,7 @@ platforms.py for details on each adapter and what each one supports)."""
 
 import argparse
 import hashlib
+import re
 import time
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def _remote_url(repo_path: Path) -> str | None:
 
 
 def build_chunks(content: str, id_prefix: str, base_metadata: dict) -> list[dict]:
-    chunks = common.chunk_text(content) if content else [""]
+    chunks = common.chunk_text(content, where=id_prefix) if content else [""]
     documents = []
     for i, chunk in enumerate(chunks):
         if not chunk.strip():
@@ -109,7 +110,9 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
 
     detected = platforms.detect_platform(remote_url)
     if not detected:
-        print(f"WARNING: {repo_path.name}'s remote isn't from any recognized platform ({remote_url}).")
+        # Without the user part: a remote is often written with a token in it.
+        shown = re.sub(r"://[^/@\s]+@", "://", remote_url)
+        print(f"WARNING: {repo_path.name}'s remote isn't from any recognized platform ({common.printable(shown)}).")
         return []
     platform, project_id, host = detected
 
@@ -172,16 +175,18 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents, desc="Checking platform")
         print(f"\n[dry-run] {pending} chunks would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.report_redactions()
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing platform")
+    redacted = common.report_redactions()
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
     print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed.")
     common.log_run_summary(
         script="index_platform.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed,
+        indexed=indexed, skipped=skipped, failed=failed, redacted=redacted,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —

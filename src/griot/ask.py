@@ -7,6 +7,15 @@ DEFAULT_LIMIT = 5
 
 
 def source_label(meta: dict) -> str:
+    """How a stored point is named to a person or an agent. The parts come
+    from the repository (a path, a branch, a tag), and a name can hold a
+    credential-shaped value just as a file can, so the label goes through the
+    same replacement as the text. The stored fields themselves stay as they
+    are: ids are built from them."""
+    return common.redaction.redact(_label(meta))[0]
+
+
+def _label(meta: dict) -> str:
     source_type = meta.get("source_type", "code")
     repo = meta.get("repo", "?")
     if source_type == "commit":
@@ -28,7 +37,7 @@ def build_context(results: list) -> str:
     parts = []
     for r in results:
         payload = r.payload or {}
-        parts.append(f"[{source_label(payload)}]\n{payload.get('content', '')}")
+        parts.append(f"[{source_label(payload)}]\n{common.stored_text(payload)}")
     return "\n\n---\n\n".join(parts)
 
 
@@ -66,7 +75,7 @@ def main(argv=None):
         print("\n--- sources ---")
         for r in results:
             payload = r.payload or {}
-            print(f"- {source_label(payload)} (score={r.score:.3f})")
+            print(f"- {common.shown(source_label(payload))} (score={r.score:.3f})")
 
     common.log_query(
         # [M1] GRIOT_LOG_QUESTIONS=false omits the question text from the
