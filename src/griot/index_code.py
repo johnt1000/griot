@@ -28,15 +28,25 @@ MAX_FILE_BYTES = 1_000_000
 
 
 def _tracked_files(repo_path: Path) -> list[Path] | None:
-    """What git tracks under repo_path, or None when it is not inside a git
-    work tree. `-z` keeps names with spaces, quotes or line breaks intact."""
+    """What the repository does not ignore under repo_path: the files git
+    tracks plus the new ones it would track (`--others --exclude-standard`
+    honours .gitignore, .git/info/exclude and the user's global excludes).
+    None when repo_path is not inside a git work tree.
+
+    New files are included on purpose: in real repositories work that has
+    not been added yet is a large share of the files (decision records,
+    models, migrations), and "not added yet" says nothing about whether a
+    file is private. Ignoring it does. `-z` keeps names with spaces, quotes
+    or line breaks intact; a name can be listed twice (an intent-to-add
+    entry, a merge conflict), hence the set."""
     try:
-        listing = common.run_git(repo_path, ["ls-files", "-z"], timeout=60, check=False)
+        listing = common.run_git(repo_path, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                 timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if listing.returncode != 0:
         return None
-    return [repo_path / name for name in listing.stdout.split("\0") if name]
+    return [repo_path / name for name in sorted({name for name in listing.stdout.split("\0") if name})]
 
 
 def _walked_files(repo_path: Path) -> list[Path]:
@@ -60,10 +70,11 @@ def _has_git_marker(repo_path: Path) -> bool:
 def discover_files(repo_path: Path) -> list[Path]:
     """The files `griot index code` reads, sorted.
 
-    In a git work tree: only what git tracks. A file the repository ignores
-    is ignored here too, and that is where local settings and notes with
-    secrets usually live; on a paid profile they would be sent to the
-    embedding API. Outside git the tree is walked.
+    In a git work tree: what the repository does not ignore (tracked files
+    and new ones). A file the repository ignores is ignored here too, and
+    that is where local settings and notes with secrets usually live; on a
+    paid profile they would be sent to the embedding API. Outside git the
+    tree is walked.
 
     In both cases, only regular files count. A symlinked file is never
     followed: its target can be anywhere on the machine, and a repository
@@ -77,7 +88,7 @@ def discover_files(repo_path: Path) -> list[Path]:
         if _has_git_marker(repo_path):
             # Fail closed. Walking here would read exactly what the rule
             # keeps out: a broken HEAD, a timeout or an ownership refusal
-            # must not turn "only tracked files" into "every file".
+            # must not turn "not the ignored files" into "every file".
             print(f"git could not list the files of {repo_path}, so nothing is read from it: walking it instead "
                   f"would index files its .gitignore keeps out. `git -C {repo_path} status` shows what is wrong.")
             return []
@@ -86,8 +97,8 @@ def discover_files(repo_path: Path) -> list[Path]:
         # Not an error, but silence here reads as "indexed nothing for no
         # reason": a directory inside some other work tree (a home directory
         # kept in git, say) lands here with everything untracked.
-        print(f"git tracks no files under {repo_path}, so nothing is read from it: "
-              f"in a git work tree only tracked files are indexed.")
+        print(f"git lists no files under {repo_path}, so nothing is read from it: "
+              f"in a git work tree, files the repository ignores are not indexed.")
 
     root = repo_path.resolve()
     inside = {}  # directory -> whether it really is inside the repository

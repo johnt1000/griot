@@ -17,9 +17,10 @@ between minor versions. Breaking changes are called out explicitly.
   `griot golden-set remove` and `griot auth remove` ask the same way and accept
   `--yes` for scripts. Anything that would be refused anyway (a bad path, an
   unknown profile, an index out of range) is reported before the question.
-- **BREAKING: in a git work tree, `griot index code` reads only what git
-  tracks.** Ignored and untracked files are no longer indexed (`git add` a new
-  file to have it indexed); a directory outside git is walked as before. Files
+- **BREAKING: in a git work tree, `griot index code` no longer reads files
+  the repository ignores.** It reads tracked files and new ones, and leaves
+  out whatever `.gitignore` (or `.git/info/exclude`, or your global excludes)
+  matches; a directory outside git is walked as before. Files
   over 1 MB are skipped and reported, and `pnpm-lock.yaml`, `*.min.*` and tool
   caches are left out. If git cannot list a work tree, nothing is read from
   it. This change does not remove anything: points already indexed from files

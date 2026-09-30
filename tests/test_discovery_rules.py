@@ -1,9 +1,11 @@
 """What `griot index code` reads from a repository.
 
-In a git work tree: what git tracks, and nothing else. A file the repository
-ignores is ignored here too, which is where local settings and notes with
-secrets usually live; on a paid profile they would be sent to the embedding
-API. Outside git the tree is walked as before.
+In a git work tree: what git tracks plus new files it would track, that is,
+everything the repository does not ignore. A file the repository ignores is
+ignored here too, which is where local settings and notes with secrets usually
+live; on a paid profile they would be sent to the embedding API. Work that is
+not added yet is kept: in real repositories it is a large share of the files.
+Outside git the tree is walked as before.
 
 In both cases a symlinked file is never followed (its target can be anywhere
 on the machine), files over a size ceiling are skipped and reported, and
@@ -38,11 +40,27 @@ def test_a_file_the_repository_ignores_is_not_indexed(repo):
     assert _rel(index_code.discover_files(repo), repo) == ["tracked.py"]
 
 
-def test_an_untracked_file_is_not_indexed_until_git_tracks_it(repo):
+def test_a_new_file_that_is_not_ignored_is_indexed_before_it_is_added(repo):
+    """Work in progress is most of some repositories. Only ignoring a file
+    keeps it out; not having run `git add` yet does not."""
     (repo / "draft.py").write_text("x = 1\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "adr-001.md").write_text("# decision\n")
+    assert _rel(index_code.discover_files(repo), repo) == ["docs/adr-001.md", "draft.py", "tracked.py"]
+
+
+def test_a_file_listed_twice_by_git_is_read_once(repo):
+    (repo / "draft.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-N", "draft.py"], check=True)
+    found = index_code.discover_files(repo)
+    assert len(found) == len(set(found)) == 2
+
+
+def test_files_ignored_by_the_local_exclude_file_are_left_out_too(repo):
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("private-notes.md\n")
+    (repo / "private-notes.md").write_text("# private\n")
     assert _rel(index_code.discover_files(repo), repo) == ["tracked.py"]
-    subprocess.run(["git", "-C", str(repo), "add", "draft.py"], check=True)
-    assert _rel(index_code.discover_files(repo), repo) == ["draft.py", "tracked.py"]
 
 
 def test_a_tracked_file_in_a_generated_directory_is_still_left_out(repo):
@@ -52,12 +70,14 @@ def test_a_tracked_file_in_a_generated_directory_is_still_left_out(repo):
     assert _rel(index_code.discover_files(repo), repo) == ["tracked.py"]
 
 
-def test_a_subdirectory_of_a_repository_lists_only_its_own_tracked_files(repo):
+def test_a_subdirectory_of_a_repository_lists_only_its_own_files(repo):
+    (repo / ".gitignore").write_text("secret.py\n")
     (repo / "pkg").mkdir()
     (repo / "pkg" / "mod.py").write_text("y = 2\n")
     (repo / "pkg" / "scratch.py").write_text("z = 3\n")
+    (repo / "pkg" / "secret.py").write_text("KEY = 'x'\n")
     subprocess.run(["git", "-C", str(repo), "add", "pkg/mod.py"], check=True)
-    assert _rel(index_code.discover_files(repo / "pkg"), repo / "pkg") == ["mod.py"]
+    assert _rel(index_code.discover_files(repo / "pkg"), repo / "pkg") == ["mod.py", "scratch.py"]
 
 
 def test_a_tracked_file_deleted_from_disk_is_skipped_not_an_error(repo):
@@ -230,11 +250,12 @@ def test_a_subdirectory_of_a_work_tree_git_cannot_list_is_not_walked_either(repo
     assert index_code.discover_files(repo / "pkg") == []
 
 
-def test_a_directory_git_tracks_nothing_under_says_so(repo, capsys):
-    (repo / "untracked").mkdir()
-    (repo / "untracked" / "a.py").write_text("x = 1\n")
-    assert index_code.discover_files(repo / "untracked") == []
-    assert "git tracks no files under" in capsys.readouterr().out
+def test_a_directory_whose_files_are_all_ignored_says_so(repo, capsys):
+    (repo / ".gitignore").write_text("scratch/\n")
+    (repo / "scratch").mkdir()
+    (repo / "scratch" / "a.py").write_text("x = 1\n")
+    assert index_code.discover_files(repo / "scratch") == []
+    assert "git lists no files under" in capsys.readouterr().out
 
 
 # --- symlinks anywhere on the way ---------------------------------------------------
