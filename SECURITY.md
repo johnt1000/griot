@@ -41,6 +41,10 @@ griot does **not** implement application-level encryption of the vector store, a
 
 If your threat model includes other users on a shared machine reading your files, the file modes cover it. If it includes someone with your OS user or root, no application-level scheme griot could implement would help.
 
+## Indexing a repository you do not trust
+
+A repository is input, and so is its git config. griot reads history with `git`, and git obeys the repository's own config, where several keys name a program to run (`log.showSignature` with `gpg.program`, `core.fsmonitor`, hooks). griot overrides those on every git call, never lets a read turn into a fetch (a repository that claims to be a partial clone would otherwise pick the program that fetches), does not read bare repositories at all (one can sit inside another project's files with a config of its own), and runs git without its own credentials in the environment. This covers what is known to run a program during the read-only commands griot uses; it is not a sandbox, and a repository you have reason to distrust is still better indexed with a local embedding profile, which sends nothing anywhere.
+
 ## MCP server considerations
 
 - Most tools are read-only. `griot_index_repo` is **disabled by default** (`GRIOT_MCP_ENABLE_INDEX`), and even when enabled only accepts paths registered in `repos.json` or under `GRIOT_MCP_INDEX_ROOTS` (resolved, symlink-safe, fail-closed). This exists because a prompt-injected agent must not be able to index — and thereby exfiltrate to an embedding API — arbitrary filesystem paths.

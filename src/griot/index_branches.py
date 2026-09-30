@@ -23,10 +23,7 @@ def _repo_key_for_path(repo_path: Path) -> str:
 
 
 def run_git(repo_path: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(repo_path), *args],
-        capture_output=True, text=True, check=True, timeout=60,
-    ).stdout
+    return common.run_git(repo_path, list(args), timeout=60).stdout
 
 
 def default_branch(repo_path: Path) -> str | None:

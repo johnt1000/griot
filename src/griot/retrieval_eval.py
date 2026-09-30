@@ -27,15 +27,13 @@ def _commits_with_files(repo_path: Path, max_commits: int | None = None) -> list
     Preserves git log's default order (most recent first) — holdout_recent
     depends on it."""
     fmt = RECORD_SEP + FIELD_SEP.join(["%H", "%s", "%b"]) + FIELD_SEP
-    cmd = ["git", "-C", str(repo_path), "log", "--all"]
+    args = ["log", "--all"]
     if max_commits is not None:
-        cmd.append(f"--max-count={max_commits}")
-    cmd += ["--name-only", f"--pretty=format:{fmt}"]
+        args.append(f"--max-count={max_commits}")
+    args += ["--name-only", f"--pretty=format:{fmt}"]
 
     try:
-        output = subprocess.run(
-            cmd, capture_output=True, text=True, check=True, timeout=120,
-        ).stdout
+        output = common.run_git(repo_path, args, timeout=120).stdout
     except subprocess.CalledProcessError as e:
         print(f"Error reading commits from {repo_path.name}: {e}")
         return []

@@ -28,10 +28,7 @@ def list_tags(repo_path: Path) -> list[dict]:
         "%(subject)", "%(contents)",
     ]) + RECORD_SEP
     try:
-        output = subprocess.run(
-            ["git", "-C", str(repo_path), "for-each-ref", "refs/tags", f"--format={fmt}"],
-            capture_output=True, text=True, check=True, timeout=60,
-        ).stdout
+        output = common.run_git(repo_path, ["for-each-ref", "refs/tags", f"--format={fmt}"], timeout=60).stdout
     except subprocess.CalledProcessError as e:
         print(f"Error reading tags from {repo_path.name}: {e}")
         return []

@@ -27,10 +27,7 @@ def list_commits(repo_path: Path) -> list[dict]:
     remote), without duplicating — a commit reachable from two branches appears once."""
     fmt = FIELD_SEP.join(["%H", "%an", "%aI", "%s", "%b"]) + RECORD_SEP
     try:
-        output = subprocess.run(
-            ["git", "-C", str(repo_path), "log", "--all", f"--pretty=format:{fmt}"],
-            capture_output=True, text=True, check=True, timeout=120,
-        ).stdout
+        output = common.run_git(repo_path, ["log", "--all", f"--pretty=format:{fmt}"], timeout=120).stdout
     except subprocess.CalledProcessError as e:
         print(f"Error reading commits from {repo_path.name}: {e}")
         return []
