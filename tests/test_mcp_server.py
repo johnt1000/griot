@@ -12,6 +12,7 @@ tested via module reload (see fixture `mcp_server_with_index_enabled`)."""
 
 import importlib
 import json
+import pathlib
 import subprocess
 from datetime import datetime, timezone
 
@@ -1798,6 +1799,9 @@ def test_main_runs_mcp_server(monkeypatch):
     the SDK's default)."""
     calls = []
     monkeypatch.setattr(mcp_server.mcp, "run", lambda *a, **kw: calls.append((a, kw)))
+    # multi is the default, so main() would otherwise leave a real reaper
+    # thread running for the rest of the test session.
+    monkeypatch.setattr(mcp_server, "_start_idle_reaper", lambda *a, **kw: None)
 
     mcp_server.main()
 
@@ -2259,3 +2263,37 @@ def test_idle_reaper_thread_releases_on_its_own_in_multi_mode(monkeypatch):
         stop.set()
 
     assert common._client is None
+
+
+def test_main_starts_the_idle_reaper_before_serving(monkeypatch):
+    order = []
+    monkeypatch.setattr(mcp_server, "_start_idle_reaper", lambda *a, **k: order.append("reaper"))
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda **k: order.append("run"))
+
+    mcp_server.main()
+
+    assert order == ["reaper", "run"]
+
+
+def test_every_registered_tool_goes_through_records_call():
+    # The idle reaper only knows a tool is running because _records_call
+    # counts it, so a tool registered without the decorator could have the
+    # collection closed underneath it. Read from the source: the SDK's
+    # registry does not expose the undecorated function.
+    import re
+
+    lines = pathlib.Path(mcp_server.__file__).read_text().splitlines()
+    unwrapped, seen = [], 0
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("@mcp.tool("):
+            continue
+        seen += 1
+        j, wrapped = i + 1, False
+        while not re.match(r"\s*(async )?def ", lines[j]):
+            wrapped |= lines[j].strip() == "@_records_call"
+            j += 1
+        if not wrapped:
+            unwrapped.append(re.match(r"\s*(?:async )?def (\w+)", lines[j]).group(1))
+
+    assert seen >= 16, "the scan found too few tools to be trusted"
+    assert unwrapped == []

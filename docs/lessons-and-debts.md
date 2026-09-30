@@ -69,6 +69,13 @@ what `multi` mode's whole premise (another process reopening the same
 collection while this one was released) makes unsafe to assume. The debt
 is smaller, not gone.
 
+**2026-09-29 update**: `multi` is now the default, so this applies to every
+install rather than to those who opted in. Measured on a copy of a real
+collection (244 MB, about 15,000 points, 70 files): a full reopen, walk
+included, takes about 87 ms (worst of seven, 133 ms). At that size the walk is
+not the dominant cost; it would only matter for a collection with many
+thousands of files.
+
 ### 5. Permission repair is best-effort per file
 
 A single `chmod` failure (a transient race with the engine's own I/O
@@ -146,6 +153,17 @@ the credential injected into `os.environ` once at import so that every
 existing `os.getenv()` call site works unchanged and is unaware of which
 backend held the value. A security improvement that breaks the tool in
 environments where it used to work will be turned off, not adopted.
+
+### A default written out explicitly is an override in disguise
+
+The generated `.env` template used to list every setting with its built-in
+default written out ("behaviorally identical to leaving it unset"). That is only
+true until the default changes: a file generated while
+`GRIOT_MCP_CONCURRENCY_MODE` defaulted to `single` kept pinning `single` after
+the default became `multi`, and would have silently defeated the change for
+every existing install. Settings whose default the project may still change
+belong in the template commented out, so the file documents the value without
+freezing it.
 
 ### Keep the long-lived host process out of expensive, exclusive work
 

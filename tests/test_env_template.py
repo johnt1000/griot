@@ -69,9 +69,19 @@ def test_operational_vars_match_real_code_defaults():
     assert values["GRIOT_SPEND_VELOCITY_CEILING_USD"] == "1.0"
     assert values["GRIOT_LOG_QUESTIONS"] == "true"
     assert values["GRIOT_MCP_ENABLE_INDEX"] == "false"
-    assert values["GRIOT_MCP_CONCURRENCY_MODE"] == "single"
     assert values["GRIOT_MCP_IDLE_RELEASE_SECONDS"] == "30"
     assert values["GRIOT_GITLAB_API_BASE"] == "https://gitlab.com/api/v4"
+
+
+def test_concurrency_mode_is_commented_out_so_it_follows_the_code_default():
+    """A default written out explicitly is an override in disguise: a .env
+    generated while the default was `single` kept pinning it after the default
+    became `multi`. Left commented, the template documents the value without
+    freezing it."""
+    common.ensure_env_template()
+    values = dotenv_values(common.ENV_PATH)
+    assert "GRIOT_MCP_CONCURRENCY_MODE" not in values
+    assert "#GRIOT_MCP_CONCURRENCY_MODE=multi" in common.ENV_PATH.read_text().splitlines()
 
 
 def test_price_vars_without_a_safe_default_are_commented_out_not_empty():

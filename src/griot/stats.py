@@ -297,10 +297,11 @@ def format_stats(s: dict, days: int) -> str:
 
     # [real output, 2026-08-22] None is neither zero nor an error here: it
     # means the count could not be read because another process holds the
-    # collection open — routine on a machine running `griot mcp`, which keeps
-    # the handle for its whole life in single mode. Printing "None points"
-    # reads as "the index is empty", the same illusion that decisionremoved
-    # from the UI, reappearing in the surface that replaced it.
+    # collection open — routine on a machine running `griot mcp`, which holds
+    # the handle while it is in use (and for its whole life in single mode).
+    # Printing "None points" reads as "the index is empty", the same illusion
+    # that decisionremoved from the UI, reappearing in the surface that
+    # replaced it.
     points = s["points_count"]
     profile = s["embed_profile"]
     count = f"{points} points" if points is not None else "point count unavailable (collection in use)"
