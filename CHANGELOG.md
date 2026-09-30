@@ -126,6 +126,28 @@ between minor versions. Breaking changes are called out explicitly.
   chose the program that fetched a missing object), and runs git without
   griot's credentials in the environment. A commit message in a legacy
   encoding no longer stops the commits source.
+- **The installer does not write through a symbolic link.**
+  `griot assist install` opened each destination as it found it, so a project
+  that shipped `.claude/skills/<name>/SKILL.md` as a link to another file had
+  that file overwritten on install, and `.claude` as a link to another
+  directory had the files written there. A destination file that is a link is
+  refused in both scopes; in local scope the write must also land inside the
+  project. Every destination is checked before the first file is written, and
+  the MCP tool refuses before it asks anyone. A `~/.claude` that is itself a
+  link (a dotfiles checkout) still works.
+- **`griot_index_status` accepts only the collection of a known profile.**
+  The name was joined to the data directory as it came, so an absolute path
+  or `..` made the server open a directory of the agent's choosing as a
+  collection. A collection name that is not a plain name is now refused
+  wherever a name becomes a path.
+- **A spend ceiling or a price that is not a number is refused at start.**
+  `GRIOT_SPEND_CEILING_USD=nan` turned the circuit breaker off without a
+  word, because no amount compares as having reached it; an infinite ceiling
+  and a negative price did the same. The two ceilings and the chat prices
+  must be finite and zero or more, and griot says which variable is wrong
+  instead of starting, for every command except `--help` and `--version`.
+  A paid call whose cost does not come out as an amount (not a number, or
+  negative) stops the run; a negative one used to be dropped as free.
 - The CLI command suggested in an MCP refusal is quoted for the shell and for
   the CLI's own parser, and is withheld when a value contains non-printable
   characters. Values chosen by the agent are shown escaped and truncated in the

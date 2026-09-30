@@ -30,9 +30,10 @@ def test_record_spend_accumulates():
     assert common.get_spend_today() == pytest.approx(1.0)
 
 
-def test_record_spend_ignores_zero_or_negative():
+def test_record_spend_ignores_zero():
+    """A free call has nothing to add. A NEGATIVE cost is not a free call:
+    see tests/test_security_hardening.py."""
     common.record_spend(0.0)
-    common.record_spend(-1.0)
     assert common.get_spend_today() == 0.0
     assert not common.SPEND_STATE_PATH.exists()  # doesn't even create the file
 
