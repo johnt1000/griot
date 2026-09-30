@@ -264,7 +264,7 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 
 | Operation | CLI | MCP | Confirmation |
 |---|---|---|---|
-| Vector search | `search` | `griot_search` (plus `group_by_document`, which the CLI has no flag for) | — |
+| Vector search | `search` | `griot_search` (plus `group_by_document`, `repos` and `source_types`, which the CLI has no flags for) | — |
 | Index status | *(part of `stats`)* | `griot_index_status` | — |
 | Today's spend | *(part of `stats`)* | `griot_spend_status` | — |
 | Usage report | `stats` | `griot_stats`, prompt `stats` | — |

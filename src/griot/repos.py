@@ -39,11 +39,12 @@ def is_git_repo(path: str) -> bool:
 
 
 def repo_status() -> list[dict]:
-    """One dict per registered repo: path, exists (still a directory on
-    disk), is_git. Used by cmd_list() for the CLI's own formatting and by
-    the griot_repos_list tool."""
+    """One dict per registered repo: name (its directory name, which is the
+    `repo` of everything indexed from it and what a search is filtered by),
+    path, exists (still a directory on disk), is_git. Used by cmd_list() for
+    the CLI's own formatting and by the griot_repos_list tool."""
     return [
-        {"path": path, "exists": Path(path).is_dir(), "is_git": is_git_repo(path)}
+        {"name": Path(path).name, "path": path, "exists": Path(path).is_dir(), "is_git": is_git_repo(path)}
         for path in _load()
     ]
 

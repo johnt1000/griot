@@ -188,7 +188,7 @@ def test_repo_status_reports_exists_and_is_git(tmp_path):
 
     statuses = {s["path"]: s for s in repos.repo_status()}
 
-    assert statuses[str(git_repo.resolve())] == {"path": str(git_repo.resolve()), "exists": True, "is_git": True}
+    assert statuses[str(git_repo.resolve())] == {"name": git_repo.resolve().name, "path": str(git_repo.resolve()), "exists": True, "is_git": True}
     assert statuses[str(plain_dir.resolve())]["exists"] is True
     assert statuses[str(plain_dir.resolve())]["is_git"] is False
     assert statuses["/path/that/does/not/exist"]["exists"] is False

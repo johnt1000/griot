@@ -55,6 +55,25 @@ document's matching chunks down to its single best-scoring chunk.
 The CLI's `griot search` has no flag for this — it always searches
 ungrouped. `group_by_document` is MCP/programmatic-only.
 
+## Narrowing a search: `repos` and `source_types`
+
+`griot_search` searches every registered repository and every kind of
+source unless told otherwise:
+
+- `repos` — a list of repository names: a repository is named after its
+  directory, which is the `repo` field of a search result and the `name`
+  that `griot_repos_list` gives. Use it when the question is about one
+  project, or to compare two.
+- `source_types` — a list of kinds (see the next section). `["commit",
+  "merge_request"]` when the question is *why* something changed; `["code"]`
+  when it is how something works today.
+
+A repository with nothing indexed, or a kind that does not exist, is an
+**error**, not an empty result: an empty list would read as "nothing was
+found". Two values that both exist and match nothing together (a repository
+with no pull requests indexed, say) do return an empty list. Like
+`group_by_document`, both are MCP/programmatic-only.
+
 ## Reading `source_type`
 
 Every search result carries `source_type`: `code`, `commit`, `tag`,
