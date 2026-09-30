@@ -40,7 +40,18 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   against file contents and against file and directory names, but not against
   binary files (gitleaks cannot read those either), and a missing list only
   prints a warning. The hooks need gitleaks installed and block the commit
-  when it is missing. A commit's author name and email
+  when it is missing. `scripts/install-git-hooks.sh --check` reports whether
+  they are active and able to run.
+  The hooks only look at what you are about to commit. `scripts/audit-history.sh`
+  looks back over every commit reachable from any branch or tag, merges
+  included, for the same things (secrets, files that never belong, your
+  private terms in contents, file names, commit and tag messages, and branch
+  and tag names) and prints locations only. It does not cover binary files,
+  unreachable commits, the reflog, or remote branches you never fetched. It
+  exits 0 only when every check ran and found nothing, 1 on findings, and 2
+  when it could not run a check (for example when your private list is
+  empty), so a result of 2 is not a green light. Run it after you change your
+  list and before you make a repository public. A commit's author name and email
   are public once the repository is, so check `git config user.email` too.
 - **No new runtime dependency without discussing it first.** griot installs
   with `pip` and runs with no services; each dependency is a constraint on

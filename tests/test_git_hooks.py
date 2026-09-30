@@ -17,54 +17,18 @@ import sys
 from pathlib import Path
 
 import pytest
+from hook_support import HOOKS, REPO_ROOT, SCRIPTS, Repo, git as _git, make_env as _env, write_script
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the hooks are bash scripts")
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS = REPO_ROOT / "scripts"
-HOOKS = SCRIPTS / "git-hooks"
 
 REAL_GITLEAKS = shutil.which("gitleaks") or next(
     (p for p in ("/opt/homebrew/bin/gitleaks", "/usr/local/bin/gitleaks") if os.access(p, os.X_OK)), None)
 needs_gitleaks = pytest.mark.skipif(REAL_GITLEAKS is None, reason="gitleaks is not installed")
 
 
-def _env(gitleaks_bin, author_email="maintainer@example.com"):
-    return {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_AUTHOR_NAME": "Maintainer", "GIT_AUTHOR_EMAIL": author_email,
-        "GIT_COMMITTER_NAME": "Maintainer", "GIT_COMMITTER_EMAIL": author_email,
-        "GITLEAKS_BIN": gitleaks_bin,
-    }
-
-
-class Repo:
-    """A throwaway repository plus the isolated environment every git call in it uses."""
-
-    def __init__(self, path, env):
-        self.path, self.env = path, env
-
-    def __fspath__(self):
-        return str(self.path)
-
-    def __str__(self):
-        return str(self.path)
-
-    def __truediv__(self, other):
-        return self.path / other
-
-
-def _git(repo, *args, env=None):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env)
-
-
 @pytest.fixture
 def stub_gitleaks(tmp_path):
-    stub = tmp_path / "gitleaks-stub"
-    stub.write_text("#!/bin/sh\nexit 0\n")
-    stub.chmod(0o755)
-    return str(stub)
+    return write_script(tmp_path / "gitleaks-stub", "exit 0\n")
 
 
 @pytest.fixture
@@ -102,7 +66,8 @@ def test_the_hooks_are_executable():
     for name in ("pre-commit", "commit-msg"):
         assert os.access(HOOKS / name, os.X_OK), name
     assert os.access(SCRIPTS / "install-git-hooks.sh", os.X_OK)
-    assert not os.access(HOOKS / "sensitive-terms.example", os.X_OK)  # a template, not a script
+    for name in ("sensitive-terms.example", "common.sh"):
+        assert not os.access(HOOKS / name, os.X_OK), name  # a template and a sourced library, not scripts
 
 
 def test_a_clean_commit_goes_through(repo):
@@ -257,12 +222,10 @@ def test_the_commit_is_blocked_when_gitleaks_cannot_be_found(repo):
 
 
 def test_a_failing_gitleaks_blocks_the_commit(repo, tmp_path):
-    failing = tmp_path / "gitleaks-fail"
-    failing.write_text("#!/bin/sh\necho 'Finding: something' >&2\nexit 1\n")
-    failing.chmod(0o755)
+    failing = write_script(tmp_path / "gitleaks-fail", "echo 'Finding: something' >&2\nexit 1\n")
     _stage(repo, "clean.md")
 
-    result = _commit(repo, env={**repo.env, "GITLEAKS_BIN": str(failing)})
+    result = _commit(repo, env={**repo.env, "GITLEAKS_BIN": failing})
 
     assert result.returncode != 0
     assert "gitleaks reported a finding" in result.stderr
@@ -344,3 +307,70 @@ def test_hooks_enabled_by_the_installer_actually_block(clone):
     result = _git(clone, "commit", "-q", "-m", "x", env=clone.env)
 
     assert result.returncode != 0 and "private terms" in result.stderr
+
+
+# --- install-git-hooks.sh --check ------------------------------------------------
+
+
+def _check(clone, **env_extra):
+    return subprocess.run([str(clone / "scripts" / "install-git-hooks.sh"), "--check"], capture_output=True, text=True,
+                          cwd=clone, env={**clone.env, **env_extra})
+
+
+def test_check_passes_on_a_fully_set_up_clone(clone):
+    assert _install(clone).returncode == 0
+    (clone / ".git" / "sensitive-terms.txt").write_text("acme-private\n")
+
+    result = _check(clone)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FAIL" not in result.stdout
+
+
+def test_check_fails_when_the_hooks_were_never_enabled(clone):
+    result = _check(clone)
+
+    assert result.returncode == 1
+    assert "FAIL" in result.stdout and "core.hooksPath" in result.stdout
+
+
+def test_check_changes_nothing(clone):
+    _check(clone)
+
+    assert _git(clone, "config", "core.hooksPath", env=clone.env).stdout.strip() == ""
+    assert not (clone / ".git" / "sensitive-terms.txt").exists()
+
+
+def test_check_fails_when_gitleaks_is_missing(clone):
+    assert _install(clone).returncode == 0
+
+    result = _check(clone, GITLEAKS_BIN="/nonexistent/gitleaks")
+
+    assert result.returncode == 1 and "gitleaks" in result.stdout and "FAIL" in result.stdout
+
+
+def test_check_fails_when_a_hook_lost_its_executable_bit(clone):
+    assert _install(clone).returncode == 0
+    (clone / "scripts" / "git-hooks" / "pre-commit").chmod(0o644)
+
+    result = _check(clone)
+
+    assert result.returncode == 1 and "pre-commit" in result.stdout
+
+
+def test_check_only_warns_when_the_private_list_has_no_active_terms(clone):
+    assert _install(clone).returncode == 0  # the template holds only commented examples
+
+    result = _check(clone)
+
+    assert result.returncode == 0
+    assert "warn" in result.stdout.lower() and "not being checked" in result.stdout.lower()
+
+
+def test_the_installer_refuses_an_argument_it_does_not_know_and_changes_nothing(clone):
+    result = subprocess.run([str(clone / "scripts" / "install-git-hooks.sh"), "--chek"], capture_output=True, text=True,
+                            cwd=clone, env=clone.env)
+
+    assert result.returncode == 2
+    assert "usage" in (result.stdout + result.stderr).lower()
+    assert _git(clone, "config", "core.hooksPath", env=clone.env).stdout.strip() == ""
