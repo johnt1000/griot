@@ -447,7 +447,8 @@ def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = Non
     try:
         common.secure_mkdir(common.LOG_DIR)
         logdb.write_tool_call(common.LOG_DIR, tool, ok=ok,
-                              duration_seconds=round(elapsed, 3), error=error)
+                              duration_seconds=round(elapsed, 3), error=error,
+                              project=common.current_project())
     except Exception as e:  # noqa: BLE001 — instrumentation must not break the tool
         common.log_and_print(f"Warning: could not record the {tool} call: {e}",
                              level="warning", echo=False)
@@ -531,6 +532,7 @@ class StatsOutput(TypedDict):
     # this index answering?" needs empty_searches and median_top_score more
     # than a human does.
     queries_by_surface: dict[str, int]
+    queries_by_project: dict[str, int]
     median_top_score: float | None
     empty_searches: int
     # All three are reason/tool -> count maps built by stats._count_by(), not

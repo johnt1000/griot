@@ -179,6 +179,7 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
+| `GRIOT_PROJECT` | name recorded with each search and tool call so `griot stats` can show usage by project (default: the folder `griot` runs in; set it per project in `.mcp.json`, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |
 | `GRIOT_MCP_CONCURRENCY_MODE` | `multi` (default) or `single` — see "Running multiple sessions" above |

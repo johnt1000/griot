@@ -30,6 +30,7 @@ Protections applied:
 - API keys are sent in headers only — never in URLs — and error/log messages never interpolate provider exception text that could contain them.
 - Credentialed HTTP requests never follow redirects, and server-provided pagination URLs are refused if they point to a different host.
 - `GRIOT_LOG_QUESTIONS=false` keeps question text out of the persistent query log.
+- Each logged search and tool call also carries the **name** of the project it came from: the folder griot ran in (never its path), or exactly what you set in `GRIOT_PROJECT`. The home directory is not recorded as a project, and the name is stripped of control characters and cut at 100 characters. It is stored locally in `logs.db` and is never sent anywhere.
 
 ## Encryption at rest — deliberate position
 
