@@ -20,6 +20,11 @@ def _mode(path):
     return stat.S_IMODE(path.stat().st_mode)
 
 
+# The fixtures below carry fixed 2026-08 timestamps; reading them back
+# against the wall clock turns every day-window assertion into a time bomb.
+_NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+
 # --- write_run / write_query round-trip -------------------------------
 
 
@@ -30,7 +35,7 @@ def test_write_and_read_run_round_trips_all_fields(tmp_path):
               "duration_seconds": 1.23, "spend_today_usd": 0.01}
     logdb.write_run(tmp_path, record)
 
-    runs = logdb.read_since(tmp_path, "runs", days=30)
+    runs = logdb.read_since(tmp_path, "runs", days=30, now=_NOW)
 
     assert runs == [record]
 
@@ -43,7 +48,7 @@ def test_write_and_read_query_round_trips_all_fields(tmp_path):
               "sources": ["code:a.py", "commit abc"], "spend_today_usd": 0.02}
     logdb.write_query(tmp_path, record)
 
-    queries = logdb.read_since(tmp_path, "queries", days=30)
+    queries = logdb.read_since(tmp_path, "queries", days=30, now=_NOW)
 
     assert queries == [record]
 
@@ -110,7 +115,7 @@ def test_migrates_existing_runs_jsonl_on_first_use(tmp_path):
         json.dumps({"timestamp": "2026-08-20T00:00:00+00:00", "indexed": 5}) + "\n"
     )
 
-    runs = logdb.read_since(tmp_path, "runs", days=365)
+    runs = logdb.read_since(tmp_path, "runs", days=365, now=_NOW)
 
     assert len(runs) == 1 and runs[0]["indexed"] == 5
 
@@ -120,7 +125,7 @@ def test_migrates_existing_queries_jsonl_on_first_use(tmp_path):
         json.dumps({"timestamp": "2026-08-20T00:00:00+00:00", "question": "old q"}) + "\n"
     )
 
-    queries = logdb.read_since(tmp_path, "queries", days=365)
+    queries = logdb.read_since(tmp_path, "queries", days=365, now=_NOW)
 
     assert len(queries) == 1 and queries[0]["question"] == "old q"
 
@@ -132,7 +137,7 @@ def test_migration_skips_corrupted_lines_without_crashing(tmp_path):
         + json.dumps({"timestamp": "2026-08-20T00:00:01+00:00", "indexed": 2}) + "\n"
     )
 
-    runs = logdb.read_since(tmp_path, "runs", days=365)
+    runs = logdb.read_since(tmp_path, "runs", days=365, now=_NOW)
 
     assert [r["indexed"] for r in runs] == [1, 2]
 
@@ -141,11 +146,11 @@ def test_migration_runs_only_once_does_not_duplicate(tmp_path):
     (tmp_path / "runs.jsonl").write_text(
         json.dumps({"timestamp": "2026-08-20T00:00:00+00:00", "indexed": 1}) + "\n"
     )
-    logdb.read_since(tmp_path, "runs", days=365)  # triggers migration
-    logdb.read_since(tmp_path, "runs", days=365)  # must not re-import
+    logdb.read_since(tmp_path, "runs", days=365, now=_NOW)  # triggers migration
+    logdb.read_since(tmp_path, "runs", days=365, now=_NOW)  # must not re-import
     logdb.write_run(tmp_path, {"timestamp": "2026-08-21T00:00:00+00:00", "indexed": 2})
 
-    runs = logdb.read_since(tmp_path, "runs", days=365)
+    runs = logdb.read_since(tmp_path, "runs", days=365, now=_NOW)
 
     assert len(runs) == 2
 
@@ -196,7 +201,7 @@ def test_write_and_read_quality_check_round_trips(tmp_path):
               "self_check": {"passed": 8, "sampled": 10, "avg_score": 0.71, "failures": []}}
     logdb.write_quality_check(tmp_path, record)
 
-    assert logdb.read_since(tmp_path, "quality_checks", days=30) == [record]
+    assert logdb.read_since(tmp_path, "quality_checks", days=30, now=_NOW) == [record]
 
 
 def test_read_since_accepts_quality_checks_table(tmp_path):
@@ -218,7 +223,7 @@ def test_migrates_legacy_single_json_file_once(tmp_path):
     logdb.migrate_legacy_json_file(tmp_path, legacy, "quality_checks")
     logdb.migrate_legacy_json_file(tmp_path, legacy, "quality_checks")  # must not re-import
 
-    assert len(logdb.read_since(tmp_path, "quality_checks", days=365)) == 1
+    assert len(logdb.read_since(tmp_path, "quality_checks", days=365, now=_NOW)) == 1
 
 
 def test_migrating_a_missing_legacy_file_is_a_noop(tmp_path):
