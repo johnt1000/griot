@@ -216,3 +216,18 @@ class GitRepo:
 @pytest.fixture
 def git_repo(tmp_path) -> GitRepo:
     return GitRepo(tmp_path / "repo")
+
+
+@pytest.fixture(autouse=True)
+def _no_test_runs_a_harness_command(monkeypatch):
+    """`griot assist install` can now run the harness's own CLI (`claude mcp
+    add ...`) to register griot's MCP server. A test that simulates an
+    interactive terminal and answers "y" would otherwise change the REAL
+    configuration of whoever runs the suite. Tests that exercise that path
+    replace this with their own recorder."""
+    from griot import harnesses
+
+    def refuse(argv):
+        raise AssertionError(f"a test tried to run a harness command for real: {argv}")
+
+    monkeypatch.setattr(harnesses, "_run_harness_command", refuse)

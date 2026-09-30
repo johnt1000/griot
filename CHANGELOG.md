@@ -95,6 +95,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot assist install` offers to register griot's MCP server.** With
+  `--scope global` for every project (the harness's user scope), otherwise for
+  this project only. It shows the exact command and runs it, through the
+  harness's own CLI, only after a typed `y`, and says how to undo it; `--mcp`
+  answers yes (and the command fails if the registration does) and `--no-mcp`
+  skips the question. Without a terminal, or without the harness CLI on the
+  PATH, it prints the command instead. A griot that has no absolute path is
+  not registered, and one inside a virtual environment is pointed out. Registration used to be documented per
+  project only, from when one server held the index for as long as it ran.
 - **`griot-operations` skill** in the `griot assist install` bundle — a
   runbook for indexing from inside an agent session: when the attached MCP
   server's own open collection makes a shell `griot index` fail with

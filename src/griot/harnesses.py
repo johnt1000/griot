@@ -19,7 +19,9 @@ on lazy dispatch) for a command that only copies a handful of text files.
 
 import argparse
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -49,6 +51,12 @@ class Harness:
     # put in it (resources/instructions/<name>). None where the file is not known.
     global_instructions_file: Callable[[Path], Path] | None = None
     instructions_resource: str | None = None
+    # The harness's OWN command that registers an MCP server, given the scope
+    # ("user" or "local") and the command that starts griot. None where griot
+    # does not know one: then the person is told what to add, and nothing runs.
+    mcp_register: Callable[[str, str], list[str]] | None = None
+    # And the one that undoes exactly that, given the same scope.
+    mcp_unregister: Callable[[str], list[str]] | None = None
 
 
 HARNESSES = [
@@ -63,6 +71,9 @@ HARNESSES = [
         detect=lambda: shutil.which("claude") is not None or (Path.home() / ".claude").is_dir(),
         global_instructions_file=lambda home: home / ".claude" / "CLAUDE.md",
         instructions_resource="claude-code.md",
+        mcp_register=lambda scope, griot: ["claude", "mcp", "add", "--scope", scope, "griot", "--", griot, "mcp"],
+        # With the scope: once a server is registered in two scopes, a remove without one is refused.
+        mcp_unregister=lambda scope: ["claude", "mcp", "remove", "--scope", scope, "griot"],
     ),
     Harness(
         id="opencode",
@@ -315,6 +326,141 @@ def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: 
     return outcome
 
 
+def _which(name: str) -> str | None:
+    return shutil.which(name)
+
+
+def _griot_command() -> str:
+    """How to start griot from outside a shell: the absolute path of the
+    griot being run. A harness started from a desktop launcher does not have
+    the terminal's PATH, so a bare `griot` could fail there. Not resolved: a
+    pipx shim is a symlink into a versioned environment, and the shim is the
+    path that survives an upgrade."""
+    running = Path(sys.argv[0])
+    if running.name == "griot" and running.is_file():
+        return str(running.absolute())
+    return _which("griot") or "griot"
+
+
+def _run_harness_command(argv: list[str]) -> "subprocess.CompletedProcess":
+    """The one place this module runs another program. Its own function so
+    that the test suite can forbid it outright: a test that answers "y" to a
+    simulated prompt must never change the real configuration of whoever
+    runs the tests."""
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+
+
+def _model_note() -> str:
+    """What one more griot server costs in memory, for the profile that is
+    actually active. The figures are the profile's own ESTIMATE (see
+    EMBED_PROFILES), so they are called one."""
+    from griot import common  # only here: everything else in this module works without it
+    estimate = common.ACTIVE_PROFILE.get("rss_estimate_mb")
+    if not estimate:
+        return f"The active embedding profile ({common.ACTIVE_PROFILE_NAME}) calls an API: a server loads no model."
+    return (f"With the active embedding profile ({common.ACTIVE_PROFILE_NAME}) each one loads the model on its first "
+            f"search: {estimate[0]} to {estimate[1]} MB of memory, by the profile's own estimate.")
+
+
+def offer_mcp_server(harness: Harness, scope: str, *, mode: str = "ask") -> str:
+    """Offers to register griot's MCP server with the harness, which is what
+    makes its tools exist in a session at all. Returns n/a | skipped | no-cli |
+    no-path | not-interactive | declined | registered | exists | failed.
+
+    `--scope global` registers for every project (the harness's user scope),
+    anything else for this project only, privately: the shared, committed
+    project file is no place for a path on one machine.
+
+    Registration used to be documented per project only, because a server
+    held the index for as long as it ran. Since the index is released when
+    idle, several sessions share it, and a project without the server simply
+    never uses griot.
+
+    It is done through the harness's own command line, never by editing its
+    config file, and only after a typed yes or `mode="yes"` (the --mcp
+    flag); afterwards it says how to undo exactly what it did. Without the
+    harness's command or without a terminal, the command is printed.
+
+    What is registered is a path, so the path is looked at first: a griot
+    that can only be named by the bare word is not registered at all (a
+    harness started from a desktop launcher would not find it), and one that
+    lives inside a virtual environment is pointed out, because the
+    registration dies with the environment."""
+    if mode == "no":
+        return "skipped"
+    griot = _griot_command()
+    if harness.mcp_register is None:
+        print(f"  MCP server: griot cannot register itself with {harness.display_name}. To use its tools there, add "
+              f"a local MCP server that runs: {shlex.join([griot, 'mcp'])}")
+        return "n/a"
+    everywhere = scope == "global"
+    harness_scope = "user" if everywhere else "local"
+    argv = harness.mcp_register(harness_scope, griot)
+    command = shlex.join(argv)
+    undo = shlex.join(harness.mcp_unregister(harness_scope)) if harness.mcp_unregister else None
+    reach = "every project on this machine" if everywhere else "this project only"
+
+    if not Path(griot).is_absolute():
+        print(f"  MCP server: nothing was registered. griot was not started from an installed `griot` command and "
+              f"none is on the PATH, so there is no absolute path to register; a harness would not find a bare "
+              f"`{griot}`. Install griot as a tool (pipx or `uv tool`) and run this again.")
+        return "no-path"
+    if _which(argv[0]) is None:
+        print(f"  MCP server: `{argv[0]}` is not on the PATH, so nothing was registered. To make griot's tools "
+              f"available in {reach}, run:\n    {command}")
+        return "no-cli"
+    in_environment = Path(griot).parent == Path(sys.prefix) / "bin"
+    fragile = (f"  Note: this griot lives inside a virtual environment ({Path(griot).parent}). The registration stops "
+               f"working if that environment is removed; a pipx or `uv tool` install gives a path that stays."
+               if in_environment else None)
+    if mode != "yes":
+        if not _is_interactive():
+            print(f"  MCP server: not registered (no terminal to ask on). To make griot's tools available in "
+                  f"{reach}, run:\n    {command}")
+            return "not-interactive"
+        print(f"\n  griot can register its MCP server with {harness.display_name} for {reach}.")
+        print(f"  It runs:\n    {command}")
+        if fragile:
+            print(fragile)
+        if everywhere:
+            print(f"  Each open session then starts its own griot server. {_model_note()}")
+            from griot import common
+            if common.CONCURRENCY_MODE == "single":
+                print("  In your griot configuration GRIOT_MCP_CONCURRENCY_MODE is 'single': one server keeps the "
+                      "index for as long as it runs, so sessions in different projects would block each other. "
+                      "Switch to 'multi' first.")
+        try:
+            answer = input("  Register it? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("  MCP server: skipped, nothing registered")
+            return "declined"
+    elif fragile:
+        print(fragile)
+
+    how_to_undo = f" To undo: {undo}" if undo else ""
+    try:
+        done = _run_harness_command(argv)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"  MCP server: could not run `{argv[0]}` ({e}). To register it yourself:\n    {command}")
+        return "failed"
+    output = (done.stdout + done.stderr).strip()
+    if done.returncode == 0:
+        print(f"  MCP server: registered for {reach}. Restart open sessions to see griot's tools.{how_to_undo}")
+        return "registered"
+    if "already exists" in output:
+        # The harness only says a server of that name is there. It may point
+        # at a griot that has since moved: say so rather than vouch for it.
+        replace = f" To replace it: {undo}, then run this again." if undo else ""
+        print(f"  MCP server: a server named griot is already registered for {reach}; the command it runs was not "
+              f"checked.{replace}")
+        return "exists"
+    print(f"  MCP server: `{argv[0]}` refused ({output or 'no message'}). To register it yourself:\n    {command}")
+    return "failed"
+
+
 def _print_result(result: dict) -> None:
     created, updated, unchanged = result["created"], result["updated"], result["unchanged"]
     print(f"{result['harness']}: skills -> {result['skills_target']}, agents -> {result['agents_target']}")
@@ -333,7 +479,8 @@ def _print_result(result: dict) -> None:
         print(f"  unchanged: {len(unchanged)}")
 
 
-def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, home: Path | None = None) -> int:
+def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, mcp: str = "ask",
+                home: Path | None = None) -> int:
     if harness_choice == "all":
         targets = detect_harnesses()
         if not targets:
@@ -343,9 +490,16 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
     else:
         targets = [h for h in HARNESSES if h.id == harness_choice]
 
+    outcomes = []
     for harness in targets:
         _print_result(install(harness, scope, home=home))
         offer_instructions(harness, scope, ask=ask_instructions, home=home)
+        outcomes.append(offer_mcp_server(harness, scope, mode=mcp))
+    # Asked for with --mcp, a registration that did not happen is a failure of
+    # the command: a script must not carry on as if the tools were there.
+    # Asked interactively it is a courtesy on top of an install that worked.
+    if mcp == "yes" and any(outcome in ("failed", "no-cli", "no-path") for outcome in outcomes):
+        return 1
     return 0
 
 
@@ -377,8 +531,15 @@ def main(argv=None) -> int:
              "There is deliberately no flag that answers that question for you.",
     )
 
+    mcp = p_install.add_mutually_exclusive_group()
+    mcp.add_argument("--mcp", dest="mcp", action="store_const", const="yes", default="ask",
+                     help="Register griot's MCP server with the harness without asking "
+                          "(--scope global: every project; otherwise this project only)")
+    mcp.add_argument("--no-mcp", dest="mcp", action="store_const", const="no",
+                     help="Do not offer to register griot's MCP server")
+
     args = parser.parse_args(argv)
-    return cmd_install(args.scope, args.harness, ask_instructions=not args.no_instructions)
+    return cmd_install(args.scope, args.harness, ask_instructions=not args.no_instructions, mcp=args.mcp)
 
 
 if __name__ == "__main__":
