@@ -168,7 +168,7 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
     ("GRIOT_MCP_ENABLE_INDEX", "false", "set to true to enable the griot_index_repo MCP tool (can spend money on a paid profile)", False),
     ("GRIOT_MCP_INDEX_ROOTS", "", "':'-separated directory prefixes allowed for MCP indexing, e.g. /Users/you/code — empty means only repos.json entries are allowed", False),
-    ("GRIOT_MCP_CONCURRENCY_MODE", "single", "single (default, zero overhead) or multi (releases the collection handle when idle, for concurrent griot mcp sessions)", False),
+    ("GRIOT_MCP_CONCURRENCY_MODE", "single", "single (default, zero overhead) or multi (retries on reopen; the idle release is only checked on the server's next call, so an idle server still holds the collection)", False),
     ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
     ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
     ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
@@ -843,10 +843,11 @@ _client_last_used_at: float | None = None
 # forever, zero overhead, but a second REAL griot mcp SESSION (not a
 # subagent/workflow — those reuse the session's MCP connection, see the
 # decision) on the same profile hard-fails with a raw error. 'multi'
-# releases the handle after GRIOT_MCP_IDLE_RELEASE_SECONDS of no use and
-# retries-with-backoff when reopening, in exchange for reopening the
-# collection (94ms measured on this machine) whenever the
-# session sits idle too long.
+# retries-with-backoff when reopening, and drops the handle once it has gone
+# unused for GRIOT_MCP_IDLE_RELEASE_SECONDS, at a reopen cost of ~94ms
+# measured on this machine. That idle check runs only inside get_client(),
+# i.e. on this server's next call, which reopens at once: an idle server
+# never lets go, so 'multi' does not free the collection for another process.
 CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "single")
 if CONCURRENCY_MODE not in ("single", "multi"):
     raise ValueError(
