@@ -24,18 +24,20 @@ profile's collection collides with it. Subagents/workflow-spawned agents
 sharing one parent MCP connection never hit this — only a genuinely
 separate session (another window, another project) does.
 
-**Fix**: close the session whose `griot mcp` holds the collection, or, to
-index from a session that has the server attached, use `griot_index_repo`
-(enabled with `GRIOT_MCP_ENABLE_INDEX=true`). It releases the server's
-handle before starting the run. The `griot-operations` skill has the full
-procedure, including how to find which process holds the collection.
+**Fix**, any of:
 
-`GRIOT_MCP_CONCURRENCY_MODE=multi` does **not** fix this today. Its idle
-release (`GRIOT_MCP_IDLE_RELEASE_SECONDS`) is only checked at the start of
-that same server's next tool call, which then reopens the collection
-straight away, so an idle server keeps holding it. Sessions on *different*
-embedding profiles never collide — each profile is a separate
-collection/directory.
+- Close the session whose `griot mcp` holds the collection.
+- To index from a session that has the server attached, use
+  `griot_index_repo` (enabled with `GRIOT_MCP_ENABLE_INDEX=true`). It
+  releases the server's handle before starting the run.
+- Switch that MCP server to cooperative mode with
+  `GRIOT_MCP_CONCURRENCY_MODE=multi`. The server then releases the handle
+  once it has gone `GRIOT_MCP_IDLE_RELEASE_SECONDS` (default 30) without a
+  tool call, and retries-with-backoff when it reopens on the next one.
+
+The `griot-operations` skill has the full procedure, including how to find
+which process holds the collection. Sessions on *different* embedding
+profiles never collide — each profile is a separate collection/directory.
 
 ## Spend circuit breaker refuses a paid call
 
@@ -135,4 +137,6 @@ the collection open right now, so `griot stats` cannot read the point
 count without colliding with it.
 
 **Fix**: nothing is broken. If you need the real count, stop the process
-holding the collection (see the first entry above).
+holding the collection, or switch that server to
+`GRIOT_MCP_CONCURRENCY_MODE=multi` so it releases the handle when idle (see
+the first entry above).

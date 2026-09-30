@@ -257,8 +257,9 @@ def test_release_then_reopen_allows_a_second_process_style_open():
 # --- concurrency mode (user decision, 2026-08-20) ----------------------------
 # 'single' (default): behaves exactly as before, no change at all. 'multi'
 # (GRIOT_MCP_CONCURRENCY_MODE=multi): drops the handle after
-# IDLE_RELEASE_SECONDS of no use (checked on the next get_client() call, not
-# on a timer) and retries-with-backoff when reopening.
+# IDLE_RELEASE_SECONDS of no use and retries-with-backoff when reopening. The
+# check here runs on the next get_client() call; an idle MCP server is covered
+# by mcp_server's reaper (tested in test_mcp_server.py).
 
 
 def test_default_concurrency_mode_is_single():

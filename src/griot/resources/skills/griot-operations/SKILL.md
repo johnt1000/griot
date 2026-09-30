@@ -16,14 +16,17 @@ time any griot tool that reads it is called (`griot_search`,
 `griot_index_status`, `griot_quality_check`) and then **keeps it open**:
 
 - `GRIOT_MCP_CONCURRENCY_MODE=single` (the default): for the server's whole life.
-- `GRIOT_MCP_CONCURRENCY_MODE=multi`: until that same server is called again
-  after `GRIOT_MCP_IDLE_RELEASE_SECONDS`. The release is checked when the
-  server is next called, not on a timer, so an idle server keeps holding the
-  collection. `multi` does not free the collection for a shell command while
-  the server sits idle.
+- `GRIOT_MCP_CONCURRENCY_MODE=multi`: until the server has gone
+  `GRIOT_MCP_IDLE_RELEASE_SECONDS` (default 30) without a tool call. It then
+  releases the collection on its own, and reopens it on the next call.
 
-So once you have used any griot MCP tool in this session, **`griot index ...`
-run through the shell collides with your own MCP server** and dies with:
+The mode is in the `env` of the project's `.mcp.json` `griot` entry. Absent
+means `single`.
+
+So in `single` mode, once you have used any griot MCP tool in this session,
+**`griot index ...` run through the shell collides with your own MCP
+server**. In `multi` mode it collides until the idle window has passed. The
+error:
 
 ```
 Service runtime error: failed to open WAL .../qdrant_data/codebase__<profile>/wal: Can't init WAL: Kind(WouldBlock)
@@ -40,23 +43,34 @@ Check which griot tools you have (they appear as `mcp__griot__*`):
 | Situation | Path |
 |---|---|
 | `griot_index_repo` is available | **Path A** (MCP). It releases this server's handle before starting, so it works in every case this server controls. |
-| griot MCP attached, `griot_index_repo` missing, no griot tool used yet this session | Path B works, but stop using griot MCP tools until the run finishes. |
-| griot MCP attached, `griot_index_repo` missing, a griot tool already used | Path B **will fail**. Tell the user and offer the fix below. Do not retry. |
+| griot MCP attached, `griot_index_repo` missing, `multi` mode | Path B, once no griot MCP tool has been called for the idle window (default 30s). |
+| griot MCP attached, `griot_index_repo` missing, `single` mode, no griot tool used yet this session | Path B works. |
+| griot MCP attached, `griot_index_repo` missing, `single` mode, a griot tool already used | Path B **will fail**. Tell the user and offer the fixes below. Do not retry. |
 | No griot MCP server attached | **Path B** (CLI). |
 
-`griot_index_repo` exists only when the server was started with
-`GRIOT_MCP_ENABLE_INDEX=true`. It is off by default because on a paid
-profile it spends money. The fix is the user's decision; offer it, don't
-make it:
+Whenever you take Path B with a griot MCP server attached, call no griot MCP
+tool until the run finishes. A tool call would reopen the collection and
+break the run.
+
+The fixes are the user's decision; offer them, don't make them. Both go in
+the `env` of the project's `.mcp.json` `griot` entry, followed by a session
+restart so the server picks up the new environment:
 
 ```json
-"env": { "GRIOT_EMBED_PROFILE": "<profile>", "GRIOT_MCP_ENABLE_INDEX": "true" }
+"env": {
+  "GRIOT_EMBED_PROFILE": "<profile>",
+  "GRIOT_MCP_ENABLE_INDEX": "true",
+  "GRIOT_MCP_CONCURRENCY_MODE": "multi"
+}
 ```
 
-in the project's `.mcp.json` `griot` entry, then restart the session so the
-server restarts with the new environment. It still only indexes paths
-registered with `griot repos add` (or under `GRIOT_MCP_INDEX_ROOTS`), and
-asks the user to confirm each run.
+- `GRIOT_MCP_ENABLE_INDEX=true` enables `griot_index_repo` (Path A). It is
+  off by default because on a paid profile it spends money. It still only
+  indexes paths registered with `griot repos add` (or under
+  `GRIOT_MCP_INDEX_ROOTS`), and asks the user to confirm each run.
+- `GRIOT_MCP_CONCURRENCY_MODE=multi` lets an idle server release the
+  collection, so Path B and other sessions on the same profile work after
+  the idle window. The cost is a short reopen on the next tool call.
 
 ## Step 2 — before spending anything
 
@@ -125,8 +139,9 @@ lsof +D ~/.local/share/griot/qdrant_data/codebase__<profile> | awk 'NR>1{print $
 ps -o pid,lstart,command -p <pid>
 ```
 
-- It is `griot mcp` from this session: use Path A, or offer the
-  `.mcp.json` fix above.
+- It is `griot mcp` from this session: use Path A; in `multi` mode, wait
+  out the idle window without calling griot tools; otherwise offer the
+  `.mcp.json` fixes above.
 - It is `griot mcp` from another session or an old leftover (check the start
   time): tell the user which one it is. Closing that session releases it.
   **Do not kill it yourself.** It belongs to a session you don't control.

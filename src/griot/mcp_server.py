@@ -61,6 +61,7 @@ import functools
 import inspect
 import json
 import os
+import threading
 import time
 from typing import Literal
 
@@ -342,12 +343,15 @@ def _records_call(fn):
         @functools.wraps(fn)
         async def async_wrapper(*args, **kwargs):
             started_at = time.time()
+            _tool_started()
             try:
                 result = await fn(*args, **kwargs)
             except Exception as e:
                 _record_call(fn.__name__, ok=False, elapsed=time.time() - started_at,
                              error=f"{type(e).__name__}: {e}")
                 raise
+            finally:
+                _tool_finished()
             _record_call(fn.__name__, ok=True, elapsed=time.time() - started_at)
             return result
         return async_wrapper
@@ -355,15 +359,78 @@ def _records_call(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         started_at = time.time()
+        _tool_started()
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
             _record_call(fn.__name__, ok=False, elapsed=time.time() - started_at,
                          error=f"{type(e).__name__}: {e}")
             raise
+        finally:
+            _tool_finished()
         _record_call(fn.__name__, ok=True, elapsed=time.time() - started_at)
         return result
     return wrapper
+
+
+# The idle reaper below must never close the shard under a tool that is using
+# it: the SDK runs sync tools in worker threads, so a close can land mid-search.
+# Every tool passes through _records_call, which makes it the one place that
+# can count calls in flight. The reaper holds this lock while it closes, so a
+# tool starting at that moment waits for the close instead of racing it.
+_inflight_lock = threading.Lock()
+_inflight = 0
+
+
+def _tool_started() -> None:
+    global _inflight
+    with _inflight_lock:
+        _inflight += 1
+
+
+def _tool_finished() -> None:
+    global _inflight
+    with _inflight_lock:
+        _inflight -= 1
+
+
+def _release_if_idle(now: float | None = None) -> None:
+    """Closes the collection handle once it has gone unused for
+    IDLE_RELEASE_SECONDS, in multi mode, with no tool running.
+
+    get_client()'s own idle check only runs when this server is called again,
+    and it reopens on the spot, so on its own an idle server never let go and
+    every other process on the same collection died with WouldBlock."""
+    if common.CONCURRENCY_MODE != "multi":
+        return
+    with _inflight_lock:
+        if _inflight or common._client is None or common._client_last_used_at is None:
+            return
+        now = time.time() if now is None else now
+        if now - common._client_last_used_at > common.IDLE_RELEASE_SECONDS:
+            common.release_client()
+
+
+def _start_idle_reaper(interval: float | None = None) -> threading.Event | None:
+    """Runs _release_if_idle() in a daemon thread for the server's lifetime.
+    Only the MCP server starts it: a CLI process in multi mode (the setting can
+    sit in .env) holds the shard across long loops without passing through
+    _records_call, so a reaper there could close it mid-index."""
+    if common.CONCURRENCY_MODE != "multi":
+        return None
+    if interval is None:
+        interval = max(0.5, min(5.0, common.IDLE_RELEASE_SECONDS / 2))
+    stop = threading.Event()
+
+    def _loop():
+        while not stop.wait(interval):
+            try:
+                _release_if_idle()
+            except Exception as e:  # noqa: BLE001 — a failed close must not kill the reaper
+                common.log_and_print(f"Warning: idle release failed: {e}", level="warning", echo=False)
+
+    threading.Thread(target=_loop, name="griot-idle-reaper", daemon=True).start()
+    return stop
 
 
 def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = None) -> None:
@@ -1243,6 +1310,7 @@ def main(argv=None) -> None:
     the tools, never calling mcp.run() — without that, the process imported
     everything and exited, never connecting via stdio. transport="stdio" is
     the SDK's default, made explicit here for clarity."""
+    _start_idle_reaper()
     mcp.run(transport="stdio")
 
 

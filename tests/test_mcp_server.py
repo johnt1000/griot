@@ -2129,3 +2129,133 @@ def test_history_prompt_asks_for_breadth():
     text = mcp_server.griot_history_report("q")
 
     assert "group_by_document" in text
+
+
+# --- idle release in multi mode ----------------------------------------------
+# get_client() only checks idleness when it is called again, and then reopens
+# on the spot, so an idle server kept the collection forever and every other
+# process (a shell `griot index`, another session) died with WouldBlock. The
+# server now runs its own reaper; these pin down when it may and may not close.
+
+
+_FAR_FUTURE = 10 ** 12
+
+
+def _multi_mode(monkeypatch, idle=30.0):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
+    monkeypatch.setattr(common, "IDLE_RELEASE_SECONDS", idle)
+
+
+def test_idle_reaper_releases_a_handle_idle_past_the_window(monkeypatch):
+    _multi_mode(monkeypatch)
+    common.get_client()
+
+    mcp_server._release_if_idle(now=common._client_last_used_at + 31)
+
+    assert common._client is None
+
+
+def test_idle_reaper_keeps_a_handle_used_within_the_window(monkeypatch):
+    _multi_mode(monkeypatch)
+    common.get_client()
+
+    mcp_server._release_if_idle(now=common._client_last_used_at + 29)
+
+    assert common._client is not None
+
+
+def test_idle_reaper_does_nothing_in_single_mode(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
+    common.get_client()
+
+    mcp_server._release_if_idle(now=_FAR_FUTURE)
+
+    assert common._client is not None
+
+
+def test_idle_reaper_never_closes_the_handle_under_a_running_sync_tool(monkeypatch):
+    # Sync tools run in SDK worker threads, so the reaper can fire mid-call;
+    # closing the shard under a search in progress would crash that call.
+    _multi_mode(monkeypatch)
+    common.get_client()
+    seen = {}
+
+    @mcp_server._records_call
+    def busy_tool():
+        mcp_server._release_if_idle(now=_FAR_FUTURE)
+        seen["open"] = common._client is not None
+        return {}
+
+    busy_tool()
+
+    assert seen["open"] is True
+
+
+def test_idle_reaper_never_closes_the_handle_under_a_running_async_tool(monkeypatch):
+    import asyncio
+
+    _multi_mode(monkeypatch)
+    common.get_client()
+    seen = {}
+
+    @mcp_server._records_call
+    async def busy_tool():
+        mcp_server._release_if_idle(now=_FAR_FUTURE)
+        seen["open"] = common._client is not None
+        return {}
+
+    asyncio.run(busy_tool())
+
+    assert seen["open"] is True
+
+
+def test_idle_reaper_can_release_again_once_the_tool_finished(monkeypatch):
+    _multi_mode(monkeypatch)
+    common.get_client()
+
+    @mcp_server._records_call
+    def quick_tool():
+        return {}
+
+    quick_tool()
+    mcp_server._release_if_idle(now=_FAR_FUTURE)
+
+    assert common._client is None
+
+
+def test_idle_reaper_counts_a_tool_that_raised_as_finished(monkeypatch):
+    _multi_mode(monkeypatch)
+    common.get_client()
+
+    @mcp_server._records_call
+    def failing_tool():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        failing_tool()
+    mcp_server._release_if_idle(now=_FAR_FUTURE)
+
+    assert common._client is None
+
+
+def test_idle_reaper_thread_is_not_started_in_single_mode(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
+
+    assert mcp_server._start_idle_reaper() is None
+
+
+def test_idle_reaper_thread_releases_on_its_own_in_multi_mode(monkeypatch):
+    import time
+
+    _multi_mode(monkeypatch, idle=0.2)
+    common.get_client()
+
+    stop = mcp_server._start_idle_reaper(interval=0.05)
+    try:
+        deadline = time.time() + 3
+        while common._client is not None and time.time() < deadline:
+            time.sleep(0.05)
+    finally:
+        stop.set()
+
+    assert common._client is None
