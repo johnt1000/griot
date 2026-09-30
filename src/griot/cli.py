@@ -19,7 +19,7 @@ import importlib
 import os
 import sys
 
-from griot import __version__
+from griot import ConfigurationError, __version__
 
 # Full pipeline order: code
 # first (largest volume), then the git metadata sources, "platform" last
@@ -472,6 +472,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     try:
         return _main(argv)
+    except ConfigurationError as e:
+        # One line instead of a traceback: what is wrong is a setting, and the
+        # message names it.
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
     except Exception as e:
         if not _is_collection_busy(e):
             raise

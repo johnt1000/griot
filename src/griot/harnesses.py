@@ -97,38 +97,74 @@ def _secure_mkdir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+class UnsafeDestination(OSError):
+    """An install destination that would make griot write somewhere other
+    than the place it names."""
+
+
+def _destination_problem(dest: Path, base: Path, contained: bool) -> str | None:
+    """Why `dest` must not be written, or None. The destination is inside a
+    directory griot does not own: in local scope it is a project, and a
+    repository can ship `.claude/skills/<name>/SKILL.md` as a link to any
+    file the user can write, or `.claude` as a link to any directory.
+
+    The file itself is never a link, in either scope. A directory on the way
+    may be one as long as the write still lands inside `base`; that is only
+    required in local scope (`contained`), because where `~/.claude` points
+    is the user's own layout (a dotfiles checkout, another volume)."""
+    if dest.is_symlink():
+        return (f"{dest} is a symbolic link, and griot does not write through one. "
+                f"Remove it, then run the install again.")
+    if dest.exists() and not dest.is_file():
+        return f"{dest} exists and is not a regular file."
+    if contained:
+        real_base, real_parent = os.path.realpath(base), os.path.realpath(dest.parent)
+        if os.path.commonpath([real_base, real_parent]) != real_base:
+            return (f"{dest.parent} leads outside {base} (to {real_parent}), through a symbolic link. "
+                    f"Remove the link, then run the install again.")
+    return None
+
+
 def _write_file(dest: Path, content: bytes) -> str:
     """Writes `content` to `dest` (mode 0600), returns which of
     created/updated/unchanged it was. Leaves an unchanged file untouched
     (no rewrite, no chmod) — see SECURITY.md's 0600/0700 convention."""
+    if dest.is_symlink():
+        raise UnsafeDestination(f"{dest} is a symbolic link, and griot does not write through one.")
     if dest.exists() and dest.read_bytes() == content:
         return "unchanged"
     status = "updated" if dest.exists() else "created"
     _secure_mkdir(dest.parent)
-    fd = os.open(dest, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    # Written beside the destination and moved over it, never INTO what is
+    # there: an existing file may share its inode with another name (a hard
+    # link, which no check can tell from an ordinary file), and the rename
+    # replaces the name instead of the content behind it. mkstemp creates the
+    # file itself (0600, exclusive), so nothing planted is opened.
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.griot-")
     try:
-        os.fchmod(fd, 0o600)  # O_CREAT only applies the mode on creation — repairs a pre-existing file
         with os.fdopen(fd, "wb") as f:
-            fd = None
             f.write(content)
-    finally:
-        if fd is not None:
-            os.close(fd)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return status
 
 
-def _copy_tree(src_root: Path, dest_root: Path, buckets: dict) -> None:
+def _tree(src_root: Path, dest_root: Path) -> list[tuple[Path, Path, str]]:
+    """(source file, destination, relative name) for every bundled file."""
     if not src_root.is_dir():
-        return
-    for src_file in sorted(p for p in src_root.rglob("*") if p.is_file()):
-        rel = src_file.relative_to(src_root)
-        buckets[_write_file(dest_root / rel, src_file.read_bytes())].append(str(rel))
+        return []
+    return [(src, dest_root / src.relative_to(src_root), str(src.relative_to(src_root)))
+            for src in sorted(p for p in src_root.rglob("*") if p.is_file())]
 
 
-def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path | None = None) -> dict:
+def _plan(harness: Harness, scope: str, home: Path | None, cwd: Path | None):
     if scope not in ("local", "global"):
         raise ValueError(f"scope must be 'local' or 'global', got {scope!r}")
-
     if scope == "local":
         base = cwd or Path.cwd()
         skills_target = harness.local_skills_dir(base)
@@ -137,13 +173,36 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
         base = home or Path.home()
         skills_target = harness.global_skills_dir(base)
         agents_target = harness.global_agents_dir(base)
-
     root = _resources_root()
+    files = (_tree(root / "skills", skills_target)
+             + _tree(root / "agents" / harness.agent_content_subdir, agents_target))
+    return base, skills_target, agents_target, files
+
+
+def install_refusal(harness_list: list[Harness], scope: str, *, home: Path | None = None,
+                    cwd: Path | None = None) -> str | None:
+    """Why this install must not happen, or None. Looks at EVERY destination
+    of every harness and writes nothing, so that a caller can refuse before
+    the first file (and the MCP tool before asking a person)."""
+    for harness in harness_list:
+        base, _, _, files = _plan(harness, scope, home, cwd)
+        for _, dest, _ in files:
+            problem = _destination_problem(dest, base, contained=scope == "local")
+            if problem:
+                return problem
+    return None
+
+
+def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path | None = None) -> dict:
+    base, skills_target, agents_target, files = _plan(harness, scope, home, cwd)
+    refusal = install_refusal([harness], scope, home=home, cwd=cwd)
+    if refusal:
+        raise UnsafeDestination(refusal)
+
     created, updated, unchanged = [], [], []
     buckets = {"created": created, "updated": updated, "unchanged": unchanged}
-
-    _copy_tree(root / "skills", skills_target, buckets)
-    _copy_tree(root / "agents" / harness.agent_content_subdir, agents_target, buckets)
+    for src, dest, rel in files:
+        buckets[_write_file(dest, src.read_bytes())].append(rel)
 
     return {
         "harness": harness.id,
@@ -157,6 +216,11 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
 
 
 def install_many(harness_list: list[Harness], scope: str, *, home: Path | None = None, cwd: Path | None = None) -> list[dict]:
+    # All of them are checked before the first file of any: a refusal for the
+    # second harness must not leave the first one installed.
+    refusal = install_refusal(harness_list, scope, home=home, cwd=cwd)
+    if refusal:
+        raise UnsafeDestination(refusal)
     return [install(h, scope, home=home, cwd=cwd) for h in harness_list]
 
 
@@ -490,9 +554,20 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
     else:
         targets = [h for h in HARNESSES if h.id == harness_choice]
 
+    # Checked for every harness before the first file of any of them.
+    refusal = install_refusal(targets, scope, home=home)
+    if refusal:
+        print(f"Error: nothing was installed. {refusal}", file=sys.stderr)
+        return 1
+
     outcomes = []
     for harness in targets:
-        _print_result(install(harness, scope, home=home))
+        try:
+            result = install(harness, scope, home=home)
+        except UnsafeDestination as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        _print_result(result)
         offer_instructions(harness, scope, ask=ask_instructions, home=home)
         outcomes.append(offer_mcp_server(harness, scope, mode=mcp))
     # Asked for with --mcp, a registration that did not happen is a failure of

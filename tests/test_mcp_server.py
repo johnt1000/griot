@@ -575,6 +575,17 @@ async def test_a_failed_management_call_reports_instead_of_raising(monkeypatch, 
 # it writes files a FUTURE agent session will load and follow automatically.
 
 
+@pytest.fixture(autouse=True)
+def _assist_install_sees_a_fixed_machine(monkeypatch):
+    """Which harnesses are installed, and what their directories hold, belong
+    to whoever runs the suite. Both are looked at BEFORE the question now, so
+    they are pinned here; tests/test_security_hardening.py exercises the real
+    destination check in a directory of its own."""
+    monkeypatch.setattr(harnesses, "detect_harnesses",
+                        lambda: [h for h in harnesses.HARNESSES if h.id == "claude-code"])
+    monkeypatch.setattr(harnesses, "install_refusal", lambda *a, **k: None)
+
+
 def _fail_if_confirmed_is_called(*args, **kwargs):
     raise AssertionError("_confirmed must not be called — validation should have short-circuited first")
 

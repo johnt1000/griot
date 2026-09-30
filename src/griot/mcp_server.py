@@ -1197,9 +1197,17 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
 def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
     """"Does this collection have data? when was it last indexed? is an
     indexing run happening right now?" — the check an agent wants to make
-    before trusting the RAG. Pure passthrough to common.get_index_status()
+    before trusting the RAG. Passes through to common.get_index_status()
     (already covers day-1/empty collection, orphan lock, etc. — see
-    common.py)."""
+    common.py).
+
+    `collection` is the collection of one embedding profile, as
+    griot_profiles_list names them; leave it out for the active one."""
+    # A collection name becomes a directory name. Only the names griot itself
+    # gives are accepted: the rule is "one of these", not "looks harmless".
+    known = [common.collection_name_for(profile) for profile in common.EMBED_PROFILES]
+    if collection is not None and collection not in known:
+        raise ValueError(f"Unknown collection {_shown(collection)}. The collections are: {', '.join(known)}.")
     return common.get_index_status(collection)
 
 
@@ -1403,10 +1411,31 @@ def _assist_install_question(harness: str, scope: str) -> str:
             f"them. Deleting them removes them.")
 
 
+def _assist_install_plan(harness: str, scope: str) -> tuple[list, str | None]:
+    """(harnesses to install into, why it cannot happen). Everything that can
+    be known without a person, in one place: the question is asked by the
+    resolver BEFORE the tool body runs, so both must reach the same verdict,
+    and a question whose answer cannot change the outcome teaches
+    click-through."""
+    if scope not in ("local", "global"):
+        return [], f"scope must be 'local' or 'global', got {_shown(scope)}."
+    known_ids = [h.id for h in harnesses.HARNESSES]
+    if harness != "all" and harness not in known_ids:
+        return [], f"harness must be 'all' or one of {known_ids}, got {_shown(harness)}."
+    if harness == "all":
+        targets = harnesses.detect_harnesses()
+        if not targets:
+            return [], f"No supported harness found ({', '.join(known_ids)}) on this machine."
+    else:
+        targets = [h for h in harnesses.HARNESSES if h.id == harness]
+    unsafe = harnesses.install_refusal(targets, scope)
+    if unsafe:
+        return [], f"Nothing was installed. {unsafe}"
+    return targets, None
+
+
 def _ask_assist_install(ctx: Context, harness: str = "all", scope: str = "local", confirm: bool = False):
-    # Same cheap checks as the tool body: nobody is asked about an argument
-    # that is already known to be wrong.
-    if scope not in ("local", "global") or (harness != "all" and harness not in [h.id for h in harnesses.HARNESSES]):
+    if _assist_install_plan(harness, scope)[1]:
         return _NO_CHANNEL
     return _resolve_ask(ctx, _assist_install_question(harness, scope), confirm=confirm, human_required=True)
 
@@ -1442,15 +1471,9 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     CLAUDE.md): `griot assist install --scope global` offers that only at an
     interactive prompt of the CLI, because that file is loaded into every
     project."""
-    if scope not in ("local", "global"):
-        return {"changed": False, "message": f"scope must be 'local' or 'global', got {scope!r}.", "results": []}
-    known_ids = [h.id for h in harnesses.HARNESSES]
-    if harness != "all" and harness not in known_ids:
-        return {
-            "changed": False,
-            "message": f"harness must be 'all' or one of {known_ids}, got {harness!r}.",
-            "results": [],
-        }
+    targets, impossible = _assist_install_plan(harness, scope)
+    if impossible:
+        return {"changed": False, "message": impossible, "results": []}
 
     ok, refusal = await _confirmed(
         ctx, _assist_install_question(harness, scope),
@@ -1459,15 +1482,10 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     if not ok:
         return {"changed": False, "message": refusal, "results": []}
 
-    if harness == "all":
-        targets = harnesses.detect_harnesses()
-        if not targets:
-            known = ", ".join(known_ids)
-            return {"changed": False, "message": f"No supported harness found ({known}) on this machine.", "results": []}
-    else:
-        targets = [h for h in harnesses.HARNESSES if h.id == harness]
-
-    raw_results = harnesses.install_many(targets, scope)
+    try:
+        raw_results = harnesses.install_many(targets, scope)
+    except harnesses.UnsafeDestination as e:  # it changed while the person was reading the question
+        return {"changed": False, "message": f"Nothing was installed. {e}", "results": []}
     results = [
         {
             "harness": r["harness"],

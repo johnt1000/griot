@@ -1,7 +1,9 @@
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -17,7 +19,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from fastembed import TextEmbedding
 from tqdm import tqdm
 
-from griot import logdb, redaction
+from griot import ConfigurationError, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -556,7 +558,19 @@ QDRANT_PATH = DATA_DIR / "qdrant_data"
 # which multiplexed several collections into a single path. Each collection
 # (one per embedding profile, see COLLECTION_NAME below) gets its own
 # subdirectory inside QDRANT_PATH.
+_COLLECTION_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+
 def _collection_path(collection: str) -> Path:
+    """Where a collection lives. `collection` is a NAME, and it is checked
+    here because this is where a name becomes a path: joined as it came, an
+    absolute path replaces the data directory and `..` walks out of it, and
+    the name can come from an agent (griot_index_status). Every reader and
+    writer of a collection goes through this function."""
+    if not isinstance(collection, str) or not _COLLECTION_NAME.fullmatch(collection):
+        raise ValueError(
+            f"Not a collection name: {printable(repr(collection))[:80]}. A collection is named after an "
+            f"embedding profile ({collection_name_for('<profile>')}); it is never a path.")
     return QDRANT_PATH / collection
 
 
@@ -696,7 +710,40 @@ CHAT_MODEL = os.getenv("GRIOT_CHAT_MODEL", "gemini-2.5-flash")
 # conservative estimate, so as to never UNDERestimate real spend against the
 # circuit breaker (the opposite would be dangerous). Adjust via env if you
 # know the exact contracted price.
-CHAT_PRICE_PER_1M_TOKENS = float(os.getenv("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50"))
+def _amount_env(name: str, default: str | None) -> float | None:
+    """An amount of money from the environment: a finite number, zero or
+    more, or None when the variable is not set and there is no default.
+    Every ceiling and every price is read through here, because each of the
+    other values quietly turns the circuit breaker off: `spend >= nan` is
+    False for every spend, an infinite ceiling is never reached, and a
+    negative price makes each paid call record as free."""
+    raw = os.getenv(name)
+    if raw is None:
+        raw = default
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value < 0:
+        raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). "
+                         f"It is set in the environment or in {ENV_PATH}.")
+    return value
+
+
+def _count_env(name: str, default: str) -> int:
+    """A whole number from the environment, reported like the amounts are:
+    one line that names the variable."""
+    raw = os.getenv(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). "
+                                 f"It is set in the environment or in {ENV_PATH}.") from None
+
+
+CHAT_PRICE_PER_1M_TOKENS = _amount_env("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50")
 
 
 def _optional_float_env(name: str) -> float | None:
@@ -706,8 +753,7 @@ def _optional_float_env(name: str) -> float | None:
     not including an unconfirmed embedding price). chat_completion() refuses
     to call a profile with price_per_1m_tokens=None, forcing the user to
     confirm before any real spend."""
-    value = os.getenv(name)
-    return float(value) if value is not None else None
+    return _amount_env(name, None)
 
 
 # Chat profiles (2026-08-13) — generalizes what used to be Gemini-only to
@@ -908,7 +954,7 @@ def _require_gemini_token() -> str:
 # (gitignored) and resets daily — covers both a single expensive run and
 # several small runs on the same day adding up to a lot.
 SPEND_STATE_PATH = DATA_DIR / ".spend_state.json"
-SPEND_CEILING_USD = float(os.getenv("GRIOT_SPEND_CEILING_USD", "3.0"))
+SPEND_CEILING_USD = _amount_env("GRIOT_SPEND_CEILING_USD", "3.0")
 
 # VELOCITY ceiling (spend in the last 5min), separate from the daily
 # ceiling. Our code is sequential by design (one batch, wait for the
@@ -918,13 +964,13 @@ SPEND_CEILING_USD = float(os.getenv("GRIOT_SPEND_CEILING_USD", "3.0"))
 # calls/min from a SINGLE process are incompatible with one call at a time
 # waiting for the previous response).
 SPEND_VELOCITY_WINDOW_SECONDS = 300
-SPEND_VELOCITY_CEILING_USD = float(os.getenv("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0"))
+SPEND_VELOCITY_CEILING_USD = _amount_env("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0")
 
 # Consecutive-failure detector — 5 batches in a row failing completely
 # isn't "bad luck", it's a sign that something is systemically broken
 # (external API down, invalid credential, etc.) — better to stop early and
 # loudly than to spend hours producing only empty batches.
-MAX_CONSECUTIVE_FAILED_BATCHES = int(os.getenv("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5"))
+MAX_CONSECUTIVE_FAILED_BATCHES = _count_env("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5")
 
 # Single-process lock — besides Qdrant's native lock (which only blocks
 # access to the same collection), this one fails fast with a clear message
@@ -1007,7 +1053,9 @@ if CONCURRENCY_MODE not in ("single", "multi"):
         f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. "
         f"Use 'multi' (default) or 'single'."
     )
-IDLE_RELEASE_SECONDS = float(os.getenv("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30"))
+# Finite and zero or more, like an amount: an idle time of `nan` is never
+# reached, and the index would be held for as long as the server runs.
+IDLE_RELEASE_SECONDS = _amount_env("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30")
 # [tuned after empirical validation with a real collision] local DISK
 # contention (another process with the WAL open), not network — a much
 # smaller budget than the 10-20s used for paid-API retries, but needs to
@@ -1161,7 +1209,10 @@ def check_spend_ceiling() -> None:
     record_spend)."""
     _ensure_spend_state_migrated()
     spend_today = logdb.read_spend_today(LOG_DIR, _today())
-    if spend_today >= SPEND_CEILING_USD:
+    # Written as "not below" on purpose, here and for the velocity: a total
+    # that is not a number compares False both ways, and must read as
+    # reached, never as under.
+    if not spend_today < SPEND_CEILING_USD:
         raise RuntimeError(
             f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
             f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
@@ -1170,7 +1221,7 @@ def check_spend_ceiling() -> None:
 
     now = time.time()
     velocity = logdb.read_spend_velocity(LOG_DIR, now - SPEND_VELOCITY_WINDOW_SECONDS)
-    if velocity >= SPEND_VELOCITY_CEILING_USD:
+    if not velocity < SPEND_VELOCITY_CEILING_USD:
         raise RuntimeError(
             f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
             f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
@@ -1197,7 +1248,18 @@ def record_spend(cost_usd: float) -> None:
     (logdb.write_spend), not here — see that function's docstring for why
     the previous read-modify-write over a JSON file silently lost most
     concurrent spend."""
-    if cost_usd <= 0:
+    if not (math.isfinite(cost_usd) and cost_usd >= 0):
+        # The same rule as for a price: finite, zero or more. Python reads
+        # NaN and Infinity from a JSON body, and nothing stops a provider
+        # from reporting a negative token count. There is no amount to add,
+        # and adding nothing would let the paid calls go on uncounted (a
+        # negative cost used to be dropped as if the call had been free):
+        # stop the run.
+        raise RuntimeError(
+            f"Local circuit breaker: the cost of a paid call came out as {cost_usd!r}, which is not an "
+            f"amount (the provider reported a token count that is not a number, or is negative). It was "
+            f"not added to today's total; stopping here rather than go on spending uncounted.")
+    if cost_usd == 0:
         return
     _ensure_spend_state_migrated()
     logdb.write_spend(LOG_DIR, _today(), cost_usd, time.time(), SPEND_VELOCITY_WINDOW_SECONDS)
@@ -2446,7 +2508,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         "pid": pid,
         "path": path,
         "last_indexed": last_indexed,
-        "spend_ceiling_exceeded": get_spend_today() >= SPEND_CEILING_USD,
+        "spend_ceiling_exceeded": not get_spend_today() < SPEND_CEILING_USD,
     }
 
 

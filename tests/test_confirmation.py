@@ -210,6 +210,9 @@ def _effects(monkeypatch):
     monkeypatch.setattr(mcp_server.golden_set, "add_case",
                         lambda **kw: calls.append("golden_set_add") or {"query": "q", "must_include": [{"repo": "r"}]})
     monkeypatch.setattr(mcp_server.harnesses, "install_many", lambda *a, **k: calls.append("assist_install") or [])
+    # The destinations belong to whoever runs the suite: not inspected here
+    # (tests/test_security_hardening.py does, in a directory of its own).
+    monkeypatch.setattr(mcp_server.harnesses, "install_refusal", lambda *a, **k: None)
     return calls
 
 
@@ -283,11 +286,25 @@ async def test_the_answer_parameter_never_reaches_the_agents_schema(name, args, 
 # --- resolvers skip the question when the call cannot succeed ------------------
 
 
-def test_assist_install_is_not_asked_about_an_unknown_harness_or_scope():
+def test_assist_install_is_not_asked_about_an_unknown_harness_or_scope(monkeypatch):
+    harnesses = mcp_server.harnesses
+    monkeypatch.setattr(harnesses, "detect_harnesses", lambda: harnesses.HARNESSES[:1])
+    monkeypatch.setattr(harnesses, "install_refusal", lambda *a, **k: None)
     ctx = _Ctx(elicitation=object())
     assert mcp_server._ask_assist_install(ctx, harness="nonsense", scope="local") is mcp_server._NO_CHANNEL
     assert mcp_server._ask_assist_install(ctx, harness="all", scope="nonsense") is mcp_server._NO_CHANNEL
     assert isinstance(mcp_server._ask_assist_install(ctx, harness="all", scope="local"), Elicit)
+
+
+def test_assist_install_is_not_asked_when_no_harness_is_there_or_a_destination_is_unsafe(monkeypatch):
+    harnesses = mcp_server.harnesses
+    ctx = _Ctx(elicitation=object())
+    monkeypatch.setattr(harnesses, "install_refusal", lambda *a, **k: None)
+    monkeypatch.setattr(harnesses, "detect_harnesses", lambda: [])
+    assert mcp_server._ask_assist_install(ctx, harness="all", scope="local") is mcp_server._NO_CHANNEL
+    monkeypatch.setattr(harnesses, "detect_harnesses", lambda: harnesses.HARNESSES[:1])
+    monkeypatch.setattr(harnesses, "install_refusal", lambda *a, **k: "x is a symbolic link")
+    assert mcp_server._ask_assist_install(ctx, harness="all", scope="local") is mcp_server._NO_CHANNEL
 
 
 def test_golden_set_add_is_not_asked_when_the_limit_is_invalid():
