@@ -16,6 +16,16 @@ between minor versions. Breaking changes are called out explicitly.
   `WouldBlock`, when to use `griot_index_repo` instead, and how to find
   which process holds the collection.
 
+### Fixed
+
+- **`GRIOT_MCP_CONCURRENCY_MODE=multi` now actually releases an idle
+  collection.** The idle check only ran on the server's next tool call,
+  which reopened the collection at once, so an idle `griot mcp` held it
+  forever and other sessions or a shell `griot index` died with
+  `WouldBlock`. The server now runs a reaper thread that releases the handle
+  after `GRIOT_MCP_IDLE_RELEASE_SECONDS` without a call, and never while a
+  tool is running.
+
 ## [0.1.0] — unreleased
 
 First public release.
