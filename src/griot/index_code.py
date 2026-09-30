@@ -1,6 +1,8 @@
 import argparse
 import hashlib
 import os
+import stat
+import subprocess
 import time
 from pathlib import Path
 
@@ -8,24 +10,138 @@ from griot import common
 
 SUPPORTED_EXTENSIONS = {
     ".py", ".md", ".js", ".ts", ".java", ".cs", ".php", ".cpp",
-    ".go", ".rb", ".rs", ".scala", ".html", ".css", ".sol", ".sh"
+    ".go", ".rb", ".rs", ".scala", ".html", ".css", ".sol", ".sh",
+    ".tsx", ".jsx", ".mjs", ".cjs", ".mdx", ".sql", ".yml", ".yaml", ".tf", ".toml",
 }
 IGNORE_DIRS = {
     "node_modules", "dist", "build", ".git", ".vscode", "__pycache__",
     ".venv", "venv", "vendor", ".next", "target", "coverage",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".turbo", ".cache",
 }
+# Generated files that carry a supported extension: hundreds of chunks of noise
+# each, and on a paid profile every one of them is embedded.
+IGNORE_FILES = {"pnpm-lock.yaml"}
+# A source file is far below this; what is above it is a dump, a bundle or a
+# data file. Skipped with a printed note rather than read whole into memory
+# and, on a paid profile, sent whole to the embedding API.
+MAX_FILE_BYTES = 1_000_000
 
 
-def discover_files(repo_path: Path) -> list[Path]:
-    """Walks the tree pruning IGNORE_DIRS before descending into them — rglob+match
-    would scan (and open) entire trees like node_modules before filtering."""
+def _tracked_files(repo_path: Path) -> list[Path] | None:
+    """What git tracks under repo_path, or None when it is not inside a git
+    work tree. `-z` keeps names with spaces, quotes or line breaks intact."""
+    try:
+        listing = common.run_git(repo_path, ["ls-files", "-z"], timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listing.returncode != 0:
+        return None
+    return [repo_path / name for name in listing.stdout.split("\0") if name]
+
+
+def _walked_files(repo_path: Path) -> list[Path]:
+    """Every file under repo_path, pruning IGNORE_DIRS before descending into
+    them: rglob+match would scan (and open) entire trees like node_modules
+    before filtering. os.walk does not descend into symlinked directories."""
     found = []
     for dirpath, dirnames, filenames in os.walk(repo_path):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
-        for filename in filenames:
-            if Path(filename).suffix in SUPPORTED_EXTENSIONS:
-                found.append(Path(dirpath) / filename)
+        found.extend(Path(dirpath) / filename for filename in filenames)
     return found
+
+
+def _has_git_marker(repo_path: Path) -> bool:
+    """A `.git` in repo_path or above it: the directory belongs to a work
+    tree, whether or not git can currently read it."""
+    resolved = repo_path.resolve()
+    return any((directory / ".git").exists() for directory in (resolved, *resolved.parents))
+
+
+def discover_files(repo_path: Path) -> list[Path]:
+    """The files `griot index code` reads, sorted.
+
+    In a git work tree: only what git tracks. A file the repository ignores
+    is ignored here too, and that is where local settings and notes with
+    secrets usually live; on a paid profile they would be sent to the
+    embedding API. Outside git the tree is walked.
+
+    In both cases, only regular files count. A symlinked file is never
+    followed: its target can be anywhere on the machine, and a repository
+    that ships `notes.md -> ~/.aws/credentials` would have it indexed.
+    The directory on the way to a file is checked as well: git lists a file
+    by name, and a directory that has since become a link would make that
+    name reach outside the repository.
+    Generated directories and files and anything over MAX_FILE_BYTES stay out."""
+    candidates = _tracked_files(repo_path)
+    if candidates is None:
+        if _has_git_marker(repo_path):
+            # Fail closed. Walking here would read exactly what the rule
+            # keeps out: a broken HEAD, a timeout or an ownership refusal
+            # must not turn "only tracked files" into "every file".
+            print(f"git could not list the files of {repo_path}, so nothing is read from it: walking it instead "
+                  f"would index files its .gitignore keeps out. `git -C {repo_path} status` shows what is wrong.")
+            return []
+        candidates = _walked_files(repo_path)
+    elif not candidates:
+        # Not an error, but silence here reads as "indexed nothing for no
+        # reason": a directory inside some other work tree (a home directory
+        # kept in git, say) lands here with everything untracked.
+        print(f"git tracks no files under {repo_path}, so nothing is read from it: "
+              f"in a git work tree only tracked files are indexed.")
+
+    root = repo_path.resolve()
+    inside = {}  # directory -> whether it really is inside the repository
+    found, too_large = [], []
+    for path in candidates:
+        if any(part in IGNORE_DIRS for part in path.relative_to(repo_path).parts[:-1]):
+            continue
+        if path.parent not in inside:
+            inside[path.parent] = _is_inside(path.parent, root)
+        if not inside[path.parent]:
+            continue
+        if path.suffix not in SUPPORTED_EXTENSIONS or path.name in IGNORE_FILES or ".min." in path.name.lower():
+            continue
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue  # tracked but deleted from disk, or gone since it was listed
+        if not stat.S_ISREG(info.st_mode):
+            continue  # a symlink (never followed), or a submodule's directory
+        if info.st_size > MAX_FILE_BYTES:
+            too_large.append(path)
+            continue
+        found.append(path)
+
+    if too_large:
+        shown = ", ".join(str(p.relative_to(repo_path)) for p in sorted(too_large)[:5])
+        more = f" and {len(too_large) - 5} more" if len(too_large) > 5 else ""
+        print(f"Skipped {len(too_large)} file(s) larger than {MAX_FILE_BYTES // 1_000_000} MB in {repo_path.name}: {shown}{more}")
+    return sorted(found)
+
+
+def _is_inside(directory: Path, root: Path) -> bool:
+    try:
+        return directory.resolve().is_relative_to(root)
+    except OSError:
+        return False
+
+
+def _read_source(path: Path, root: Path) -> str | None:
+    """The text of a discovered file, or None when it is no longer what
+    discovery saw. Listing and reading are two moments: the open itself
+    refuses a symlink (O_NOFOLLOW), and what was opened is checked again for
+    kind and size, so a file swapped in between is not read."""
+    if not _is_inside(path.parent, root):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "r", encoding="utf-8", errors="ignore") as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
+            return None
+        return f.read()
 
 
 def _repo_key_for_path(repo_path: Path) -> str:
@@ -54,10 +170,13 @@ def process_repository(repo_path: Path, repo_key: str | None = None) -> list[dic
         return []
 
     from tqdm import tqdm
+    root = repo_path.resolve()
     for file_path in tqdm(filtered_files, desc=f"Reading {repo_path.name}"):
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = _read_source(file_path, root)
+            if content is None:
+                tqdm.write(f"Skipped {file_path}: it changed after it was listed.")
+                continue
             if not content.strip():
                 continue
             rel_path = str(file_path.relative_to(repo_path))

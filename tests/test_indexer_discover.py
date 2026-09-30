@@ -16,8 +16,12 @@ def _make_tree(tmp_path):
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist" / "bundle.js").write_text("//bundle")
 
-    (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "config.py").write_text("# not real code")
+    # A `.git` directory somewhere below, not at the root: a `.git` at the
+    # root would make this a git work tree, which is listed by git and not
+    # walked (tests/test_discovery_rules.py covers that side).
+    nested = tmp_path / "third_party" / ".git"
+    nested.mkdir(parents=True)
+    (nested / "config.py").write_text("# not real code")
     return tmp_path
 
 
@@ -46,7 +50,7 @@ def test_discover_files_prunes_ignored_dirs_entirely(tmp_path):
     assert not any(set(f.split("/")) & index_code.IGNORE_DIRS for f in rel)
     assert "node_modules/pacote/index.js" not in rel
     assert "dist/bundle.js" not in rel
-    assert ".git/config.py" not in rel
+    assert "third_party/.git/config.py" not in rel
 
 
 def test_discover_files_empty_directory_returns_empty_list(tmp_path):
