@@ -17,6 +17,10 @@ between minor versions. Breaking changes are called out explicitly.
   `griot golden-set remove` and `griot auth remove` ask the same way and accept
   `--yes` for scripts. Anything that would be refused anyway (a bad path, an
   unknown profile, an index out of range) is reported before the question.
+- **Bare repositories are no longer read.** `griot index` on a bare clone
+  used to index its commits, tags and branches; it is now refused, because a
+  bare repository can sit inside another project's files with a git config of
+  its own and git cannot tell the two apart. Index a normal clone instead.
 - **MCP confirmations reach the person in Claude Code.** The state-changing
   tools ask through the SDK's resolver mechanism, which works on the protocol
   revision Claude Code negotiates; before, the question never arrived and the
@@ -29,6 +33,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **Indexing a repository no longer runs programs named in that repository's
+  git config.** `git log` obeys the repository's own config, and keys such as
+  `log.showSignature` with `gpg.program` make it run a program of the
+  repository's choosing; a repository received as an archive could therefore
+  run code on `griot index`. Every git call now goes through one helper that
+  overrides those keys, never fetches (a repository posing as a partial clone
+  chose the program that fetched a missing object), and runs git without
+  griot's credentials in the environment. A commit message in a legacy
+  encoding no longer stops the commits source.
 - The CLI command suggested in an MCP refusal is quoted for the shell and for
   the CLI's own parser, and is withheld when a value contains non-printable
   characters. Values chosen by the agent are shown escaped and truncated in the

@@ -4,7 +4,6 @@ platforms.py for details on each adapter and what each one supports)."""
 
 import argparse
 import hashlib
-import subprocess
 import time
 from pathlib import Path
 
@@ -25,10 +24,7 @@ def _repo_key_for_path(repo_path: Path) -> str:
 
 def _remote_url(repo_path: Path) -> str | None:
     try:
-        return subprocess.run(
-            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
-            capture_output=True, text=True, check=True, timeout=10,
-        ).stdout.strip()
+        return common.run_git(repo_path, ["remote", "get-url", "origin"], timeout=10).stdout.strip()
     except Exception:
         return None
 

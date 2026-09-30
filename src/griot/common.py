@@ -276,6 +276,62 @@ def _ensure_log_handler() -> None:
         _logger.addHandler(_handler)
 
 
+# A repository being indexed is untrusted input, and so is its git config:
+# several keys name a PROGRAM git runs during a read. With log.showSignature
+# set, `git log` runs gpg.program for every signed commit; core.fsmonitor and
+# hooks are the same kind. Command-line config outranks the repository's, so
+# each of those is overridden here rather than trusted. gpg.program itself is
+# overridden too, not just the switch: a `%G` format placeholder verifies
+# signatures whatever log.showSignature says. safe.bareRepository=explicit
+# refuses a bare repository that was not named on purpose: one can sit in a
+# project's tracked files and carry a config of its own.
+_GIT_NEUTRAL_CONFIG = (
+    "log.showSignature=false",
+    "gpg.program=false",
+    "gpg.ssh.program=false",
+    "gpg.x509.program=false",
+    "core.fsmonitor=false",
+    "core.hooksPath=/dev/null",
+    "core.pager=cat",
+    "safe.bareRepository=explicit",
+)
+
+# What git needs from the environment to find itself and the user's own
+# config. Everything else is dropped: the credentials griot loads into its
+# environment have no business in a child process, and inherited GIT_*
+# variables (GIT_DIR, when griot is started from a hook) would point git at a
+# different repository than the one asked for.
+_GIT_ENV_ALLOWED = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+                    "XDG_CONFIG_HOME", "SYSTEMROOT", "USERPROFILE")
+
+
+def run_git(repo_path, args: list[str], *, timeout: float, check: bool = True) -> subprocess.CompletedProcess:
+    """The only place the package runs git. Reads `repo_path` with the
+    repository's program-running config neutralized and without the user's
+    credentials in the environment (see the two constants above).
+
+    Output is decoded as UTF-8 with replacement: a commit written in a legacy
+    encoding must cost one odd character, not the whole source."""
+    argv = ["git", "--no-pager"]
+    for setting in _GIT_NEUTRAL_CONFIG:
+        argv += ["-c", setting]
+    argv += ["-C", str(repo_path), *args]
+    env = {name: os.environ[name] for name in _GIT_ENV_ALLOWED if name in os.environ}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    # Reading must never turn into fetching. A repository that claims to be
+    # a partial clone makes git fetch a missing object on demand, from a
+    # "remote" and over a transport the repository picks: an `ext::` URL is
+    # a command line, core.sshCommand is the program run for ssh. The first
+    # variable stops the fetch (git 2.44+). The second allows NO transport
+    # protocol at all and, unlike `-c protocol.allow=never`, cannot be
+    # outranked by a `protocol.<name>.allow=always` in the repository's config.
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    env["GIT_ALLOW_PROTOCOL"] = ""
+    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          check=check, timeout=timeout, env=env)
+
+
 def is_interactive() -> bool:
     """True when a person can be asked: both ends are a terminal."""
     return sys.stdin.isatty() and sys.stdout.isatty()

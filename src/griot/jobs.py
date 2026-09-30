@@ -235,11 +235,14 @@ def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str 
     # the local filesystem — collapsed into one generic message.
     is_valid_git_repo = False
     if repo_path.is_dir():
-        check = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(repo_path), capture_output=True, text=True,
-        )
-        is_valid_git_repo = check.returncode == 0
+        # The exit code alone is not enough: inside a bare repository (which
+        # can sit in a project's tracked files, with a config of its own)
+        # git answers "false" and still exits 0.
+        try:
+            check = common.run_git(repo_path, ["rev-parse", "--is-inside-work-tree"], timeout=10, check=False)
+            is_valid_git_repo = check.returncode == 0 and check.stdout.strip() == "true"
+        except (OSError, subprocess.TimeoutExpired):
+            is_valid_git_repo = False
     if not is_valid_git_repo:
         return f"'{path}' invalid: must exist, be a directory, and be a git repository."
     return None
