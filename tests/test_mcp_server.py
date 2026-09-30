@@ -515,7 +515,7 @@ async def test_profiles_delete_names_what_is_lost_before_doing_it(monkeypatch):
     assert result["changed"] is False
     assert "bge-small" in result["message"]
     assert "permanently" in result["message"].lower()
-    assert "griot profiles delete bge-small" in result["message"]
+    assert "griot profiles delete -- bge-small" in result["message"]
 
 
 @pytest.mark.anyio
@@ -535,7 +535,7 @@ async def test_profiles_delete_refuses_the_agent_passable_confirm(monkeypatch):
     assert deleted == []
     assert result["changed"] is False
     assert "confirm=true" not in result["message"]
-    assert "griot profiles delete bge-small" in result["message"]
+    assert "griot profiles delete -- bge-small" in result["message"]
 
 
 @pytest.mark.anyio

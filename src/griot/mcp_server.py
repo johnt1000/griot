@@ -61,6 +61,7 @@ import functools
 import inspect
 import json
 import os
+import shlex
 import threading
 import time
 from typing import Literal
@@ -247,6 +248,23 @@ class GoldenSetListOutput(TypedDict):
 class ReposListOutput(TypedDict):
     repos: list[RepoEntry]
     count: int
+
+
+def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = None) -> str:
+    """The `griot ...` command a person can paste into a shell.
+
+    `words` are fixed subcommands and flags. Everything the agent controls
+    goes in `positional` or `option`, because two parsers read this text.
+    The shell: every word is quoted, or a path or query could be split or
+    expanded into a command the person runs unknowingly. The CLI's own
+    argparse: positionals come after `--`, and an option's value is glued as
+    `--name=value`, or a value starting with `-` would be read as a flag."""
+    argv = ["griot", *words]
+    if option is not None:
+        argv.append(f"{option[0]}={option[1]}")
+    if positional:
+        argv += ["--", *(str(v) for v in positional)]
+    return shlex.join(argv)
 
 
 class _Confirmation(BaseModel):
@@ -775,7 +793,7 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None)
     elicitation, or the terminal."""
     ok, refusal = await _confirmed(ctx, f"Register {path!r} as indexable? "
                                         f"Anything under it could then be sent to the embedding API.",
-                                   confirm=confirm, cli_hint=f"griot repos add {path}",
+                                   confirm=confirm, cli_hint=_cli_command("repos", "add", positional=[path]),
                                    human_required=True)
     if not ok:
         return {"changed": False, "message": refusal}
@@ -798,7 +816,7 @@ async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = No
     on disk are untouched. Requires confirmation like every state change
     here."""
     ok, refusal = await _confirmed(ctx, f"Unregister {path!r}? (already-indexed data is kept)",
-                                   confirm=confirm, cli_hint=f"griot repos remove {path}")
+                                   confirm=confirm, cli_hint=_cli_command("repos", "remove", positional=[path]))
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -830,7 +848,7 @@ async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Contex
         ctx,
         f"PERMANENTLY delete profile {profile!r}? Its indexed vectors are lost and "
         f"re-creating them costs whatever that profile charges to embed.",
-        confirm=confirm, cli_hint=f"griot profiles delete {profile}",
+        confirm=confirm, cli_hint=_cli_command("profiles", "delete", positional=[profile]),
         human_required=True)
     if not ok:
         return {"changed": False, "message": refusal}
@@ -883,7 +901,7 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     intact: curating widens no security boundary and destroys no indexed
     data, so a deliberate second call is proportionate here."""
     ok, refusal = await _confirmed(ctx, f"Add {query!r} to the golden set?",
-                                   confirm=confirm, cli_hint=f"griot golden-set add {query!r}")
+                                   confirm=confirm, cli_hint=_cli_command("golden-set", "add", positional=[query]))
     if not ok:
         return {"changed": False, "message": refusal}
     # [review finding] Capped like griot_search's, and for a stronger reason:
@@ -916,7 +934,7 @@ async def griot_golden_set_remove(index: int, confirm: bool = False,
     case can be curated again — so the confirm= fallback applies, unlike
     griot_profiles_delete."""
     ok, refusal = await _confirmed(ctx, f"Remove golden-set case #{index}?",
-                                   confirm=confirm, cli_hint=f"griot golden-set remove {index}")
+                                   confirm=confirm, cli_hint=_cli_command("golden-set", "remove", positional=[index]))
     if not ok:
         return {"changed": False, "message": refusal}
     try:
@@ -1226,7 +1244,7 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
         ctx,
         f"Install griot's bundled skills/agents for {targets_desc} at {scope} scope? "
         f"This writes files that a future AI coding session in that location will load and follow automatically.",
-        confirm=confirm, cli_hint=f"griot assist install --scope {scope} --harness {harness}",
+        confirm=confirm, cli_hint=_cli_command("assist", "install", "--scope", scope, "--harness", harness),
         human_required=True)
     if not ok:
         return {"changed": False, "message": refusal, "results": []}
@@ -1312,7 +1330,7 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
             return {"started": False, "reason": blocked, "path": None, "pid": None, "sources": None}
         ok, refusal = await _confirmed(
             ctx, f"Index {path!r}? This calls the embedding API and costs money on a paid profile.",
-            confirm=confirm, cli_hint=f"griot index all --path {path}")
+            confirm=confirm, cli_hint=_cli_command("index", "all", option=("--path", path)))
         if not ok:
             return {"started": False, "reason": refusal, "path": None, "pid": None, "sources": None}
         return jobs.start_index_job(path, sources)
