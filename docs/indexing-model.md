@@ -73,16 +73,21 @@ the implementation does now), a commit (when it changed), a merge request
 (what was argued before it was accepted) and an issue (what problem started
 it).
 
-There is no filter parameter — the tool takes a query and a limit — so
-covering several kinds of source means varying the query and sorting the
-results yourself by `source_type`. The `/mcp__griot__history` prompt exists
-to drive exactly that.
+`griot_search` takes `source_types` (and `repos`) to narrow a search to
+some kinds of source: commits and pull requests when the question is why
+something changed, code when it is how something works. The
+`/mcp__griot__history` prompt drives a question across the kinds.
 
-`group_by_document=true` collapses a document's chunks to its best-scoring
-one, which makes a given number of results reach more distinct files,
-commits and PRs. It is off by default: repeated hits on one file are
-*different* chunks, not redundancy, so grouping trades depth for breadth
-rather than removing waste.
+What comes back is arranged for a reader. One document fills at most three
+results, so a long file does not take every slot, and a file or a commit
+that is indexed in more than one place (a copied file, a fork) comes back
+once, naming the other places it was found; two different commits with the
+same message stay two results. `group_by_document=true` goes further and keeps only the
+best-scoring chunk of each document, which makes a given number of results
+reach more distinct files, commits and PRs: repeated hits on one file are
+*different* chunks, not redundancy, so grouping trades depth for breadth.
+The quality check and the golden set do not get this arrangement: they
+measure retrieval itself, point by point.
 
 ## What is stored is not always what was read
 

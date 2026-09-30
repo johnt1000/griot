@@ -76,7 +76,7 @@ def test_log_query_uses_active_chat_profile_model_not_hardcoded_gemini(monkeypat
     """Real finding: log_query() used common.CHAT_MODEL (always Gemini) as
     the fallback for 'model' even when a different chat profile was active
     — the log would lie about which model actually answered."""
-    monkeypatch.setattr(common, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False: [])
     monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
     monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE_NAME", "groq")
     monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE", {"model": "llama-3.3-70b-versatile", "backend": "openai_compatible_chat"})
@@ -95,7 +95,7 @@ def test_log_query_omits_question_when_disabled(monkeypatch):
     question forever — questions about work repos are often sensitive.
     GRIOT_LOG_QUESTIONS=false omits the text."""
     monkeypatch.setenv("GRIOT_LOG_QUESTIONS", "false")
-    monkeypatch.setattr(common, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False: [])
     monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
 
     logged = {}
@@ -108,7 +108,7 @@ def test_log_query_omits_question_when_disabled(monkeypatch):
 
 def test_log_query_keeps_question_by_default(monkeypatch):
     monkeypatch.delenv("GRIOT_LOG_QUESTIONS", raising=False)
-    monkeypatch.setattr(common, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False: [])
     monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
 
     logged = {}
@@ -123,7 +123,7 @@ def test_log_query_includes_spend_today_usd(monkeypatch):
     runs.jsonl (indexing) — chat spend never showed up because ask.py never
     logged that field on the query, even though it's the SAME circuit
     breaker."""
-    monkeypatch.setattr(common, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False: [])
     monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
     monkeypatch.setattr(common, "get_spend_today", lambda: 0.0042)
 

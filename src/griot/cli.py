@@ -185,7 +185,7 @@ def _cmd_search(args) -> int:
     profile); synthesis with an LLM is `griot ask`."""
     from griot import ask, common  # lazy: only imports qdrant/fastembed here
 
-    results = common.search(args.query, limit=args.limit)
+    results = common.search(args.query, limit=args.limit, diverse=True)
     if not results:
         print("No results.")
         return 0
@@ -197,6 +197,9 @@ def _cmd_search(args) -> int:
             # one-line preview — the full result is ask/MCP's job
             first_line = content.splitlines()[0]
             print(f"        {common.printable(first_line[:200])}")
+        also_in = getattr(r, "also_in", None)
+        if also_in:
+            print(f"        same text in: {', '.join(common.shown(label) for label in also_in)}")
     return 0
 
 

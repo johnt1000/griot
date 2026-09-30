@@ -44,16 +44,16 @@ document's matching chunks down to its single best-scoring chunk.
 
 - **Off (default)** favors **depth**: repeated hits from the same file,
   commit, or PR are usually *not* redundant — they're different chunks of
-  the same document each carrying different, real information. This is
-  what you want when you expect the answer to live in one or two
-  documents and want as much of their content as fits in `limit` results.
+  the same document each carrying different, real information. One document
+  fills at most three results, so a long file cannot take every slot; for
+  all of it, open the file.
 - **On** favors **breadth**: the same `limit` reaches more distinct files,
   commits, and PRs, at the cost of only seeing each one's best chunk. Use
   this when you're not sure which document has the answer and want to
   survey more of them before drilling in.
 
 The CLI's `griot search` has no flag for this — it always searches
-ungrouped. `group_by_document` is MCP/programmatic-only.
+ungrouped (with the same three-per-document ceiling). `group_by_document` is MCP/programmatic-only.
 
 ## Narrowing a search: `repos` and `source_types`
 
@@ -87,11 +87,19 @@ on which kind of source responds:
 - **merge_request** — what was argued *before* the change was accepted.
 - **issue** — what problem *started* the change in the first place.
 
-**There is no filter parameter** on `griot_search` — it takes a query and a
-limit, nothing else. Covering several kinds of source for one question
-means varying the query wording and then sorting/reading the results by
-`source_type` yourself; griot doesn't do that for you. (`griot search`
-prints a labeled excerpt per hit, e.g. `commit a1b2c3d4 — my-service` or
+To get only some kinds, pass `source_types` (previous section). Each result
+also carries `metadata`, what was stored with the source: `file_path` and
+`chunk_index` for code; the whole `commit_hash`, `author` and `date` for a
+commit; the tag, branch, pull request or issue identifier for the rest,
+with a date (for a branch, the date of its last commit). That is what to
+act on: open that file, show that commit, say when. A file or a commit that
+is indexed in more than one place (a copied file, a fork) comes back once,
+with the other places found among the best matches in `also_in`; two
+different commits with the same message stay two results. `limit` is a
+ceiling: a search whose best matches are all chunks of two long files
+returns six results, not eight.
+
+(`griot search` prints a labeled excerpt per hit, e.g. `commit a1b2c3d4 — my-service` or
 `MR !245 (merged) — my-api`, so the source kind is visible at a glance even
 from the CLI.)
 

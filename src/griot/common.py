@@ -2547,6 +2547,95 @@ def document_key(payload: dict) -> tuple:
     return (payload.get("repo"), source_type, *identifiers)
 
 
+def source_label(meta: dict) -> str:
+    """How a stored point is named to a person or an agent. The parts come
+    from the repository (a path, a branch, a tag), and a name can hold a
+    credential-shaped value just as a file can, so the label goes through the
+    same replacement as the text. The stored fields themselves stay as they
+    are: ids are built from them."""
+    return redaction.redact(_label(meta))[0]
+
+
+def _label(meta: dict) -> str:
+    source_type = meta.get("source_type", "code")
+    repo = meta.get("repo", "?")
+    if source_type == "commit":
+        return f"commit {meta.get('commit_hash', '?')[:8]} — {repo}"
+    if source_type == "tag":
+        return f"tag {meta.get('tag_name', '?')} — {repo}"
+    if source_type == "branch":
+        return f"branch {meta.get('branch_name', '?')} — {repo}"
+    if source_type == "merge_request":
+        return f"MR !{meta.get('mr_iid', '?')} ({meta.get('state', '?')}) — {repo}"
+    if source_type == "release":
+        return f"release {meta.get('tag_name', '?')} — {repo}"
+    if source_type == "issue":
+        return f"issue #{meta.get('issue_iid', '?')} ({meta.get('state', '?')}) — {repo}"
+    return f"{repo}/{meta.get('file_path', '?')}"
+
+
+# What a reader of results gets at most from ONE document when the search is
+# not grouped. Unbounded, a long file took every slot: in real sessions the
+# eight results of a search were often four documents, and the agent asked
+# again to see what else there was. Three still lets one document answer in
+# some depth (4,500 characters of it); the rest is a file the agent can open.
+SEARCH_MAX_CHUNKS_PER_DOCUMENT = 3
+
+
+class SearchHit:
+    """One result of a diverse search: what a stored point offers a reader
+    (`id`, `score`, `payload`), plus `also_in`, the labels of the other
+    places where the same thing was found among the best matches."""
+
+    __slots__ = ("id", "score", "payload", "also_in")
+
+    def __init__(self, hit):
+        self.id, self.score, self.payload = hit.id, hit.score, hit.payload or {}
+        self.also_in: list[str] = []
+
+
+def _diversified(hits: list, limit: int, per_document: int) -> list:
+    """`hits` (best first) as a reader should get them: at most
+    `per_document` from one document, and the same thing indexed in more
+    than one place once, the best-placed copy naming the others.
+
+    "The same thing" is the same text AND the same kind of thing. For code
+    that is any file with that text (a copied file, a vendored directory).
+    For the rest the identifier must match too: a commit stores its message
+    and not its hash, so two commits that both say "fix typo" have the same
+    text and are two different steps of a history; the same commit hash in
+    two repositories (a fork, a mirror) is one. Compared by the text itself,
+    not by `content_hash`: the hash covers what was embedded, which may
+    include more than the text.
+
+    Up to `limit` results: the store was asked for a multiple of `limit`,
+    and when that whole window is chunks of a few long documents there are
+    fewer slots to give. For the same reason `also_in` names the copies
+    found among the best matches, not every copy in the index."""
+    kept, taken, by_text = [], {}, {}
+    for hit in hits:
+        payload = hit.payload or {}
+        text = payload.get("content") or ""
+        kind = payload.get("source_type", "code")
+        same_thing = (text, kind) if kind == "code" else (text, *document_key(payload)[1:])
+        twin = by_text.get(same_thing) if text.strip() else None
+        if twin is not None:
+            label = source_label(payload)
+            if label != source_label(twin.payload) and label not in twin.also_in:
+                twin.also_in.append(label)
+            continue
+        if len(kept) >= limit:
+            continue  # still reading on: a copy of something kept may come later
+        key = document_key(payload)
+        if taken.get(key, 0) >= per_document:
+            continue
+        taken[key] = taken.get(key, 0) + 1
+        kept.append(SearchHit(hit))
+        if text.strip():
+            by_text[same_thing] = kept[-1]
+    return kept
+
+
 # How many points to ask the store for, per document requested, when
 # grouping. The vector search runs in-process and the query embedding (the
 # only paid part) happens once either way — measured at 32 points being no
@@ -2625,7 +2714,8 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
 
 
 def search(query: str, limit: int = 5, group_by_document: bool = False, *,
-           repos: list[str] | None = None, source_types: list[str] | None = None) -> list:
+           repos: list[str] | None = None, source_types: list[str] | None = None,
+           diverse: bool = False) -> list:
     """Local search over Qdrant Edge — embeds the query with the active
     profile and queries the embedded index. Returns a list of ScoredPoint
     (.payload, .score) — shard.query() already returns the list directly
@@ -2645,7 +2735,13 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     repos / source_types narrow the search to those repositories (the
     `repo` of a point: its directory name) and those kinds of source
     (SOURCE_TYPES); see _search_filter for what is an error and what is an
-    empty result."""
+    empty result.
+
+    diverse is for whoever READS the results (an agent, a person, the chat
+    model): see _diversified. It returns SearchHit objects, up to `limit` of
+    them. Off by default
+    because the quality check and the golden set measure retrieval itself
+    and need every point, in the store's order."""
     repos, source_types = _checked_filters(repos, source_types)
     client = get_client()
     # Before the query is embedded: on a paid profile that call costs money,
@@ -2660,11 +2756,13 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
         raise RuntimeError(
             f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
             f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
-    fetch = limit * _GROUPING_OVERFETCH if group_by_document else limit
+    fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
     hits = client.query(
         qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True,
                         filter=only)
     )
+    if diverse:
+        return _diversified(hits, limit, 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT)
     if not group_by_document:
         return hits
 
