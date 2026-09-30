@@ -8,7 +8,13 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`griot-operations` skill** in the `griot assist install` bundle — a
+  runbook for indexing from inside an agent session: when the attached MCP
+  server's own open collection makes a shell `griot index` fail with
+  `WouldBlock`, when to use `griot_index_repo` instead, and how to find
+  which process holds the collection.
 
 ## [0.1.0] — unreleased
 

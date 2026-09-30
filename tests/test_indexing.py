@@ -256,10 +256,9 @@ def test_release_then_reopen_allows_a_second_process_style_open():
 
 # --- concurrency mode (user decision, 2026-08-20) ----------------------------
 # 'single' (default): behaves exactly as before, no change at all. 'multi'
-# (GRIOT_MCP_CONCURRENCY_MODE=multi): releases the handle after
-# IDLE_RELEASE_SECONDS of no use and retries-with-backoff when reopening — so
-# a genuine second griot mcp session on the same profile doesn't collide
-# permanently.
+# (GRIOT_MCP_CONCURRENCY_MODE=multi): drops the handle after
+# IDLE_RELEASE_SECONDS of no use (checked on the next get_client() call, not
+# on a timer) and retries-with-backoff when reopening.
 
 
 def test_default_concurrency_mode_is_single():
