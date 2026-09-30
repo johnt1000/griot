@@ -348,10 +348,10 @@ def _check_env_file_permissions(env_path: Path) -> None:
             log_and_print(f"Warning: could not fix the permission of {env_path}: {e}", level="warning")
 
 
-# griot is independent of litellm/ — it never points at that .env. If a
-# <config_dir>/.env exists, loads from there;
-# otherwise, the variables (GEMINI_TOKEN, GITLAB_PERSONAL_ACCESS_TOKEN)
-# already come from the shell (~/.bashrc / ~/.zshrc).
+# griot reads only its own <config_dir>/.env, never another project's. If it
+# exists, loads from there; otherwise, the variables (GEMINI_TOKEN,
+# GITLAB_PERSONAL_ACCESS_TOKEN) already come from the shell (~/.bashrc /
+# ~/.zshrc).
 _check_env_file_permissions(ENV_PATH)
 load_dotenv(dotenv_path=ENV_PATH)
 

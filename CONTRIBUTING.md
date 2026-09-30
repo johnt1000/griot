@@ -23,6 +23,15 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   code.
 - **English everywhere** — code, comments, docstrings, test names, and every
   string a user sees.
+- **Never commit a secret, or anything that belongs to your own machine.**
+  That covers API keys and tokens, `.env` files, anything copied from
+  `~/.config/griot` or `~/.local/share/griot`, and absolute paths under your
+  home directory: tests and docs use placeholders such as `/Users/you/code`.
+  CI scans the full history with [gitleaks](https://github.com/gitleaks/gitleaks)
+  using `.gitleaks.toml`; before you push, run `gitleaks dir --config
+  .gitleaks.toml .` on your working tree and `gitleaks git --config
+  .gitleaks.toml .` on the history, and you will see what it will see. A commit's author name and email
+  are public once the repository is, so check `git config user.email` too.
 - **No new runtime dependency without discussing it first.** griot installs
   with `pip` and runs with no services; each dependency is a constraint on
   that. Optional extras are the escape hatch.
