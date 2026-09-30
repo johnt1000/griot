@@ -88,6 +88,12 @@ mcp = MCPServer("griot")
 # agent's context with low-relevance snippets for no good reason.
 SEARCH_LIMIT_MAX = 50
 
+# Default for griot_search. Real agents override the old default of 5 on
+# about nine calls in ten and ask for 6 to 8 (110 logged searches, 2026-09), so
+# the default now starts where they end up. The CLI keeps 5: a person reads its
+# output in a terminal, and nothing measured says they want more.
+SEARCH_LIMIT_DEFAULT = 8
+
 # Default SMALLER than the CLI's (quality_check.SELF_CHECK_SAMPLE_SIZE == 30,
 # the design notes) — specifically limits cost for the
 # GRIOT_EMBED_PROFILE=gemini case, where each self-check sample is a paid
@@ -587,7 +593,7 @@ class QualityCheckOutput(TypedDict):
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
-def griot_search(query: str, limit: int = 5, group_by_document: bool = False) -> SearchOutput:
+def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_document: bool = False) -> SearchOutput:
     """Pure vector search over indexed code/commits/branches/tags/MRs/
     releases/issues from the working repos. Returns RAW chunks with
     metadata, no synthesis — synthesis is the calling agent's job. It's the
