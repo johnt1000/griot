@@ -475,7 +475,8 @@ async def test_profiles_delete_names_what_is_lost_before_doing_it(monkeypatch):
 
     assert result["changed"] is False
     assert "bge-small" in result["message"]
-    assert "permanently" in result["message"].lower()
+    assert "cannot be undone" in result["message"].lower()
+    assert "vectors" in result["message"].lower()
     assert "griot profiles delete -- bge-small" in result["message"]
 
 

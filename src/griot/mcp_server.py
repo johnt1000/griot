@@ -257,7 +257,25 @@ class ReposListOutput(TypedDict):
     count: int
 
 
-def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = None) -> str:
+def _has_control_chars(value) -> bool:
+    """True for anything a terminal does not show as itself. The rule is "not
+    printable", not a list of code points: U+2028, U+2029 and U+0085 break a
+    line without being below 32, bidi controls reorder what is displayed, and
+    zero-width characters hide inside it."""
+    return not str(value).isprintable()
+
+
+def _shown(value, limit: int = 80) -> str:
+    """A value the agent chose, as it may appear inside a question a person
+    reads. `repr` escapes line breaks, quotes, control and bidi characters, so
+    the value cannot end the sentence, start a line of its own or hide the
+    consequence stated after it; the length cap keeps the true part of the
+    question on screen however long the value is."""
+    shown = repr(str(value))
+    return shown if len(shown) <= limit else shown[:limit] + "...'"
+
+
+def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = None) -> str | None:
     """The `griot ...` command a person can paste into a shell.
 
     `words` are fixed subcommands and flags. Everything the agent controls
@@ -266,6 +284,12 @@ def _cli_command(*words: str, positional=(), option: tuple[str, str] | None = No
     expanded into a command the person runs unknowingly. The CLI's own
     argparse: positionals come after `--`, and an option's value is glued as
     `--name=value`, or a value starting with `-` would be read as a flag."""
+    # A line break inside a quoted argument is still a line break in the
+    # message, and a person copies the command line by line. No command beats
+    # one that pastes as something else, so there is none (see _confirmed).
+    values = [*positional, *(option[1:] if option else ())]
+    if any(_has_control_chars(v) for v in values):
+        return None
     argv = ["griot", *words]
     if option is not None:
         argv.append(f"{option[0]}={option[1]}")
@@ -315,8 +339,8 @@ def _resolve_ask(ctx, question: str, *, confirm: bool, human_required: bool):
     return Elicit(question, _Ask)
 
 
-async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str,
-                     human_required: bool = False,
+async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
+                     human_required: bool = False, cli_note: str | None = None,
                      answer=None) -> tuple[bool, str | None]:
     """Gate for any operation that changes state or spends money.
 
@@ -363,19 +387,29 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str,
     if confirm and not human_required:
         return True, None
 
+    # The command goes on its own line after a fixed marker, never inside the
+    # question's line, so nothing an agent puts in a path or a query can move
+    # or imitate it. No command at all when the value could not be quoted.
+    if cli_hint is None:
+        run = ("Ask the user to do it from a terminal by hand: a value contains control characters, "
+               "so there is no command to paste.")
+    else:
+        run = f"ask the user to run:\n{cli_hint}" + (f"\n{cli_note}" if cli_note else "")
     if human_required:
+        if cli_hint is not None:
+            run = run[0].upper() + run[1:]
         return False, (
             f"{question}\n"
-            f"This one needs a person, and no confirmation reached you, so nothing was "
-            f"changed. There is deliberately no argument that authorizes it — run it "
-            f"yourself: {cli_hint}"
+            f"Nothing was changed: this needs a person, and no confirmation reached the user. "
+            f"No argument authorizes it, on purpose. {run}"
         )
 
+    if cli_hint is None:
+        run = run[0].lower() + run[1:]
     return False, (
         f"{question}\n"
-        f"This client cannot ask you to confirm, so nothing was changed. "
-        f"Call this tool again with confirm=true to proceed, "
-        f"or run it yourself: {cli_hint}"
+        f"Nothing was changed: this client cannot ask the user to confirm. "
+        f"To proceed, call this tool again with confirm=true, or {run}"
     )
 
 
@@ -809,8 +843,8 @@ def griot_profiles_list() -> ProfilesListOutput:
 
 
 def _repos_add_question(path: str) -> str:
-    return (f"Register {path!r} as indexable? "
-            f"Anything under it could then be sent to the embedding API.")
+    return (f"Register {_shown(path)} as an indexable repo. Anything under it can then be sent to the "
+            f"embedding API. You can undo this by removing the repo from the list.")
 
 
 def _ask_repos_add(ctx: Context, path: str, confirm: bool = False):
@@ -857,7 +891,8 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
 
 
 def _repos_remove_question(path: str) -> str:
-    return f"Unregister {path!r}? (already-indexed data is kept)"
+    return (f"Remove {_shown(path)} from the indexed repos. Data already indexed is kept. "
+            f"You can undo this by adding the repo again.")
 
 
 def _ask_repos_remove(ctx: Context, path: str, confirm: bool = False):
@@ -887,8 +922,8 @@ async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = No
 
 
 def _profiles_delete_question(profile: str) -> str:
-    return (f"PERMANENTLY delete profile {profile!r}? Its indexed vectors are lost and "
-            f"re-creating them costs whatever that profile charges to embed.")
+    return (f"Delete profile {_shown(profile)} and its indexed vectors. This cannot be undone, and "
+            f"rebuilding them costs whatever that profile charges to embed.")
 
 
 def _ask_profiles_delete(ctx: Context, profile: str, confirm: bool = False):
@@ -957,8 +992,15 @@ def griot_golden_set_list() -> GoldenSetListOutput:
     return {"note": GOLDEN_SET_NOTE, "cases": cases, "count": len(cases)}
 
 
+# The CLI command is interactive: it runs a real search and asks which results
+# must come back, so it cannot reuse the ones the agent selected. Saying so
+# keeps the hint from passing for the same operation.
+_GOLDEN_SET_ADD_CLI_NOTE = ("(It is interactive: it runs a search and asks which results must come "
+                            "back, so it will not reuse the ones you selected.)")
+
+
 def _golden_set_add_question(query: str) -> str:
-    return f"Add {query!r} to the golden set?"
+    return f"Add a test case for {_shown(query)} to the golden set. You can undo this by removing the case."
 
 
 def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, confirm: bool = False):
@@ -994,7 +1036,7 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
                            f"nothing reports every expected result as missing, forever."}
     ok, refusal = await _confirmed(ctx, _golden_set_add_question(query),
                                    confirm=confirm, cli_hint=_cli_command("golden-set", "add", positional=[query]),
-                                   answer=answer)
+                                   cli_note=_GOLDEN_SET_ADD_CLI_NOTE, answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     limit = min(limit, SEARCH_LIMIT_MAX)
@@ -1009,7 +1051,8 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
 
 
 def _golden_set_remove_question(index: int) -> str:
-    return f"Remove golden-set case #{index}?"
+    return (f"Remove golden-set case #{index}. The indexed data is not touched, "
+            f"and the case can be added again.")
 
 
 def _ask_golden_set_remove(ctx: Context, index: int, confirm: bool = False):
@@ -1298,8 +1341,9 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) ->
 
 def _assist_install_question(harness: str, scope: str) -> str:
     targets_desc = "every detected harness" if harness == "all" else harness
-    return (f"Install griot's bundled skills/agents for {targets_desc} at {scope} scope? "
-            f"This writes files that a future AI coding session in that location will load and follow automatically.")
+    return (f"Install griot's skills and agents for {targets_desc} at {scope} scope. Files with the same "
+            f"names are overwritten, edits included, and a future coding session there will load and follow "
+            f"them. Deleting them removes them.")
 
 
 def _ask_assist_install(ctx: Context, harness: str = "all", scope: str = "local", confirm: bool = False):
@@ -1391,7 +1435,8 @@ class IndexRepoOutput(TypedDict):
 
 
 def _index_repo_question(path: str) -> str:
-    return f"Index {path!r}? This calls the embedding API and costs money on a paid profile."
+    return (f"Index {_shown(path)}. This calls the embedding API and costs money on a paid profile; "
+            f"the spend cannot be undone.")
 
 
 def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
