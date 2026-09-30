@@ -134,6 +134,7 @@ def main(argv=None):
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")
     parser.add_argument("--dry-run", action="store_true", help="Only counts how many chunks would need to be (re)embedded, without spending anything on embedding (still queries the platform's API to know what exists).")
+    parser.add_argument("--prune", action="store_true", help="Accepted so `griot index all --prune` can forward it; points from the code platform are never removed automatically, because a failed or partial API listing would look the same as deleted items.")
     args = parser.parse_args(argv)
 
     start_time = time.time()

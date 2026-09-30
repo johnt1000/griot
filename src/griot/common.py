@@ -1972,6 +1972,196 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         release_lock()
 
 
+def _registration(repo_path) -> tuple[str | None, str | None]:
+    """(name, None) when repo_path is registered under a name that belongs to
+    it alone, otherwise (None, why). The name is the registered entry's own
+    directory name, which is what the indexers write as `payload.repo` and use
+    as the id key; two entries are the same repository when they resolve to
+    the same directory, so one registered through a symlink still counts."""
+    try:
+        entries = [Path(p) for p in load_repos()]
+    except (OSError, ValueError):
+        return None, "repos.json could not be read"
+    resolved = Path(repo_path).resolve()
+    mine = [entry for entry in entries if entry.resolve() == resolved]
+    if not mine:
+        return None, "it is not registered in repos.json"
+    if len(mine) > 1:
+        # By a symlink and by its real path, or the same line twice: each
+        # entry indexes under its own name, so no single name stands for it.
+        return None, "that directory is registered more than once"
+    name = mine[0].name
+    if len([entry for entry in entries if entry.name == name]) != 1:
+        return None, f"more than one registered repository is named '{name}'"
+    return name, None
+
+
+def registered_repo_name(repo_path: Path) -> str | None:
+    """The name a repository's points carry and its ids are keyed on, but
+    only when that name leads back to exactly this directory through
+    repos.json. None for a path that is not registered and for a name two
+    registered repositories share: nothing keyed on the name may act on them."""
+    return _registration(repo_path)[0]
+
+
+_PRUNE_PAGE = 1000
+# Above this many points AND this fraction of what a repository has for a
+# source, stale points are not removed unless the run was told to (--prune).
+# Most of a repository going stale at once is far more often a wrong branch
+# checked out or a listing gone wrong than code that really left; a small
+# repository losing two of three files is ordinary, hence the floor.
+_PRUNE_GUARD_MIN_POINTS = 100
+_PRUNE_GUARD_FRACTION = 0.5
+# The payload fields each source's id is built from (see the indexers).
+_PRUNE_ID_FIELDS = {
+    "code": ["file_path", "chunk_index"],
+    "commit": ["commit_hash", "chunk_index"],
+    "tag": ["tag_name"],
+    "branch": ["branch_name"],
+}
+
+
+def _ids_a_point_could_have(source_type: str, key: str, payload: dict) -> list[str]:
+    """The natural ids a point with this payload would have if it had been
+    written under `key`. Mirrors the id formats of the four local indexers
+    (tests/test_orphans.py holds the two together). A commit has had three
+    shapes over time: one point per commit, chunked with an index, and an
+    early one that suffixed `:0` to single points."""
+    if source_type == "code":
+        if payload.get("file_path") is None or payload.get("chunk_index") is None:
+            return []
+        return [f"{key}:code:{payload['file_path']}:{payload['chunk_index']}"]
+    if source_type == "commit":
+        if not payload.get("commit_hash"):
+            return []
+        base = f"{key}:commit:{payload['commit_hash']}"
+        return [base, *{f"{base}:{i}" for i in (payload.get("chunk_index"), 0) if i is not None}]
+    field = {"tag": "tag_name", "branch": "branch_name"}[source_type]
+    return [f"{key}:{source_type}:{payload[field]}"] if payload.get(field) else []
+
+
+def _point_ids_written_under(client, repo: str, source_type: str, key: str) -> tuple[list, int]:
+    """(ids, foreign): the points of `repo` and `source_type` that were
+    written under the id key `key`, and how many were not.
+
+    `payload.repo` is a directory name. A --path run of ANOTHER directory
+    with the same name writes that name too, under a different key, so the
+    name alone does not say whose a point is. A point belongs to `key` when
+    its id is the one its own payload produces under that key; anything else
+    (another key, or a point missing the fields its id is built from) is
+    counted as foreign and never touched."""
+    scope = qe.Filter(must=[
+        qe.FieldCondition(key="repo", match=qe.MatchValue(value=repo)),
+        qe.FieldCondition(key="source_type", match=qe.MatchValue(value=source_type)),
+    ])
+    ids, foreign, offset = [], 0, None
+    while True:
+        points, offset = client.scroll(qe.ScrollRequest(
+            limit=_PRUNE_PAGE, offset=offset, filter=scope,
+            with_payload=_PRUNE_ID_FIELDS[source_type], with_vector=False))
+        for point in points:
+            candidates = _ids_a_point_could_have(source_type, key, point.payload or {})
+            if str(point.id) in {stable_id(candidate) for candidate in candidates}:
+                ids.append(point.id)
+            else:
+                foreign += 1
+        if offset is None:
+            return ids, foreign
+
+
+def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, used_path: bool = False,
+                  incomplete=(), failed: int = 0, dry_run: bool = False, force: bool = False) -> int:
+    """Removes the points of `source_type` that this run did not produce, for
+    each repository in `repo_paths`. Returns how many were removed (or, with
+    dry_run, would be).
+
+    Indexing only ever added or replaced, so a deleted file, a file that
+    shrank or became ignored, a deleted branch, all stayed searchable for
+    good. This asks the store itself what it holds for the repository and
+    compares that with the ids of `documents`: no second record of what was
+    indexed is kept anywhere.
+
+    It is the one destructive step of indexing, and re-creating a point
+    costs an embedding, so every doubt resolves to "remove nothing":
+    - `used_path`: a --path run is not a registered repository's run.
+    - a repository that is not registered, or whose name two registered
+      repositories share: the name does not identify its points.
+    - a point that was not written under this repository's id key (see
+      _point_ids_written_under): it is another directory's.
+    - no documents for the repository: that is what a failed listing looks
+      like, far more often than a repository emptied on purpose.
+    - `incomplete`: names of repositories a file of which could not be read.
+    - `failed`: documents of this run that were not written.
+    - more than half of the repository's points (above a floor) stale at
+      once, unless `force` (see _PRUNE_GUARD_*).
+    - the index lock is taken: the documents are already written, so this
+      says so and leaves the removal to the next run.
+
+    The lock is taken again here, after index_documents() released it. A run
+    that slips in between can have a point it just wrote removed by this one;
+    the next run puts it back. The window is milliseconds and the cost one
+    embedding, which is why the two are not fused into one critical section."""
+    if used_path:
+        return 0
+    produced: dict[str, set[str]] = {}
+    for doc in documents:
+        produced.setdefault(doc["metadata"]["repo"], set()).add(stable_id(doc["id"]))
+    names = []
+    for path in repo_paths:
+        if not produced.get(Path(path).name):
+            continue
+        name, why_not = _registration(path)
+        if name is None:
+            print(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.")
+        elif produced.get(name) and name not in incomplete and name not in names:
+            names.append(name)
+    if not names:
+        return 0
+    if failed:
+        print(f"Stale points were not removed: {failed} document(s) of this run failed, "
+              f"so what the index holds cannot be compared with what was read.")
+        return 0
+
+    total = 0
+    if not dry_run:
+        try:
+            acquire_lock()
+        except RuntimeError as e:
+            print(f"Stale points were not removed: {e} The next run removes them.")
+            return 0
+    try:
+        client = get_client()
+        for name in names:
+            existing, foreign = _point_ids_written_under(client, name, source_type, name)
+            if foreign:
+                print(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
+                      f"directory (--path) and are left alone.")
+            stale = [point_id for point_id in existing if str(point_id) not in produced[name]]
+            if not stale:
+                continue
+            if (not force and len(stale) > _PRUNE_GUARD_MIN_POINTS
+                    and len(stale) > len(existing) * _PRUNE_GUARD_FRACTION):
+                outcome = "they would not be removed" if dry_run else "nothing was removed"
+                print(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
+                      f"by this run. That is more than half, so {outcome}: it usually means another branch is "
+                      f"checked out or files went missing. If it is right, run again with --prune.")
+                continue
+            if dry_run:
+                print(f"[dry-run] {len(stale)} stale point(s) of {name} ({source_type}) would be removed: "
+                      f"their source is no longer there.")
+            else:
+                for i in range(0, len(stale), _PRUNE_PAGE):
+                    client.update(qe.UpdateOperation.delete_points(stale[i:i + _PRUNE_PAGE]))
+                client.flush()
+                print(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
+            total += len(stale)
+    finally:
+        if not dry_run:
+            _secure_collection_dir(COLLECTION_NAME)
+            release_lock()
+    return total
+
+
 def index_lock_status() -> dict:
     """[shared config path] Just the lock-derived fields of get_index_status()
     (running/pid/path) — zero shard I/O. Extracted for callers that only

@@ -170,7 +170,7 @@ def _repo_key_for_path(repo_path: Path) -> str:
     return f"{repo_path.name}-{digest}"
 
 
-def process_repository(repo_path: Path, repo_key: str | None = None) -> list[dict]:
+def process_repository(repo_path: Path, repo_key: str | None = None, problems: list | None = None) -> list[dict]:
     key = repo_key or repo_path.name
     print(f"\nProcessing repository: {repo_path.name}")
     documents = []
@@ -187,6 +187,8 @@ def process_repository(repo_path: Path, repo_key: str | None = None) -> list[dic
             content = _read_source(file_path, root)
             if content is None:
                 tqdm.write(f"Skipped {file_path}: it changed after it was listed.")
+                if problems is not None:
+                    problems.append(str(file_path))
                 continue
             if not content.strip():
                 continue
@@ -205,6 +207,8 @@ def process_repository(repo_path: Path, repo_key: str | None = None) -> list[dic
                 })
         except Exception as e:
             tqdm.write(f"Error reading {file_path}: {e}")
+            if problems is not None:
+                problems.append(str(file_path))
     return documents
 
 
@@ -214,6 +218,7 @@ def main(argv=None):
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")
     parser.add_argument("--dry-run", action="store_true", help="Only counts how many chunks would need to be (re)embedded, without spending anything (no local CPU, no API cost).")
+    parser.add_argument("--prune", action="store_true", help="Remove stale points (their source is no longer there) even when they are more than half of what is indexed for a repository.")
     args = parser.parse_args(argv)
 
     start_time = time.time()
@@ -236,13 +241,23 @@ def main(argv=None):
                 return
 
     all_documents = []
+    # Repositories a file of which could not be read: their stale points are
+    # left alone, or an unreadable file would be removed as if it were gone.
+    incomplete = set()
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if repo_path.is_dir():
             repo_key = _repo_key_for_path(repo_path) if args.path else None
-            all_documents.extend(process_repository(repo_path, repo_key=repo_key))
+            problems = []
+            all_documents.extend(process_repository(repo_path, repo_key=repo_key, problems=problems))
+            if problems:
+                incomplete.add(repo_path.name)
         else:
             print(f"WARNING: '{repo_path}' is not a valid directory.")
+
+    # What stale-point removal may act on (see common.prune_orphans for the fences).
+    prune_scope = dict(source_type="code", repo_paths=repo_paths_str, used_path=bool(args.path),
+                       incomplete=incomplete, force=args.prune)
 
     if not all_documents:
         print("\nNo documents to index.")
@@ -251,16 +266,18 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents)
         print(f"\n[dry-run] {pending} chunks would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.prune_orphans(all_documents, dry_run=True, **prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents)
+    pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
     print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
     common.log_run_summary(
         script="index_code.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed,
+        indexed=indexed, skipped=skipped, failed=failed, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —

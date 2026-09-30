@@ -91,6 +91,7 @@ def main(argv=None):
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")
     parser.add_argument("--dry-run", action="store_true", help="Only counts how many commits would need to be (re)embedded, without spending anything.")
+    parser.add_argument("--prune", action="store_true", help="Remove stale points (their source is no longer there) even when they are more than half of what is indexed for a repository.")
     args = parser.parse_args(argv)
 
     start_time = time.time()
@@ -123,6 +124,10 @@ def main(argv=None):
         print(f"{repo_path.name}: {len(docs)} commits")
         all_documents.extend(docs)
 
+    # What stale-point removal may act on (see common.prune_orphans for the fences).
+    prune_scope = dict(source_type="commit", repo_paths=repo_paths_str, used_path=bool(args.path),
+                       incomplete=(), force=args.prune)
+
     if not all_documents:
         print("\nNo commits to index.")
         return
@@ -130,16 +135,18 @@ def main(argv=None):
     if args.dry_run:
         pending, up_to_date = common.count_pending(all_documents, desc="Checking commits")
         print(f"\n[dry-run] {pending} commits would need to be (re)embedded, {up_to_date} are already up to date.")
+        common.prune_orphans(all_documents, dry_run=True, **prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing commits")
+    pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
     print(f"Total: {indexed} commits indexed, {skipped} unchanged (skipped), {failed} failed.")
     common.log_run_summary(
         script="index_commits.py", repo=args.repo or args.path or "all",
-        indexed=indexed, skipped=skipped, failed=failed,
+        indexed=indexed, skipped=skipped, failed=failed, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),
         # [user-requested] WHICH documents failed, not just how many —
