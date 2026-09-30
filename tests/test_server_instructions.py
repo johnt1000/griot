@@ -14,7 +14,7 @@ import re
 import pytest
 from mcp.client.client import Client
 
-from griot import mcp_server
+from griot import common, mcp_server
 
 
 async def _server():
@@ -83,7 +83,16 @@ async def test_the_search_tool_description_leads_with_how_to_use_it():
 async def test_the_search_tool_description_names_only_arguments_it_has():
     _, tools = await _server()
     tool = tools["griot_search"]
-    assert _code_words(tool.description) - set(tool.input_schema["properties"]) <= {"note"}, "`note` is a field of the output"
+    # Besides arguments: the fields of what the tool returns, the fields of
+    # the repository list the text sends the agent to for names, and the
+    # kinds of source, which are the VALUES `source_types` takes (held to
+    # what the indexers write by tests/test_search_filters.py).
+    output = tool.output_schema
+    returned = set(output["properties"]) | set(output["$defs"]["SearchResult"]["properties"])
+    listed = set(tools["griot_repos_list"].output_schema["$defs"]["RepoEntry"]["properties"])
+    allowed = set(tool.input_schema["properties"]) | returned | listed | set(common.SOURCE_TYPES)
+    assert _code_words(tool.description) <= allowed, _code_words(tool.description) - allowed
+    assert "name" in listed and "repo" in returned, "the two names the text points at exist"
 
 
 @pytest.mark.anyio

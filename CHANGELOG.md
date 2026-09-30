@@ -164,6 +164,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_search` can be narrowed.** `repos` keeps a search inside the named
+  repositories and `source_types` to kinds of source (`code`, `commit`,
+  `tag`, `branch`, `merge_request`, `release`, `issue`). A repository with
+  nothing indexed or a kind that does not exist is an error, not an empty
+  result, and is refused before the query is embedded. `griot_repos_list`
+  now gives each repository's `name`, which is what `repos` takes. The
+  filters used are recorded with the search in the query log, also when
+  `GRIOT_LOG_QUESTIONS=false` withholds the question itself (the names of
+  what was returned were already recorded).
 - **The MCP server tells the agent when to use it.** It now sends
   instructions at connection: what griot covers (every registered repository,
   not only the current one), when to search it first, when not to (an exact

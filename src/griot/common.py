@@ -2555,7 +2555,77 @@ def document_key(payload: dict) -> tuple:
 _GROUPING_OVERFETCH = 6
 
 
-def search(query: str, limit: int = 5, group_by_document: bool = False) -> list:
+# The kinds of source an indexer writes as `source_type`, which is what a
+# search can be narrowed to. tests/test_search_filters.py holds this list to
+# what the five indexers actually write.
+SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "issue")
+
+# Each repository named in a filter costs one scan of the collection to make
+# sure something is indexed for it (there is no payload index to ask).
+SEARCH_FILTER_MAX_VALUES = 20
+
+
+def _filter_names(name: str, values) -> list[str]:
+    """The values of one search filter, or [] for "no filter". A bare string
+    is refused rather than read as a list of its letters."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(f"{name} must be a list of names, not {type(values).__name__}.")
+    if len(values) > SEARCH_FILTER_MAX_VALUES:
+        raise ValueError(f"{name} takes at most {SEARCH_FILTER_MAX_VALUES} names (got {len(values)}).")
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must hold names (got {printable(repr(value))[:80]}).")
+    return list(dict.fromkeys(values))
+
+
+def _checked_filters(repos, source_types) -> tuple[list[str], list[str]]:
+    """Both filters as lists, after everything that can be checked without
+    the index: opening a collection another process holds waits for it, and
+    a filter that is wrong on its face should not wait for anything."""
+    repos, source_types = _filter_names("repos", repos), _filter_names("source_types", source_types)
+    unknown = [kind for kind in source_types if kind not in SOURCE_TYPES]
+    if unknown:
+        raise ValueError(f"Unknown source type(s): {', '.join(printable(repr(k))[:80] for k in unknown)}. "
+                         f"The kinds of source are: {', '.join(SOURCE_TYPES)}.")
+    return repos, source_types
+
+
+def _search_filter(client, repos: list[str], source_types: list[str]):
+    """The store filter for a search, or None. A filter that matches nothing
+    gives an empty result, and an empty result reads as "nothing was found":
+    so a value that CANNOT match (a kind griot does not have, a repository
+    with nothing indexed) is an error, and only a combination of values that
+    do exist may come back empty.
+
+    A name is matched against what is INDEXED under it (the `repo` every
+    point carries: the directory name at the time of the run), not against
+    repos.json. A point with no `source_type` at all would be left out by a
+    kind filter; every indexer has always written one."""
+    for repo in repos:
+        one = qe.Filter(must=[qe.FieldCondition(key="repo", match=qe.MatchValue(value=repo))])
+        if not client.count(qe.CountRequest(exact=True, filter=one)):
+            try:
+                registered = sorted({Path(p).name for p in load_repos()})
+            except (OSError, ValueError):
+                registered = []
+            known = f" Registered repositories: {', '.join(shown(r) for r in registered)}." if registered else ""
+            raise ValueError(
+                f"Nothing is indexed for a repository named {printable(repr(repo))[:80]} with profile "
+                f"'{ACTIVE_PROFILE_NAME}'. Pass the directory name alone, spelled exactly (not a path). If the "
+                f"name is right, the repository has not been indexed with this profile yet: index it first."
+                f"{known}")
+    must = []
+    if repos:
+        must.append(qe.FieldCondition(key="repo", match=qe.MatchAny(any=repos)))
+    if source_types:
+        must.append(qe.FieldCondition(key="source_type", match=qe.MatchAny(any=source_types)))
+    return qe.Filter(must=must) if must else None
+
+
+def search(query: str, limit: int = 5, group_by_document: bool = False, *,
+           repos: list[str] | None = None, source_types: list[str] | None = None) -> list:
     """Local search over Qdrant Edge — embeds the query with the active
     profile and queries the embedded index. Returns a list of ScoredPoint
     (.payload, .score) — shard.query() already returns the list directly
@@ -2570,8 +2640,17 @@ def search(query: str, limit: int = 5, group_by_document: bool = False) -> list:
     removing waste. Measured on a real index: a focused query held 4
     documents in 8 slots, and grouping surfaced 4 more at a slightly LOWER
     score than the eighth ungrouped hit. Worth it when the question is "where
-    does this live", wrong when one document IS the answer."""
+    does this live", wrong when one document IS the answer.
+
+    repos / source_types narrow the search to those repositories (the
+    `repo` of a point: its directory name) and those kinds of source
+    (SOURCE_TYPES); see _search_filter for what is an error and what is an
+    empty result."""
+    repos, source_types = _checked_filters(repos, source_types)
     client = get_client()
+    # Before the query is embedded: on a paid profile that call costs money,
+    # and a search that cannot run should not spend it.
+    only = _search_filter(client, repos, source_types)
     query_vector = embed_texts([query])[0]
     if query_vector is None:
         # embed_texts() answers None for what it could not embed, which is
@@ -2583,7 +2662,8 @@ def search(query: str, limit: int = 5, group_by_document: bool = False) -> list:
             f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
     fetch = limit * _GROUPING_OVERFETCH if group_by_document else limit
     hits = client.query(
-        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True)
+        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True,
+                        filter=only)
     )
     if not group_by_document:
         return hits

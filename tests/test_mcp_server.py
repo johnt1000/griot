@@ -43,7 +43,7 @@ def test_griot_search_formats_results_with_source_label(monkeypatch):
         FakeHit(0.87, {"repo": "repo-x", "source_type": "commit", "commit_hash": "a1b2c3d4e5", "content": "fix bug"}),
     ]
 
-    def fake_search(query, limit=5, group_by_document=False):
+    def fake_search(query, limit=5, group_by_document=False, **filters):
         assert query == "how does login work"
         assert limit == 8  # the MCP default: what agents actually ask for
         return hits
@@ -68,7 +68,7 @@ def test_griot_search_formats_results_with_source_label(monkeypatch):
 
 def test_griot_search_empty_collection_returns_empty_list_not_error(monkeypatch):
     """Day 1: empty collection -> results: [], never an exception."""
-    monkeypatch.setattr(common, "search", lambda query, limit=5, group_by_document=False: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, group_by_document=False, **filters: [])
 
     output = mcp_server.griot_search(query="anything")
 
@@ -80,7 +80,7 @@ def test_griot_search_clamps_limit_to_max(monkeypatch):
     needlessly inflate the agent's context."""
     seen = {}
 
-    def fake_search(query, limit=5, group_by_document=False):
+    def fake_search(query, limit=5, group_by_document=False, **filters):
         seen["limit"] = limit
         return []
 
@@ -96,7 +96,7 @@ def test_griot_search_propagates_runtime_error(monkeypatch):
     propagate without being swallowed — the conversion to isError is automatic via
     Client (confirmed empirically), there should be no try/except here."""
 
-    def fake_search(query, limit=5, group_by_document=False):
+    def fake_search(query, limit=5, group_by_document=False, **filters):
         raise RuntimeError("Local circuit breaker: today's estimated spend already hit the ceiling")
 
     monkeypatch.setattr(common, "search", fake_search)
@@ -139,8 +139,8 @@ def test_griot_spend_status_reports_spend_and_ceilings(monkeypatch):
 
 def test_griot_repos_list_returns_registered_repos(monkeypatch):
     monkeypatch.setattr(repos, "repo_status", lambda: [
-        {"path": "/repos/alpha", "exists": True, "is_git": True},
-        {"path": "/repos/beta", "exists": False, "is_git": False},
+        {"name": "alpha", "path": "/repos/alpha", "exists": True, "is_git": True},
+        {"name": "beta", "path": "/repos/beta", "exists": False, "is_git": False},
     ])
 
     result = mcp_server.griot_repos_list()
@@ -154,7 +154,7 @@ def test_griot_repos_list_reports_missing_and_non_git_entries(monkeypatch):
     the directory is gone / isn't a git repo" — indexing the latter fails or
     silently indexes nothing, and the tool should let it see that first."""
     monkeypatch.setattr(repos, "repo_status", lambda: [
-        {"path": "/repos/gone", "exists": False, "is_git": False},
+        {"name": "gone", "path": "/repos/gone", "exists": False, "is_git": False},
     ])
 
     entry = mcp_server.griot_repos_list()["repos"][0]
@@ -958,7 +958,7 @@ def test_every_read_only_tool_records_its_call(monkeypatch):
         "points_count": 0, "collection": "c", "embed_profile": "p", "running": False,
         "pid": None, "path": None, "last_indexed": None, "spend_ceiling_exceeded": False})
     monkeypatch.setattr(repos, "repo_status", lambda: [])
-    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False: [])
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **filters: [])
 
     mcp_server.griot_search("q")
     mcp_server.griot_spend_status()
@@ -1023,7 +1023,7 @@ class _FakeHit:
 def _hits(monkeypatch, *scores):
     hits = [_FakeHit(s, {"repo": "r", "source_type": "code", "file_path": "a.py", "content": "x"})
             for s in scores]
-    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False: hits)
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **filters: hits)
     return hits
 
 
@@ -1071,7 +1071,7 @@ def test_griot_search_records_the_top_score(monkeypatch):
 
 
 def test_griot_search_with_no_results_records_a_null_top_score(monkeypatch):
-    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False: [])
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **filters: [])
 
     mcp_server.griot_search("nothing matches this")
 
@@ -1458,7 +1458,7 @@ async def test_call_tool_griot_search_runtime_error_becomes_iserror_via_client(m
     going through the real protocol, only assumed."""
     from mcp.client.client import Client
 
-    def fake_search(query, limit=5, group_by_document=False):
+    def fake_search(query, limit=5, group_by_document=False, **filters):
         raise RuntimeError("Local circuit breaker: today's estimated spend already hit the ceiling")
 
     monkeypatch.setattr(common, "search", fake_search)
@@ -2080,7 +2080,7 @@ async def test_search_exposes_document_grouping_through_the_protocol():
 def test_search_passes_grouping_through_to_common(monkeypatch):
     seen = {}
     monkeypatch.setattr(common, "search",
-                        lambda query, limit, group_by_document=False:
+                        lambda query, limit, group_by_document=False, **filters:
                         seen.update(g=group_by_document) or [])
 
     mcp_server.griot_search("q", group_by_document=True)
@@ -2095,7 +2095,7 @@ def test_search_limit_cap_applies_to_grouped_results_too(monkeypatch):
     a large limit turns into a much larger fetch."""
     seen = {}
     monkeypatch.setattr(common, "search",
-                        lambda query, limit, group_by_document=False:
+                        lambda query, limit, group_by_document=False, **filters:
                         seen.update(limit=limit) or [])
 
     mcp_server.griot_search("q", limit=10_000, group_by_document=True)
