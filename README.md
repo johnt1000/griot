@@ -125,6 +125,8 @@ or in `.mcp.json`:
 }
 ```
 
+The server sends instructions when it connects: what griot covers, when to search it first and when to read or grep instead. A client that passes server instructions on to the agent (Claude Code does) needs nothing installed for that.
+
 `griot_search` takes an optional `group_by_document`: off by default (every matching chunk, so one document can answer in depth), on when you want breadth (the best chunk of each document, so the same number of results reaches more files, commits and PRs).
 
 Read-only tools: `griot_search`, `griot_spend_status`, `griot_index_status`, `griot_quality_check`, `griot_repos_list`, `griot_profiles_list`, `griot_golden_set_list`, `griot_stats`, `griot_auth_guidance`.
