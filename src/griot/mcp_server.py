@@ -1454,7 +1454,7 @@ class IndexRepoOutput(TypedDict):
 
 def _index_repo_question(path: str) -> str:
     return (f"Index {_shown(path)}. This calls the embedding API and costs money on a paid profile; "
-            f"the spend cannot be undone.")
+            f"the spend cannot be undone. It also removes indexed points whose source is gone.")
 
 
 def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
@@ -1500,7 +1500,12 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
         confirmation; it widens NO boundary (the path was already
         authorized by the operator, in repos.json or GRIOT_MCP_INDEX_ROOTS),
         hence the confirm= fallback and no human_required. The spend
-        ceiling remains the independent protection against cost."""
+        ceiling remains the independent protection against cost.
+
+        The run also removes indexed points whose source is gone (a deleted
+        file, a deleted branch), within the fences of common.prune_orphans.
+        Recoverable at the price of an embedding, so the same confirmation
+        covers it; the question says so."""
         # [review finding] Check what is cheap to check BEFORE asking anyone.
         # Confirmation is the expensive step here — it spends a person's
         # attention — and asking about a path that was never going to be

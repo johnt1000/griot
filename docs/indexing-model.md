@@ -84,6 +84,28 @@ commits and PRs. It is off by default: repeated hits on one file are
 *different* chunks, not redundancy, so grouping trades depth for breadth
 rather than removing waste.
 
+## Stale points
+
+A run upserts what it read and then removes, per repository and source, the
+points it did not produce (`common.prune_orphans`). The store is asked what it
+holds (a filtered scroll on `repo` and `source_type`) and the answer is
+compared with the ids of the documents just built; there is no second record
+of what was indexed. Sources are `code`, `commit`, `tag` and `branch`; the
+platform sources are never pruned, because a partial API listing is
+indistinguishable from deleted items.
+
+`payload.repo` is the directory name, which does not identify a point: a
+`--path` run of another directory of the same name writes it too, under a
+different id key. So a point counts as the repository's only when its id is
+the one its own payload produces under the repository's key
+(`_point_ids_written_under`); anything else is left alone.
+
+Removal is skipped for a `--path` run, for a repository that is not registered
+or whose directory name another registered repository shares, when nothing was
+read for that source, when a file could not be read (`code`), when a document
+failed, when the index lock is taken, and when more than half of the
+repository's points (above 100) would go, unless `--prune`. The run prints why.
+
 ## Chunking
 
 Text is split at 1500 characters with a 200-character overlap. The overlap

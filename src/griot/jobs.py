@@ -110,14 +110,7 @@ def _repo_name_if_uniquely_registered(resolved: Path) -> str | None:
     None otherwise (two registered repos sharing a basename, or not
     registered at all) — the caller falls back to `--path`, which is
     always correct even if never optimal for reuse."""
-    try:
-        registered = [Path(p).resolve() for p in common.load_repos()]
-    except (OSError, ValueError):
-        return None
-    matches_by_name = [p for p in registered if p.name == resolved.name]
-    if len(matches_by_name) == 1 and matches_by_name[0] == resolved:
-        return resolved.name
-    return None
+    return common.registered_repo_name(resolved)
 
 
 def child_env(boot_env: dict, boot_file: dict) -> dict:

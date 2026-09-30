@@ -23,10 +23,22 @@ between minor versions. Breaking changes are called out explicitly.
   matches; a directory outside git is walked as before. Files
   over 1 MB are skipped and reported, and `pnpm-lock.yaml`, `*.min.*` and tool
   caches are left out. If git cannot list a work tree, nothing is read from
-  it. This change does not remove anything: points already indexed from files
-  that are no longer read, ignored files included, stay in the index and
-  searchable. To drop them today, delete the profile's collection
-  (`griot profiles delete`) and index again.
+  it. Points already indexed from files that are no longer read, ignored
+  files included, are removed the next time that repository is indexed (see
+  the next entry).
+- **Indexing now removes stale points.** A deleted or renamed file, the tail
+  of a file that shrank, a file that is now ignored, a deleted branch or tag:
+  their points used to stay forever and search kept returning text that no
+  longer exists. After a run, the points it did not produce are removed, for
+  the `code`, `commits`, `tags` and `branches` sources. It is skipped whenever
+  in doubt: with `--path`, for an unregistered repository or an ambiguous
+  name, for points another directory of the same name wrote, when nothing was
+  read for the source (the last tag or branch of a repository keeps its
+  point), when a file could not be read or a document failed, and when more
+  than half of a repository's points (above 100) would go at once, unless
+  `--prune`. `--dry-run` reports how many would be removed. The index now
+  reflects the working tree at the time of the run: indexing on another
+  branch, or in a sparse checkout, removes what is not on disk.
 - **More file types are indexed**: `.tsx .jsx .mjs .cjs .mdx .sql .yml .yaml
   .tf .toml`. The next `griot index code` embeds them; on a paid profile that
   costs money, and `--dry-run` shows how many chunks first.

@@ -44,7 +44,10 @@ Run one source directly instead of all five with `griot index <source>`
   `repos.json` entirely. Useful for a one-off index you don't want
   registered.
 - `--dry-run` — counts how many chunks would need to be (re)embedded
-  without spending anything (no local CPU for embedding, no API call).
+  without spending anything (no local CPU for embedding, no API call), and
+  how many stale points would be removed.
+- `--prune` — removes stale points even when they are more than half of
+  what is indexed for a repository (see "Stale points" below).
 - On `griot index all` specifically, `--sources code,commits` (a
   comma-separated subset of `code,commits,tags,branches,platform`) filters
   which sources run.
@@ -71,6 +74,42 @@ keys for identical content and made reuse collapse to near zero. If you
 ever see indexing runs that never reuse anything for a repo you know hasn't
 changed, that mismatch is the first thing to check (`griot stats` reports
 the reuse rate — see `griot-troubleshooting`).
+
+## Stale points — what is removed, and when it is not
+
+After a run, points whose source is gone are removed: a deleted or renamed
+file, the tail of a file that shrank, a file that is now ignored, a deleted
+branch or tag (as long as at least one remains: see below), a commit no ref
+reaches any more. Search stops returning text
+that no longer exists. It compares what the run read with what the index
+holds for that repository and source; nothing else is recorded.
+
+Removing is the one destructive step, and a removed point costs an embedding
+to bring back, so it is skipped whenever in doubt:
+
+- with `--path` (only a repository registered in `repos.json` is pruned, and
+  only if no other registered repository has the same directory name), and
+  for points a `--path` run of another directory of the same name wrote,
+  and for a directory that is registered more than once (by a symlink and by
+  its real path, say);
+- when the run read nothing for the repository and source (so the LAST tag
+  or branch of a repository, once deleted, keeps its point), when a file
+  could not be read (`code` source), or when a document failed to be written;
+- when more than half of the repository's points (and more than 100) would
+  go at once. That usually means another branch is checked out. The run says
+  so; `--prune` goes ahead.
+- never for the `platform` source: a failed or partial API listing looks the
+  same as deleted items.
+
+A registered name means the directory registered under it NOW: replace one
+registered `api` with another directory called `api`, and the next run
+removes what the first one left.
+
+The index reflects the working tree at the time of the run. Indexing on one
+branch and then on another removes what only the first had, and re-embeds it
+if you switch back. The same goes for a sparse checkout: files that are not
+on disk are gone as far as the run can tell. Below 100 points, or below half
+of a repository, nothing holds the removal back.
 
 ## Choosing an embedding profile
 
