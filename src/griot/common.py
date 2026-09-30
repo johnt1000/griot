@@ -16,7 +16,6 @@ import psutil
 import qdrant_edge as qe
 import requests
 from dotenv import load_dotenv, set_key, unset_key
-from fastembed import TextEmbedding
 from tqdm import tqdm
 
 from griot import ConfigurationError, logdb, redaction
@@ -1032,7 +1031,7 @@ def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
 warn_legacy_layout()
 migrate_legacy_spend_state()
 
-_embed_model: TextEmbedding | None = None
+_embed_model = None  # a fastembed.TextEmbedding once a local profile is first used
 _client: "qe.EdgeShard | None" = None
 _client_last_used_at: float | None = None
 
@@ -1265,7 +1264,17 @@ def record_spend(cost_usd: float) -> None:
     logdb.write_spend(LOG_DIR, _today(), cost_usd, time.time(), SPEND_VELOCITY_WINDOW_SECONDS)
 
 
-def get_embed_model() -> TextEmbedding:
+def _text_embedding_class():
+    """fastembed's model class, imported on first use. It pulls onnxruntime
+    in with it and was most of what starting griot cost (about 0.45 s of
+    0.7 s, measured), paid by every command and every MCP server start, the ones
+    that never embed locally included: `griot stats`, `griot repos list`,
+    any run on an API profile."""
+    from fastembed import TextEmbedding
+    return TextEmbedding
+
+
+def get_embed_model():
     global _embed_model
     if _embed_model is None:
         # limited threads: the machine runs several other heavy things in
@@ -1279,7 +1288,7 @@ def get_embed_model() -> TextEmbedding:
         # Placing it inside DATA_DIR keeps the cache alongside the rest of
         # griot's data (qdrant_data/, logs/), persistent and under the
         # same user control.
-        _embed_model = TextEmbedding(
+        _embed_model = _text_embedding_class()(
             model_name=ACTIVE_PROFILE["model"], threads=6,
             cache_dir=str(DATA_DIR / "models"),
         )
