@@ -11,16 +11,19 @@ messages quoted are the real ones the code raises, not paraphrases.
 ## Collection locked / "another griot process still has it open"
 
 **Symptom**: an indexing or search command fails complaining another griot
-process already has the collection open, or (in `multi` concurrency mode)
+process already has the collection open, or, after waiting about 12
+seconds for it to free up (the default `multi` concurrency mode),
 `Could not open collection '<name>' after N attempts — another griot
 process still has it open.`
 
 **Cause**: the vector store is embedded, not a server — only one OS process
 can hold a given collection's directory open at a time. If `griot mcp` is
-running and has already touched a collection (via `griot_search`,
-`griot_index_status`, etc.), it holds that handle for the rest of its life
-by default, and a second, separate process touching the *same* embedding
-profile's collection collides with it. Subagents/workflow-spawned agents
+running and has touched a collection (via `griot_search`,
+`griot_index_status`, etc.), it holds that handle while it is in use and,
+in the default `multi` mode, until it has been idle for
+`GRIOT_MCP_IDLE_RELEASE_SECONDS` (default 30). In `single` mode it holds it
+for the rest of its life. A second, separate process touching the *same*
+embedding profile's collection collides with it in the meantime. Subagents/workflow-spawned agents
 sharing one parent MCP connection never hit this — only a genuinely
 separate session (another window, another project) does.
 
@@ -30,10 +33,13 @@ separate session (another window, another project) does.
 - To index from a session that has the server attached, use
   `griot_index_repo` (enabled with `GRIOT_MCP_ENABLE_INDEX=true`). It
   releases the server's handle before starting the run.
-- Switch that MCP server to cooperative mode with
-  `GRIOT_MCP_CONCURRENCY_MODE=multi`. The server then releases the handle
-  once it has gone `GRIOT_MCP_IDLE_RELEASE_SECONDS` (default 30) without a
-  tool call, and retries-with-backoff when it reopens on the next one.
+- Wait out the idle window (30 seconds by default) with no griot tool
+  calls, then run the command again. Nothing to configure: this is what the
+  default `multi` mode does.
+- If the server is in `single` mode (set in `.mcp.json`, or pinned by an
+  older `.env`), switch it to `multi` with
+  `GRIOT_MCP_CONCURRENCY_MODE=multi`. Otherwise it holds the collection
+  until its session ends.
 
 The `griot-operations` skill has the full procedure, including how to find
 which process holds the collection. Sessions on *different* embedding
@@ -131,12 +137,11 @@ profiles).
 unavailable (collection in use)` instead of a number.
 
 **Cause**: this is not an error and does not mean the index is empty —
-another process (typically a running `griot mcp` in `single` concurrency
-mode, which holds the collection open for its whole life once touched) has
+another process (typically a running `griot mcp` that was used within the
+last 30 seconds, or, in `single` mode, at any point since it started) has
 the collection open right now, so `griot stats` cannot read the point
 count without colliding with it.
 
-**Fix**: nothing is broken. If you need the real count, stop the process
-holding the collection, or switch that server to
-`GRIOT_MCP_CONCURRENCY_MODE=multi` so it releases the handle when idle (see
-the first entry above).
+**Fix**: nothing is broken. If you need the real count, wait for the
+idle window and run `griot stats` again, or stop the process holding the
+collection (see the first entry above).

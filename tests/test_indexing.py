@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 import qdrant_edge as qe
@@ -255,21 +257,27 @@ def test_release_then_reopen_allows_a_second_process_style_open():
 
 
 # --- concurrency mode (user decision, 2026-08-20) ----------------------------
-# 'single' (default): behaves exactly as before, no change at all. 'multi'
+# 'single' (opt-in): behaves exactly as before, no change at all. 'multi' (default)
 # (GRIOT_MCP_CONCURRENCY_MODE=multi): drops the handle after
 # IDLE_RELEASE_SECONDS of no use and retries-with-backoff when reopening. The
 # check here runs on the next get_client() call; an idle MCP server is covered
 # by mcp_server's reaper (tested in test_mcp_server.py).
 
 
-def test_default_concurrency_mode_is_single():
-    assert common.CONCURRENCY_MODE == "single"
+def test_default_concurrency_mode_is_multi():
+    # A fresh interpreter, so a GRIOT_MCP_CONCURRENCY_MODE exported in the
+    # developer's shell cannot turn this into a test of their environment.
+    env = {k: v for k, v in os.environ.items() if k != "GRIOT_MCP_CONCURRENCY_MODE"}
+    out = subprocess.run([sys.executable, "-c", "from griot import common; print(common.CONCURRENCY_MODE)"],
+                         env=env, capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "multi"
 
 
 def test_single_mode_never_retries_on_load_failure(monkeypatch):
     """In single mode, get_client() needs to keep behaving EXACTLY as
     before: a single attempt, a raw exception, zero sleep — no
-    behavior/latency regression for those who didn't opt into multi mode."""
+    behavior/latency regression for those who opted into single mode."""
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
     common.get_client()
     common.release_client()  # leaves the marker on disk, but closes the handle
 
@@ -291,6 +299,7 @@ def test_single_mode_never_retries_on_load_failure(monkeypatch):
 
 
 def test_single_mode_never_releases_on_idle(monkeypatch):
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "single")
     first = common.get_client()
     now = common._client_last_used_at  # None in single mode — but the client stays memoized regardless
     monkeypatch.setattr(common.time, "time", lambda: 999999999.0)  # "much later"

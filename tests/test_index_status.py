@@ -336,3 +336,24 @@ def test_delete_collection_refuses_while_an_indexing_run_holds_the_lock():
         assert path.exists()  # never touched
     finally:
         common.release_lock()
+
+
+def test_status_never_waits_out_a_held_collection_in_multi_mode(monkeypatch):
+    """A held collection is a normal answer for a status read (points_count
+    None). Multi mode's reopen backoff is for callers that need the shard;
+    applied here it turned `griot stats`' instant "in use" into a ~12s stall."""
+    monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
+    common.get_client()
+    common.release_client()  # leaves the marker on disk, so the next get_client() LOADS
+
+    def held(path):
+        raise RuntimeError("failed to open WAL: Kind(WouldBlock)")
+
+    monkeypatch.setattr(qe.EdgeShard, "load", held)
+    slept = []
+    monkeypatch.setattr(common.time, "sleep", lambda s: slept.append(s))
+
+    status = common.get_index_status()
+
+    assert status["points_count"] is None
+    assert slept == []

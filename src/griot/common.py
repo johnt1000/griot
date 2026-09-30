@@ -168,7 +168,10 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
     ("GRIOT_MCP_ENABLE_INDEX", "false", "set to true to enable the griot_index_repo MCP tool (can spend money on a paid profile)", False),
     ("GRIOT_MCP_INDEX_ROOTS", "", "':'-separated directory prefixes allowed for MCP indexing, e.g. /Users/you/code — empty means only repos.json entries are allowed", False),
-    ("GRIOT_MCP_CONCURRENCY_MODE", "single", "single (default, zero overhead) or multi (griot mcp releases the collection handle when idle, for concurrent sessions and shell indexing)", False),
+    # Commented on purpose: a default written out explicitly is an override in
+    # disguise, so a .env generated under the old default (`single`) kept
+    # pinning it after the default became `multi`.
+    ("GRIOT_MCP_CONCURRENCY_MODE", "multi", "multi (default): griot mcp releases the collection after the idle window, so other sessions and shell indexing can use it; single keeps it open for the server's whole life (no reopen cost, but nothing else can use that profile meanwhile)", True),
     ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
     ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
     ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
@@ -838,21 +841,22 @@ _embed_model: TextEmbedding | None = None
 _client: "qe.EdgeShard | None" = None
 _client_last_used_at: float | None = None
 
-# [user decision, 2026-08-20] concurrency mode for the active collection's
-# handle. 'single' (default) is the traditional behavior — memoizes
-# forever, zero overhead, but a second REAL griot mcp SESSION (not a
-# subagent/workflow — those reuse the session's MCP connection, see the
-# decision) on the same profile hard-fails with a raw error. 'multi'
+# [user decision, 2026-08-20; default flipped to 'multi' 2026-09-29] concurrency
+# mode for the active collection's handle. 'single' (opt-in) is the
+# traditional behavior — memoizes forever, zero overhead, but a second REAL
+# griot mcp SESSION (not a subagent/workflow — those reuse the session's MCP
+# connection, see the decision) on the same profile hard-fails with a raw
+# error. 'multi'
 # retries-with-backoff when reopening, and drops the handle once it has gone
 # unused for GRIOT_MCP_IDLE_RELEASE_SECONDS, at a reopen cost of ~94ms
 # measured on this machine. get_client() checks idleness only when called,
 # and then reopens at once, so on its own an idle server never let go: the
 # MCP server runs a reaper thread (mcp_server._start_idle_reaper) for that.
-CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "single")
+CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "multi")
 if CONCURRENCY_MODE not in ("single", "multi"):
     raise ValueError(
         f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. "
-        f"Use 'single' (default) or 'multi'."
+        f"Use 'multi' (default) or 'single'."
     )
 IDLE_RELEASE_SECONDS = float(os.getenv("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30"))
 # [tuned after empirical validation with a real collision] local DISK
@@ -1091,16 +1095,19 @@ def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
             time.sleep(_LOCK_RETRY_DELAYS[i])
 
 
-def get_client() -> "qe.EdgeShard":
+def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     """Memoized handle for the ACTIVE collection's Edge shard
     (COLLECTION_NAME) — only one process can have the directory open at a
     time (Edge's mutual exclusion is per PROCESS — safe within threads of
-    the same process, not ACROSS processes). In 'single' mode
-    (default) the handle stays open forever, identical to the original
-    behavior. In 'multi' mode (GRIOT_MCP_CONCURRENCY_MODE=multi), it
-    releases itself after IDLE_RELEASE_SECONDS of no use — so a second
-    griot mcp session on the same profile can get in — and reopens with
-    retry-with-backoff."""
+    the same process, not ACROSS processes). In 'multi' mode (the
+    default) it releases itself after IDLE_RELEASE_SECONDS of no use — so a
+    second griot mcp session on the same profile can get in — and reopens
+    with retry-with-backoff. In 'single' mode (GRIOT_MCP_CONCURRENCY_MODE=single)
+    the handle stays open forever, identical to the original behavior.
+
+    wait=False skips that backoff for a caller for whom "held by someone
+    else" is a normal answer rather than a failure to work around (a status
+    read): the ~12s budget is for callers that need the shard."""
     global _client, _client_last_used_at
     if CONCURRENCY_MODE == "multi" and _client is not None and _client_last_used_at is not None:
         if time.time() - _client_last_used_at > IDLE_RELEASE_SECONDS:
@@ -1108,7 +1115,7 @@ def get_client() -> "qe.EdgeShard":
     if _client is None:
         path = _collection_path(COLLECTION_NAME)
         if (path / _EDGE_CONFIG_MARKER).exists():
-            _client = _load_shard_with_retry(path) if CONCURRENCY_MODE == "multi" else qe.EdgeShard.load(str(path))
+            _client = _load_shard_with_retry(path) if CONCURRENCY_MODE == "multi" and wait else qe.EdgeShard.load(str(path))
         else:
             path.mkdir(parents=True, exist_ok=True)
             cfg = qe.EdgeConfig(
@@ -1788,7 +1795,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # writing (same active collection), the whole tool would break
         # instead of returning a best-effort result.
         try:
-            points_count = get_client().info().points_count
+            points_count = get_client(wait=False).info().points_count
         except Exception as e:
             log_and_print(
                 f"Warning: could not check points_count for '{collection}' "

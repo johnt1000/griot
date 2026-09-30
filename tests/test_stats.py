@@ -793,7 +793,8 @@ def test_report_says_why_the_point_count_is_missing():
 
     None here is not zero and not an error: it means "could not read while
     something else has it open", which is normal on this machine (the MCP
-    server holds the handle for its whole life in single mode). The line has
+    server holds the handle while it is in use, and for its whole life in
+    single mode). The line has
     to say that, because a reader seeing a number's absence assumes the
     index is empty."""
     s = stats.compute_stats([], [], {"points_count": None, "embed_profile": "openai-small"})
