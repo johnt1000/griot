@@ -6,31 +6,9 @@ from griot import common
 DEFAULT_LIMIT = 5
 
 
-def source_label(meta: dict) -> str:
-    """How a stored point is named to a person or an agent. The parts come
-    from the repository (a path, a branch, a tag), and a name can hold a
-    credential-shaped value just as a file can, so the label goes through the
-    same replacement as the text. The stored fields themselves stay as they
-    are: ids are built from them."""
-    return common.redaction.redact(_label(meta))[0]
-
-
-def _label(meta: dict) -> str:
-    source_type = meta.get("source_type", "code")
-    repo = meta.get("repo", "?")
-    if source_type == "commit":
-        return f"commit {meta.get('commit_hash', '?')[:8]} — {repo}"
-    if source_type == "tag":
-        return f"tag {meta.get('tag_name', '?')} — {repo}"
-    if source_type == "branch":
-        return f"branch {meta.get('branch_name', '?')} — {repo}"
-    if source_type == "merge_request":
-        return f"MR !{meta.get('mr_iid', '?')} ({meta.get('state', '?')}) — {repo}"
-    if source_type == "release":
-        return f"release {meta.get('tag_name', '?')} — {repo}"
-    if source_type == "issue":
-        return f"issue #{meta.get('issue_iid', '?')} ({meta.get('state', '?')}) — {repo}"
-    return f"{repo}/{meta.get('file_path', '?')}"
+# Defined in common.py, where search uses it too; kept under this name
+# because every caller says ask.source_label.
+source_label = common.source_label
 
 
 def build_context(results: list) -> str:
@@ -42,7 +20,7 @@ def build_context(results: list) -> str:
 
 
 def ask(question: str, model: str | None, limit: int) -> tuple[str, list]:
-    results = common.search(question, limit)
+    results = common.search(question, limit, diverse=True)
     context = build_context(results)
 
     prompt = (

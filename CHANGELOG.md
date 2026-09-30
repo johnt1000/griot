@@ -10,6 +10,14 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Changed
 
+- **One document no longer takes every result.** `griot_search`,
+  `griot search` and the context `griot ask` builds hold one document to
+  three chunks (ungrouped; `group_by_document` still means one), and the
+  slots it gives up go to the next best results, so `limit` is now a
+  ceiling. A file copied between repositories, or the same commit in a fork,
+  comes back once and names the other places found (`also_in`); different
+  commits with the same message stay separate. The quality check and the golden set
+  still get every point: they measure retrieval, not reading.
 - **BREAKING: CLI commands that destroy or widen something now ask first.**
   `griot repos add` and `griot profiles delete` ask `[y/N]` at an interactive
   terminal and have no flag that answers instead: run without a terminal they
@@ -164,6 +172,13 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **A search result says where, when and who.** Each `griot_search` result
+  carries `metadata`, what was stored with the source: the path and chunk
+  number of a file, the whole hash, author and date of a commit, the
+  identifier and date of a tag, branch, pull request, release or issue. The
+  label alone cut the hash to eight characters and had no date, so "when did
+  this change" could not be answered from a search. An agent now also sees
+  the author name stored with a commit, a pull request or an issue.
 - **`griot_search` can be narrowed.** `repos` keeps a search inside the named
   repositories and `source_types` to kinds of source (`code`, `commit`,
   `tag`, `branch`, `merge_request`, `release`, `issue`). A repository with

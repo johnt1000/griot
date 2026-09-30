@@ -57,6 +57,7 @@ def test_griot_search_formats_results_with_source_label(monkeypatch):
             "source_label": "commit a1b2c3d4 — repo-x",
             "repo": "repo-x",
             "source_type": "commit",
+            "metadata": {"commit_hash": "a1b2c3d4e5"},
             "content": "fix bug",
             "score": 0.87,
         }
@@ -1944,22 +1945,29 @@ async def test_index_status_survives_a_locked_collection_through_the_protocol(mo
     assert result.structured_content["points_count"] is None
 
 
-def test_history_prompt_teaches_the_post_filter_it_actually_needs():
-    """[review finding] The prompt told the agent to search "so the different
-    source types can each contribute" — but griot_search takes only query and
-    limit. There is NO source_type filter. As written, one-search-per-source
-    was satisfied by luck: the agent can only vary the wording and then read
-    source_type off each result.
-
-    Describing a capability the tool does not have is worse than describing
-    none: the agent follows the instruction, believes it filtered, and
-    reports coverage it never had."""
+@pytest.mark.anyio
+async def test_history_prompt_names_only_a_filter_the_tool_has():
+    """[review finding, then a real change] The prompt once told the agent to
+    search "so the different source types can each contribute" when
+    griot_search took only a query and a limit: the agent followed it,
+    believed it had filtered, and reported coverage it never had. The tool
+    has a `source_types` argument now and the prompt uses it, so the two are
+    held together here: the argument the prompt names is in the tool's real
+    schema, and every kind it tells the agent to pass is one the filter
+    accepts."""
+    import re
     text = mcp_server.griot_history_report("q")
+    async with Client(mcp_server.mcp) as client:
+        tool = {t.name: t for t in (await client.list_tools()).tools}["griot_search"]
 
-    assert "source_type" in text
-    assert "filter" in text.lower() or "read" in text.lower()
-    # It must not promise a parameter that does not exist.
-    assert "source_type=" not in text
+    assert "source_types" in text and "source_types" in tool.input_schema["properties"]
+    asked_for = set(re.findall(r'"([a-z_]+)"', " ".join(re.findall(r"\[[^\]]*\]", text))))
+    assert asked_for and asked_for <= set(common.SOURCE_TYPES), asked_for - set(common.SOURCE_TYPES)
+    assert "no filter" not in text.lower()
+    # It lists what each kind knows; every kind it lists has to be in one of
+    # the searches it asks for, or the agent is told about a kind and never
+    # sent to look at it.
+    assert asked_for == set(common.SOURCE_TYPES), set(common.SOURCE_TYPES) - asked_for
 
 
 def test_health_prompt_asks_the_tool_that_knows_about_paid_profiles():

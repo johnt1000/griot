@@ -76,7 +76,19 @@ async def test_the_search_tool_description_leads_with_how_to_use_it():
     assert "registered repositories" in first and "all of them" in first, "its reach comes first"
     assert "do not use it" in " ".join(description.lower().split())
     assert "group_by_document" in description
-    assert len(description) <= 1300
+    # Raised from 1300 when the filters and the metadata of a result had to
+    # be described. Still a ceiling: every agent that loads the tool reads it.
+    assert len(description) <= 1500
+
+
+def _stored_fields():
+    """Every field an indexer stores with a point, which is what a result's
+    `metadata` can hold: the keys of the dict literals in the five indexers."""
+    from pathlib import Path
+    fields = set()
+    for module in ("index_code", "index_commits", "index_tags", "index_branches", "index_platform"):
+        fields |= set(re.findall(r'"([a-z_]+)":', (Path(common.__file__).parent / f"{module}.py").read_text()))
+    return fields
 
 
 @pytest.mark.anyio
@@ -91,16 +103,21 @@ async def test_the_search_tool_description_names_only_arguments_it_has():
     returned = set(output["properties"]) | set(output["$defs"]["SearchResult"]["properties"])
     listed = set(tools["griot_repos_list"].output_schema["$defs"]["RepoEntry"]["properties"])
     allowed = set(tool.input_schema["properties"]) | returned | listed | set(common.SOURCE_TYPES)
-    assert _code_words(tool.description) <= allowed, _code_words(tool.description) - allowed
+    # The names of stored fields are allowed ONLY in the paragraph that
+    # introduces `metadata`. Anywhere else `author` or `state` in backticks
+    # would read as an argument, which is the mistake this test exists for.
+    for paragraph in tool.description.split("\n\n"):
+        here = allowed | _stored_fields() if "`metadata`" in paragraph else allowed
+        assert _code_words(paragraph) <= here, (_code_words(paragraph) - here, paragraph[:60])
     assert "name" in listed and "repo" in returned, "the two names the text points at exist"
 
 
 @pytest.mark.anyio
 async def test_no_text_promises_a_date_the_search_does_not_return():
-    """A commit comes back as its message and a label with its hash. The
-    date is in the index but not in what search returns, so neither text may
-    say the agent learns WHEN from a search. When results carry the date,
-    this test and the texts change together."""
+    """Neither text may say the agent learns WHEN from a search unless a
+    result carries what was stored with the source. It does now (`metadata`,
+    with the date of a commit: tests/test_search_results.py asks a real
+    client for it), so the texts say "when"; this holds them to that field."""
     instructions, tools = await _server()
     fields = set(tools["griot_search"].output_schema["$defs"]["SearchResult"]["properties"])
     if not fields & {"date", "metadata"}:
