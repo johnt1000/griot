@@ -134,9 +134,9 @@ def test_main_without_repos_json_prints_friendly_error(monkeypatch, capsys):
 
     monkeypatch.setattr(index_branches.common, "load_repos", fail_load_repos)
 
-    index_branches.main([])
+    assert index_branches.main([]) == 1
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err  # an error: stderr and a failing exit status
     assert "not found" in out
 
 

@@ -139,7 +139,7 @@ def get_case(index: int, cases: list[dict] | None = None) -> dict:
 
 
 def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int = 10) -> int:
-    repo_path = Path(repo_path_str)
+    repo_path = Path(repo_path_str).resolve()  # `suggest .` must still name the repository
     if not repo_path.is_dir():
         print(f"Error: '{repo_path_str}' does not exist or is not a directory.", file=sys.stderr)
         return 1

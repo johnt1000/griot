@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -87,19 +88,33 @@ def main(argv=None):
     if args.path:
         # --path skips repos.json entirely: the rest of the flow already operates
         # on Path objects identical to the ones coming from repos.json, with no change at all.
-        repo_paths_str = [args.path]
+        # Resolved: `--path .` must still give the repository its directory
+        # name (Path(".").name is empty), in its points and in its ids.
+        repo_paths_str = [str(Path(args.path).resolve())]
     else:
         try:
             repo_paths_str = common.load_repos()
         except FileNotFoundError:
-            print(f"Error: {common.REPOS_JSON_PATH} not found.")
-            return
+            print(f"Error: {common.REPOS_JSON_PATH} not found.", file=sys.stderr)
+            return 1
 
         if args.repo:
             repo_paths_str = [p for p in repo_paths_str if Path(p).name == args.repo]
             if not repo_paths_str:
-                print(f"Error: no repo named '{args.repo}' in repos.json.")
-                return
+                print(f"Error: no repo named '{args.repo}' in repos.json.", file=sys.stderr)
+                return 1
+
+    # One missing path among several is a warning (below). None of them
+    # existing is the same failure as a name that matches nothing: the run
+    # could not start, and saying "nothing to index" with exit status 0 would
+    # let a script believe the index is up to date.
+    if not repo_paths_str:
+        print("Error: no repository is registered. Register one with `griot repos add <path>`.", file=sys.stderr)
+        return 1
+    if not any(Path(p).is_dir() for p in repo_paths_str):
+        print(f"Error: none of the {len(repo_paths_str)} path(s) to index is a directory: "
+              f"{', '.join(repo_paths_str[:3])}{' ...' if len(repo_paths_str) > 3 else ''}", file=sys.stderr)
+        return 1
 
     all_documents = []
     for path_str in repo_paths_str:
@@ -146,4 +161,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

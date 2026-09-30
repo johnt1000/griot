@@ -1316,6 +1316,7 @@ def test_griot_quality_check_passes_through_and_uses_small_default(monkeypatch):
         seen["sample_size"] = sample_size
         return {"sampled": 3, "passed": 3, "failed": 0, "avg_score": 0.99, "failures": []}
 
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
     monkeypatch.setattr(quality_check, "run_self_check", fake_run_self_check)
 
     output = mcp_server.griot_quality_check()
@@ -1333,8 +1334,9 @@ def test_griot_quality_check_honors_explicit_sample_size(monkeypatch):
 
     def fake_run_self_check(collection, sample_size=quality_check.SELF_CHECK_SAMPLE_SIZE, min_score=quality_check.SELF_CHECK_MIN_SCORE):
         seen["sample_size"] = sample_size
-        return {"sampled": 0, "passed": 0, "failed": 0, "avg_score": None, "failures": []}
+        return {"sampled": 1, "passed": 1, "failed": 0, "avg_score": 0.99, "failures": []}
 
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
     monkeypatch.setattr(quality_check, "run_self_check", fake_run_self_check)
 
     mcp_server.griot_quality_check(sample_size=7)
@@ -1995,6 +1997,7 @@ def test_quality_check_tool_records_its_run_for_the_trend(monkeypatch, tmp_path)
 
     "I checked the reader and not the writer", again — this time on a surface
     that did not exist when the rule was written."""
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
     monkeypatch.setattr(quality_check, "run_self_check",
                         lambda collection, sample_size: {"passed": 9, "sampled": 10, "failed": 1,
                                                          "collection": collection, "failures": []})
@@ -2016,10 +2019,11 @@ def test_quality_check_tool_caps_the_sample_size(monkeypatch):
     off, which bounds the damage at a day's ceiling rather than preventing it.
     The health prompt promotes this tool to the recommended path."""
     seen = {}
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
     monkeypatch.setattr(quality_check, "run_self_check",
                         lambda collection, sample_size: seen.update(n=sample_size) or
-                        {"passed": 0, "sampled": 0, "failed": 0, "collection": collection,
-                         "failures": []})
+                        {"passed": 1, "sampled": 1, "failed": 0, "collection": collection,
+                         "avg_score": 0.99, "failures": []})
     monkeypatch.setattr(quality_check, "_record_for_trend", lambda *a, **kw: None)
 
     mcp_server.griot_quality_check(sample_size=100_000)

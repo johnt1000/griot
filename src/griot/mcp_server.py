@@ -55,6 +55,7 @@ import inspect
 import json
 import os
 import shlex
+import sys
 import threading
 import time
 from typing import Annotated, Literal
@@ -66,7 +67,7 @@ from typing import Annotated, Literal
 # module fail to load on the two oldest versions it claims to support — found
 # by running the suite on 3.10 while setting up CI, not by any test. Already a
 # transitive dependency of pydantic, so this adds nothing to install.
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from pydantic import BaseModel
 
@@ -631,6 +632,8 @@ class QualityPoint(TypedDict):
 class StatsOutput(TypedDict):
     days: int
     points_count: int | None
+    # Why points_count is null when it is: "busy" or "unreadable: <reason>".
+    points_error: NotRequired[str | None]
     embed_profile: str | None
     num_runs: int
     total_indexed: int
@@ -695,6 +698,10 @@ class IndexStatusOutput(TypedDict):
     # degraded read into a hard error: the exact opposite of what the
     # try/except producing the None was written for.
     points_count: int | None
+    # Why points_count is null when it is: "busy" or "unreadable: <reason>".
+    # Not required: a missing key must degrade to "no reason given", not
+    # reject the whole answer (the same trap points_count itself once was).
+    points_error: NotRequired[str | None]
     collection: str
     embed_profile: str
     running: bool
@@ -1367,8 +1374,19 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) ->
     depends on manual curation, out of scope for this tool (the design notes)."""
     if sample_size < 1:
         raise ValueError(f"sample_size must be at least 1 (got {sample_size})")
+    # A check that samples nothing measured nothing. Returned as zeros with
+    # no error it reads as "nothing failed", which is how an empty index got
+    # a clean bill from the tool the health prompt recommends (the CLI had
+    # the same defect). Asked first, so that checking never CREATES the
+    # collection it is checking.
+    not_measured = (f"Quality was not measured: nothing is indexed for profile '{common.ACTIVE_PROFILE_NAME}'. "
+                    f"Index a repository first (`griot index all`), then run this again.")
+    if not common.collection_exists(common.COLLECTION_NAME):
+        raise RuntimeError(not_measured)
     result = quality_check.run_self_check(common.COLLECTION_NAME,
                                           min(sample_size, QUALITY_CHECK_SAMPLE_MAX))
+    if result["sampled"] == 0:
+        raise RuntimeError(not_measured)
     # [review finding] Same regression as an earlier decision, one surface over: the
     # trend table is read by griot_stats and written by _record_for_trend,
     # which only the CLI called — so a check run from here left no trace, and
@@ -1474,6 +1492,18 @@ class IndexRepoOutput(TypedDict):
     reason: str | None
 
 
+def _index_command(path: str) -> str | None:
+    """The CLI command that indexes `path` under the SAME ids an earlier run
+    used. A registered repository is indexed by its name; `--path` keys the
+    ids on the directory instead, so pasted for a registered repository it
+    would embed everything again under new ids and leave the old points
+    behind (start_index_job makes the same choice, for the same reason)."""
+    name = common.registered_repo_name(path)
+    if name is not None:
+        return _cli_command("index", "all", option=("--repo", name))
+    return _cli_command("index", "all", option=("--path", path))
+
+
 def _index_repo_question(path: str) -> str:
     return (f"Index {_shown(path)}. This calls the embedding API and costs money on a paid profile; "
             f"the spend cannot be undone. It also removes indexed points whose source is gone.")
@@ -1540,11 +1570,18 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
             return {"started": False, "reason": blocked, "path": None, "pid": None, "sources": None}
         ok, refusal = await _confirmed(
             ctx, _index_repo_question(path),
-            confirm=confirm, cli_hint=_cli_command("index", "all", option=("--path", path)),
-            answer=answer)
+            confirm=confirm, cli_hint=_index_command(path), answer=answer)
         if not ok:
             return {"started": False, "reason": refusal, "path": None, "pid": None, "sources": None}
         return jobs.start_index_job(path, sources)
+
+
+def _keep_stdout_for_the_protocol() -> None:
+    """Over stdio this process's stdout IS the JSON-RPC stream. Notices that
+    a terminal run echoes (a collection held by another process, an embedding
+    call being retried) would land in the middle of it as lines that are not
+    messages. They go to stderr, where a client shows or logs them."""
+    common._echo_stream = sys.stderr
 
 
 def main(argv=None) -> None:
@@ -1556,6 +1593,7 @@ def main(argv=None) -> None:
     the tools, never calling mcp.run() — without that, the process imported
     everything and exited, never connecting via stdio. transport="stdio" is
     the SDK's default, made explicit here for clarity."""
+    _keep_stdout_for_the_protocol()
     _start_idle_reaper()
     mcp.run(transport="stdio")
 

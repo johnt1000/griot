@@ -320,7 +320,7 @@ def test_multi_mode_retries_transient_lock_then_succeeds(monkeypatch):
     def flaky_load(path):
         calls["n"] += 1
         if calls["n"] < 3:
-            raise RuntimeError("outro processo com o WAL aberto")
+            raise RuntimeError("failed to open WAL: Kind(WouldBlock)")
         return real_load(path)
 
     monkeypatch.setattr(qe.EdgeShard, "load", flaky_load)
@@ -340,7 +340,7 @@ def test_multi_mode_raises_clear_error_after_retries_exhausted(monkeypatch):
     common.release_client()
 
     def always_fails(path):
-        raise RuntimeError("another process has the WAL open, always")
+        raise RuntimeError("failed to open WAL: Kind(WouldBlock), always")
 
     monkeypatch.setattr(qe.EdgeShard, "load", always_fails)
     monkeypatch.setattr(common.time, "sleep", lambda s: None)
@@ -660,7 +660,7 @@ def test_a_status_read_reports_a_held_collection_as_collection_busy_without_wait
 
 def test_multi_mode_exhausting_its_retries_raises_collection_busy(monkeypatch):
     monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
-    _held_load(monkeypatch, RuntimeError("another process has the WAL open"))
+    _held_load(monkeypatch, RuntimeError("failed to open WAL: Kind(WouldBlock)"))
     monkeypatch.setattr(common.time, "sleep", lambda s: None)
 
     with pytest.raises(common.CollectionBusyError, match="Could not open collection") as info:

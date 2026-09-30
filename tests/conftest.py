@@ -231,3 +231,13 @@ def _no_test_runs_a_harness_command(monkeypatch):
         raise AssertionError(f"a test tried to run a harness command for real: {argv}")
 
     monkeypatch.setattr(harnesses, "_run_harness_command", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _echo_goes_to_stdout_again(monkeypatch):
+    """The MCP server's main() points log_and_print() at stderr for the life
+    of the process. A test that calls it would change where every later
+    test's output goes."""
+    from griot import common
+
+    monkeypatch.setattr(common, "_echo_stream", None)
