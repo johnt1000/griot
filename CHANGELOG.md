@@ -17,6 +17,18 @@ between minor versions. Breaking changes are called out explicitly.
   `griot golden-set remove` and `griot auth remove` ask the same way and accept
   `--yes` for scripts. Anything that would be refused anyway (a bad path, an
   unknown profile, an index out of range) is reported before the question.
+- **BREAKING: in a git work tree, `griot index code` reads only what git
+  tracks.** Ignored and untracked files are no longer indexed (`git add` a new
+  file to have it indexed); a directory outside git is walked as before. Files
+  over 1 MB are skipped and reported, and `pnpm-lock.yaml`, `*.min.*` and tool
+  caches are left out. If git cannot list a work tree, nothing is read from
+  it. This change does not remove anything: points already indexed from files
+  that are no longer read, ignored files included, stay in the index and
+  searchable. To drop them today, delete the profile's collection
+  (`griot profiles delete`) and index again.
+- **More file types are indexed**: `.tsx .jsx .mjs .cjs .mdx .sql .yml .yaml
+  .tf .toml`. The next `griot index code` embeds them; on a paid profile that
+  costs money, and `--dry-run` shows how many chunks first.
 - **Bare repositories are no longer read.** `griot index` on a bare clone
   used to index its commits, tags and branches; it is now refused, because a
   bare repository can sit inside another project's files with a git config of
@@ -33,6 +45,10 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **Symlinks in a repository are not followed.** A repository could ship
+  `notes.md -> ~/.aws/credentials` and have the target indexed, and on a paid
+  profile sent to the embedding API. The file and the directories on the way
+  to it are checked when listed and again when opened.
 - **Indexing a repository no longer runs programs named in that repository's
   git config.** `git log` obeys the repository's own config, and keys such as
   `log.showSignature` with `gpg.program` make it run a program of the

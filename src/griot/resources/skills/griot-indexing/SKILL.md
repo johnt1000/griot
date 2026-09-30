@@ -9,11 +9,15 @@ description: Deep guide to griot's indexing model — the five sources and what 
 
 `griot index all` runs, in this fixed order:
 
-1. **`code`** — walks each registered repo's files (extensions:
-   `.py .md .js .ts .java .cs .php .cpp .go .rb .rs .scala .html .css .sol
-   .sh`; skips `node_modules`, `dist`, `build`, `.git`, `__pycache__`,
-   `.venv`/`venv`, `vendor`, `.next`, `target`, `coverage`), chunks each
-   file, embeds it.
+1. **`code`** — reads each registered repo's files, chunks each one, embeds
+   it. In a git work tree it reads **only what git tracks**: a file that is
+   ignored or not yet added is not indexed (`git add` it first). Outside git
+   it walks the directory. Extensions: `.py .md .mdx .js .mjs .cjs .jsx .ts
+   .tsx .java .cs .php .cpp .go .rb .rs .scala .html .css .sol .sh .sql .yml
+   .yaml .tf .toml`. Left out either way: `node_modules`, `dist`, `build`,
+   `.git`, `__pycache__`, `.venv`/`venv`, `vendor`, `.next`, `target`,
+   `coverage` and tool caches; `pnpm-lock.yaml` and `*.min.*`; symlinks
+   (not followed); and any file over 1 MB, which is reported.
 2. **`commits`** — git commit history.
 3. **`tags`** — git tags.
 4. **`branches`** — git branches.
