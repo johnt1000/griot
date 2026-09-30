@@ -95,6 +95,13 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **The MCP server tells the agent when to use it.** It now sends
+  instructions at connection: what griot covers (every registered repository,
+  not only the current one), when to search it first, when not to (an exact
+  string or value, a known path), how to write a query, and to open what a
+  result points at. Before, an agent saw only tool names, and sessions
+  with the server connected searched with grep instead. The description of
+  `griot_search` now leads with the same things.
 - **`griot assist install` offers to register griot's MCP server.** With
   `--scope global` for every project (the harness's user scope), otherwise for
   this project only. It shows the exact command and runs it, through the
