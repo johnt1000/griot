@@ -41,7 +41,7 @@ def test_griot_search_formats_results_with_source_label(monkeypatch):
 
     def fake_search(query, limit=5, group_by_document=False):
         assert query == "how does login work"
-        assert limit == 5
+        assert limit == 8  # the MCP default: what agents actually ask for
         return hits
 
     monkeypatch.setattr(common, "search", fake_search)
@@ -2307,3 +2307,19 @@ def test_the_reaper_checks_often_enough_that_the_idle_window_is_what_you_wait(mo
     monkeypatch.setattr(common, "IDLE_RELEASE_SECONDS", idle)
 
     assert mcp_server._reaper_interval() == expected
+
+
+@pytest.mark.anyio
+async def test_the_search_limit_default_agents_see_in_the_schema_is_eight():
+    # Verified through the protocol: the default is read off the tool's signature, so the schema an
+    # agent receives is what decides it, not a constant somewhere.
+    from mcp.client.client import Client
+
+    async with Client(mcp_server.mcp) as client:
+        tool = {t.name: t for t in (await client.list_tools()).tools}["griot_search"]
+
+    assert tool.input_schema["properties"]["limit"]["default"] == 8 == mcp_server.SEARCH_LIMIT_DEFAULT
+
+
+def test_the_search_limit_default_sits_inside_the_cap():
+    assert 1 <= mcp_server.SEARCH_LIMIT_DEFAULT <= mcp_server.SEARCH_LIMIT_MAX
