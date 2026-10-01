@@ -25,8 +25,10 @@ what "done for a public release" still means.
 
 ## Next
 
-- **A cheap indexing speed-up that was spotted and not done:** a new HTTP
-  connection per embedding call.
+Nothing is queued here right now: the gap between the CLI and the MCP tools,
+the defects a code analysis reported and the cheap indexing speed-ups are
+all done (see the [changelog](CHANGELOG.md)). What comes next is chosen from
+the list below.
 
 ## Considered, not scheduled
 

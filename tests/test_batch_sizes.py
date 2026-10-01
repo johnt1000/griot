@@ -120,7 +120,7 @@ def test_an_index_run_on_an_openai_compatible_profile_makes_fewer_requests(monke
         sent.append(len(kwargs["json"]["input"]))
         return _Answer(kwargs["json"]["input"])
 
-    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(common, "_http_post", post)
     documents = [{"id": f"repo:code:f{n}.py:0", "content": f"text number {n}",
                   "metadata": {"source_type": "code", "repo": "repo", "file_path": f"f{n}.py", "chunk_index": 0}}
                  for n in range(300)]
@@ -171,7 +171,7 @@ def openai_profile(monkeypatch):
     monkeypatch.setenv("GRIOT_OPENAI_API_KEY", "not-a-real-key")
 
     def use(endpoint):
-        monkeypatch.setattr(requests, "post", endpoint)
+        monkeypatch.setattr(common, "_http_post", endpoint)
         return endpoint
 
     return type("Profile", (), {"profile": profile, "use": staticmethod(use), "dim": profile["dim"]})()

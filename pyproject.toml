@@ -93,3 +93,6 @@ griot = ["resources/skills/**/*.md", "resources/agents/**/*.md", "resources/inst
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "as_every_other_test: in a file that lifts one of conftest's guards, a test that keeps the guard",
+]

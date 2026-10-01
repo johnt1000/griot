@@ -478,6 +478,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Performance
 
+- **Calls to an embedding or chat API go over a connection that is kept.**
+  Every call opened its own: a TCP and a TLS handshake before each batch of
+  an index run, and before each search of a server that stays up for days.
+  Measured against a real endpoint, a call took about 385 ms on a new
+  connection and about 240 ms on a kept one. A kept connection that the
+  other end closed while it sat idle is tried again at once on a fresh one,
+  instead of falling into the ten or twenty seconds the calls wait when an
+  API cannot be reached. The session keeps nothing but the connection: no
+  cookie is stored, and a credential goes in its own call's headers.
 - **Local indexing is faster and takes a fraction of the memory.** A local
   model was handed 128 texts at once, a number taken from a rule of thumb
   and never measured on the chunks griot cuts (up to 1500 characters). It

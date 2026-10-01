@@ -48,7 +48,7 @@ def test_gemini_token_goes_in_header_not_url(monkeypatch, fake_gemini_token):
         captured.update(url=url, params=params, headers=headers)
         return FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}], "usageMetadata": {}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     common.chat_completion("question")
 
     assert TOKEN not in captured["url"]
@@ -63,7 +63,7 @@ def test_gemini_http_error_message_never_contains_token(monkeypatch, fake_gemini
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         return FakeResponse(500, url=f"https://generativelanguage.googleapis.com/x?key={TOKEN}")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     try:
         common.chat_completion("question")
         assert False, "should have raised RuntimeError"
@@ -78,7 +78,7 @@ def test_gemini_connection_error_message_never_contains_token(monkeypatch, fake_
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         raise requests.ConnectionError(f"Max retries exceeded with url: /x?key={TOKEN}")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     try:
         common.chat_completion("question")
         assert False, "should have raised RuntimeError"
@@ -97,7 +97,7 @@ def test_embed_error_log_line_never_contains_token(monkeypatch, fake_gemini_toke
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         return FakeResponse(500, url=f"https://generativelanguage.googleapis.com/x?key={TOKEN}")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     with caplog.at_level(logging.WARNING, logger="griot"):
         result = common.embed_texts(["a"])
 

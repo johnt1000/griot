@@ -33,7 +33,7 @@ def test_embed_texts_direct_calls_batch_embed_contents_and_records_spend(monkeyp
             "usageMetadata": {"promptTokenCount": 100},
         })
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     vectors = common.embed_texts(["text one", "text two"])
 
     assert vectors == [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
@@ -50,7 +50,7 @@ def test_embed_texts_direct_returns_none_list_on_http_error(monkeypatch, fake_ge
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         return FakeResponse(500, {})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     result = common.embed_texts(["a", "b", "c"])
     assert result == [None, None, None]
 
@@ -66,7 +66,7 @@ def test_embed_texts_direct_retries_on_429_then_succeeds(monkeypatch, fake_gemin
             return FakeResponse(429, {})
         return FakeResponse(200, {"embeddings": [{"values": [1.0, 1.0, 1.0, 1.0]}], "usageMetadata": {"promptTokenCount": 5}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     result = common.embed_texts(["text"])
     assert result == [[1.0, 1.0, 1.0, 1.0]]
     assert calls["n"] == 3
@@ -79,7 +79,7 @@ def test_embed_texts_direct_gives_up_after_max_rate_limit_retries(monkeypatch, f
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         return FakeResponse(429, {})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     result = common.embed_texts(["a", "b"])
     assert result == [None, None]
 
@@ -105,7 +105,7 @@ def test_chat_completion_returns_text_and_records_spend(monkeypatch, fake_gemini
             "usageMetadata": {"totalTokenCount": 50},
         })
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     answer = common.chat_completion("what is the capital of france?")
 
     assert answer == "Paris."
@@ -121,7 +121,7 @@ def test_chat_completion_uses_explicit_model_override(monkeypatch, fake_gemini_t
         captured["url"] = url
         return FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}], "usageMetadata": {}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     common.chat_completion("question", model="gemini-flash-lite-latest")
     assert "gemini-flash-lite-latest" in captured["url"]
 
@@ -132,7 +132,7 @@ def test_chat_completion_raises_runtime_error_when_gemini_unavailable(monkeypatc
     def fake_post(url, params=None, json=None, timeout=None, headers=None, allow_redirects=True):
         return FakeResponse(500, {})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     try:
         common.chat_completion("question")
         assert False, "should have raised RuntimeError"

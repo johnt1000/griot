@@ -1,4 +1,5 @@
 import hashlib
+import http.cookiejar
 import json
 import logging
 import math
@@ -1651,6 +1652,81 @@ class GeminiUnavailable(Exception):
     the helper."""
 
 
+class _NoCookies(http.cookiejar.DefaultCookiePolicy):
+    """A kept session is for the connection, not for state: a cookie an API
+    sets is not stored and not sent back."""
+
+    def set_ok(self, cookie, request):
+        return False
+
+
+_http_lock = threading.Lock()
+_http_session_kept: "requests.Session | None" = None
+# The session that has completed a call, if it is still the kept one: only
+# then can one of its connections have gone stale. The session itself, not a
+# flag: a slow call finishing on a session that was replaced meanwhile must
+# not vouch for the new one.
+_http_session_worked: "requests.Session | None" = None
+# A connection error that a fresh connection would meet again.
+_NOT_A_STALE_CONNECTION = (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ProxyError)
+
+
+def _new_http_session() -> "requests.Session":
+    session = requests.Session()
+    session.cookies.set_policy(_NoCookies())
+    return session
+
+
+def _http_session() -> "requests.Session":
+    """The session this process keeps for its calls to embedding and chat
+    APIs. Nothing is stored on it between calls but the open connections:
+    the credential of a call goes in that call's own headers."""
+    global _http_session_kept
+    with _http_lock:
+        if _http_session_kept is None:
+            _http_session_kept = _new_http_session()
+        return _http_session_kept
+
+
+def _drop_http_session() -> None:
+    global _http_session_kept, _http_session_worked
+    with _http_lock:
+        kept, _http_session_kept, _http_session_worked = _http_session_kept, None, None
+    if kept is not None:
+        kept.close()
+
+
+def _http_post(url: str, **kwargs) -> "requests.Response":
+    """POST over a connection that is kept between calls. Each call used to
+    open its own: a TCP and a TLS handshake before every batch of an index
+    run and before every search of a long-lived server (about 150 ms of a
+    385 ms call, measured against a real endpoint).
+
+    A kept connection can have been closed by the other end while it sat
+    idle, and then the first write on it fails. The callers wait ten or
+    twenty seconds between attempts when an API cannot be reached, which is
+    for a network that is down, not for this: after a call that worked, a
+    connection error is tried once more, at once, on a fresh connection. A
+    timeout is not (the call already waited its full time), nor an error a
+    fresh connection would meet again (a certificate, a proxy), nor a
+    failure on a session that never worked (nothing was kept, so nothing
+    went stale)."""
+    global _http_session_worked
+    session = _http_session()
+    try:
+        response = session.post(url, **kwargs)
+    except requests.ConnectionError as e:
+        if isinstance(e, _NOT_A_STALE_CONNECTION) or _http_session_worked is not session:
+            raise
+        _drop_http_session()
+        session = _http_session()
+        response = session.post(url, **kwargs)
+    with _http_lock:
+        if _http_session_kept is session:
+            _http_session_worked = session
+    return response
+
+
 def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: int = 5, max_connection_retries: int = 30) -> dict:
     """POST directly to Google's API (no LiteLLM/proxy in between) with two
     independent retry budgets — used by embed_texts() ("direct" backend)
@@ -1670,7 +1746,7 @@ def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: 
             # includes the full URL, so a query param would leak the key
             # into logs/stdout/tracebacks. allow_redirects=False: a
             # cross-host redirect can't carry the credential along with it.
-            resp = requests.post(f"{GEMINI_API_BASE}/{path}", headers={"x-goog-api-key": token}, json=json_body, timeout=120, allow_redirects=False)
+            resp = _http_post(f"{GEMINI_API_BASE}/{path}", headers={"x-goog-api-key": token}, json=json_body, timeout=120, allow_redirects=False)
             if resp.status_code == 429:
                 if rate_limit_attempt >= max_rate_limit_retries:
                     raise GeminiUnavailable(f"persistent 429 after {max_rate_limit_retries} attempts")
@@ -1720,7 +1796,7 @@ def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict,
             # [M5] allow_redirects=False: the Authorization header must not
             # follow a cross-host redirect (requests only strips it in some
             # cases; better to never follow one with a credential attached).
-            resp = requests.post(url, headers=headers, json=json_body, timeout=120, allow_redirects=False)
+            resp = _http_post(url, headers=headers, json=json_body, timeout=120, allow_redirects=False)
             if resp.status_code == 429:
                 if rate_limit_attempt >= max_rate_limit_retries:
                     raise DirectAPIUnavailable(f"persistent 429 after {max_rate_limit_retries} attempts on {url}")
