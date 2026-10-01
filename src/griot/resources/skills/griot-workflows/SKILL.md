@@ -52,8 +52,8 @@ document's matching chunks down to its single best-scoring chunk.
   this when you're not sure which document has the answer and want to
   survey more of them before drilling in.
 
-The CLI's `griot search` has no flag for this — it always searches
-ungrouped (with the same three-per-document ceiling). `group_by_document` is MCP/programmatic-only.
+On the CLI it is `griot search --group-by-document`; without it the same
+three-per-document ceiling applies.
 
 ## Narrowing a search: `repos` and `source_types`
 
@@ -71,8 +71,8 @@ source unless told otherwise:
 A repository with nothing indexed, or a kind that does not exist, is an
 **error**, not an empty result: an empty list would read as "nothing was
 found". Two values that both exist and match nothing together (a repository
-with no pull requests indexed, say) do return an empty list. Like
-`group_by_document`, both are MCP/programmatic-only.
+with no pull requests indexed, say) do return an empty list. On the CLI the
+same filters are `--repo NAME` and `--source-type KIND`, each repeatable.
 
 ## Reading `source_type`
 

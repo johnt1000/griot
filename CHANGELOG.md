@@ -216,6 +216,12 @@ between minor versions. Breaking changes are called out explicitly.
   label alone cut the hash to eight characters and had no date, so "when did
   this change" could not be answered from a search. An agent now also sees
   the author name stored with a commit, a pull request or an issue.
+- **`griot search` takes the filters the MCP tool has.** `--repo NAME` and
+  `--source-type KIND` (each repeatable) and `--group-by-document`, with the
+  same rule: a repository with nothing indexed or a kind that does not exist
+  is an error (exit status 2), not "No results.". A `--limit` below 1 is a
+  usage error instead of a traceback. `griot ask` is not narrowed: it still
+  searches everything.
 - **`griot_search` can be narrowed.** `repos` keeps a search inside the named
   repositories and `source_types` to kinds of source (`code`, `commit`,
   `tag`, `branch`, `merge_request`, `release`, `issue`). A repository with

@@ -2654,18 +2654,26 @@ SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "
 SEARCH_FILTER_MAX_VALUES = 20
 
 
+class SearchFilterError(ValueError):
+    """A search filter that cannot be used: not a list of names, too many, a
+    kind of source that does not exist, a repository with nothing indexed.
+    Its own type so that a caller can tell "the arguments are wrong" from
+    any other failure of a search (a ValueError still, for those who do not
+    care)."""
+
+
 def _filter_names(name: str, values) -> list[str]:
     """The values of one search filter, or [] for "no filter". A bare string
     is refused rather than read as a list of its letters."""
     if values is None:
         return []
     if not isinstance(values, (list, tuple)):
-        raise ValueError(f"{name} must be a list of names, not {type(values).__name__}.")
+        raise SearchFilterError(f"{name} must be a list of names, not {type(values).__name__}.")
     if len(values) > SEARCH_FILTER_MAX_VALUES:
-        raise ValueError(f"{name} takes at most {SEARCH_FILTER_MAX_VALUES} names (got {len(values)}).")
+        raise SearchFilterError(f"{name} takes at most {SEARCH_FILTER_MAX_VALUES} names (got {len(values)}).")
     for value in values:
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{name} must hold names (got {printable(repr(value))[:80]}).")
+            raise SearchFilterError(f"{name} must hold names (got {printable(repr(value))[:80]}).")
     return list(dict.fromkeys(values))
 
 
@@ -2683,7 +2691,7 @@ def _checked_filters(repos, source_types) -> tuple[list[str], list[str]]:
     repos, source_types = _filter_names("repos", repos), _filter_names("source_types", source_types)
     unknown = [kind for kind in source_types if kind not in SOURCE_TYPES]
     if unknown:
-        raise ValueError(f"Unknown source type(s): {', '.join(printable(repr(k))[:80] for k in unknown)}. "
+        raise SearchFilterError(f"Unknown source type(s): {', '.join(printable(repr(k))[:80] for k in unknown)}. "
                          f"The kinds of source are: {', '.join(SOURCE_TYPES)}.")
     return repos, source_types
 
@@ -2706,7 +2714,7 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
             except (OSError, ValueError):
                 registered = []
             known = f" Registered repositories: {', '.join(shown(r) for r in registered)}." if registered else ""
-            raise ValueError(
+            raise SearchFilterError(
                 f"Nothing is indexed for a repository named {printable(repr(repo))[:80]} with profile "
                 f"'{ACTIVE_PROFILE_NAME}'. Pass the directory name alone, spelled exactly (not a path). If the "
                 f"name is right, the repository has not been indexed with this profile yet: index it first."
