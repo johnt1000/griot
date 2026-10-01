@@ -1350,6 +1350,59 @@ def record_spend(cost_usd: float) -> None:
     logdb.write_spend(LOG_DIR, _today(), cost_usd, time.time(), SPEND_VELOCITY_WINDOW_SECONDS)
 
 
+# How many bytes of text are counted as one token when a provider did not say
+# what it billed (see _billed_tokens). Lower than the 3.5 characters per token
+# measured on an index (CHARS_PER_TOKEN_ESTIMATE), on purpose: this number
+# feeds the spend ceiling, and a ceiling that is reached late is the one that
+# hurts. Dense text (base64, minified code, numbers) and text outside ASCII
+# cost more tokens than their size suggests, so this is still an estimate.
+FALLBACK_BYTES_PER_TOKEN = 3.0
+# Said once per process: see _billed_tokens().
+_estimated_spend_was_said = False
+
+
+def _billed_tokens(answer, path: tuple[str, str], texts: list[str]) -> float:
+    """The number of tokens a paid call is counted by: what the provider
+    reported at `path` in its `answer`, or, when it reported nothing usable,
+    an estimate from the size of the `texts` that went to and came from it.
+
+    The cost used to be the reported count times the price and nothing
+    else, so an answer without a count (the field missing, null, zero, not
+    a number) cost zero: nothing was added to the day's total, and the
+    ceiling, the only budget these calls have, stayed open for as long as
+    nothing told it otherwise. Counted in bytes, so that text which costs
+    more than a token per character is not counted short, and never as
+    nothing: a paid call is at least one token.
+
+    A count that IS a number and makes no sense (negative, not finite) is
+    passed on as it is: record_spend() stops the run on it, which is the
+    right answer to a provider reporting nonsense."""
+    global _estimated_spend_was_said
+    reported = answer
+    for key in path:
+        reported = reported.get(key) if isinstance(reported, dict) else None
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported != 0:
+        return reported
+    size = sum(len(text.encode("utf-8")) for text in texts if isinstance(text, str))
+    if not _estimated_spend_was_said:
+        _estimated_spend_was_said = True
+        log_and_print("Note: the API did not report how many tokens it billed for this call. Its cost is counted "
+                      "from the size of the text instead, which is an estimate: the spend shown and the spend "
+                      "ceiling go by it.", level="warning")
+    return max(1, math.ceil(size / FALLBACK_BYTES_PER_TOKEN))
+
+
+def _reply_if_any(answer, *path) -> str:
+    """The text at `path` in a chat answer, or "" when it is not there: for
+    sizing the call, which must not be what fails."""
+    for step in path:
+        try:
+            answer = answer[step]
+        except (KeyError, IndexError, TypeError):
+            return ""
+    return answer if isinstance(answer, str) else ""
+
+
 def _text_embedding_class():
     """fastembed's model class, imported on first use. It pulls onnxruntime
     in with it and was most of what starting griot cost (about 0.45 s of
@@ -1890,7 +1943,7 @@ def _embed_one_openai_compatible_request(texts: list[str], api_key: str) -> list
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
-    tokens = data.get("usage", {}).get("total_tokens", 0)
+    tokens = _billed_tokens(data, ("usage", "total_tokens"), texts)
     record_spend(tokens / 1_000_000 * ACTIVE_PROFILE["price_per_1m_tokens"])
     # index guarantees correspondence with the input even if data[] comes
     # back out of order — unlike Gemini's batchEmbedContents, which has no index.
@@ -1947,7 +2000,7 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
-    tokens = body.get("usageMetadata", {}).get("promptTokenCount", 0)
+    tokens = _billed_tokens(body, ("usageMetadata", "promptTokenCount"), texts)
     record_spend(tokens / 1_000_000 * ACTIVE_PROFILE["price_per_1m_tokens"])
     # batchEmbedContents doesn't return a per-item id/index (unlike the
     # OpenAI-style format the proxy call used to use) — the response order
@@ -1992,7 +2045,9 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     except DirectAPIUnavailable as e:
         raise RuntimeError(f"Could not get a response from {ACTIVE_CHAT_PROFILE_NAME}: {e}") from e
 
-    tokens = data.get("usage", {}).get("total_tokens", 0)
+    # Counted before the reply is taken out: an answer that cannot be read
+    # was billed all the same.
+    tokens = _billed_tokens(data, ("usage", "total_tokens"), [prompt, _reply_if_any(data, "choices", 0, "message", "content")])
     record_spend(tokens / 1_000_000 * price)
     return data["choices"][0]["message"]["content"]
 
@@ -2022,7 +2077,8 @@ def chat_completion(prompt: str, model: str | None = None) -> str:
     except GeminiUnavailable as e:
         raise RuntimeError(f"Could not get a response from Gemini: {e}") from e
 
-    tokens = body.get("usageMetadata", {}).get("totalTokenCount", 0)
+    tokens = _billed_tokens(body, ("usageMetadata", "totalTokenCount"),
+                            [prompt, _reply_if_any(body, "candidates", 0, "content", "parts", 0, "text")])
     record_spend(tokens / 1_000_000 * ACTIVE_CHAT_PROFILE["price_per_1m_tokens"])
     return body["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -2265,7 +2321,8 @@ def count_pending(documents: list[dict], desc: str = "Checking") -> tuple[int, i
 
 # About how many characters of indexed code and prose make one token, for an
 # ESTIMATE of what a run would cost (measured on a real index: 3.53). The
-# bill is computed from the provider's own token count, never from this.
+# spend that is recorded comes from the provider's own token count; where a
+# provider reports none, from FALLBACK_BYTES_PER_TOKEN, not from this.
 CHARS_PER_TOKEN_ESTIMATE = 3.5
 
 

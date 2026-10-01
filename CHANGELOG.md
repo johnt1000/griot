@@ -411,6 +411,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **A paid call whose answer reports no tokens is still counted.** The
+  cost of a call was the token count the provider reported times the
+  price. An answer without one (the field missing, null or zero) cost
+  nothing: the day's total did not move and the spend ceiling never came
+  closer, for embeddings and for `griot ask` alike. Such a call is now
+  counted from the size of the text sent and received, in bytes, at a rate
+  that errs on the side of counting more, and never as nothing; griot says
+  once that the figure is an estimate. A chat answer that cannot be read
+  is counted before it fails.
 - **A token glued to an underscore is recognised.** The formats known by
   their prefix (GitHub, GitLab, Slack, Stripe, OpenAI, AWS key ids and the
   rest) were matched from a word boundary, and an underscore is a word
