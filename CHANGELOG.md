@@ -195,6 +195,19 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot config` shows and changes the settings.** Every setting was a
+  line in `<config>/.env` that took an editor, the variable's name and a
+  guess at what a valid value is. `griot config list` shows each one, the
+  value in force and where it comes from (environment, file or default);
+  `get` prints one; `set` checks the value before writing it; `unset` goes
+  back to the default. A change that widens something is asked about at an
+  interactive terminal, with no flag that answers: raising a spend ceiling
+  (also by unsetting a lower one), turning on indexing through MCP, adding a
+  directory an agent may index, pointing the GitLab or Gitea token at
+  another host. The GitLab API base must be https. No MCP tool changes a
+  setting. A chat profile or a concurrency mode that does not exist is now
+  one line that says how to fix it instead of a traceback, and `config set`
+  works with a file griot cannot start with, which is how it is repaired.
 - **`griot profiles use <name>` makes a profile the active one.** It writes
   `GRIOT_EMBED_PROFILE` to `<config>/.env`, which used to take an editor and
   knowing the variable's name. It asks first when the profile calls an API

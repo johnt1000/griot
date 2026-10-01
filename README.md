@@ -189,6 +189,8 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 
 ## Environment variables
 
+`griot config list` shows every setting, the value in force and where it comes from (the environment, `<config>/.env`, or the default). `griot config set <name> <value>` checks a value and writes it to the file, `griot config unset <name>` goes back to the default, and `griot config get <name>` prints one value. A change that widens something is asked about at an interactive terminal, with no flag that answers: raising a spend ceiling, turning on indexing through MCP, adding a directory an agent may index, pointing a platform token at another host. A variable exported in the environment wins over the file, and a running MCP server keeps the values it started with. The embedding profile has its own command (`griot profiles use`), and credentials have `griot auth`.
+
 | Variable | Purpose |
 |---|---|
 | `GRIOT_EMBED_PROFILE` | active embedding profile (default `jina-code`) |

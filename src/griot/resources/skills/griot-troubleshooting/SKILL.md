@@ -40,8 +40,8 @@ separate session (another window, another project) does.
   calls, then run the command again. Nothing to configure: this is what the
   default `multi` mode does.
 - If the server is in `single` mode (set in `.mcp.json`, or pinned by an
-  older `.env`), switch it to `multi` with
-  `GRIOT_MCP_CONCURRENCY_MODE=multi`. Otherwise it holds the collection
+  older `.env`: `griot config get mcp-concurrency` shows it), switch it back
+  with `griot config unset mcp-concurrency`. Otherwise it holds the collection
   until its session ends.
 
 The `griot-operations` skill has the full procedure, including how to find
@@ -75,11 +75,13 @@ indexing and `griot ask` — they draw from the same spend state.
 **Fix**: figure out *why* spend jumped before doing anything else — this
 breaker exists specifically to make you stop and look, not to be raised
 reflexively. If the spend really is expected (a deliberate large paid
-reindex, for instance), raise the relevant ceiling explicitly via the env
-var above. Note also: the `openai` and `deepseek` **chat** profiles refuse
-to run at all until you set their price env var
-(`GRIOT_OPENAI_CHAT_PRICE_PER_1M_TOKENS` /
-`GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS`) — griot never assumes an
+reindex, for instance), the user raises the relevant ceiling with `griot
+config set spend-ceiling <USD>` (or `spend-velocity-ceiling`). Raising one
+asks for confirmation at an interactive terminal and has no flag that
+answers, so it is the user's step, not an agent's. Note also: the `openai`
+and `deepseek` **chat** profiles refuse to run at all until their price is
+set (`griot config set openai-chat-price <USD per 1M tokens>`, or
+`deepseek-chat-price`) — griot never assumes an
 unverified price, so an unset price var looks like a different error but
 has the same root cause: the breaker refusing to track spend it can't
 compute.

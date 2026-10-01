@@ -162,8 +162,8 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_DEEPSEEK_CHAT_MODEL", "deepseek-chat", "model override within the deepseek chat profile", False),
     ("GRIOT_GROQ_CHAT_MODEL", "llama-3.3-70b-versatile", "model override within the groq chat profile", False),
     ("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50", "USD/1M tokens for the gemini chat profile (confirmed price, override if it changes)", False),
-    ("GRIOT_OPENAI_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile openai — griot never guesses a paid price. Uncomment and set a real value.", True),
-    ("GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile deepseek — same reason. Uncomment and set a real value.", True),
+    ("GRIOT_OPENAI_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile openai — griot never guesses a paid price. Set it with `griot config set openai-chat-price <value>`, or uncomment and set a real value.", True),
+    ("GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS", "", "REQUIRED (USD/1M tokens) before using --chat-profile deepseek — same reason. Set it with `griot config set deepseek-chat-price <value>`, or uncomment and set a real value.", True),
     ("GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS", "", "optional — defaults to $0 (free tier) if left commented out; uncomment only if that changes", True),
     ("GRIOT_SPEND_CEILING_USD", "3.0", "daily spend ceiling for the local circuit breaker", False),
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
@@ -203,7 +203,8 @@ def ensure_env_template() -> None:
 
     lines = [
         "# griot configuration — generated on first run.",
-        "# Uncomment/edit only what you need; every setting below already carries",
+        "# `griot config list` shows these, `griot config set <name> <value>` changes one",
+        "# with the value checked first. Or edit here: every setting below already carries",
         "# griot's built-in default written out explicitly, so nothing here changes",
         "# behavior until you actually change a value.",
         "#",
@@ -713,6 +714,13 @@ CHAT_MODEL = os.getenv("GRIOT_CHAT_MODEL", "gemini-2.5-flash")
 # conservative estimate, so as to never UNDERestimate real spend against the
 # circuit breaker (the opposite would be dangerous). Adjust via env if you
 # know the exact contracted price.
+def _where_to_fix() -> str:
+    """The second half of every "this setting is not valid" error."""
+    return (f"It is set in the environment or in {ENV_PATH}: `griot config set <name> <value>` writes the file "
+            f"and `griot config unset <name>` removes the line, back to the default (<name> can be the "
+            f"variable itself; `griot config --help` lists the short names).")
+
+
 def _amount_env(name: str, default: str | None) -> float | None:
     """An amount of money from the environment: a finite number, zero or
     more, or None when the variable is not set and there is no default.
@@ -730,8 +738,7 @@ def _amount_env(name: str, default: str | None) -> float | None:
     except ValueError:
         value = math.nan
     if not math.isfinite(value) or value < 0:
-        raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). "
-                         f"It is set in the environment or in {ENV_PATH}.")
+        raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). {_where_to_fix()}")
     return value
 
 
@@ -742,8 +749,7 @@ def _count_env(name: str, default: str) -> int:
     try:
         return int(raw)
     except ValueError:
-        raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). "
-                                 f"It is set in the environment or in {ENV_PATH}.") from None
+        raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix()}") from None
 
 
 CHAT_PRICE_PER_1M_TOKENS = _amount_env("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50")
@@ -806,9 +812,9 @@ CHAT_PROFILES = {
 
 ACTIVE_CHAT_PROFILE_NAME = os.getenv("GRIOT_CHAT_PROFILE", "gemini")
 if ACTIVE_CHAT_PROFILE_NAME not in CHAT_PROFILES:
-    raise ValueError(
-        f"Unknown GRIOT_CHAT_PROFILE={ACTIVE_CHAT_PROFILE_NAME!r}. "
-        f"Options: {', '.join(CHAT_PROFILES)}"
+    raise ConfigurationError(
+        f"Unknown GRIOT_CHAT_PROFILE={ACTIVE_CHAT_PROFILE_NAME!r}. Options: {', '.join(CHAT_PROFILES)}. "
+        f"{_where_to_fix()}"
     )
 ACTIVE_CHAT_PROFILE = CHAT_PROFILES[ACTIVE_CHAT_PROFILE_NAME]
 
@@ -1052,9 +1058,9 @@ _client_last_used_at: float | None = None
 # MCP server runs a reaper thread (mcp_server._start_idle_reaper) for that.
 CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "multi")
 if CONCURRENCY_MODE not in ("single", "multi"):
-    raise ValueError(
-        f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. "
-        f"Use 'multi' (default) or 'single'."
+    raise ConfigurationError(
+        f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. Use 'multi' (default) or 'single'. "
+        f"{_where_to_fix()}"
     )
 # Finite and zero or more, like an amount: an idle time of `nan` is never
 # reached, and the index would be held for as long as the server runs.
