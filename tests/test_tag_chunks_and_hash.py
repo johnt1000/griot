@@ -271,8 +271,8 @@ def test_a_git_that_peels_one_level_only_is_asked_for_the_commit(git_repo, monke
     def older_git(repo_path, args, **kw):
         if args[0] != "for-each-ref":
             return real(repo_path, args, **kw)
-        record = index_tags.FIELD_SEP.join(["outer", outer_object, "tag", inner_object, "tag",
-                                            "2026-01-01T00:00:00+00:00", "outer", ""]) + index_tags.RECORD_SEP
+        record = "".join(field + "\x00" for field in ["outer", outer_object, "tag", inner_object, "tag",
+                                                       "2026-01-01T00:00:00+00:00", "outer", ""]) + "\n"
         return type("Done", (), {"stdout": record, "returncode": 0})()
 
     monkeypatch.setattr(common, "run_git", older_git)

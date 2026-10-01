@@ -7,8 +7,6 @@ from pathlib import Path
 
 from griot import common
 
-FIELD_SEP = "\x1f"
-RECORD_SEP = "\x1e"
 
 
 def _repo_key_for_path(repo_path: Path) -> str:
@@ -40,10 +38,9 @@ def list_tags(repo_path: Path) -> list[dict]:
     # lightweight tag, which is the commit itself). The message is asked for
     # as subject and body: `contents` repeats the subject and, for a signed
     # tag, ends with the signature block.
-    fmt = FIELD_SEP.join([
+    fmt = common.git_format(
         "%(refname:short)", "%(objectname)", "%(objecttype)", "%(*objectname)", "%(*objecttype)",
-        "%(creatordate:iso-strict)", "%(subject)", "%(contents:body)",
-    ]) + RECORD_SEP
+        "%(creatordate:iso-strict)", "%(subject)", "%(contents:body)", nul="%00")
     try:
         output = common.run_git(repo_path, ["for-each-ref", "refs/tags", f"--format={fmt}"], timeout=60).stdout
     except subprocess.CalledProcessError as e:
@@ -51,11 +48,9 @@ def list_tags(repo_path: Path) -> list[dict]:
         return []
 
     tags = []
-    for record in output.split(RECORD_SEP):
-        record = record.strip("\n")
-        if not record:
-            continue
-        name, object_hash, object_type, peeled_hash, peeled_type, date, subject, body = record.split(FIELD_SEP)
+    for name, object_hash, object_type, peeled_hash, peeled_type, date, subject, body in common.git_records(output, 8):
+        if not name or not common.is_git_hash(object_hash):
+            continue  # not where a record begins: see git_records()
         if object_type != "tag":
             commit_hash = object_hash
         elif peeled_type == "commit":

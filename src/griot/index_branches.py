@@ -7,7 +7,6 @@ from pathlib import Path
 
 from griot import common
 
-FIELD_SEP = "\x1f"
 MAX_AHEAD_COMMITS = 20
 
 
@@ -50,16 +49,17 @@ def remote_branches(repo_path: Path) -> list[str]:
 
 
 def last_commit(repo_path: Path, branch: str) -> dict | None:
-    fmt = FIELD_SEP.join(["%H", "%an", "%aI", "%s"])
+    fmt = common.git_format("%H", "%an", "%aI", "%s")
     try:
         # [L1] --end-of-options: refs come from `git branch -r` (today always
         # origin/*), but a ref must never be interpretable as an option
-        line = run_git(repo_path, "log", "-1", f"--pretty=format:{fmt}", "--end-of-options", branch).strip()
+        output = run_git(repo_path, "log", "-1", f"--pretty=format:{fmt}", "--end-of-options", branch)
     except subprocess.CalledProcessError:
         return None
-    if not line:
+    records = common.git_records(output, 4)
+    if not records or not common.is_git_hash(records[0][0]):
         return None
-    commit_hash, author, date, subject = line.split(FIELD_SEP)
+    commit_hash, author, date, subject = records[0]
     return {"hash": commit_hash, "author": author, "date": date, "subject": subject}
 
 

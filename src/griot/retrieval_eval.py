@@ -14,19 +14,19 @@ import subprocess
 from pathlib import Path
 
 from griot import common
-from griot.index_commits import FIELD_SEP, RECORD_SEP
 
 
 def _commits_with_files(repo_path: Path, max_commits: int | None = None) -> list[dict]:
     """git log --all --name-only in a single call (same performance rationale
     as index_commits.py — no subprocess per commit to get the touched files).
-    RECORD_SEP as a PREFIX of each record (not a suffix, unlike list_commits)
-    because here --name-only inserts the file list AFTER each commit's field
-    block; a suffix separator would fall between a commit's fields and the
-    SAME commit's file list, mixing it with the next record on split.
-    Preserves git log's default order (most recent first) — holdout_recent
-    depends on it."""
-    fmt = RECORD_SEP + FIELD_SEP.join(["%H", "%s", "%b"]) + FIELD_SEP
+
+    Each record BEGINS with NUL and each of its three fields ends with one
+    (NUL is the one character a message cannot hold: see
+    common.git_records()). --name-only writes the file list AFTER the
+    fields, so what follows the last NUL of a record, up to the NUL that
+    begins the next, is that commit's files. Preserves git log's default
+    order (most recent first) — holdout_recent depends on it."""
+    fmt = "%x00" + common.git_format("%H", "%s", "%b")
     # core.quotepath off: with it, a name outside ASCII comes out as
     # `caf\303\251.py`, a path that exists nowhere, and the file was dropped
     # as "gone from the working tree".
@@ -41,20 +41,18 @@ def _commits_with_files(repo_path: Path, max_commits: int | None = None) -> list
         print(f"Error reading commits from {repo_path.name}: {e}")
         return []
 
+    # ["", hash, subject, body, files, hash, subject, body, files, ...]
+    parts = output.split("\x00")[1:]
     commits = []
-    for chunk in output.split(RECORD_SEP):
-        chunk = chunk.strip("\n")
-        if not chunk:
-            continue
-        # maxsplit=3: %H, %s, and %b are separated by FIELD_SEP, plus the final
-        # FIELD_SEP after %b (before the file block) — 4 parts total.
-        commit_hash, subject, body, rest = chunk.split(FIELD_SEP, 3)
-        files = [f for f in rest.split("\n") if f.strip()]
+    for start in range(0, len(parts) - 3, 4):
+        commit_hash, subject, body, rest = parts[start:start + 4]
+        if not common.is_git_hash(commit_hash):
+            continue  # not where a record begins
         commits.append({
             "hash": commit_hash,
             "subject": subject,
             "body": body.strip(),
-            "files": files,
+            "files": [f for f in rest.split("\n") if f.strip()],
         })
     return commits
 

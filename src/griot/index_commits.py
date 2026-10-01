@@ -7,8 +7,6 @@ from pathlib import Path
 
 from griot import common
 
-FIELD_SEP = "\x1f"
-RECORD_SEP = "\x1e"
 
 
 def _repo_key_for_path(repo_path: Path) -> str:
@@ -26,7 +24,7 @@ def _repo_key_for_path(repo_path: Path) -> str:
 def list_commits(repo_path: Path) -> list[dict]:
     """git log --all: covers commits reachable from any branch (local or
     remote), without duplicating — a commit reachable from two branches appears once."""
-    fmt = FIELD_SEP.join(["%H", "%an", "%aI", "%s", "%b"]) + RECORD_SEP
+    fmt = common.git_format("%H", "%an", "%aI", "%s", "%b")
     try:
         output = common.run_git(repo_path, ["log", "--all", f"--pretty=format:{fmt}"], timeout=120).stdout
     except subprocess.CalledProcessError as e:
@@ -34,11 +32,9 @@ def list_commits(repo_path: Path) -> list[dict]:
         return []
 
     commits = []
-    for record in output.split(RECORD_SEP):
-        record = record.strip("\n")
-        if not record:
-            continue
-        commit_hash, author, date, subject, body = record.split(FIELD_SEP)
+    for commit_hash, author, date, subject, body in common.git_records(output, 5):
+        if not common.is_git_hash(commit_hash):
+            continue  # not where a record begins: see git_records()
         commits.append({
             "hash": commit_hash,
             "author": author,
