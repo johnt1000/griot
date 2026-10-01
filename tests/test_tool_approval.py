@@ -311,8 +311,10 @@ def test_a_settings_directory_that_is_a_file_is_a_message_not_a_traceback(claude
     project = tmp_path / "project"
     project.mkdir()
     (project / ".claude").write_text("not a directory")
-    terminal("y")
-    assert harnesses.offer_tool_approval(claude, "local", home=tmp_path / "home", cwd=project) == "failed"
+    asked = terminal("y")
+    # Known before asking, so nobody is asked: a yes could not change it.
+    assert harnesses.offer_tool_approval(claude, "local", home=tmp_path / "home", cwd=project) == "unsafe"
+    assert asked == [] and "not a directory" in capsys.readouterr().out
     assert (project / ".claude").read_text() == "not a directory"
 
 

@@ -234,6 +234,16 @@ def _no_test_runs_a_harness_command(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _the_harness_config_dir_of_whoever_runs_the_suite_is_not_used(monkeypatch):
+    """`griot assist install --scope global` writes where the harness keeps
+    its user files, and CLAUDE_CONFIG_DIR says where that is. Left set, a
+    test that passes its own `home=` would still install into the REAL
+    directory of whoever runs the suite. Tests that are about the variable
+    set it themselves, to a temporary directory."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_test_writes_a_settings_file_outside_its_own_directory(monkeypatch, tmp_path_factory):
     """`griot assist install` can add rules to the harness's settings file
     (`~/.claude/settings.json`). A test that simulates a terminal, answers

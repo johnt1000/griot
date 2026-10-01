@@ -69,6 +69,45 @@ class Harness:
     global_settings_file: Callable[[Path], Path] | None = None
     local_settings_file: Callable[[Path], Path] | None = None
     tool_rule: Callable[[str], str] | None = None
+    # The environment variable that moves the harness's user directory, when
+    # it has one, and why its current value cannot be used (or None).
+    user_dir_variable: str | None = None
+    user_dir_problem: Callable[[], str | None] | None = None
+
+
+def _claude_user_dir(home: Path) -> Path:
+    """Where Claude Code keeps its user files: the directory CLAUDE_CONFIG_DIR
+    names when it is set (a leading `~` is the home directory), `~/.claude`
+    otherwise. With the variable set the harness reads everything from
+    there, settings, memory file, skills and agents alike, and nothing from
+    `~/.claude`: files installed in the default place would be files nobody
+    loads, reported as installed."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not configured or _claude_user_dir_problem():
+        # With a value that cannot be used nothing global is written at all
+        # (install_refusal says why); this path only keeps detection working.
+        return home / ".claude"
+    return Path(configured).expanduser()
+
+
+def _claude_user_dir_problem() -> str | None:
+    """Why the value of CLAUDE_CONFIG_DIR does not name one place, or None.
+    The variable comes from whoever started the process: for the MCP server
+    that can be a project's own file, so its value is input. A relative one
+    would be read against the directory the process happens to be in."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not configured:
+        return None
+    shown = repr(configured)[:120]
+    try:
+        expanded = Path(configured).expanduser()
+    except RuntimeError:
+        return (f"CLAUDE_CONFIG_DIR is {shown}, which names the home directory of a user that cannot be found. "
+                f"Set it to an absolute path.")
+    if not expanded.is_absolute():
+        return (f"CLAUDE_CONFIG_DIR is {shown}, which is not an absolute path: griot does not guess what it is "
+                f"relative to. Set it to an absolute path.")
+    return None
 
 
 HARNESSES = [
@@ -77,20 +116,22 @@ HARNESSES = [
         display_name="Claude Code",
         local_skills_dir=lambda cwd: cwd / ".claude" / "skills",
         local_agents_dir=lambda cwd: cwd / ".claude" / "agents",
-        global_skills_dir=lambda home: home / ".claude" / "skills",
-        global_agents_dir=lambda home: home / ".claude" / "agents",
+        global_skills_dir=lambda home: _claude_user_dir(home) / "skills",
+        global_agents_dir=lambda home: _claude_user_dir(home) / "agents",
         agent_content_subdir="claude-code",
-        detect=lambda: shutil.which("claude") is not None or (Path.home() / ".claude").is_dir(),
-        global_instructions_file=lambda home: home / ".claude" / "CLAUDE.md",
+        detect=lambda: shutil.which("claude") is not None or _claude_user_dir(Path.home()).is_dir(),
+        global_instructions_file=lambda home: _claude_user_dir(home) / "CLAUDE.md",
         instructions_resource="claude-code.md",
         mcp_register=lambda scope, griot: ["claude", "mcp", "add", "--scope", scope, "griot", "--", griot, "mcp"],
         # With the scope: once a server is registered in two scopes, a remove without one is refused.
         mcp_unregister=lambda scope: ["claude", "mcp", "remove", "--scope", scope, "griot"],
-        global_settings_file=lambda home: home / ".claude" / "settings.json",
+        global_settings_file=lambda home: _claude_user_dir(home) / "settings.json",
         # settings.local.json, not settings.json: the latter is the one a team commits.
         local_settings_file=lambda cwd: cwd / ".claude" / "settings.local.json",
         # mcp__<server>__<tool>, for a server registered under the name "griot".
         tool_rule=lambda tool: f"mcp__griot__{tool}",
+        user_dir_variable="CLAUDE_CONFIG_DIR",
+        user_dir_problem=_claude_user_dir_problem,
     ),
     Harness(
         id="opencode",
@@ -110,8 +151,28 @@ def detect_harnesses(candidates: list[Harness] | None = None) -> list[Harness]:
 
 
 def _secure_mkdir(path: Path) -> None:
+    """Creates `path` and whatever is missing above it, 0700. A directory
+    that is already there keeps its mode: it is the user's (their `agents/`,
+    a project's `.claude/`), and only what griot creates is griot's to set."""
+    missing = []
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        missing.append(probe)
+        probe = probe.parent
     path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+    for created in missing:
+        os.chmod(created, 0o700)
+
+
+def user_dir_set_by(harness: Harness, scope: str) -> str | None:
+    """The name of the environment variable that decided where a GLOBAL
+    install goes, or None when the default place is used."""
+    variable = harness.user_dir_variable
+    return variable if scope == "global" and variable and os.environ.get(variable, "").strip() else None
+
+
+def _user_dir_problem(harness: Harness, scope: str) -> str | None:
+    return harness.user_dir_problem() if scope == "global" and harness.user_dir_problem else None
 
 
 class UnsafeDestination(OSError):
@@ -134,6 +195,11 @@ def _destination_problem(dest: Path, base: Path, contained: bool) -> str | None:
                 f"Remove it, then run the install again.")
     if dest.exists() and not dest.is_file():
         return f"{dest} exists and is not a regular file."
+    above = dest.parent
+    while not above.exists() and above != above.parent:
+        above = above.parent
+    if not above.is_dir():
+        return f"{above} is not a directory, so nothing can be installed under it."
     if contained:
         real_base, real_parent = os.path.realpath(base), os.path.realpath(dest.parent)
         if os.path.commonpath([real_base, real_parent]) != real_base:
@@ -196,12 +262,23 @@ def _plan(harness: Harness, scope: str, home: Path | None, cwd: Path | None):
     return base, skills_target, agents_target, files
 
 
+def destinations(harness: Harness, scope: str, *, home: Path | None = None,
+                 cwd: Path | None = None) -> tuple[Path, Path]:
+    """(skills directory, agents directory) an install would write into. For
+    whoever has to SHOW the place before anything is written."""
+    _, skills_target, agents_target, _ = _plan(harness, scope, home, cwd)
+    return skills_target, agents_target
+
+
 def install_refusal(harness_list: list[Harness], scope: str, *, home: Path | None = None,
                     cwd: Path | None = None) -> str | None:
     """Why this install must not happen, or None. Looks at EVERY destination
     of every harness and writes nothing, so that a caller can refuse before
     the first file (and the MCP tool before asking a person)."""
     for harness in harness_list:
+        problem = _user_dir_problem(harness, scope)
+        if problem:
+            return problem
         base, _, _, files = _plan(harness, scope, home, cwd)
         for _, dest, _ in files:
             problem = _destination_problem(dest, base, contained=scope == "local")
@@ -366,7 +443,7 @@ def _is_interactive() -> bool:
 
 def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: Path | None = None) -> str:
     """Asks whether to put griot's block in the harness's global instructions file.
-    Returns n/a | skipped | current | malformed | not-interactive | declined |
+    Returns n/a | skipped | unsafe | current | malformed | not-interactive | declined |
     created | added | updated. Nothing is written without a typed "y" or "yes"."""
     if scope != "global" or harness.global_instructions_file is None:
         return "n/a"  # a project's own CLAUDE.md is usually committed and shared: not ours to edit
@@ -375,6 +452,10 @@ def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: 
         return "n/a"
     if not ask:
         return "skipped"
+    problem = _user_dir_problem(harness, scope)
+    if problem:
+        print(f"  instructions: NOT touched. {problem}")
+        return "unsafe"
     path = harness.global_instructions_file(home or Path.home())
     state = instructions_state(path, block)
     if state == "current":
@@ -522,6 +603,11 @@ def offer_mcp_server(harness: Harness, scope: str, *, mode: str = "ask") -> str:
         print(fragile)
 
     how_to_undo = f" To undo: {undo}" if undo else ""
+    variable = user_dir_set_by(harness, scope)
+    if how_to_undo and variable:
+        # The harness's own CLI follows the variable: without it, the undo
+        # would look in another configuration and find nothing.
+        how_to_undo += f" (with {variable} set as it is now)"
     try:
         done = _run_harness_command(argv)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -717,6 +803,10 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
     reach = "every project" if everywhere else "this project"
 
     if everywhere:
+        problem = _user_dir_problem(harness, scope)
+        if problem:
+            print(f"  tool approval: NOT touched. {problem}")
+            return "unsafe"
         real = Path(os.path.realpath(path))  # the user's own file: often a link into a dotfiles checkout
     else:
         # A project is not the user's: a repository can ship this file, or
@@ -834,6 +924,9 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
 
     outcomes = []
     for harness in targets:
+        variable = user_dir_set_by(harness, scope)
+        if variable:
+            print(f"{harness.id}: {variable} is set, so its user files go where that points, not to the default place.")
         try:
             result = install(harness, scope, home=home)
         except UnsafeDestination as e:
