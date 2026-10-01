@@ -99,11 +99,11 @@ The first time you run any `griot` command, `<config>/.env` is generated for you
 The server has to be registered with your agent before its tools exist in a session. The installer can do it for you:
 
 ```bash
-griot assist install --scope global       # asks whether to register the server for every project
-griot assist install                      # asks whether to register it for this project only
+griot assist install                      # for every project: copies the skills, then asks about the rest
+griot assist install --scope local        # for this project only
 ```
 
-It shows the exact command and runs it only after you type `y` (`--mcp` answers yes and makes the command fail if the registration does, `--no-mcp` skips the question). For Claude Code that command is `claude mcp add --scope user griot -- <path to griot> mcp`, and the way back is `claude mcp remove --scope user griot` (`--scope local` for a per-project registration); the installer prints it. Install griot as a tool first (`pipx` or `uv tool`): what gets registered is the path of the griot you ran, and one inside a project's virtual environment stops working when that environment goes.
+It first asks the harness what is registered already. A server that runs this griot is left alone, and so is one that runs anything else that is still there. One whose command no longer exists is offered to be replaced, showing the two commands it would run (remove, then add), and only at the scope being installed: an install for one project never removes what is registered for every project, and an install for every project never touches a project's own registration (it says so when that one is broken, since it takes precedence there). Otherwise it shows the exact command and runs it only after you type `y` (`--mcp` answers yes and makes the command fail if the registration does, `--no-mcp` skips the question). For Claude Code that command is `claude mcp add --scope user griot -- <path to griot> mcp`, and the way back is `claude mcp remove --scope user griot` (`--scope local` for a per-project registration); the installer prints it. Install griot as a tool first (`pipx` or `uv tool`): what gets registered is the path of the griot you ran, and one inside a project's virtual environment stops working when that environment goes.
 
 The installer then **offers** to let the agent call griot's read-only tools without asking each time: an agent that has to ask before every search mostly does not search. For Claude Code it shows the rules (`mcp__griot__griot_search` and the other read-only tools, as the server itself marks them) and the file, and adds them to `permissions.allow` only after you type `y`: in `~/.claude/settings.json` with `--scope global`, otherwise in the project's personal `.claude/settings.local.json`. (Wherever this page says `~/.claude`, read the directory `CLAUDE_CONFIG_DIR` names when you have set it: Claude Code keeps its user files there, and the installer follows it for the skills, the agent, the instructions block and these rules.) Every other setting keeps its value (the file is written back as indented JSON, so its layout may change), a rule or pattern you already have under `deny` or `ask` wins and is left out, and a file griot cannot edit safely is not touched: not plain JSON settings, a key given twice, read-only. griot adds no rule for the tools that change anything, nor for the quality check. A rule matches any MCP server named `griot`, whoever defines it. There is no flag that answers yes, an MCP tool never does this, and `--no-allow-tools` skips the question. To undo, remove the rules from that file.
 
@@ -152,10 +152,13 @@ The tools that change something register or remove a repository, delete a profil
 ### Claude Code / opencode skills and agent
 
 ```bash
-griot assist install                      # local: detects Claude Code and/or opencode, installs into whichever is present
-griot assist install --scope global       # every project on this machine, instead of just this one
+griot assist install                      # every project: detects Claude Code and/or opencode, installs into whichever is present
+griot assist install --scope local        # this project only, into ./.claude or ./.opencode
 griot assist install --harness opencode   # skip detection, target one harness explicitly
+griot assist install --skills-only        # copy the skills and the agent, and ask nothing
 ```
+
+After the files, the installer asks up to three things, in this order, each `[y/N]` with no as the default: registering the MCP server, letting the read-only tools run without a prompt, and (for every project only) the instructions block. The last two are offered only when the server is registered, since they are about its tools. It ends with a summary of what was done and what comes next. With no supported harness on the machine it installs nothing and exits with an error.
 
 Copies a small bundle — five Skills (onboarding, indexing, day-to-day search/ask workflows, operations — running and recovering index runs from inside an agent session — and troubleshooting) and a setup Agent — written for whoever uses griot in **their own** project, not for contributing to griot itself. Claude Code gets `.claude/skills/`+`.claude/agents/`, opencode gets `.opencode/skills/`+`.opencode/agents/` (at `--scope global`: Claude Code's user directory, `~/.claude` or the one `CLAUDE_CONFIG_DIR` names, and `~/.config/opencode/`); Skills are one shared file per skill (both harnesses read the same `SKILL.md` layout), the setup Agent ships as two variants because the two harnesses use different frontmatter for a subagent definition. The same thing is also `griot_assist_install`, an MCP tool an already-connected agent can request on your behalf — it still needs a real human answer, for the same reason `repos_add`/`profiles_delete` do. Re-running it overwrites a file it installed before if griot's bundled version changed — including any edits you made to that file yourself; the command lists which files it overwrote.
 

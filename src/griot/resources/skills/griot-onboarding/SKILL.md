@@ -43,8 +43,10 @@ profiles (OpenAI, Gemini) only send data when you explicitly select them.
 ## Make the tools available to your agent
 
 griot's MCP server has to be registered with the agent before its tools show
-up in a session. `griot assist install --scope global` offers to register it
-for every project (`griot assist install` for this project only): it shows
+up in a session. `griot assist install` offers to register it for every
+project (`--scope local` for this project only). It looks first at what is
+registered already and offers to replace a registration whose command is
+gone; otherwise it shows
 the command and runs it only after you type `y`, and prints how to undo it.
 With a local embedding profile, remember that each open session runs its own
 server, and each one loads the model on its first search (`griot profiles
