@@ -10,6 +10,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_config_list` shows the settings an MCP server is running with.**
+  `griot config list` answers for a new process; a server read the file
+  once, when it started, and its environment can come from where it was
+  registered. Per setting the tool gives the value in that server, where it
+  came from (the environment, the file, or the default), what the file says
+  now, and `restart_needed` when the two differ and a restart would apply
+  the change. It lists no credential, replaces one written inside a URL,
+  and changes nothing; the installer offers it among the read-only tools
+  that may run without a prompt.
 - **`griot_quality_check` runs the curated golden set too.** It ran the
   self-check only, so an agent asked whether the index can be trusted had
   half an answer and the `health` prompt sent the rest to a terminal. The
@@ -241,6 +250,12 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A yes/no setting is read with the spellings `griot config set` takes.**
+  The command accepts yes/no/on/off and writes true/false, but the readers
+  knew two spellings each: a line written by hand as
+  `GRIOT_LOG_QUESTIONS=no` kept logging questions, and
+  `GRIOT_MCP_ENABLE_INDEX=yes` did not enable the tool. Both now read
+  true/yes/on/1 and false/no/off/0.
 - **A golden set file that cannot be run names the file and the case.**
   `quality_golden_set.json` is edited by hand; a case without its `query`
   or `must_include` ended `griot quality-check` in a traceback naming the

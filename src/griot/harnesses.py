@@ -982,7 +982,7 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
     print(f"  It adds these rules to `permissions.allow` in {path}:\n")
     print("    " + "\n    ".join(to_add))
     print("\n  They do not change your index or your configuration: they search what you indexed, list "
-          "repositories and profiles, and report status and usage (each call is logged).\n"
+          "repositories, profiles and settings, and report status and usage (each call is logged).\n"
           "  griot_search embeds the query, which on a paid embedding profile costs a fraction of a "
           "cent per search.\n"
           "  griot adds no rule for the tools that change something, nor for the quality check.\n"

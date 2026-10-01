@@ -54,6 +54,7 @@ import functools
 import inspect
 import json
 import os
+import re
 import shlex
 import sys
 import threading
@@ -81,7 +82,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 
-from griot import ask, auth, cli, common, golden_set, harnesses, jobs, logdb, quality_check, repos, stats
+from griot import TRUE_WORDS, ask, auth, cli, common, config, golden_set, harnesses, jobs, logdb, quality_check, repos, stats
 
 # What the server tells an agent about itself before any tool is loaded. An
 # agent sees only tool NAMES until it loads them, and nothing told it when
@@ -261,6 +262,29 @@ class ProfileEntry(TypedDict):
 class ProfilesListOutput(TypedDict):
     profiles: list[ProfileEntry]
     active: str
+
+
+class ConfigEntry(TypedDict):
+    name: str
+    variable: str
+    # What this server runs with, and where it got it: "environment" (set
+    # where the server was started; wins over the file), "file" (griot's own
+    # .env, as it was when the server started) or "default".
+    value: str | None
+    source: str
+    default: str | None
+    # What the file says NOW, or null when it has no such line.
+    in_file: str | None
+    # The file changed since this server read it, and a restart applies it.
+    restart_needed: bool
+    description: str
+
+
+class ConfigListOutput(TypedDict):
+    env_file: str
+    settings: list[ConfigEntry]
+    restart_needed: bool
+    note: str
 
 
 class ManagementOutput(TypedDict):
@@ -982,6 +1006,68 @@ def _active_profile() -> str:
     nothing with no entry marked is_active."""
     name = os.getenv("GRIOT_EMBED_PROFILE", common.ACTIVE_PROFILE_NAME)
     return name if name in common.EMBED_PROFILES else common.ACTIVE_PROFILE_NAME
+
+
+_CONFIG_LIST_NOTE = (
+    "Read-only. A setting is changed with `griot config set <name> <value>` in a terminal (a change that "
+    "widens what griot may do, spend or reach is asked of a person there), and a running server keeps the "
+    "values it started with: restart it to apply a change. Under source \"environment\" the file is not "
+    "used: the value comes from where the server was started (for a registered server, the `env` of its "
+    "registration, or a `--profile` on its command line)."
+)
+
+
+# Up to the LAST @ before the path: a password can hold one unencoded.
+_URL_USERINFO = re.compile(r"(://)[^/?#\s]*@")
+
+
+def _setting_shown(value: str | None) -> str | None:
+    """A value as it may be returned. A URL can carry a credential before
+    its host: that part is replaced whatever it looks like (the detectors
+    of common.shown() judge by shape, and let a password that reads like a
+    placeholder through, which is right for indexed text and not for a
+    setting). Then the same treatment anything griot prints gets."""
+    if value is None:
+        return None
+    return common.shown(_URL_USERINFO.sub(r"\1[REDACTED]@", value))
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_records_call
+def griot_config_list() -> ConfigListOutput:
+    """The settings THIS server is running with, and where each comes from.
+
+    `griot config list` at a terminal answers for a new process. A server
+    read the configuration once, when it started, so this answers for the
+    one being asked: per setting, `value` and `source` — "environment" (set
+    where the server was started, for instance in the `env` of its
+    registration; it wins over the file), "file" (griot's own .env, as it
+    was at start) or "default". `in_file` is what the file says now, and
+    `restart_needed` is true when that differs from what the server runs
+    with and a restart would apply it.
+
+    Use it when griot does not behave as its configuration says: the wrong
+    embedding profile, indexing through MCP not enabled, a spend ceiling
+    that is not the expected one.
+
+    Credentials are not settings and are never listed. Nothing is changed
+    from here: `note` says how a setting is changed."""
+    try:
+        rows = [(setting, config.running_with(setting)) for setting in config.SETTINGS]
+        descriptions = config._template()
+    except (OSError, UnicodeError) as e:
+        raise RuntimeError(f"Could not read {common.ENV_PATH.name} ({common.ENV_PATH}): {e}. "
+                           f"`griot config list` in a terminal reads the same file.") from e
+    settings: list[ConfigEntry] = [{
+        "name": setting.name, "variable": setting.variable,
+        "value": _setting_shown(state["value"]), "source": state["source"],
+        "default": _setting_shown(config.default_of(setting)),
+        "in_file": _setting_shown(state["in_file"]),
+        "restart_needed": state["restart_needed"],
+        "description": descriptions.get(setting.variable, (None, ""))[1],
+    } for setting, state in rows]
+    return {"env_file": str(common.ENV_PATH), "settings": settings,
+            "restart_needed": any(entry["restart_needed"] for entry in settings), "note": _CONFIG_LIST_NOTE}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -1869,7 +1955,7 @@ def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
     return _resolve_ask(ctx, _index_repo_question(path), confirm=confirm, human_required=False)
 
 
-if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").lower() in ("1", "true"):
+if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     @_records_call
     async def griot_index_repo(

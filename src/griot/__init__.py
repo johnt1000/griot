@@ -1,6 +1,15 @@
 __version__ = "0.1.0"
 
 
+# The spellings a yes/no setting is read with. Here, in one place, because
+# `griot config set` (which checks a value before griot's configuration
+# loads) and the code that reads the variable must agree: the command took
+# yes/no/on/off while the readers knew two spellings each, so a line
+# written by hand as `GRIOT_LOG_QUESTIONS=no` kept logging questions.
+TRUE_WORDS = ("true", "yes", "on", "1")
+FALSE_WORDS = ("false", "no", "off", "0")
+
+
 class ConfigurationError(ValueError):
     """A setting griot cannot start with. Defined here, not in common.py: it
     is raised while common.py is being imported, and the CLI has to be able

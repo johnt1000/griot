@@ -36,6 +36,11 @@ claude mcp get griot               # how the server is registered, and any env o
 A server registered by `griot assist install` has no `env`; a project that
 defines its own `griot` entry in `.mcp.json` may have one.
 
+From inside a session, the `griot_config_list` tool answers for the server
+that is running: the value each setting has there, whether it came from the
+environment, the file or the default, and `restart_needed` when the file
+changed after the server started. It lists no credential.
+
 So a `griot index ...` run through the shell **collides with your own MCP
 server**: until the idle window has passed in `multi` mode, until the
 session ends in `single` mode. The CLI waits about 12 seconds in `multi` mode,
