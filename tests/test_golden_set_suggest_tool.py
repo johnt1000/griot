@@ -224,7 +224,8 @@ async def test_an_index_held_by_another_process_does_not_fail_the_call(registere
 
     def held(*, wait=True):
         waited.append(wait)
-        raise common.CollectionBusyError("another griot process still has it open")
+        raise common.CollectionBusyError(common.COLLECTION_NAME, common.QDRANT_PATH,
+                                         "another griot process still has it open")
 
     monkeypatch.setattr(common, "get_client", held)
     out = (await _suggest(path=str(registered.path))).structured_content
