@@ -12,6 +12,8 @@ don't come from any specific commit. `list`/`remove` round out the CRUD, same
 pattern as `griot repos`."""
 
 import argparse
+import contextlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -65,7 +67,10 @@ def _load() -> list:
 def _save(cases: list) -> None:
     common.secure_mkdir(common.GOLDEN_SET_PATH.parent)
     # [M2] 0600: curated queries reveal real repo/file names
-    common.secure_write_text(common.GOLDEN_SET_PATH, json.dumps(cases, indent=2, ensure_ascii=False))
+    # Through a scratch file and a rename: written in place, a write that
+    # stopped half-way (a full disk, Ctrl-C) left a file nobody could read,
+    # and with it every case curated so far.
+    common.secure_write_text_atomic(common.GOLDEN_SET_PATH, json.dumps(cases, indent=2, ensure_ascii=False))
 
 
 def list_cases() -> list[dict]:
@@ -164,40 +169,147 @@ def get_case(index: int, cases: list[dict] | None = None) -> dict:
     return cases[index - 1]
 
 
+# How many results a case is searched with when it does not say (see
+# quality_check.run_golden_set), and so how many files one may require.
+CASE_LIMIT = 5
+
+
+def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit: int = 10) -> dict:
+    """Data half of `golden-set suggest`: candidate cases from the git log
+    of `repo_path`, none written. A commit's message is the question and
+    the files it touched are what must come back.
+
+    Only a case that CAN pass is a candidate. A touched file is required
+    only if the index holds a chunk of it: `griot index code` reads it (an
+    image, a lock file or a file the repository ignores is never there)
+    and it has text (an empty `__init__.py` is listed and stores nothing).
+    A commit that touched more such files than a search returns is left
+    out: every file is required, so it could never pass. So is one without
+    a message: there is no question. Approved, a case like those failed
+    forever, and a failing golden set is what says an index is broken.
+
+    `repo_path` may be a directory inside a work tree (that is how it is
+    indexed, then): git names files from the top of the tree, so they are
+    brought to the directory's own paths, and a file outside it is not its.
+
+    {repo, candidates: [{query, limit, must_include, commit}], commits,
+    not_indexable, too_many_files, no_message, problem}: the counts are the
+    commits left out for each reason, over the whole log that was read;
+    `problem` is what the file listing said when it found nothing. `limit`
+    is how many candidates to return, counted after leaving those out.
+    Raises ValueError when `repo_path` is not a git work tree."""
+    import subprocess
+
+    from griot import index_code  # lazy: only this command needs the file discovery
+
+    repo_name = repo_path.name
+    try:
+        top = Path(common.run_git(repo_path, ["rev-parse", "--show-toplevel"], timeout=30).stdout.strip())
+        prefix = common.run_git(repo_path, ["rev-parse", "--show-prefix"], timeout=30).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as e:
+        # Said plainly, and as a failure: carrying on printed the git
+        # command that failed and then "no candidates", with exit status 0.
+        raise ValueError(f"'{repo_path}' is not a git work tree: candidates come from its git log.") from e
+    qrels = retrieval_eval.build_qrels_from_git(top, repo_name, max_commits=max_commits)
+    # What it reports about files it skips is for an index run. Kept only to
+    # say why nothing was listed, when nothing was.
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        indexable = {path.relative_to(repo_path).as_posix(): path for path in index_code.discover_files(repo_path)}
+    root = repo_path.resolve()
+    has_text: dict[str, bool] = {}
+
+    def in_the_index(name: str) -> bool:
+        """Whether an index run stores at least one chunk for this file:
+        the same two checks index_code.process_repository() makes."""
+        if name not in indexable:
+            return False
+        if name not in has_text:
+            content = index_code._read_source(indexable[name], root)
+            has_text[name] = bool(content and content.strip())
+        return has_text[name]
+
+    candidates, not_indexable, too_many_files, no_message = [], 0, 0, 0
+    for qrel in qrels:
+        if not qrel["query"].strip():
+            no_message += 1
+            continue
+        here = [f[len(prefix):] for f in qrel["relevant_file_paths"] if f.startswith(prefix)]
+        files = [f for f in here if in_the_index(f)]
+        if not files:
+            not_indexable += 1
+        elif len(files) > CASE_LIMIT:
+            too_many_files += 1
+        elif len(candidates) < limit:
+            candidates.append({
+                "query": qrel["query"], "limit": CASE_LIMIT,
+                "must_include": [{"repo": repo_name, "source_type": "code", "file_path": f} for f in files],
+                "commit": qrel["commit_hash"],
+            })
+    return {"repo": repo_name, "candidates": candidates, "commits": len(qrels),
+            "not_indexable": not_indexable, "too_many_files": too_many_files, "no_message": no_message,
+            "problem": " ".join(said.getvalue().split()) or None if not indexable else None}
+
+
+def left_out_note(found: dict) -> str | None:
+    """Why some commits are not among the candidates, or None when all are."""
+    reasons = []
+    if found["too_many_files"]:
+        reasons.append(f"{found['too_many_files']} commit(s) touched more files than a case can require "
+                       f"({CASE_LIMIT}: every file must be among the results of one search)")
+    if found["not_indexable"]:
+        reasons.append(f"{found['not_indexable']} commit(s) touched no file the index would hold (none that "
+                       f"`griot index code` reads, or only empty ones)")
+    if found["no_message"]:
+        reasons.append(f"{found['no_message']} commit(s) have no message, so there is no question to ask")
+    return ("Left out: " + "; ".join(reasons) + ".") if reasons else None
+
+
 def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int = 10) -> int:
     repo_path = Path(repo_path_str).resolve()  # `suggest .` must still name the repository
     if not repo_path.is_dir():
         print(f"Error: '{repo_path_str}' does not exist or is not a directory.", file=sys.stderr)
         return 1
+    if limit < 1:
+        print(f"Error: --limit must be at least 1 (got {limit}).", file=sys.stderr)
+        return 2
 
-    repo_name = repo_path.name
-    qrels = retrieval_eval.build_qrels_from_git(repo_path, repo_name, max_commits=max_commits)
-    if not qrels:
-        print("No candidates found (no commits with touched files that still exist in the working tree).")
+    try:
+        found = suggest_candidates(repo_path, max_commits=max_commits, limit=limit)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    note = left_out_note(found)
+    if not found["candidates"]:
+        print("No candidates found (no commit touched files that the index reads and that still exist in the "
+              "working tree).")
+        if found["problem"]:
+            print(common.printable(found["problem"]))
+        if note:
+            print(note)
         return 0
 
     cases = _load()
     added = 0
-    for qrel in qrels[:limit]:
-        display_query = qrel["query"].splitlines()[0]
-        files = qrel["relevant_file_paths"]
-        preview = ", ".join(files[:5]) + ("..." if len(files) > 5 else "")
+    for candidate in found["candidates"]:
+        display_query = candidate["query"].splitlines()[0]
+        files = [entry["file_path"] for entry in candidate["must_include"]]
         print(f"\nCandidate query: {display_query}")
-        print(f"  must_include: {len(files)} file(s) — {preview}")
+        print(f"  must_include: {len(files)} file(s) — {', '.join(files)}")
         answer = input("Approve this case? [y/N/q(uit)] ").strip().lower()
         if answer == "q":
             break
         if answer != "y":
             continue
-        cases.append({
-            "query": qrel["query"],
-            "must_include": [{"repo": repo_name, "source_type": "code", "file_path": f} for f in files],
-        })
+        cases.append({"query": candidate["query"], "limit": candidate["limit"],
+                      "must_include": candidate["must_include"]})
         added += 1
 
     if added:
         _save(cases)
     print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    if note:
+        print(note)
     return 0
 
 

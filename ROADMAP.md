@@ -34,9 +34,7 @@ what "done for a public release" still means.
   [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md).
 - **Reported by a code analysis, not fixed yet.** Each still needs a test
   that reproduces it before it is touched: tag indexing does not chunk a long
-  tag message and takes the wrong hash for an annotated tag;
-  `griot golden-set suggest` can write cases that cannot pass and does not
-  write the file atomically; releasing the collection after the idle window
+  tag message and takes the wrong hash for an annotated tag; releasing the collection after the idle window
   can race with a call that is opening it; a control character in a commit
   message can stop the commits source.
 - **Cheap indexing speed-ups that were measured or spotted and not done:**

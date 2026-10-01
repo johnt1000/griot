@@ -257,6 +257,22 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **`griot golden-set suggest` offers only cases that can pass.** A
+  candidate required every file its commit touched that still existed:
+  files `griot index code` never reads (an image, a lock file, a file the
+  repository ignores) included, and any number of them, when a case is
+  searched with five results. Approved, such a case failed forever. A file
+  is now required only if the index would hold a chunk of it (read by
+  `griot index code`, and not empty); a commit that touched more files
+  than a search returns, or that has no message, is left out; and the
+  command says how many commits it left out and why. A file whose name is
+  not ASCII is no longer dropped as missing, a directory inside a work
+  tree gets its own paths instead of the tree's, a directory that is not a
+  git work tree is an error instead of "no candidates", and `--limit`
+  counts candidates, not commits.
+- **The golden set file is written through a rename.** It was written in
+  place, by every command that changes it: a write that stopped half-way
+  left a file nobody could read, and every curated case with it.
 - **A yes/no setting is read with the spellings `griot config set` takes.**
   The command accepts yes/no/on/off and writes true/false, but the readers
   knew two spellings each: a line written by hand as

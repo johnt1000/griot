@@ -27,7 +27,10 @@ def _commits_with_files(repo_path: Path, max_commits: int | None = None) -> list
     Preserves git log's default order (most recent first) — holdout_recent
     depends on it."""
     fmt = RECORD_SEP + FIELD_SEP.join(["%H", "%s", "%b"]) + FIELD_SEP
-    args = ["log", "--all"]
+    # core.quotepath off: with it, a name outside ASCII comes out as
+    # `caf\303\251.py`, a path that exists nowhere, and the file was dropped
+    # as "gone from the working tree".
+    args = ["-c", "core.quotepath=false", "log", "--all"]
     if max_commits is not None:
         args.append(f"--max-count={max_commits}")
     args += ["--name-only", f"--pretty=format:{fmt}"]
