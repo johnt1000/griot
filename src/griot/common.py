@@ -668,6 +668,8 @@ EMBED_PROFILES = {
         "model": "text-embedding-3-small",
         "dim": 1536,
         "price_per_1m_tokens": 0.02,
+        "index_batch_size": 128,  # texts per request: see batch_sizes()
+        "request_token_limit": 300_000,  # what the endpoint takes in one request
         "api_key_env": "GRIOT_OPENAI_API_KEY",  # griot's own name, never the generic "OPENAI_API_KEY" — a scoped key avoids any other local tool inheriting it
     },
     "bge-small": {
@@ -734,21 +736,45 @@ def collection_name_for(profile_name: str) -> str:
 
 COLLECTION_NAME = collection_name_for(ACTIVE_PROFILE_NAME)
 EMBED_DIM = ACTIVE_PROFILE["dim"]
-# The "50" for the "direct" backend is tuned for a different reason (the
-# Gemini batchEmbedContents API's request batch size) — don't touch it. The
-# "local" one went from 20 to 128: research
-# showed fastembed's .embed() has an internal default of 256, and a batch
-# of 20 sits well below the ONNX Runtime's efficiency sweet spot on CPU —
-# peak throughput at a batch of ~128 for quantized models, and even a
-# non-quantized model benefits from batches larger than 20.
-INDEX_BATCH_SIZE = 50 if ACTIVE_PROFILE["backend"] == "direct" else 128
-# Explicit batch_size passed to fastembed's .embed() (the "local" branch of
-# embed_texts) — same reasoning as above (section 10.2, item 1). Kept as a
-# separate constant from INDEX_BATCH_SIZE because the two could diverge in
-# the future (one controls the outer slicing for content_hash/upsert
-# checking, the other ONNX's internal batch size); today they share the
-# same value by coincidence.
-EMBED_CALL_BATCH_SIZE = 128
+# How many documents one round of index_documents() takes, and how many texts
+# a local model is handed at once. Per profile, because the right numbers
+# have nothing in common:
+#
+# - An API profile sends one round as one request, so the round is as large
+#   as the API takes safely. Gemini's batchEmbedContents accepts at most 100
+#   requests per call and 50 is what it was tuned for. An OpenAI-compatible
+#   endpoint accepts 2048 inputs and 300,000 tokens per request: 128 chunks
+#   of code or English stay well under that, and a round of text that costs
+#   more than a token per character is cut into requests by its bytes (see
+#   _requests_within_the_limit). With one size for both, an
+#   OpenAI-compatible run made two and a half times the requests it needed.
+# - A local profile takes rounds of 128 (a large round sorts more texts by
+#   length together, so each batch pads less) and hands the model 8 texts
+#   at a time. Measured on chunks of this repository, as cut for indexing
+#   (up to 1500 characters): with bge-small, 4.2 chunks/s and 0.6 GB at 8
+#   against 2.9 chunks/s and 3.0 GB at 128; with jina-code, the default,
+#   2.0 chunks/s and 1.4 GB at 8, 0.35 chunks/s and 2.8 GB at 64, and no
+#   answer in fifteen minutes at 128. Throughput is flat from 4 to 16 and
+#   falls after that; memory grows with every step. The 128 that stood here
+#   came from a rule of thumb about ONNX batches that does not hold for
+#   texts this long.
+_DEFAULT_INDEX_BATCH_SIZE = {"local": 128, "direct": 50}
+_DEFAULT_EMBED_BATCH_SIZE = 8
+
+
+def batch_sizes(profile: dict) -> dict:
+    """{"index": documents per round of index_documents(), "embed": texts a
+    local model is handed at once} for an embedding profile. A profile says
+    its own (`index_batch_size`, `embed_batch_size`) where it differs."""
+    return {
+        "index": profile.get("index_batch_size", _DEFAULT_INDEX_BATCH_SIZE.get(profile["backend"], 50)),
+        "embed": profile.get("embed_batch_size", _DEFAULT_EMBED_BATCH_SIZE),
+    }
+
+
+INDEX_BATCH_SIZE = batch_sizes(ACTIVE_PROFILE)["index"]
+# Passed to fastembed's .embed() (the "local" branch of embed_texts).
+EMBED_CALL_BATCH_SIZE = batch_sizes(ACTIVE_PROFILE)["embed"]
 
 # ask.py's chat model — a direct call to generateContent (Google's API),
 # no LiteLLM. "-latest" (gemini-flash-latest) was tried first but rejected
@@ -1726,11 +1752,39 @@ def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict,
             time.sleep(10)
 
 
+# What one request may hold when the profile does not say: the embeddings
+# endpoint this adapter was written for takes 300,000 tokens per request.
+_DEFAULT_REQUEST_TOKEN_LIMIT = 300_000
+
+
+def _requests_within_the_limit(texts: list[str], limit: int) -> list[list[int]]:
+    """The positions of `texts`, in order, cut into requests whose UTF-8
+    bytes add up to at most `limit`. A token is never shorter than one byte,
+    so the bytes of a request bound its tokens whatever the text is: counted
+    in characters, a round of Chinese or of emoji costs several times what
+    the same round of code does, and went over a limit that code stays far
+    under. A text larger than the limit on its own goes alone: the endpoint
+    answers for that one text, and the rest of the round is not lost to it."""
+    requests_, current, size = [], [], 0
+    for position, text in enumerate(texts):
+        weight = len(text.encode("utf-8"))
+        if current and size + weight > limit:
+            requests_.append(current)
+            current, size = [], 0
+        current.append(position)
+        size += weight
+    if current:
+        requests_.append(current)
+    return requests_
+
+
 def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]:
     """Generic HTTP adapter: only reads what the active
     profile defines (endpoint_url/model/api_key_env/extra_params) — no
     provider-specific logic here, so Voyage/remote can reuse it without
-    duplication when they're added."""
+    duplication when they're added. One round is one request, unless its
+    texts are too large for one (see _requests_within_the_limit): then each
+    request stands or fails on its own."""
     api_key_env = ACTIVE_PROFILE["api_key_env"]
     api_key = os.getenv(api_key_env)
     if not api_key:
@@ -1738,6 +1792,18 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
             f"{api_key_env} not found in the environment — required for the "
             f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
         )
+    result: list[list[float] | None] = [None] * len(texts)
+    limit = ACTIVE_PROFILE.get("request_token_limit", _DEFAULT_REQUEST_TOKEN_LIMIT)
+    for number, positions in enumerate(_requests_within_the_limit(texts, limit)):
+        if number:
+            check_spend_ceiling()  # embed_texts() checked before the first one
+        vectors = _embed_one_openai_compatible_request([texts[position] for position in positions], api_key)
+        for position, vector in zip(positions, vectors):
+            result[position] = vector
+    return result
+
+
+def _embed_one_openai_compatible_request(texts: list[str], api_key: str) -> list[list[float] | None]:
     body = {"model": ACTIVE_PROFILE["model"], "input": texts, **ACTIVE_PROFILE.get("extra_params", {})}
     try:
         data = _openai_compatible_post_with_retry(
@@ -1773,7 +1839,7 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
         # section 10.2, item 3), and griot's corpus mixes long code chunks
         # with short commit messages. Without sorting, a short commit in a
         # mixed batch pays the padding cost of the longest chunk in the
-        # SAME batch. Explicit batch_size avoids tiny batches (item 1). At
+        # SAME batch. The batch size is the profile's (see batch_sizes()). At
         # the end, undoes the sort — the caller (index_documents) does
         # zip(to_embed, vectors) assuming index-to-index correspondence
         # with the INPUT `texts` list, not with the internal processing order.
