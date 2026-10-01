@@ -10,6 +10,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_quality_check` runs the curated golden set too.** It ran the
+  self-check only, so an agent asked whether the index can be trusted had
+  half an answer and the `health` prompt sent the rest to a terminal. The
+  tool now returns both, apart: the self-check's counts, and `golden_check`
+  with each curated case, whether it passed, what was missing, and a reason
+  when it could not pass at all. When the cases are not run (`golden_set=false`,
+  none curated, or more than one call runs) `golden_check` is null and
+  `golden_set_not_run` says why. The run is recorded for the trend, as the
+  terminal's is.
 - **`griot_index_preview` says what an index run would do.** Per source:
   how many chunks would be embedded, how many are up to date, how many
   stale points a plain run would remove and how many it would hold back
@@ -232,6 +241,13 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A golden set file that cannot be run names the file and the case.**
+  `quality_golden_set.json` is edited by hand; a case without its `query`
+  or `must_include` ended `griot quality-check` in a traceback naming the
+  missing key, after the self-check had run. It is now checked before
+  anything is embedded (a `limit` that is not a whole number of at least 1
+  is refused the same way), and when a search fails in the middle of the
+  curated cases the self-check that was already done is still recorded.
 - **`griot assist install --scope global` follows `CLAUDE_CONFIG_DIR`.**
   Claude Code keeps its user files in the directory that variable names and
   does not read `~/.claude` when it is set; the installer wrote to

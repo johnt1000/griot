@@ -255,6 +255,19 @@ def main(argv=None):
         print(f"Error: collection '{collection}' does not exist.", file=sys.stderr if args.json else sys.stdout)
         raise SystemExit(1)
 
+    # The curated cases are read and checked BEFORE anything is embedded: a
+    # file that cannot be run as cases used to end in a traceback naming a
+    # missing key, after the self-check had been paid for. None = no file.
+    golden_set = None
+    if not args.skip_golden_set and common.GOLDEN_SET_PATH.exists():
+        try:
+            golden_set = golden_set_mod.list_cases()
+            golden_set_mod.check_cases(golden_set)
+        except (OSError, ValueError) as e:
+            print(f"Error: {common.GOLDEN_SET_PATH} cannot be run: {e}. Fix the file, or remove the case with "
+                  f"`griot golden-set remove`.", file=sys.stderr if args.json else sys.stdout)
+            raise SystemExit(1)
+
     if not args.json:
         print(f"=== Self-check: {collection} ===")
     self_check = run_self_check(collection, args.sample_size, args.min_score)
@@ -267,14 +280,19 @@ def main(argv=None):
     if not args.skip_golden_set:
         # resolved via common (CONFIG_DIR/quality_golden_set.json) — hand-curated
         # by the user, not part of the installed code
-        if not common.GOLDEN_SET_PATH.exists():
+        if golden_set is None:
             if not args.json:
                 print(f"\nWarning: {common.GOLDEN_SET_PATH} does not exist, skipping golden set.")
         else:
-            golden_set = golden_set_mod.list_cases()
             if not args.json:
                 print(f"\n=== Golden set: {len(golden_set)} curated questions ===")
-            golden_check = run_golden_set(golden_set)
+            try:
+                golden_check = run_golden_set(golden_set)
+            except Exception:
+                # Whatever stopped a search (the spend ceiling, the embedding
+                # API): the self-check above is done and is still recorded.
+                _record_for_trend(collection, self_check, None)
+                raise
             if not args.json:
                 for case in golden_check["cases"]:
                     status = "OK" if case["passed"] else "FAILED"

@@ -678,8 +678,8 @@ class GoldenSetState(TypedDict):
     # Repository names the curated cases expect and repos.json does not
     # have: those cases can only fail.
     unregistered_repos: list[str]
-    # The last time the golden set was run (`griot quality-check` in a
-    # terminal), or nulls. A PAST run: last_run_at says when.
+    # The last time the golden set was run (griot_quality_check, or `griot
+    # quality-check` in a terminal), or nulls. A PAST run: last_run_at says when.
     last_passed: int | None
     last_total: int | None
     last_run_at: str | None
@@ -793,12 +793,38 @@ class QualityCheckFailure(TypedDict):
     reason: str
 
 
+class GoldenCheckCase(TypedDict):
+    query: str
+    passed: bool
+    # The expected entries no result matched.
+    missing: list[dict]
+    # Set when the case could not pass whatever the search returned (its
+    # repository has nothing indexed, or it constrains nothing).
+    reason: str | None
+    top_results: list[dict]
+    # The limit the case asks for, when it is more than this tool searches
+    # and the case was run with less: a failure may then pass at a terminal.
+    limit_reduced_from: int | None
+
+
+class GoldenCheck(TypedDict):
+    note: str
+    total: int
+    passed: int
+    failed: int
+    cases: list[GoldenCheckCase]
+
+
 class QualityCheckOutput(TypedDict):
     sampled: int
     passed: int
     failed: int
     avg_score: float | None
     failures: list[QualityCheckFailure]
+    # The curated cases, run. Null when they were not: golden_set_not_run
+    # then says why, so that "not run" is never read as "nothing failed".
+    golden_check: GoldenCheck | None
+    golden_set_not_run: str | None
 
 
 # Beside `metadata` in a result, or not for an agent at all.
@@ -1425,14 +1451,12 @@ def griot_health_report() -> str:
     Either can pass while the other fails, and the two failures mean
     opposite things. Nobody reading a pass rate infers that on their own.
 
-    [my own finding, caught while checking this prompt against the code]
-    Only ONE of the two is reachable from here. griot_quality_check runs the
-    self-check and explicitly does not run the golden set; griot_golden_set_list
-    returns the curated CASES, never a result of running them. Saying "read
-    both checks" would have had the agent report a measurement it never
-    received. The prompt now states what MCP can and cannot answer and sends
-    the curated half to `griot quality-check` in a terminal — the same rule
-    the rest of this surface follows."""
+    Both are run by griot_quality_check, which returns them apart: the
+    self-check's counts, and `golden_check` (null, with
+    `golden_set_not_run` saying why, when the curated cases were not run).
+    The prompt used to send the curated half to a terminal, when the tool
+    ran the self-check only; what it must still prevent is a null read as
+    a pass."""
     return (
         "Assess whether griot's index can be trusted right now.\n\n"
         "1. Call griot_index_status to see the collection is there and how big.\n"
@@ -1440,31 +1464,38 @@ def griot_health_report() -> str:
         "field is what tells you whether the next step costs money. griot_spend_status "
         "is worth calling too, for how much of today's ceiling is already spent, but it "
         "reports the profile's NAME, not whether that profile bills.\n"
-        "3. Only then call griot_quality_check: it embeds one query per sampled point, "
-        "free on a local profile and billed on a paid one. On a paid profile, tell me "
-        "the cost before running a large sample rather than after.\n"
-        "4. Call griot_golden_set_list to see which curated cases exist.\n\n"
-        "Be exact about what you actually measured, because only half of it is "
-        "reachable from here:\n"
-        "- griot_quality_check runs the SELF-CHECK only. It is mechanical — indexed "
+        "3. Only then call griot_quality_check: it embeds one query per sampled point "
+        "and one per curated case, free on a local profile and billed on a paid one. "
+        "On a paid profile, tell me the cost before running a large sample rather than "
+        "after.\n\n"
+        "It returns two measurements. Read them apart, because they fail for opposite "
+        "reasons:\n"
+        "- The self-check (sampled, passed, failed, failures) is mechanical — indexed "
         "points retrieving themselves proves the pipeline is intact, and proves "
         "nothing about whether search is useful. Failing means the index is damaged: "
         "wrong vectors, corrupted payloads, a profile mismatch.\n"
-        "- griot_golden_set_list returns the curated CASES, not a result of running "
-        "them. It tells you what someone decided this index must be able to answer, "
-        "and nothing about whether it still does. Do NOT report the golden set as "
-        "passing or failing now — you did not run it. griot_stats has the result of "
-        "the LAST time someone did (golden_set: last_passed of last_total, at "
-        "last_run_at): report that as a past run, with its age, never as a fresh "
-        "measurement. To run it, tell me to use `griot quality-check` in a terminal, "
-        "which executes both halves.\n"
-        "- An empty golden set is itself worth reporting. It means nothing has ever "
-        "measured whether this index answers a real question, and the self-check "
-        "cannot substitute for that — it would pass on an index full of the wrong "
-        "content, as long as the content retrieves itself.\n\n"
+        "- `golden_check` is the curated golden set: questions someone wrote down with "
+        "the results that must come back. It is the only one that measures usefulness. "
+        "For each failed case say which it is: a `reason` means the case could not pass "
+        "whatever search returned (its repository has nothing indexed under this "
+        "profile — an indexing gap, not a search failure); no `reason` means search "
+        "ran and did not return what was expected, and `missing` and `top_results` "
+        "show what it returned instead. A failed case with `limit_reduced_from` set "
+        "was searched with fewer results than it asks for: say that, it may pass with "
+        "`griot quality-check` in a terminal. A self-check that passes with curated cases "
+        "failing is an intact index that is stale or missing content, not a broken "
+        "one.\n"
+        "- When `golden_check` is null the curated cases were NOT run, and "
+        "`golden_set_not_run` says why. Do not report that as passing. If there are no "
+        "curated cases, say so plainly: nothing has ever measured whether this index "
+        "answers a real question, and the self-check cannot substitute for that — it "
+        "would pass on an index full of the wrong content, as long as the content "
+        "retrieves itself. griot_golden_set_list shows the cases, and griot_stats has "
+        "the result of the last run that did include them (golden_set: last_passed of "
+        "last_total, at last_run_at) — a past run, to be reported with its age.\n\n"
         "Finish with a plain verdict — trust it, trust it for some things, or reindex "
-        "— naming the evidence, and say which part of the picture is missing because "
-        "the curated half was not run."
+        "— naming the evidence, and say which part of the picture is missing if the "
+        "curated half was not run."
     )
 
 
@@ -1495,14 +1526,87 @@ def griot_overview_report() -> str:
     )
 
 
+# One query is embedded per curated case, and the number of cases is whatever
+# the file holds: bounded for the reason the self-check's sample is.
+QUALITY_CHECK_GOLDEN_SET_MAX = 50
+# Per case, how many of the results that came back are shown: enough to see
+# what search returned instead of what was expected.
+QUALITY_CHECK_TOP_RESULTS_SHOWN = 5
+
+
+def _curated_cases_to_run() -> tuple[list[dict] | None, str | None]:
+    """(the cases to run, or None; why none is run). Everything that can be
+    known without embedding anything, so that a file nobody can run is an
+    error BEFORE the self-check spends a query per sample."""
+    try:
+        cases = golden_set.list_cases()
+        golden_set.check_cases(cases)
+    except (OSError, ValueError) as e:
+        raise _corrupt_golden_set(e) from e
+    if not cases:
+        return None, ("no curated case exists yet, so nothing has measured whether this index answers a real "
+                      "question. Add cases with griot_golden_set_add (or `griot golden-set add` in a terminal).")
+    if len(cases) > QUALITY_CHECK_GOLDEN_SET_MAX:
+        return None, (f"{len(cases)} curated cases are more than this tool runs in one call "
+                      f"({QUALITY_CHECK_GOLDEN_SET_MAX}): `griot quality-check` in a terminal runs them all.")
+    return cases, None
+
+
+def _held_to_the_search_limit(cases: list[dict]) -> list[dict]:
+    """A limit written by hand is spent here, by a call approved for
+    something else: held to what griot_search itself allows. The case says
+    so in the result (limit_reduced_from), since with fewer results a case
+    that passes at a terminal can fail here."""
+    return [{**case, "limit": min(case.get("limit", 5), SEARCH_LIMIT_MAX)} for case in cases]
+
+
+def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenCheck:
+    """The run as an agent gets it: the curated text carries the note the
+    list of cases has (another agent can have written it), and names that
+    come from repositories are shown the way search results show them.
+    `as_written` are the cases before their limit was held down, in the
+    order they were run."""
+    asked = [case.get("limit", 5) for case in as_written]
+    return {
+        "note": GOLDEN_SET_NOTE,
+        "total": golden_check["total"], "passed": golden_check["passed"], "failed": golden_check["failed"],
+        "cases": [{
+            "query": case["query"], "passed": case["passed"], "missing": case["missing"],
+            "reason": case.get("reason"),
+            "top_results": [{"score": hit["score"], "source_type": hit["source_type"],
+                             "repo": common.shown(str(hit["repo"])) if hit["repo"] is not None else None}
+                            for hit in case["top_results"][:QUALITY_CHECK_TOP_RESULTS_SHOWN]],
+            # Only for a case that was searched: one with a `reason` never was.
+            "limit_reduced_from": limit if limit > SEARCH_LIMIT_MAX and not case.get("reason") else None,
+        } for case, limit in zip(golden_check["cases"], asked)],
+    }
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
-def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) -> QualityCheckOutput:
-    """Runs the vector search quality self-check (level 1: samples real
-    already-indexed points, searches for their own content, confirms
-    self-match) — a diagnostic for "is the RAG working" before trusting it
-    for a task. Does not run the curated golden set (run_golden_set) — that
-    depends on manual curation, out of scope for this tool (the design notes)."""
+def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
+                        golden_set: bool = True) -> QualityCheckOutput:
+    """Measures whether search over the active index can be trusted, the way
+    `griot quality-check` does at a terminal: two checks that mean different
+    things.
+
+    The self-check samples indexed points and confirms each retrieves
+    itself: mechanical, it says the pipeline is intact. The curated golden
+    set (`golden_check`) runs the questions someone wrote down with the
+    results that must come back: the only one that says search is useful.
+    Each case has `passed`, what was `missing`, and a `reason` when it could
+    not pass at all (its repository has nothing indexed). A case that asks
+    for more results than this tool searches is run with fewer and says so
+    (`limit_reduced_from`).
+
+    `golden_check` is null when the cases were not run, and
+    `golden_set_not_run` says why (none curated yet, too many for one call,
+    or golden_set=false was passed to run the self-check alone). Null is
+    never a pass.
+
+    Embeds one query per sampled point and one query per curated case: free
+    on a local profile, billed on a paid one. The run is recorded for the
+    trend griot_stats reports."""
     if sample_size < 1:
         raise ValueError(f"sample_size must be at least 1 (got {sample_size})")
     # A check that samples nothing measured nothing. Returned as zeros with
@@ -1514,17 +1618,34 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) ->
                     f"Index a repository first (`griot index all`), then run this again.")
     if not common.collection_exists(common.COLLECTION_NAME):
         raise RuntimeError(not_measured)
+    if golden_set:
+        cases, not_run = _curated_cases_to_run()
+    else:
+        cases, not_run = None, "golden_set=false was passed: only the self-check ran."
     result = quality_check.run_self_check(common.COLLECTION_NAME,
                                           min(sample_size, QUALITY_CHECK_SAMPLE_MAX))
     if result["sampled"] == 0:
         raise RuntimeError(not_measured)
+    golden_check = None
+    if cases:
+        try:
+            golden_check = quality_check.run_golden_set(_held_to_the_search_limit(cases))
+        except Exception as e:  # noqa: BLE001 - whatever stops a search (spend ceiling, the embedding API)
+            # The self-check is done and paid for: recorded, and said. It
+            # used to vanish with the error of the half that came after it.
+            quality_check._record_for_trend(common.COLLECTION_NAME, result, None)
+            raise RuntimeError(
+                f"The curated golden set stopped before it finished: {e}. The self-check did run and is "
+                f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
+                f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
     # trend table is read by griot_stats and written by _record_for_trend,
     # which only the CLI called — so a check run from here left no trace, and
-    # the health prompt makes this the recommended path. golden_check is None
-    # because this tool deliberately does not run the curated half.
-    quality_check._record_for_trend(common.COLLECTION_NAME, result, None)
-    return result
+    # the health prompt makes this the recommended path. Recorded whole, as
+    # the terminal does; what is returned is the shown form.
+    quality_check._record_for_trend(common.COLLECTION_NAME, result, golden_check)
+    return {**result, "golden_check": _golden_check_shown(golden_check, cases) if golden_check else None,
+            "golden_set_not_run": not_run}
 
 
 def _assist_install_question(harness: str, scope: str) -> str:

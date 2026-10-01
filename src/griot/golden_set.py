@@ -75,6 +75,32 @@ def list_cases() -> list[dict]:
     return _load()
 
 
+def check_cases(cases) -> None:
+    """Raises ValueError when what the file holds cannot be run as cases.
+
+    add_case() guards what it writes, but the file is also edited by hand
+    and written by cmd_suggest(): the point where the cases are RUN is the
+    only one every writer passes. A case without its fields used to surface
+    there as the name of the missing key. Cases are numbered as `golden-set
+    list` and `golden-set remove` number them, from 1.
+
+    An entry that constrains nothing is not refused here: run_golden_set()
+    fails that case by name, which closes the gate and still runs the rest."""
+    if not isinstance(cases, list):
+        raise ValueError("it must hold a list of cases")
+    for number, case in enumerate(cases, start=1):
+        if not isinstance(case, dict):
+            raise ValueError(f"case {number} is not an object with `query` and `must_include`")
+        if not isinstance(case.get("query"), str) or not case["query"].strip():
+            raise ValueError(f"case {number} has no `query` text")
+        entries = case.get("must_include")
+        if not isinstance(entries, list) or not entries or not all(isinstance(entry, dict) for entry in entries):
+            raise ValueError(f"case {number} needs `must_include`: a list of at least one object")
+        limit = case.get("limit", 5)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError(f"case {number} has a `limit` that is not a whole number of at least 1")
+
+
 def add_case(query: str, must_include: list[dict], limit: int = 5) -> dict:
     """Data half of `golden-set add`: persists a case and returns it. The
     caller decides which search results are correct and passes the

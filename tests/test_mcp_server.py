@@ -1331,10 +1331,13 @@ def test_griot_quality_check_passes_through_and_uses_small_default(monkeypatch):
     monkeypatch.setattr(common, "collection_exists", lambda collection: True)
     monkeypatch.setattr(quality_check, "run_self_check", fake_run_self_check)
 
-    output = mcp_server.griot_quality_check()
+    output = mcp_server.griot_quality_check(golden_set=False)
 
     assert seen["collection"] == common.COLLECTION_NAME
-    assert output == {"sampled": 3, "passed": 3, "failed": 0, "avg_score": 0.99, "failures": []}
+    # The curated half has its own file: tests/test_quality_check_golden_set.py.
+    assert {k: output[k] for k in ("sampled", "passed", "failed", "avg_score", "failures")} == {
+        "sampled": 3, "passed": 3, "failed": 0, "avg_score": 0.99, "failures": []}
+    assert output["golden_check"] is None
     # the MCP default needs to be SMALLER than the CLI's (30) — limits cost if the
     # active profile is paid.
     assert seen["sample_size"] == mcp_server.QUALITY_CHECK_DEFAULT_SAMPLE_SIZE
@@ -1853,24 +1856,17 @@ def test_health_prompt_separates_the_two_kinds_of_check():
     assert "mechanical" in text.lower()
 
 
-def test_health_prompt_does_not_claim_the_golden_set_gets_run():
-    """[my own finding, before the review answered] griot_quality_check runs
-    the SELF-CHECK only — its docstring says so outright ("Does not run the
-    curated golden set"). The first version of this prompt told the agent to
-    "read the two checks as the different measurements they are", but only
-    one of them can be executed over MCP: griot_golden_set_list returns the
-    curated CASES, never a result of running them.
-
-    So the prompt promised a reading the data cannot support. It now says
-    what MCP can and cannot answer, and sends the curated half to the
-    terminal — the same rule the whole management surface follows: the
-    terminal is always the complete path, MCP is convenience over it."""
+def test_health_prompt_does_not_let_a_golden_set_that_was_not_run_pass():
+    """griot_quality_check used to run the SELF-CHECK only, and the prompt
+    sent the curated half to a terminal so that the agent would not report a
+    measurement it never received. The tool now runs both; what is left of
+    that rule is the case where the curated cases were NOT run (none exist,
+    too many for one call): `golden_check` is null, and null is not a pass."""
     text = mcp_server.griot_health_report()
 
-    assert "griot quality-check" in text, "must name the CLI command that runs the curated half"
+    assert "golden_check" in text and "golden_set_not_run" in text
     assert "self-check" in text.lower()
-    # The claim that the tool runs both is exactly what was wrong.
-    assert "both checks" not in text.lower()
+    assert "Do not report that as passing" in text
 
 
 def test_health_prompt_warns_that_the_check_can_cost_money():
