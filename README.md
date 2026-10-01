@@ -10,7 +10,7 @@ Named after the West African storyteller who keeps a community's history: griot 
 
 - **Fully local storage** — vectors live in an in-process [Qdrant Edge](https://qdrant.tech/edge/) shard under your XDG data dir. No services to run.
 - **Free by default** — the default embedding profile (`jina-code`) runs locally via ONNX. Paid profiles (OpenAI, Gemini) are opt-in.
-- **Spend circuit breaker** — daily ceiling + 5-minute velocity ceiling on every paid call, with atomic on-disk state. The `openai` and `deepseek` chat profiles refuse to run until you set their price env var, so the breaker always tracks real cost.
+- **Spend circuit breaker** — daily ceiling + 5-minute velocity ceiling on every paid call, with atomic on-disk state. The `openai` and `deepseek` chat profiles refuse to run until you set their price (`griot config set openai-chat-price <USD per 1M tokens>`, or `deepseek-chat-price`), so the breaker always tracks real cost.
 - **Five platforms** — GitHub, GitLab (incl. self-hosted), Bitbucket Cloud, Azure DevOps and Gitea/Forgejo adapters for PRs/releases/issues, detected from each repo's `origin` remote. These are built against each provider's documented API and covered by tests with mocked HTTP; only the GitHub path has been exercised against a live account.
 - **MCP server** — expose search/status/quality tools to Claude Code, opencode or any MCP client. Indexing via agent is off by default and path-allowlisted.
 - **Security-hardened** — API keys never in URLs or logs, 0600/0700 file modes on everything it writes, no credential ever follows a redirect. See [SECURITY.md](SECURITY.md).
@@ -51,6 +51,8 @@ griot stats
 
 `griot index all` runs the sources in order: `code`, `commits`, `tags`, `branches`, `platform`. Filter with `--sources code,commits`. Index an unregistered directory directly with `--path <dir>`.
 
+In a git work tree `index code` reads what git does not ignore (tracked files and new ones), skips symlinks and files over 1 MB, and replaces credential-looking values before anything is embedded. After each run the points whose source is gone are removed: a deleted file, a deleted branch. That removal is held back when more than half of a repository would go (`--prune` overrides) and never happens for a `--path` run, so register a repository you index regularly. `--dry-run` says what a run would embed and remove, at no cost.
+
 ## Embedding profiles
 
 Each profile gets its own collection (vectors from different models aren't comparable). Make one the active profile with `griot profiles use <name>`, which writes `GRIOT_EMBED_PROFILE` to `<config>/.env` (it asks first when the profile calls an API; `--yes` answers), or pick one for a single run with `--profile`. A profile switched to has its own, empty index until you run `griot index all`, and an MCP server that is already running keeps the profile it started with. A `GRIOT_EMBED_PROFILE` exported in the environment, or set in a server's own `env`, wins over the file.
@@ -62,7 +64,7 @@ Each profile gets its own collection (vectors from different models aren't compa
 | `openai-small` | OpenAI API | paid | needs `GRIOT_OPENAI_API_KEY` |
 | `gemini` | Gemini API | paid | needs `GEMINI_TOKEN` |
 
-`griot profiles list` shows every profile with RAM estimates and credential status. `griot profiles delete <profile>` permanently deletes that profile's on-disk collection to reclaim disk space (refuses the active profile and any profile currently being indexed). It asks for confirmation at an interactive terminal and has no `--yes`.
+`griot profiles list` shows every profile with RAM estimates and credential status. `griot profiles delete <profile>` permanently deletes that profile's on-disk collection to reclaim disk space (refuses the active profile, and refuses while any indexing run is in progress). It asks for confirmation at an interactive terminal and has no `--yes`.
 
 ## Chat profiles (`griot ask` only)
 
@@ -75,7 +77,7 @@ Search is controlled by the *embedding* profile above; the chat profile only dec
 | `deepseek` | `GRIOT_DEEPSEEK_API_KEY` | deepseek-chat | **required**: `GRIOT_DEEPSEEK_CHAT_PRICE_PER_1M_TOKENS` |
 | `groq` | `GRIOT_GROQ_API_KEY` | llama-3.3-70b-versatile | defaults to $0 (free tier — verify current limits in Groq's console) |
 
-griot never assumes an unverified price: `openai`/`deepseek` refuse to run until you set their price env var, so the spend circuit breaker always tracks real cost.
+griot never assumes an unverified price: `openai`/`deepseek` refuse to run until you set their price (`griot config set openai-chat-price <USD per 1M tokens>`, or `deepseek-chat-price`), so the spend circuit breaker always tracks real cost.
 
 ## Credentials
 
@@ -90,7 +92,7 @@ Install the optional `keychain` extra (`pip install "griot[keychain]"`) and cred
 
 Platform tokens (only needed for `griot index platform`): `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`.
 
-The first time you run any `griot` command, `<config>/.env` is generated for you with **every** variable griot supports already listed and commented, mode 0600 — settings that have a real default are written out explicitly (harmless, identical to leaving them unset), credentials are left empty ready to fill in. Open it once to see the full surface of what's configurable.
+The first time you run any `griot` command, `<config>/.env` is generated for you with every setting listed, mode 0600: most with their default written out, those whose default may still change commented out, and credentials empty. You rarely need to open it: `griot config list` shows each setting, the value in force and where it comes from, and `griot config set` changes one.
 
 ## MCP server
 
@@ -120,18 +122,19 @@ or in `.mcp.json`:
   "mcpServers": {
     "griot": {
       "command": "griot",
-      "args": ["mcp"],
-      "env": { "GRIOT_EMBED_PROFILE": "jina-code", "GRIOT_MCP_ENABLE_INDEX": "false" }
+      "args": ["mcp"]
     }
   }
 }
 ```
 
+Leave `env` out unless you want this project to differ from your own configuration: a variable set there wins over `griot config` and `griot profiles use` for that server. `GRIOT_PROJECT` is the one that belongs there.
+
 The server sends instructions when it connects: what griot covers, when to search it first and when to read or grep instead. A client that passes server instructions on to the agent (Claude Code does) needs nothing installed for that.
 
 `griot_search` takes an optional `group_by_document`: off by default (up to three chunks of one document, so it can answer in some depth without taking every slot), on when you want breadth (the best chunk of each document, so the same number of results reaches more files, commits and PRs). `repos` and `source_types` narrow a search to some repositories and to some kinds of source (`code`, `commit`, `tag`, `branch`, `merge_request`, `release`, `issue`); a repository with nothing indexed, or a kind that does not exist, is an error rather than an empty result. `griot search` takes the same as `--repo`, `--source-type` and `--group-by-document`.
 
-Read-only tools: `griot_search`, `griot_spend_status`, `griot_index_status`, `griot_quality_check`, `griot_repos_list`, `griot_profiles_list`, `griot_golden_set_list`, `griot_stats`, `griot_auth_guidance`.
+The server's own tool list is the inventory (your client shows it), and [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md) maps each tool to its CLI command. The read-only ones cover search, index and spend status, the usage report, the lists of repositories, profiles and curated cases, which credentials are configured, and the self-check of the index.
 
 Four prompts, which clients surface as slash commands:
 
@@ -144,7 +147,7 @@ Four prompts, which clients surface as slash commands:
 
 A prompt injects text; the work is still a tool call, so nothing here runs in the background or spends anything on its own.
 
-Tools that change something: `griot_repos_add`, `griot_repos_remove`, `griot_profiles_delete`, `griot_golden_set_add`, `griot_golden_set_remove`, `griot_assist_install` (below), and `griot_index_repo` (**off by default** — it can spend money on paid profiles; enable with `GRIOT_MCP_ENABLE_INDEX=true`, and even then it only accepts paths registered via `griot repos add` or under `GRIOT_MCP_INDEX_ROOTS`). None of them act unasked. Where your client can show a confirmation dialog they ask you, and only your answer counts: a `confirm=true` argument from the agent is ignored there, and a "no" is final. Where the client cannot ask, they refuse and hand back the equivalent `griot` command, and an explicit `confirm=true` argument re-runs them — which means that on such a client an agent that passes `confirm=true` up front executes without a human. That fallback is deliberate: it is the only thing that works on a client that cannot prompt. **Registering a new repo, deleting a profile, and installing assist skills/agents do not have it** — those accept nothing but a real human answer, because they widen what may be indexed, destroy data irreversibly, or install files a future AI session will auto-load and follow, and `confirm` is an argument the agent supplies to itself. Those three are also marked as requiring user interaction, which Claude Code honors: run headless, it denies the call before it reaches griot, even with an allow rule for the tool. (Full policy table: [docs/mcp-capability-coverage.md § The management surface](docs/mcp-capability-coverage.md#the-management-surface).)
+The tools that change something register or remove a repository, delete a profile, curate the golden set, install the skills (`griot_assist_install`, below) and index a repository (`griot_index_repo`, **off by default** — it can spend money on paid profiles; you enable it with `griot config set mcp-index true`, which asks at a terminal, and even then it only accepts paths registered via `griot repos add` or under `GRIOT_MCP_INDEX_ROOTS`). None of them act unasked. Where your client can show a confirmation dialog they ask you, and only your answer counts: a `confirm=true` argument from the agent is ignored there, and a "no" is final. Where the client cannot ask, they refuse and hand back the equivalent `griot` command, and an explicit `confirm=true` argument re-runs them — which means that on such a client an agent that passes `confirm=true` up front executes without a human. That fallback is deliberate: it is the only thing that works on a client that cannot prompt. **Registering a new repo, deleting a profile, and installing assist skills/agents do not have it** — those accept nothing but a real human answer, because they widen what may be indexed, destroy data irreversibly, or install files a future AI session will auto-load and follow, and `confirm` is an argument the agent supplies to itself. Those three are also marked as requiring user interaction, which Claude Code honors: run headless, it denies the call before it reaches griot, even with an allow rule for the tool. (Full policy table: [docs/mcp-capability-coverage.md § The management surface](docs/mcp-capability-coverage.md#the-management-surface).)
 
 ### Claude Code / opencode skills and agent
 
@@ -154,7 +157,7 @@ griot assist install --scope global       # every project on this machine, inste
 griot assist install --harness opencode   # skip detection, target one harness explicitly
 ```
 
-Copies a small bundle — five Skills (onboarding, indexing, day-to-day search/ask workflows, operations — running and recovering index runs from inside an agent session — and troubleshooting) and a setup Agent — written for whoever uses griot in **their own** project, not for contributing to griot itself. Claude Code gets `.claude/skills/`+`.claude/agents/`, opencode gets `.opencode/skills/`+`.opencode/agents/` (or the `~/`-rooted equivalents at `--scope global`); Skills are one shared file per skill (both harnesses read the same `SKILL.md` layout), the setup Agent ships as two variants because the two harnesses use different frontmatter for a subagent definition. The same thing is also `griot_assist_install`, an MCP tool an already-connected agent can request on your behalf — it still needs a real human answer, for the same reason `repos_add`/`profiles_delete` do. Re-running it overwrites a file it installed before if griot's bundled version changed — including any edits you made to that file yourself; the command lists which files it overwrote.
+Copies a small bundle — five Skills (onboarding, indexing, day-to-day search/ask workflows, operations — running and recovering index runs from inside an agent session — and troubleshooting) and a setup Agent — written for whoever uses griot in **their own** project, not for contributing to griot itself. Claude Code gets `.claude/skills/`+`.claude/agents/`, opencode gets `.opencode/skills/`+`.opencode/agents/` (at `--scope global`: Claude Code's user directory, `~/.claude` or the one `CLAUDE_CONFIG_DIR` names, and `~/.config/opencode/`); Skills are one shared file per skill (both harnesses read the same `SKILL.md` layout), the setup Agent ships as two variants because the two harnesses use different frontmatter for a subagent definition. The same thing is also `griot_assist_install`, an MCP tool an already-connected agent can request on your behalf — it still needs a real human answer, for the same reason `repos_add`/`profiles_delete` do. Re-running it overwrites a file it installed before if griot's bundled version changed — including any edits you made to that file yourself; the command lists which files it overwrote.
 
 At global scope, `griot assist install` also **offers** to add a short block to the harness's global instructions file (`~/.claude/CLAUDE.md` for Claude Code) that tells agents in every project when to use `griot_search`. It shows you the exact text and the file, and writes only if you type `y` at the prompt. With no interactive terminal (a script, a pipe) it writes nothing, and there is deliberately no flag that answers for you. That keeps the question from being skipped by accident or by an MCP tool. It is not a defence against a process that already has a shell on your machine: that process can edit the file directly, or drive a pseudo-terminal. `--no-instructions` skips the question. The block sits between `griot:begin` and `griot:end` markers, nothing outside them is touched, a symlinked file is written through, and deleting the block removes it. `griot_assist_install` (MCP) never touches this file.
 
@@ -191,6 +194,8 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 
 `griot config list` shows every setting, the value in force and where it comes from (the environment, `<config>/.env`, or the default). `griot config set <name> <value>` checks a value and writes it to the file, `griot config unset <name>` goes back to the default, and `griot config get <name>` prints one value. A change that widens something is asked about at an interactive terminal, with no flag that answers: raising a spend ceiling, turning on indexing through MCP, adding a directory an agent may index, pointing a platform token at another host. A variable exported in the environment wins over the file, and a running MCP server keeps the values it started with. The embedding profile has its own command (`griot profiles use`), and credentials have `griot auth`.
 
+The most used ones; `griot config list` shows them all.
+
 | Variable | Purpose |
 |---|---|
 | `GRIOT_EMBED_PROFILE` | active embedding profile (default `jina-code`) |
@@ -198,7 +203,7 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
-| `GRIOT_PROJECT` | name recorded with each search and tool call so `griot stats` can show usage by project (default: the folder `griot` runs in; set it per project in `.mcp.json`, not in `.env`) |
+| `GRIOT_PROJECT` | name recorded with each `griot ask`, `griot_search` and MCP tool call so `griot stats` can show usage by project (default: the folder `CLAUDE_PROJECT_DIR` names, else the folder `griot` runs in; set it in the `env` of that project's MCP server entry, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |
 | `GRIOT_MCP_CONCURRENCY_MODE` | `multi` (default) or `single` — see "Running multiple sessions" above |
@@ -210,7 +215,7 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 
 ```bash
 griot quality-check              # self-check: sampled points must find themselves
-griot golden-set suggest <repo>  # derive curated test cases from git log (human-approved)
+griot golden-set suggest ~/code/my-app  # derive curated test cases from that repository's git log (human-approved)
 griot golden-set add "query"     # curate a case from a real search
 ```
 

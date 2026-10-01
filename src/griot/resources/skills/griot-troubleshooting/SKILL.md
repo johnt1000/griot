@@ -34,7 +34,8 @@ separate session (another window, another project) does.
 
 - Close the session whose `griot mcp` holds the collection.
 - To index from a session that has the server attached, use
-  `griot_index_repo` (enabled with `GRIOT_MCP_ENABLE_INDEX=true`). It
+  `griot_index_repo` (the user enables it with `griot config set mcp-index
+  true`, which asks at a terminal). It
   releases the server's handle before starting the run.
 - Wait out the idle window (30 seconds by default) with no griot tool
   calls, then run the command again. Nothing to configure: this is what the
