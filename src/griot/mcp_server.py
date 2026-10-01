@@ -936,8 +936,8 @@ def _active_profile() -> str:
 
     [review finding] Deliberately defensive: nothing in the server's own
     process mutates GRIOT_EMBED_PROFILE today (there is no switch-profile
-    tool, and .env resolves at import), so this cannot currently observe a
-    difference. It is here because the failure mode is silent when it does
+    tool; `griot profiles use` writes the file a NEW process reads, and .env
+    resolves at import), so this cannot currently observe a difference. It is here because the failure mode is silent when it does
     happen, and because griot_spend_status and griot_quality_check still
     read the import-time constant — a switch would make them disagree with
     this tool. Migrating those means resolving the COLLECTION live too, not

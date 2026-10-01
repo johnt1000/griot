@@ -145,7 +145,9 @@ tier's floor, but never blocks you from selecting it. For the two paid
 profiles, `griot profiles list` also reports whether the relevant
 credential is configured.
 
-Select a profile with `GRIOT_EMBED_PROFILE` (persistent, via `.env`) or
+Select a profile with `griot profiles use <name>` (persistent: it writes
+`GRIOT_EMBED_PROFILE` to `<config>/.env`, asking first when the profile calls
+an API; a variable exported in the environment still wins over the file) or
 per-invocation with `--profile <name>` on `index`/`search`/`ask`. **Each
 profile gets its own collection** — vectors from different models aren't
 comparable, so switching profiles means indexing from scratch under the new
@@ -188,6 +190,6 @@ Permanently deletes that profile's on-disk collection. It asks for
 confirmation at an interactive terminal and has no flag that answers instead,
 so the user runs it, not an agent. It refuses to delete
 the **active** profile (switch to a different one first with
-`GRIOT_EMBED_PROFILE`/`--profile`) and refuses a profile that was never
+`griot profiles use <name>`) and refuses a profile that was never
 indexed (nothing to delete). This is irreversible — there's no undo short
 of re-indexing from scratch.

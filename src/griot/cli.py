@@ -19,7 +19,7 @@ import importlib
 import os
 import sys
 
-from griot import ConfigurationError, __version__
+from griot import ConfigurationError, UnknownEmbedProfile, __version__
 
 # Full pipeline order: code
 # first (largest volume), then the git metadata sources, "platform" last
@@ -296,6 +296,74 @@ def _cmd_profiles_list(args) -> int:
         price = f"${profile['price_per_1m_tokens']:.2f}/1M"
         print(f"    {name:<14}{profile['dim']}d   {price}   {configured}{active}")
 
+    print("\n  Make one the active profile with: griot profiles use <name>")
+    return 0
+
+
+def _cmd_profiles_use(args) -> int:
+    """`griot profiles use <name>`: makes `name` the active embedding
+    profile by writing GRIOT_EMBED_PROFILE to <config>/.env, the file every
+    griot process reads (the MCP server included, which is registered with
+    no environment of its own).
+
+    Switching writes nothing but that line. It asks first when the profile
+    calls an API, because from then on what is indexed and searched is sent
+    there and billed: recoverable (switch back), so --yes answers it."""
+    from dotenv import dotenv_values
+
+    from griot import auth, common
+
+    name = args.profile
+    if name not in common.EMBED_PROFILES:
+        print(f"Error: unknown profile {name!r}. Options: {', '.join(common.EMBED_PROFILES)}.", file=sys.stderr)
+        return 2
+    profile = common.EMBED_PROFILES[name]
+    in_file = dotenv_values(common.ENV_PATH).get("GRIOT_EMBED_PROFILE") if common.ENV_PATH.exists() else None
+    # What the REAL environment said before this command touched it (see
+    # _main). The file is loaded without overriding the environment, so a
+    # variable exported there is the one in force, whatever the file says.
+    exported = getattr(args, "environment_profile", None)
+    calls_an_api = profile["backend"] != "local"
+
+    if in_file == name:
+        print(f"'{name}' is already the active embedding profile in {common.ENV_PATH}.")
+    else:
+        if calls_an_api:
+            refused = common.confirm(
+                f"Make '{name}' the active embedding profile? It calls an API: from now on what griot indexes "
+                f"and searches is sent to it, and embedding is billed.", yes=args.yes)
+            if refused:
+                return refused
+        common.env_file_set("GRIOT_EMBED_PROFILE", name)
+        was = f" (was '{in_file}')" if in_file else ""
+        print(f"Active embedding profile: '{name}'{was}. Written to {common.ENV_PATH}.")
+
+    credential = common.credential_env_for_profile(name, profile)
+    if credential and not os.getenv(credential):
+        provider = auth._provider_label(credential) if credential.startswith("GRIOT_") else name
+        print(f"  It needs a credential that is not set ({credential}): griot auth set {provider}")
+    collection = common.collection_name_for(name)
+    if common.collection_exists(collection):
+        # "A collection exists", not "it has an index": asked without opening
+        # it (another process may hold it), and one that exists can be empty.
+        print(f"  A collection already exists for it ({collection}); `griot index all` brings it up to date.")
+    else:
+        print("  Nothing is indexed under it yet: each profile has its own index. Run `griot index all`.")
+    if in_file and in_file != name and common.collection_exists(common.collection_name_for(in_file)):
+        print(f"  The index of '{in_file}' stays on disk; `griot profiles delete {in_file}` removes it.")
+    print("  An MCP server that is already running keeps the profile it started with: restart open sessions.")
+    if exported and exported != name:
+        shown = common.printable(exported)[:80]
+        if exported in common.EMBED_PROFILES:
+            print(f"  GRIOT_EMBED_PROFILE is also set in the environment (to '{shown}'), and the environment wins "
+                  f"over the file: this shell, and what is started from it, keeps using that profile until the "
+                  f"variable is unset.")
+        else:
+            # The file is right now and the next command still fails: say
+            # why, or its hint to run this very command goes in circles.
+            print(f"  GRIOT_EMBED_PROFILE is also set in the environment, to '{shown}', which is not a profile. "
+                  f"The environment wins over the file, so every griot command started from this shell fails "
+                  f"until the variable is unset.")
     return 0
 
 
@@ -342,7 +410,8 @@ def check_delete_profile(profile_name: str, *, active_profile_name: str | None =
         raise ValueError(f"unknown profile '{profile_name}'.")
     active = active_profile_name if active_profile_name is not None else common.ACTIVE_PROFILE_NAME
     if profile_name == active:
-        raise ValueError(f"'{profile_name}' is the active profile — switch to a different one first, then delete.")
+        raise ValueError(f"'{profile_name}' is the active profile — switch to a different one first "
+                         f"(`griot profiles use <name>`), then delete.")
     collection = common.collection_name_for(profile_name)
     if not common.collection_exists(collection):
         raise ValueError(f"collection '{collection}' does not exist.")
@@ -497,6 +566,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     profiles_sub = p_profiles.add_subparsers(dest="profiles_command", metavar="<action>", required=True)
     profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
+    p_profiles_use = profiles_sub.add_parser(
+        "use", help="Makes a profile the active one (writes GRIOT_EMBED_PROFILE to the config .env)"
+    )
+    p_profiles_use.add_argument("profile", help="Profile name (see `griot profiles list`)")
+    p_profiles_use.add_argument("--yes", action="store_true",
+                                help="Do not ask before switching to a profile that calls an API")
+    p_profiles_use.set_defaults(func=_cmd_profiles_use)
     p_profiles_delete = profiles_sub.add_parser(
         "delete", help="Permanently deletes a profile's on-disk collection (frees disk space)"
     )
@@ -524,6 +600,10 @@ def main(argv=None) -> int:
 
 def _main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    # What the REAL environment says, before --profile below writes the same
+    # variable and before .env is loaded: `profiles use` needs to tell an
+    # exported variable from either of those.
+    exported_profile = os.environ.get("GRIOT_EMBED_PROFILE")
     argv, profile = _extract_profile_override(argv)
     if profile is not None:
         os.environ["GRIOT_EMBED_PROFILE"] = profile
@@ -568,6 +648,25 @@ def _main(argv=None) -> int:
     # subcommand imports common.py transitively a few lines later anyway —
     # this doesn't add new cost, just moves the config-dir template creation
     # ahead of it (closest thing to "on install" a pip package can hook into).
+    if args.func is _cmd_profiles_use:
+        # The profile being chosen is put in force for this process before
+        # common is imported, so that a file naming a profile that no
+        # longer exists cannot stop the one command that repairs it (the
+        # profile is validated when common loads).
+        if profile is not None:
+            print("Error: --profile picks a profile for one run, and `profiles use` sets the one that stays: "
+                  "give only the name to `profiles use`.", file=sys.stderr)
+            return 2
+        args.environment_profile = exported_profile
+        os.environ["GRIOT_EMBED_PROFILE"] = args.profile
+        try:
+            from griot import common  # noqa: F401 — loaded here to catch the one error below
+        except UnknownEmbedProfile as e:
+            if e.name != args.profile:
+                raise
+            # The name came from the command line, not from a setting: say so.
+            print(f"Error: unknown profile {args.profile!r}. Options: {', '.join(e.options)}.", file=sys.stderr)
+            return 2
     from griot import common
     common.ensure_env_template()
     return args.func(args)

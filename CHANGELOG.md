@@ -195,6 +195,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot profiles use <name>` makes a profile the active one.** It writes
+  `GRIOT_EMBED_PROFILE` to `<config>/.env`, which used to take an editor and
+  knowing the variable's name. It asks first when the profile calls an API
+  (`--yes` answers), and says what follows: the credential that is missing,
+  that the profile has its own index to build, that a running MCP server
+  keeps its profile until restarted, and that a variable exported in the
+  environment wins over the file. A `GRIOT_EMBED_PROFILE` that names no
+  profile is now one line that says how to fix it (exit status 2) instead
+  of a traceback on every command, and `profiles use` repairs it.
 - **`griot assist install` offers to pre-approve griot's read-only tools.**
   A harness asks a person before each tool call unless its settings allow
   the tool, and an agent that has to ask before every search mostly does not
