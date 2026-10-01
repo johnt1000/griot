@@ -334,6 +334,50 @@ def run_git(repo_path, args: list[str], *, timeout: float, check: bool = True) -
                           check=check, timeout=timeout, env=env)
 
 
+def git_format(*placeholders: str, nul: str = "%x00") -> str:
+    """A git format string that ends every field with NUL. `git log` writes
+    it `%x00`, `git for-each-ref` writes it `%00`."""
+    return "".join(placeholder + nul for placeholder in placeholders)
+
+
+_GIT_HASH = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
+def git_records(output: str, fields: int) -> list[list[str]]:
+    """What git printed for a git_format() of `fields` fields, as one list
+    per record.
+
+    NUL is the one character git refuses in a commit message, a tag message
+    and a name. The sources used to separate fields and records with the
+    control characters 0x1f and 0x1e, which git accepts in all three: one
+    commit holding either made a split come out with the wrong number of
+    fields, a ValueError that ended the commits source on every run.
+
+    The line break git puts between two records lands at the start of the
+    next record's first field and is removed. Output that does not divide
+    into whole records (git cut off, or a NUL where none can be) leaves the
+    incomplete tail out and says so in the log: a source never ends in a
+    traceback over what a repository holds."""
+    parts = output.split("\x00")
+    parts.pop()  # after the last terminator: nothing, or the break before a record that never came
+    whole = len(parts) - len(parts) % fields
+    if whole != len(parts):
+        log_and_print(f"Warning: what git printed does not divide into records of {fields} fields; the last "
+                      f"{len(parts) - whole} field(s) were left out.", level="warning", echo=False)
+    records = []
+    for start in range(0, whole, fields):
+        record = parts[start:start + fields]
+        record[0] = record[0].lstrip("\n")
+        records.append(record)
+    return records
+
+
+def is_git_hash(value: str) -> bool:
+    """A full object name, SHA-1 or SHA-256: what marks a record as read
+    from where it begins."""
+    return bool(_GIT_HASH.fullmatch(value))
+
+
 def is_interactive() -> bool:
     """True when a person can be asked: both ends are a terminal."""
     return sys.stdin.isatty() and sys.stdout.isatty()

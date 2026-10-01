@@ -265,6 +265,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A control character in a commit does not stop a source.** The git log,
+  the tags and the branches were read with the control characters 0x1f and
+  0x1e between fields and records, and git accepts both in a commit
+  message, a tag message and an author's name. One such commit ended the
+  commits source with a ValueError, and `griot index all` with it, on every
+  run; the same went for the tags, for the last commit of a branch and for
+  `griot golden-set suggest`. They are now read with NUL between fields,
+  the one character git refuses there, and output that does not divide
+  into whole records is left out with a warning instead of a traceback.
 - **An annotated tag carries the hash of its commit.** What was stored as
   `commit_hash` was the hash of the tag object, which names no commit and
   matches nothing in the commits source. A tag of a tag is followed to the
