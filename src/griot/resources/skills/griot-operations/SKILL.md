@@ -25,10 +25,11 @@ The mode comes from the `env` of the project's `.mcp.json` `griot` entry,
 else from `<config>/.env`. Absent means `multi`. An older `.env` (generated
 before `multi` became the default) can carry an active
 `GRIOT_MCP_CONCURRENCY_MODE=single` line that pins the old behavior. Check
-only that variable, and never print the whole `.env`, which holds credentials:
+only that setting, and never print the whole `.env`, which holds credentials:
 
 ```bash
-grep GRIOT_MCP_CONCURRENCY_MODE .mcp.json "${GRIOT_CONFIG_DIR:-$HOME/.config/griot}/.env"
+griot config get mcp-concurrency          # what griot's own configuration says
+grep GRIOT_MCP_CONCURRENCY_MODE .mcp.json  # what this project's server entry overrides, if anything
 ```
 
 So a `griot index ...` run through the shell **collides with your own MCP
@@ -76,9 +77,9 @@ restart so the server picks up the new environment:
   off by default because on a paid profile it spends money. It still only
   indexes paths registered with `griot repos add` (or under
   `GRIOT_MCP_INDEX_ROOTS`), and asks the user to confirm each run.
-- If the `grep` above shows `single`, add `"GRIOT_MCP_CONCURRENCY_MODE":
-  "multi"` to the same `env` (it takes precedence over `.env`), or delete the
-  line from `.env`. `multi` lets an idle server release the collection, so
+- If either shows `single`: `griot config unset mcp-concurrency` (the
+  default is `multi`), and if the `.mcp.json` entry sets it, change it there
+  too (the server's own `env` takes precedence over `.env`). `multi` lets an idle server release the collection, so
   Path B and other sessions on the same profile work after the idle window.
   The cost is a short reopen on the first tool call after an idle stretch.
 

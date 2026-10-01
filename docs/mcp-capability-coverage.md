@@ -291,6 +291,7 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 | `auth list` | Even a masked value lets someone confirm a stolen key is the right one, and gives an agent nothing beyond the `configured` boolean it already has. |
 | `golden-set suggest` | Interactive by nature — it walks the git log asking for case-by-case approval. |
 | `mcp` | It is the command that starts this server. |
+| `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |
 
 Two tools expose less than their CLI counterpart, and both differences

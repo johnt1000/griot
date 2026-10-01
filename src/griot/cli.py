@@ -41,6 +41,7 @@ _MODULES = {
     "golden-set": "griot.golden_set",
     "assist": "griot.harnesses",
     "audit": "griot.redaction",
+    "config": "griot.config",
 }
 
 
@@ -551,6 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("golden-set", "Manages the curated golden set for quality-check (suggest/add/list/remove)"),
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
+        ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal
@@ -637,6 +639,15 @@ def _main(argv=None) -> int:
     # docstring already promises) and keeps index/search/profiles on the
     # unchanged, strict build_parser()/parse_args() path.
     if argv and argv[0] in _MODULES:
+        if argv[0] == "config":
+            # Before the configuration is read: see the function. It is what
+            # lets `griot config set` repair a file griot cannot start with.
+            from griot import config
+            if len(argv) == 1 or {"-h", "--help"} & set(argv[1:]):
+                # The help names the settings, and it is what the error for
+                # a broken file points at: it must not need that file.
+                return config.main(argv[1:])
+            config.before_configuration_loads(argv[1:])
         from griot import common
         common.ensure_env_template()
         return _run_module(_MODULES[argv[0]], argv[1:])
