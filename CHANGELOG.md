@@ -265,6 +265,16 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **`griot mcp` starts on Python 3.10 again.** `griot_stats` and
+  `griot_index_status` each declared a field of their answer as
+  `NotRequired[...]`. The MCP SDK reads an answer's fields with
+  `typing.get_type_hints`, which from Python 3.11 takes that qualifier off
+  and on 3.10 leaves it there, and the model it builds is then refused: on
+  the oldest Python the package supports, importing the server failed and
+  it did not start. Nothing showed it: the tests had only run on a newer
+  Python. The field is declared in
+  a `total=False` base instead, which every version reads the same way; the
+  schema a client sees is unchanged.
 - **A branch named like a path in the work tree is listed.** With a
   directory `origin/feat` in the work tree, git stopped at the branch
   `origin/feat` with "ambiguous argument: both revision and filename", and
