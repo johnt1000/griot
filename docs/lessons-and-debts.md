@@ -220,6 +220,38 @@ set, and the directory it named could be a link to somewhere else. The
 question now gives the resolved directories and says when the environment
 chose them. Naming the option is not naming the consequence.
 
+### Only what counts its users may close what they use
+
+The function that hands out the open collection used to close and reopen it
+once it had gone unused for a while. It cannot know who still holds the
+handle it gave out: in a server with two calls at once, the second closed
+the collection under the first. Letting go of an idle handle moved to the
+one place that counts the calls in flight, and the two tools that need the
+collection to themselves wait for the others instead of closing it.
+
+### What decides embedding does not decide rewriting
+
+A document is embedded again when its text changes, and only then. The
+fields stored beside the text (the state of a pull request, the commit a tag
+points at) change for other reasons, and they were never written on their
+own: a pull request merged without a change of wording kept saying it was
+open. They are now compared separately and written without embedding.
+
+### A separator is safe only if the source cannot hold it
+
+The git log was read with two control characters between fields and
+records, chosen because nobody types them. Git accepts both in a commit
+message, and one commit that held one stopped a whole source on every run.
+"Unlikely" is not a property of the format; NUL, which git refuses in those
+places, is.
+
+### A test that always fails kills every mutant
+
+A mutation run reported no survivors while one of the tests it relied on was
+failing for an unrelated reason, so every mutant "died". The run now checks
+that the unmutated tests pass before it mutates anything, and a commit waits
+for the suite's result to be read, not merely for the suite to have run.
+
 ### Measure before making every user pay again
 
 Putting the file path in the embedded text looked like an obvious
