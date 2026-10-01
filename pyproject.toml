@@ -56,6 +56,9 @@ dependencies = [
     # Same reasoning as typing-extensions: mcp_server.py imports BaseModel from
     # pydantic directly, so it must not rely on `mcp` continuing to pull it in.
     "pydantic>=2",
+    # And again: mcp_server.py waits with anyio.sleep (the MCP SDK's own async
+    # layer), which it imports directly.
+    "anyio",
 ]
 
 [project.optional-dependencies]

@@ -265,6 +265,18 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **The index is not closed under a call that is using it.** In a server
+  with more than one tool call at a time, three things could take the
+  collection from under a call or leave it held for good. A call arriving
+  after the idle window closed and reopened the handle, whoever was using
+  it. Two calls that both found it closed both opened it, and one of the
+  two handles was never closed. And `griot_index_repo` closed it to make
+  room for the index run whatever else was in flight. Opening and closing
+  are now one at a time; only the idle reaper, which counts the calls in
+  flight, lets go of an idle handle; and the index tool, like the preview,
+  waits a few seconds for the other call to finish and otherwise answers
+  "another call is using the index" instead of closing it. It checks
+  before asking for confirmation as well as after.
 - **A control character in a commit does not stop a source.** The git log,
   the tags and the branches were read with the control characters 0x1f and
   0x1e between fields and records, and git accepts both in a commit

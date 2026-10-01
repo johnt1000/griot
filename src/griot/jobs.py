@@ -258,6 +258,7 @@ def start_index_job(
     *,
     allow_env_roots: bool = True,
     env: dict | None = None,
+    release=None,
 ) -> dict:
     """Triggers indexing as a detached subprocess — code, commits, tags
     and branches by default. Does NOT wait for completion; returns as
@@ -288,8 +289,12 @@ def start_index_job(
     # active collection's handle (get_client()) — the subprocess needs to
     # open the SAME directory to write; without releasing it here, it
     # dies with "failed to open WAL ... WouldBlock". The next read
-    # reopens it on demand.
-    common.release_client()
+    # reopens it on demand. `release` is how a host with other calls in
+    # flight lets go (it answers with a reason when it cannot: closing the
+    # collection here regardless took it from under a search in progress).
+    busy = (release or common.release_client)()
+    if busy:
+        return {"started": False, "reason": busy, "path": None, "pid": None, "sources": None}
 
     log_path = common.LOG_DIR / "griot_index.log"
     common.secure_mkdir(log_path.parent)

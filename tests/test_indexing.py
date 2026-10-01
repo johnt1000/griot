@@ -258,10 +258,10 @@ def test_release_then_reopen_allows_a_second_process_style_open():
 
 # --- concurrency mode (user decision, 2026-08-20) ----------------------------
 # 'single' (opt-in): behaves exactly as before, no change at all. 'multi' (default)
-# (GRIOT_MCP_CONCURRENCY_MODE=multi): drops the handle after
-# IDLE_RELEASE_SECONDS of no use and retries-with-backoff when reopening. The
-# check here runs on the next get_client() call; an idle MCP server is covered
-# by mcp_server's reaper (tested in test_mcp_server.py).
+# (GRIOT_MCP_CONCURRENCY_MODE=multi): the handle is let go after
+# IDLE_RELEASE_SECONDS of no use, by mcp_server's reaper (tested in
+# test_mcp_server.py), and reopened with retry-with-backoff. get_client() does
+# not close it itself: see tests/test_client_release_race.py.
 
 
 def test_default_concurrency_mode_is_multi():
@@ -349,7 +349,10 @@ def test_multi_mode_raises_clear_error_after_retries_exhausted(monkeypatch):
         common.get_client()
 
 
-def test_multi_mode_releases_client_after_idle_window(monkeypatch):
+def test_multi_mode_does_not_reopen_the_client_on_its_own_after_the_idle_window(monkeypatch):
+    """It used to: get_client() closed and reopened the handle once the
+    window had passed, which closed it under any call still using it. The
+    reaper, which counts calls in flight, is what lets go now."""
     monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
     monkeypatch.setattr(common, "IDLE_RELEASE_SECONDS", 30.0)
 
@@ -361,7 +364,7 @@ def test_multi_mode_releases_client_after_idle_window(monkeypatch):
 
     second = common.get_client()
 
-    assert second is not first  # actually reopened
+    assert second is first
 
 
 def test_multi_mode_reuses_client_within_idle_window(monkeypatch):
