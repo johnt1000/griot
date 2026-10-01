@@ -265,6 +265,11 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **A branch named like a path in the work tree is listed.** With a
+  directory `origin/feat` in the work tree, git stopped at the branch
+  `origin/feat` with "ambiguous argument: both revision and filename", and
+  the branches source skipped the branch without a word. The name is now
+  given as a revision and nothing else.
 - **The index is not closed under a call that is using it.** In a server
   with more than one tool call at a time, three things could take the
   collection from under a call or leave it held for good. A call arriving
@@ -473,6 +478,18 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Performance
 
+- **The branches source no longer runs two git processes per branch.** It
+  ran one for the last commit of every remote branch and one for what each
+  has ahead of the default branch. The last commits of all branches are
+  now read in two calls, and one more says which branches have anything
+  ahead: the list of those commits is asked for only where there are any,
+  and on most repositories nearly every remote branch was merged long ago.
+  Measured on a repository with 300 remote branches, 60 of them ahead: 602
+  git calls and 14.2 s before, 65 calls and 1.5 s after. The documents are
+  the same as before, so nothing is embedded again: the names are resolved
+  and the commits formatted by git itself, as before, only for all
+  branches at once. Where git cannot answer for all of them together, each
+  branch is asked on its own as it was.
 - **griot starts in less than half the time.** The local embedding library
   (fastembed, with onnxruntime under it) was imported by every command and
   every MCP server start: about 0.45 s of the 0.7 s that importing griot took

@@ -26,9 +26,8 @@ what "done for a public release" still means.
 ## Next
 
 - **Cheap indexing speed-ups that were measured or spotted and not done:**
-  two git subprocesses per branch in the branches source, one embedding
-  batch size for every profile, and a new HTTP connection per embedding
-  call.
+  one embedding batch size for every profile, and a new HTTP connection per
+  embedding call.
 
 ## Considered, not scheduled
 

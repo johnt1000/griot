@@ -53,7 +53,11 @@ def last_commit(repo_path: Path, branch: str) -> dict | None:
     try:
         # [L1] --end-of-options: refs come from `git branch -r` (today always
         # origin/*), but a ref must never be interpretable as an option
-        output = run_git(repo_path, "log", "-1", f"--pretty=format:{fmt}", "--end-of-options", branch)
+        # The trailing `--` says the name is a revision and nothing else:
+        # without it, a path of the same name in the work tree (a directory
+        # `origin/feat`) makes git stop with "ambiguous argument", and the
+        # branch was skipped.
+        output = run_git(repo_path, "log", "-1", f"--pretty=format:{fmt}", "--end-of-options", branch, "--")
     except subprocess.CalledProcessError:
         return None
     records = common.git_records(output, 4)
@@ -61,6 +65,75 @@ def last_commit(repo_path: Path, branch: str) -> dict | None:
         return None
     commit_hash, author, date, subject = records[0]
     return {"hash": commit_hash, "author": author, "date": date, "subject": subject}
+
+
+# How many names or hashes go into one git command line.
+_PER_CALL = 400
+
+
+def _in_chunks(items: list[str]) -> list[list[str]]:
+    return [items[start:start + _PER_CALL] for start in range(0, len(items), _PER_CALL)]
+
+
+def branch_tips(repo_path: Path, branches: list[str]) -> dict[str, dict] | None:
+    """The last commit of every branch in `branches`, {branch: {"hash",
+    "author", "date", "subject"}}, in two git calls for all of them instead
+    of one `git log -1` per branch. None when git cannot answer that way
+    for every one of them: the caller then asks about each on its own.
+
+    The answer is the same text as one branch at a time gives: each name is
+    resolved the way `git log -1 <name> --` resolves it (a tag or a local
+    branch of the same name wins, a tag object is peeled to its commit,
+    something that is no commit fails), and the fields come from `git
+    log`'s own formatting (which re-encodes a legacy message and trims a
+    subject). Reading the refs with `git for-each-ref` was faster
+    still and answered differently in each of those cases; the text of a
+    document decides whether it is embedded again."""
+    hashes: list[str] = []
+    commits: dict[str, dict] = {}
+    if any(branch.startswith("-") for branch in branches):
+        # `git rev-parse` has no way to say "what follows is not an option"
+        # (it prints --end-of-options back), and a remote can be named
+        # `-x`. Such a repository is read one branch at a time, where the
+        # name goes after --end-of-options.
+        return None
+    try:
+        for names in _in_chunks(branches):
+            resolved = run_git(repo_path, "rev-parse", *[f"{name}^{{commit}}" for name in names])
+            found = resolved.split()
+            if len(found) != len(names) or not all(common.is_git_hash(value) for value in found):
+                return None
+            hashes.extend(found)
+        fmt = common.git_format("%H", "%an", "%aI", "%s")
+        for some in _in_chunks(sorted(set(hashes))):
+            output = run_git(repo_path, "log", "--no-walk=unsorted", f"--pretty=format:{fmt}", "--end-of-options", *some)
+            for commit_hash, author, date, subject in common.git_records(output, 4):
+                commits[commit_hash] = {"hash": commit_hash, "author": author, "date": date, "subject": subject}
+    except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+        return None  # a name that is no commit, a git that is too old, a repository too slow
+    if not all(commit_hash in commits for commit_hash in hashes):
+        return None
+    return {branch: commits[commit_hash] for branch, commit_hash in zip(branches, hashes)}
+
+
+def tips_ahead_of(repo_path: Path, base: str, hashes: set[str]) -> set[str] | None:
+    """Which of these commits `base` does not contain, in one git call per
+    few hundred of them. A branch has something ahead of `base` exactly when
+    its last commit is one of them, so `git log base..branch` is only worth
+    running for those: on most repositories nearly every remote branch was
+    merged long ago. None when git could not say (a default branch that
+    does not resolve): every branch is then asked, as before.
+
+    `base` is given by the very name ahead_commits() gives `git log`, as an
+    argument and never inside a format string."""
+    ahead: set[str] = set()
+    try:
+        for some in _in_chunks(sorted(hashes)):
+            output = run_git(repo_path, "rev-list", "--end-of-options", *some, f"^{base}")
+            ahead.update(output.split())
+    except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+        return None
+    return ahead & hashes
 
 
 def ahead_commits(repo_path: Path, base: str, branch: str) -> list[str]:
@@ -75,14 +148,20 @@ def ahead_commits(repo_path: Path, base: str, branch: str) -> list[str]:
 def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
     key = repo_key or repo_path.name
     base = default_branch(repo_path)
+    # The default branch is already covered by index_code.py (code) and index_commits.py.
+    branches = [branch for branch in remote_branches(repo_path) if branch != base]
+    tips = branch_tips(repo_path, branches)
+    ahead_tips = tips_ahead_of(repo_path, base, {tip["hash"] for tip in tips.values()}) if tips and base else None
     documents = []
-    for branch in remote_branches(repo_path):
-        if branch == base:
-            continue  # already covered by index_code.py (code) and index_commits.py
-        commit = last_commit(repo_path, branch)
+    for branch in branches:
+        # Without the answer for all of them at once: one branch at a time.
+        commit = tips[branch] if tips is not None else last_commit(repo_path, branch)
         if commit is None:
             continue
-        ahead = ahead_commits(repo_path, base, branch) if base else []
+        if not base or (ahead_tips is not None and commit["hash"] not in ahead_tips):
+            ahead = []  # the default branch contains it: there is nothing to list
+        else:
+            ahead = ahead_commits(repo_path, base, branch)
 
         text = f"Branch: {branch}\nLast commit: {commit['subject']} ({commit['author']}, {commit['date']})"
         if ahead:
