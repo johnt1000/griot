@@ -234,6 +234,32 @@ def _no_test_runs_a_harness_command(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_writes_a_settings_file_outside_its_own_directory(monkeypatch, tmp_path_factory):
+    """`griot assist install` can add rules to the harness's settings file
+    (`~/.claude/settings.json`). A test that simulates a terminal, answers
+    "y" and uses the real harness with the real home would otherwise edit
+    the settings of whoever runs the suite. Every write of a settings file
+    goes through harnesses._write_settings: here it refuses any path outside
+    pytest's temporary directory."""
+    import os
+    from pathlib import Path
+
+    from griot import harnesses
+
+    write = getattr(harnesses, "_write_settings", None)
+    if write is None:
+        return
+    base = Path(os.path.realpath(tmp_path_factory.getbasetemp()))
+
+    def guarded(path, text):
+        if base not in Path(os.path.realpath(path)).parents:
+            raise AssertionError(f"a test tried to write a settings file outside the test's own directory: {path}")
+        return write(path, text)
+
+    monkeypatch.setattr(harnesses, "_write_settings", guarded)
+
+
+@pytest.fixture(autouse=True)
 def _echo_goes_to_stdout_again(monkeypatch):
     """The MCP server's main() points log_and_print() at stderr for the life
     of the process. A test that calls it would change where every later

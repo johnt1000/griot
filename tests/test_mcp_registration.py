@@ -216,6 +216,7 @@ def test_install_offers_the_server_for_each_target(env, monkeypatch, tmp_path):
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
+    monkeypatch.setattr(harnesses, "offer_tool_approval", lambda *a, **k: "n/a")  # tests/test_tool_approval.py
     _answer(monkeypatch, "y")
     assert harnesses.main(["install", "--scope", "global", "--harness", "claude-code"]) == 0
     assert len(env.calls) == 1
@@ -227,6 +228,7 @@ def test_the_flags_skip_or_answer_the_question(env, monkeypatch, flag, expected_
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
+    monkeypatch.setattr(harnesses, "offer_tool_approval", lambda *a, **k: "n/a")  # tests/test_tool_approval.py
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although a flag answered"))
     assert harnesses.main(["install", "--scope", "global", "--harness", "claude-code", flag]) == 0
     assert len(env.calls) == expected_calls
@@ -346,6 +348,7 @@ def _main(monkeypatch, *argv):
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
+    monkeypatch.setattr(harnesses, "offer_tool_approval", lambda *a, **k: "n/a")  # tests/test_tool_approval.py
     return harnesses.main(["install", "--harness", "claude-code", *argv])
 
 
@@ -382,6 +385,7 @@ def test_with_every_harness_the_flag_registers_where_it_can_and_explains_elsewhe
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
+    monkeypatch.setattr(harnesses, "offer_tool_approval", lambda *a, **k: "n/a")  # tests/test_tool_approval.py
     monkeypatch.setattr(harnesses, "detect_harnesses", lambda candidates=None: [CLAUDE, OPENCODE])
     assert harnesses.main(["install", "--scope", "global", "--mcp"]) == 0
     assert len(env.calls) == 1 and "opencode" in capsys.readouterr().out

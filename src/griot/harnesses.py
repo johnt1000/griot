@@ -12,12 +12,17 @@ tools/model; opencode: description/mode/permission), so agent content lives
 in a separate resources/agents/<harness.id>/ subdirectory per harness —
 agent_content_subdir picks the right one.
 
-Deliberately does NOT import griot.common: that module pulls in
-qdrant_edge/fastembed at import time (seconds of cost, see cli.py's docstring
-on lazy dispatch) for a command that only copies a handful of text files.
+Deliberately does NOT import griot.common when it is loaded: that module
+pulls in qdrant_edge and reads the configuration (see cli.py's docstring on
+lazy dispatch), for a command that mostly copies a handful of text files.
+The two steps that need it import it where they run: the note about the
+concurrency mode when registering the MCP server, and the list of read-only
+tools when offering to pre-approve them.
 """
 
 import argparse
+import fnmatch
+import json
 import os
 import shlex
 import shutil
@@ -57,6 +62,13 @@ class Harness:
     mcp_register: Callable[[str, str], list[str]] | None = None
     # And the one that undoes exactly that, given the same scope.
     mcp_unregister: Callable[[str], list[str]] | None = None
+    # Where the harness keeps the tools that may run without asking: the
+    # user's file (given the home) and a project's PERSONAL one (given the
+    # project), and how it names one of griot's tools in a rule. None where
+    # griot does not know the format: then nothing is offered.
+    global_settings_file: Callable[[Path], Path] | None = None
+    local_settings_file: Callable[[Path], Path] | None = None
+    tool_rule: Callable[[str], str] | None = None
 
 
 HARNESSES = [
@@ -74,6 +86,11 @@ HARNESSES = [
         mcp_register=lambda scope, griot: ["claude", "mcp", "add", "--scope", scope, "griot", "--", griot, "mcp"],
         # With the scope: once a server is registered in two scopes, a remove without one is refused.
         mcp_unregister=lambda scope: ["claude", "mcp", "remove", "--scope", scope, "griot"],
+        global_settings_file=lambda home: home / ".claude" / "settings.json",
+        # settings.local.json, not settings.json: the latter is the one a team commits.
+        local_settings_file=lambda cwd: cwd / ".claude" / "settings.local.json",
+        # mcp__<server>__<tool>, for a server registered under the name "griot".
+        tool_rule=lambda tool: f"mcp__griot__{tool}",
     ),
     Harness(
         id="opencode",
@@ -525,6 +542,261 @@ def offer_mcp_server(harness: Harness, scope: str, *, mode: str = "ask") -> str:
     return "failed"
 
 
+# --- tools that may run without asking -----------------------------------------------
+# A harness asks a person before each tool call unless a rule in its settings
+# allows the tool. An agent that has to ask before every search mostly does not
+# search. griot can add rules for its READ-ONLY tools. That widens what an agent
+# may do without a person, so it follows the rule of the instructions block: a
+# typed "y" at a terminal with the exact rules on screen, no flag that answers
+# yes, and never from the MCP tool.
+
+
+def tool_rules(harness: Harness) -> list[str]:
+    """The rules griot offers, in the harness's own syntax. Which tools comes
+    from the server itself (mcp_server.tools_safe_to_preapprove)."""
+    from griot import mcp_server  # heavy, and only needed when this is offered
+
+    return [harness.tool_rule(name) for name in mcp_server.tools_safe_to_preapprove()]
+
+
+def settings_file(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path | None = None) -> Path | None:
+    if scope == "global":
+        return harness.global_settings_file(home or Path.home()) if harness.global_settings_file else None
+    return harness.local_settings_file(cwd or Path.cwd()) if harness.local_settings_file else None
+
+
+_RULE_LISTS = ("allow", "deny", "ask")
+
+
+class _KeyGivenTwice(ValueError):
+    pass
+
+
+def _no_key_twice(pairs: list) -> dict:
+    """json.loads keeps the last of two equal keys and says nothing. Written
+    back, the other value would be gone from the user's file."""
+    keys = [key for key, _ in pairs]
+    twice = next((key for key in keys if keys.count(key) > 1), None)
+    if twice is not None:
+        raise _KeyGivenTwice(twice)
+    return dict(pairs)
+
+
+def _read_settings(real: Path) -> tuple[dict | None, str | None, str]:
+    """(settings, why they cannot be edited, the text as read). A file that is
+    missing is empty settings. Anything griot does not recognise as settings
+    is refused rather than guessed at: the file is the user's, and a wrong
+    rewrite of it breaks their harness."""
+    if not real.exists():
+        return {}, None, ""
+    if not os.access(real, os.R_OK):
+        return None, "it cannot be read", ""
+    if not os.access(real, os.W_OK):
+        # The write is a rename, which replaces a read-only file without
+        # complaint. Whoever made it read-only meant it.
+        return None, "it is read-only", ""
+    text = _read_text(real)
+    if text is None:
+        return None, "it is not UTF-8 text", ""
+    if not text.strip():
+        return {}, None, text
+    try:
+        settings = json.loads(text, object_pairs_hook=_no_key_twice)
+    except _KeyGivenTwice as e:
+        return None, f"it gives the key {str(e)!r} twice", text
+    except ValueError as e:
+        return None, f"it is not valid JSON ({e})", text
+    if not isinstance(settings, dict):
+        return None, "it does not hold a JSON object", text
+    permissions = settings.get("permissions", {})
+    if not isinstance(permissions, dict):
+        return None, "its `permissions` is not an object", text
+    for name in _RULE_LISTS:
+        rules = permissions.get(name, [])
+        if not isinstance(rules, list) or not all(isinstance(rule, str) for rule in rules):
+            return None, f"its `permissions.{name}` is not a list of rules", text
+    return settings, None, text
+
+
+def _covers(pattern: str, rule: str, *, allowing: bool) -> bool:
+    """Whether a rule of the user's applies to one of ours: the same rule,
+    the whole server (`mcp__griot`), or a wildcard that matches it. An ALLOW
+    rule only counts when its server part is literal: the harness ignores an
+    allow rule such as `mcp__*`, so it allows nothing. Under deny and ask any
+    wildcard counts."""
+    server = rule.rsplit("__", 1)[0]
+    if pattern in (rule, server):
+        return True
+    if "*" not in pattern:
+        return False
+    if allowing and not pattern.startswith(f"{server}__"):
+        return False
+    return fnmatch.fnmatchcase(rule, pattern)
+
+
+def _approval_plan(settings: dict, rules: list[str]) -> tuple[list[str], dict[str, str]]:
+    """(rules to add, rules left out and under which list the user already
+    decided otherwise). A rule that is already allowed is neither."""
+    permissions = settings.get("permissions", {})
+    to_add, left_out = [], {}
+    for rule in rules:
+        decided = next((name for name in ("deny", "ask")
+                        if any(_covers(theirs, rule, allowing=False) for theirs in permissions.get(name, []))), None)
+        if decided:
+            left_out[rule] = decided  # theirs is a decision; it also wins in the harness
+        elif not any(_covers(theirs, rule, allowing=True) for theirs in permissions.get("allow", [])):
+            to_add.append(rule)
+    return to_add, left_out
+
+
+def _indent_of(text: str) -> int | str:
+    """The indentation the file already uses, so that adding rules changes as
+    little of its layout as a rewrite can."""
+    for line in text.splitlines():
+        stripped = line.lstrip(" \t")
+        if stripped and len(stripped) < len(line):
+            lead = line[: len(line) - len(stripped)]
+            return "\t" if lead[0] == "\t" else len(lead)
+    return 2
+
+
+def _write_settings(path: Path, text: str) -> None:
+    """The one place a settings file is written. Its own function so that
+    the test suite can keep every such write inside its own directory. A
+    file griot creates is private (0600); an existing one keeps its mode."""
+    created = not path.exists()
+    _atomic_write(path, text)
+    if created:
+        os.chmod(path, 0o600)
+
+
+def _tracked_by_git(path: Path) -> bool:
+    """Whether git tracks this file. Best effort: anything that goes wrong
+    reads as "not tracked", and the hardened runner is used because the
+    repository asked about is not necessarily the user's own."""
+    try:
+        from griot import common
+
+        done = common.run_git(path.parent, ["ls-files", "--error-unmatch", "--", path.name], timeout=10, check=False)
+        return done.returncode == 0
+    except Exception:  # noqa: BLE001 — a warning that could not be worked out is no warning
+        return False
+
+
+def _existing_project_file_note(real: Path, settings: dict) -> list[str]:
+    """What to say about a project settings file that is already there. A
+    repository can ship one with permissions and hooks of its own; adding to
+    it must not read as vouching for it."""
+    if not real.exists():
+        return []
+    held = []
+    others = len(settings.get("permissions", {}).get("allow", []))
+    if others:
+        held.append(f"{others} other allow rule{'s' if others != 1 else ''}")
+    held.extend(key for key in ("hooks", "env") if settings.get(key))
+    lines = [f"  That file already exists{' (' + ', '.join(held) + ')' if held else ''}; griot keeps what is in it. "
+             f"If this project is not yours, read it first: it decides what an agent may do here."]
+    if _tracked_by_git(real):
+        lines.append("  It is tracked by git in this repository: what you add is shared with whoever clones it.")
+    return lines
+
+
+def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home: Path | None = None,
+                        cwd: Path | None = None) -> str:
+    """Asks whether griot's read-only tools may run without the harness
+    asking each time. Returns n/a | skipped | unsafe | malformed | current |
+    not-interactive | declined | failed | created | added. Nothing is written
+    without a typed "y" or "yes", and nothing it does raises: the install it
+    follows has already happened."""
+    path = settings_file(harness, scope, home=home, cwd=cwd)
+    if path is None or harness.tool_rule is None:
+        return "n/a"
+    if not ask:
+        return "skipped"
+    everywhere = scope == "global"
+    reach = "every project" if everywhere else "this project"
+
+    if everywhere:
+        real = Path(os.path.realpath(path))  # the user's own file: often a link into a dotfiles checkout
+    else:
+        # A project is not the user's: a repository can ship this file, or
+        # `.claude`, as a link to a file of theirs.
+        problem = _destination_problem(path, cwd or Path.cwd(), contained=True)
+        if problem:
+            print(f"  tool approval: NOT touched. {problem}")
+            return "unsafe"
+        real = path
+
+    rules = tool_rules(harness)  # loads the server: only now that something may be offered
+    by_hand = "    " + "\n    ".join(rules)
+    settings, why_not, text = _read_settings(real)
+    if settings is None:
+        print(f"  tool approval: NOT touched. {path} is not something griot can edit safely: {why_not}. "
+              f"To let {harness.display_name} call griot's read-only tools without asking, add these to "
+              f"`permissions.allow` there by hand:\n{by_hand}")
+        return "malformed"
+
+    to_add, left_out = _approval_plan(settings, rules)
+    kept_out = ""
+    if left_out:
+        kept_out = ("  Left out, because that file already has a rule for them under "
+                    f"{' or '.join(f'`{name}`' for name in sorted(set(left_out.values())))}, and that is your "
+                    f"decision: {', '.join(sorted(left_out))}")
+    if not to_add:
+        print(f"  tool approval: nothing to add in {path}.")
+        if kept_out:
+            print(kept_out)
+        return "current"
+    if not _is_interactive():
+        print(f"  tool approval: {harness.display_name} asks before each griot tool call. Run "
+              f"`griot assist install{' --scope global' if everywhere else ''}` in a terminal to be asked "
+              f"whether the read-only ones may run without that; nothing is written without your answer.")
+        return "not-interactive"
+
+    print(f"\n  griot can let {harness.display_name} call griot's read-only tools without asking each time, "
+          f"in {reach}.")
+    print(f"  It adds these rules to `permissions.allow` in {path}:\n")
+    print("    " + "\n    ".join(to_add))
+    print("\n  They do not change your index or your configuration: they search what you indexed, list "
+          "repositories and profiles, and report status and usage (each call is logged).\n"
+          "  griot_search embeds the query, which on a paid embedding profile costs a fraction of a "
+          "cent per search.\n"
+          "  griot adds no rule for the tools that change something, nor for the quality check.\n"
+          "  A rule matches any MCP server named `griot`, whoever defines it: in a project that ships its "
+          "own server under that name, these rules apply to that one.")
+    if kept_out:
+        print(kept_out)
+    if not everywhere:
+        for line in _existing_project_file_note(real, settings) or [
+                "  That file is your personal settings for this project: keep it out of version control."]:
+            print(line)
+    try:
+        answer = input(f"  Add them to {path}? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("  tool approval: skipped, nothing written")
+        return "declined"
+
+    permissions = settings.setdefault("permissions", {})
+    permissions.setdefault("allow", []).extend(to_add)
+    eol = "\r\n" if "\r\n" in text else "\n"
+    outcome = "added" if real.exists() else "created"
+    try:
+        new = json.dumps(settings, indent=_indent_of(text), ensure_ascii=False).replace("\n", eol) + eol
+        _write_settings(real, new)
+    except (OSError, ValueError) as e:
+        # The skills are installed and the answer was yes: say what happened
+        # and how to finish by hand, instead of a traceback after the fact.
+        print(f"  tool approval: NOT written, {path} could not be saved ({e}). To add the rules yourself, put "
+              f"these in `permissions.allow` there:\n" + "    " + "\n    ".join(to_add))
+        return "failed"
+    print(f"  tool approval: {outcome} {len(to_add)} rule(s) in {path}. To undo, remove them from "
+          f"`permissions.allow` in that file.")
+    return outcome
+
+
 def _print_result(result: dict) -> None:
     created, updated, unchanged = result["created"], result["updated"], result["unchanged"]
     print(f"{result['harness']}: skills -> {result['skills_target']}, agents -> {result['agents_target']}")
@@ -544,7 +816,7 @@ def _print_result(result: dict) -> None:
 
 
 def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, mcp: str = "ask",
-                home: Path | None = None) -> int:
+                ask_tools: bool = True, home: Path | None = None) -> int:
     if harness_choice == "all":
         targets = detect_harnesses()
         if not targets:
@@ -570,6 +842,9 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
         _print_result(result)
         offer_instructions(harness, scope, ask=ask_instructions, home=home)
         outcomes.append(offer_mcp_server(harness, scope, mode=mcp))
+        # A courtesy, like the instructions block: whatever its outcome, the
+        # install itself worked.
+        offer_tool_approval(harness, scope, ask=ask_tools, home=home)
     # Asked for with --mcp, a registration that did not happen is a failure of
     # the command: a script must not carry on as if the tools were there.
     # Asked interactively it is a courtesy on top of an install that worked.
@@ -613,8 +888,16 @@ def main(argv=None) -> int:
     mcp.add_argument("--no-mcp", dest="mcp", action="store_const", const="no",
                      help="Do not offer to register griot's MCP server")
 
+    p_install.add_argument(
+        "--no-allow-tools",
+        action="store_true",
+        help="Do not offer to let the harness call griot's read-only tools without asking each time. "
+             "There is deliberately no flag that answers that question for you.",
+    )
+
     args = parser.parse_args(argv)
-    return cmd_install(args.scope, args.harness, ask_instructions=not args.no_instructions, mcp=args.mcp)
+    return cmd_install(args.scope, args.harness, ask_instructions=not args.no_instructions, mcp=args.mcp,
+                       ask_tools=not args.no_allow_tools)
 
 
 if __name__ == "__main__":
