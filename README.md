@@ -53,7 +53,7 @@ griot stats
 
 ## Embedding profiles
 
-Each profile gets its own collection (vectors from different models aren't comparable). Select with `GRIOT_EMBED_PROFILE` or per-invocation `--profile`.
+Each profile gets its own collection (vectors from different models aren't comparable). Make one the active profile with `griot profiles use <name>`, which writes `GRIOT_EMBED_PROFILE` to `<config>/.env` (it asks first when the profile calls an API; `--yes` answers), or pick one for a single run with `--profile`. A profile switched to has its own, empty index until you run `griot index all`, and an MCP server that is already running keeps the profile it started with. A `GRIOT_EMBED_PROFILE` exported in the environment, or set in a server's own `env`, wins over the file.
 
 | Profile | Backend | Cost | Notes |
 |---|---|---|---|

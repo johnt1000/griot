@@ -77,9 +77,12 @@ recommendation to the user rather than defaulting silently:
   if missing, tell them to run `griot auth set <provider>` themselves —
   never ask them to paste a key into the conversation).
 
-If the user wants something other than the default, set it via
-`GRIOT_EMBED_PROFILE` in their shell/`.env`, or pass `--profile <name>` on
-the indexing commands below — don't silently apply a profile override that
+If the user wants something other than the default, `griot profiles use
+<name>` makes it the active profile for good (it writes `GRIOT_EMBED_PROFILE`
+to griot's `.env`), and `--profile <name>` on the indexing commands below
+picks one for a single run. Switching to a profile that calls an API asks
+for confirmation at a terminal: that answer is the user's, so have them run
+it rather than passing `--yes` for them — don't apply a profile change that
 outlives this session without telling them.
 
 ## 4. Dry run before spending anything

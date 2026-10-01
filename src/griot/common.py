@@ -18,7 +18,7 @@ import requests
 from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
-from griot import ConfigurationError, logdb, redaction
+from griot import ConfigurationError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -662,9 +662,13 @@ def _resolve_profile(name: str) -> dict:
 
 ACTIVE_PROFILE_NAME = os.getenv("GRIOT_EMBED_PROFILE", "jina-code")
 if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
-    raise ValueError(
-        f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}. "
-        f"Options: {', '.join(EMBED_PROFILES)} (or add a new one to EMBED_PROFILES, common.py)"
+    # A setting griot cannot start with, like a ceiling that is not a number:
+    # one line that names it and says how to fix it, not a traceback.
+    raise UnknownEmbedProfile(
+        f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}. Options: {', '.join(EMBED_PROFILES)}. "
+        f"If the variable is exported in this environment, unset it or fix it there (the environment wins "
+        f"over the file); otherwise pick one with `griot profiles use <name>`, which writes {ENV_PATH}.",
+        ACTIVE_PROFILE_NAME, list(EMBED_PROFILES),
     )
 ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
 
