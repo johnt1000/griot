@@ -853,7 +853,23 @@ class GoldenSetState(TypedDict):
     last_run_at: str | None
 
 
-class StatsOutput(TypedDict):
+class _WhyNoPointCount(TypedDict, total=False):
+    """The one field of an answer that may be absent.
+
+    Declared here, in a `total=False` base, and not as `NotRequired[...]` in
+    the answer itself: the SDK reads an answer's fields with
+    typing.get_type_hints, which on Python 3.10 leaves that qualifier in
+    place, and the model it then builds is refused. With it on a field of
+    StatsOutput and of IndexStatusOutput, this module could not be imported
+    on 3.10 at all. (A TypedDict NESTED in an answer is read by pydantic,
+    which knows the qualifier on every version: SearchResult keeps its own.)"""
+    # Why points_count is null when it is: "busy" or "unreadable: <reason>".
+    # May be absent: a missing key must degrade to "no reason given", not
+    # reject the whole answer (the same trap points_count itself once was).
+    points_error: str | None
+
+
+class StatsOutput(_WhyNoPointCount):
     days: int
     # What is true now, whatever `days` is. `attention` is what someone has
     # to act on (a last run that died, a reached spend ceiling, a collection
@@ -876,8 +892,6 @@ class StatsOutput(TypedDict):
     query_latency_p50_seconds: float | None
     query_latency_p90_seconds: float | None
     points_count: int | None
-    # Why points_count is null when it is: "busy" or "unreadable: <reason>".
-    points_error: NotRequired[str | None]
     embed_profile: str | None
     num_runs: int
     total_indexed: int
@@ -933,7 +947,7 @@ class LastIndexedInfo(TypedDict):
     error: str | None
 
 
-class IndexStatusOutput(TypedDict):
+class IndexStatusOutput(_WhyNoPointCount):
     # [review finding] Nullable, because common.get_index_status() genuinely
     # returns None when another process holds the collection open — routine
     # on a machine running `griot mcp`, and guaranteed right after
@@ -942,10 +956,6 @@ class IndexStatusOutput(TypedDict):
     # degraded read into a hard error: the exact opposite of what the
     # try/except producing the None was written for.
     points_count: int | None
-    # Why points_count is null when it is: "busy" or "unreadable: <reason>".
-    # Not required: a missing key must degrade to "no reason given", not
-    # reject the whole answer (the same trap points_count itself once was).
-    points_error: NotRequired[str | None]
     collection: str
     embed_profile: str
     running: bool
