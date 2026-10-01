@@ -25,9 +25,6 @@ what "done for a public release" still means.
 
 ## Next
 
-- **Reported by a code analysis, not fixed yet.** It still needs a test
-  that reproduces it before it is touched: releasing the collection after
-  the idle window can race with a call that is opening it.
 - **Cheap indexing speed-ups that were measured or spotted and not done:**
   two git subprocesses per branch in the branches source, one embedding
   batch size for every profile, and a new HTTP connection per embedding

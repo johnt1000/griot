@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1101,9 +1102,9 @@ _client_last_used_at: float | None = None
 # error. 'multi'
 # retries-with-backoff when reopening, and drops the handle once it has gone
 # unused for GRIOT_MCP_IDLE_RELEASE_SECONDS, at a reopen cost of ~94ms
-# measured on this machine. get_client() checks idleness only when called,
-# and then reopens at once, so on its own an idle server never let go: the
-# MCP server runs a reaper thread (mcp_server._start_idle_reaper) for that.
+# measured on this machine. Dropping it is done by a reaper thread of the MCP
+# server (mcp_server._start_idle_reaper), which counts the calls in flight:
+# get_client() never closes the handle it memoizes.
 CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "multi")
 if CONCURRENCY_MODE not in ("single", "multi"):
     raise ConfigurationError(
@@ -1359,10 +1360,14 @@ class CollectionBusyError(RuntimeError):
     collection and explain it instead of showing a traceback. A RuntimeError
     because get_client() used to raise a plain one here."""
 
-    def __init__(self, collection: str, path: Path, message: str):
+    def __init__(self, collection: str, path: Path, message: str, *, in_this_process: bool = False):
         super().__init__(message)
         self.collection = collection
         self.path = path
+        # True when it is another call of THIS process that is opening it (a
+        # status read does not wait for that): "held by another process"
+        # would then name a process that does not exist.
+        self.in_this_process = in_this_process
 
 
 # The engine raises a bare exception for a lock collision, with no type to
@@ -1415,53 +1420,76 @@ def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
             time.sleep(_LOCK_RETRY_DELAYS[i])
 
 
+# Opening and closing the handle of the active collection, one at a time.
+# Sync MCP tools run in worker threads: two calls that both found it closed
+# both opened it (and the one that lost was never closed), and a release
+# that came while another call was opening found nothing to close.
+_client_lock = threading.RLock()
+# How long a status read (get_client(wait=False)) waits for a call that is
+# opening the collection before it answers "busy".
+_STATUS_READ_PATIENCE = 0.5
+
+
 def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     """Memoized handle for the ACTIVE collection's Edge shard
     (COLLECTION_NAME) — only one process can have the directory open at a
     time (Edge's mutual exclusion is per PROCESS — safe within threads of
-    the same process, not ACROSS processes). In 'multi' mode (the
-    default) it releases itself after IDLE_RELEASE_SECONDS of no use — so a
-    second griot mcp session on the same profile can get in — and reopens
-    with retry-with-backoff. In 'single' mode (GRIOT_MCP_CONCURRENCY_MODE=single)
-    the handle stays open forever, identical to the original behavior.
+    the same process, not ACROSS processes). In 'multi' mode (the default)
+    it is reopened with retry-with-backoff after it was released. In
+    'single' mode (GRIOT_MCP_CONCURRENCY_MODE=single) the handle stays open
+    forever, identical to the original behavior.
 
-    wait=False skips that backoff for a caller for whom "held by someone
+    It is never closed here. This function used to close and reopen the
+    handle once IDLE_RELEASE_SECONDS had passed since its last use, and it
+    cannot know who is using it: a call arriving during a long one closed
+    the collection under it. Letting go of an idle handle is the job of
+    whoever counts the calls in flight (mcp_server's reaper).
+
+    wait=False skips the backoff for a caller for whom "held by someone
     else" is a normal answer rather than a failure to work around (a status
-    read): the ~12s budget is for callers that need the shard."""
+    read): the ~12s budget is for callers that need the shard. Such a
+    caller does not wait long behind another call that is opening it,
+    either."""
     global _client, _client_last_used_at
-    if CONCURRENCY_MODE == "multi" and _client is not None and _client_last_used_at is not None:
-        if time.time() - _client_last_used_at > IDLE_RELEASE_SECONDS:
-            release_client()
-    if _client is None:
+    if not _client_lock.acquire(timeout=-1 if wait else _STATUS_READ_PATIENCE):
         path = _collection_path(COLLECTION_NAME)
-        if (path / _EDGE_CONFIG_MARKER).exists():
-            _client = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
-        else:
-            path.mkdir(parents=True, exist_ok=True)
-            cfg = qe.EdgeConfig(
-                vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
-            )
-            _client = qe.EdgeShard.create(str(path), cfg)
-        # [M2] qdrant_data is a recoverable plaintext copy (compressed
-        # payload, not encrypted) of ALL indexed content — 0700 on the root
-        # directory and on the collection's directory closes it off to
-        # other local users without depending on what the engine does with
-        # the internal files.
-        os.chmod(QDRANT_PATH, 0o700)
-        os.chmod(path, 0o700)
-        # [security review, lower-priority gap] the outer chmod above only
-        # covers the directory itself — Edge's own files inside it (WAL,
-        # segments, edge_config.json) are written with the process umask
-        # regardless of which caller reached this branch (search(),
-        # count_pending(), get_index_status() all funnel through here on a
-        # first open, not just index_documents()), so the same recursive
-        # repair index_documents() already does at the end of a write must
-        # also run here.
-        _secure_collection_dir(COLLECTION_NAME)
-        ensure_collection(_client)
-    if CONCURRENCY_MODE == "multi":
-        _client_last_used_at = time.time()
-    return _client
+        raise CollectionBusyError(COLLECTION_NAME, path,
+                                  f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
+                                  in_this_process=True)
+    try:
+        if _client is None:
+            path = _collection_path(COLLECTION_NAME)
+            if (path / _EDGE_CONFIG_MARKER).exists():
+                opened = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+                cfg = qe.EdgeConfig(
+                    vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
+                )
+                opened = qe.EdgeShard.create(str(path), cfg)
+            _client = opened
+            # [M2] qdrant_data is a recoverable plaintext copy (compressed
+            # payload, not encrypted) of ALL indexed content — 0700 on the root
+            # directory and on the collection's directory closes it off to
+            # other local users without depending on what the engine does with
+            # the internal files.
+            os.chmod(QDRANT_PATH, 0o700)
+            os.chmod(path, 0o700)
+            # [security review, lower-priority gap] the outer chmod above only
+            # covers the directory itself — Edge's own files inside it (WAL,
+            # segments, edge_config.json) are written with the process umask
+            # regardless of which caller reached this branch (search(),
+            # count_pending(), get_index_status() all funnel through here on a
+            # first open, not just index_documents()), so the same recursive
+            # repair index_documents() already does at the end of a write must
+            # also run here.
+            _secure_collection_dir(COLLECTION_NAME)
+            ensure_collection(_client)
+        if CONCURRENCY_MODE == "multi":
+            _client_last_used_at = time.time()
+        return _client
+    finally:
+        _client_lock.release()
 
 
 def release_client() -> None:
@@ -1477,10 +1505,14 @@ def release_client() -> None:
     subprocess — the next read reopens on demand, the same get_client() as
     always (_client goes back to None)."""
     global _client, _client_last_used_at
-    if _client is not None:
-        _client.close()
-        _client = None
-    _client_last_used_at = None
+    # Under the lock: a release that came while another call was opening
+    # found nothing to close, and the open that finished a moment later left
+    # the collection held for the very subprocess this made room for.
+    with _client_lock:
+        if _client is not None:
+            _client.close()
+            _client = None
+        _client_last_used_at = None
 
 
 # Options of the top-level `griot` command that take a value, so the value is
@@ -2567,8 +2599,10 @@ def _points_error(collection: str, error: Exception) -> str:
     to the caller: a collection that is busy is normal and passes; one that
     cannot be read is damage, and calling it busy hides that."""
     if isinstance(error, CollectionBusyError) or _LOCK_COLLISION_SIGNATURE in str(error):
+        holder = ("being opened by another call" if getattr(error, "in_this_process", False)
+                  else "held by another process")
         log_and_print(f"Warning: could not check points_count for '{collection}': "
-                      f"held by another process ({error})", level="warning")
+                      f"{holder} ({error})", level="warning")
         return "busy"
     log_and_print(f"Warning: could not check points_count for '{collection}': "
                   f"the collection could not be opened ({error})", level="warning")

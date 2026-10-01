@@ -873,7 +873,7 @@ async def test_index_repo_waits_for_confirmation(mcp_server_with_index_enabled, 
     # one is about the confirmation layer, so let the path through.
     monkeypatch.setattr(srv.jobs, "index_job_refusal", lambda p, **kw: None)
     monkeypatch.setattr(srv.jobs, "start_index_job",
-                        lambda p, s=None: started.append(p) or {"started": True})
+                        lambda p, s=None, **kw: started.append(p) or {"started": True})
 
     result = await srv.griot_index_repo("/repos/alpha", ctx=_FakeCtx())
 
@@ -908,7 +908,7 @@ async def test_index_repo_runs_once_confirmed(mcp_server_with_index_enabled, mon
     srv = mcp_server_with_index_enabled
     monkeypatch.setattr(srv.jobs, "index_job_refusal", lambda p, **kw: None)
     monkeypatch.setattr(srv.jobs, "start_index_job",
-                        lambda p, s=None: {"started": True, "pid": 42, "path": p,
+                        lambda p, s=None, **kw: {"started": True, "pid": 42, "path": p,
                                            "sources": s, "reason": None})
 
     result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
@@ -2322,10 +2322,124 @@ def _git_repo(path):
     return str(path)
 
 
+# --- an index run and the other calls in flight ------------------------------------------
+# The run needs the collection to itself: its subprocess opens the same
+# directory. griot_index_repo used to close the server's handle whatever else
+# was running, which took the index from under a search in progress.
+
+
+def _index_stubs(srv, monkeypatch, started):
+    monkeypatch.setattr(srv.jobs, "index_job_refusal", lambda p, **kw: None)
+
+    def start(p, s=None, *, release=None, **kw):
+        busy = release() if release else None
+        if busy:
+            return {"started": False, "reason": busy, "path": None, "pid": None, "sources": None}
+        started.append(p)
+        return {"started": True, "path": p, "pid": 1, "sources": ["code"], "reason": None}
+
+    monkeypatch.setattr(srv.jobs, "start_index_job", start)
+
+
+@pytest.mark.anyio
+async def test_index_repo_is_refused_before_asking_while_another_call_stays_in_flight(
+        mcp_server_with_index_enabled, monkeypatch):
+    """A person's yes must be able to change the outcome: a run that cannot
+    start is said so before anyone is asked."""
+    srv = mcp_server_with_index_enabled
+    started, asked = [], []
+    _index_stubs(srv, monkeypatch, started)
+    monkeypatch.setattr(srv, "_WAIT_FOR_OTHER_CALLS_SECONDS", 0.2)
+
+    async def confirmed(*a, **k):
+        asked.append(1)
+        return True, None
+
+    monkeypatch.setattr(srv, "_confirmed", confirmed)
+    srv._tool_started()  # a search that does not finish
+    try:
+        result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
+    finally:
+        srv._tool_finished()
+    assert result["started"] is False and "another griot tool call" in result["reason"]
+    assert asked == [] and started == []
+    assert srv._alone_queue == [], "a call that gave up waiting does not stay in the queue"
+
+
+@pytest.mark.anyio
+async def test_index_repo_waits_for_a_call_that_is_about_to_finish(mcp_server_with_index_enabled, monkeypatch):
+    """A search takes a fraction of a second: refusing outright would waste
+    the question and the answer."""
+    import threading
+    import time as _time
+    srv = mcp_server_with_index_enabled
+    started = []
+    _index_stubs(srv, monkeypatch, started)
+    monkeypatch.setattr(srv, "_WAIT_FOR_OTHER_CALLS_SECONDS", 5.0)
+    srv._tool_started()
+
+    def finishes_soon():
+        _time.sleep(0.2)
+        srv._tool_finished()
+
+    threading.Thread(target=finishes_soon).start()
+    result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
+    assert result["started"] is True and started == ["/repos/alpha"]
+
+
+@pytest.mark.anyio
+async def test_index_repo_is_not_started_when_a_call_arrives_during_the_question_and_stays(
+        mcp_server_with_index_enabled, monkeypatch):
+    srv = mcp_server_with_index_enabled
+    started = []
+    _index_stubs(srv, monkeypatch, started)
+    monkeypatch.setattr(srv, "_WAIT_FOR_OTHER_CALLS_SECONDS", 0.2)
+
+    async def confirmed_while_a_search_arrives(*a, **k):
+        srv._tool_started()
+        return True, None
+
+    monkeypatch.setattr(srv, "_confirmed", confirmed_while_a_search_arrives)
+    try:
+        result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
+    finally:
+        srv._tool_finished()
+    assert result["started"] is False and started == []
+    assert "another griot tool call" in result["reason"] and "not started" in result["reason"]
+
+
+@pytest.mark.anyio
+async def test_index_repo_never_closes_the_index_under_a_call_that_slipped_in(mcp_server_with_index_enabled, monkeypatch):
+    """Between the last wait and the start of the run there is no lock: what
+    the run is given to let go of the collection must still look at the
+    calls in flight, and must not wait inside the event loop."""
+    import time as _time
+    srv = mcp_server_with_index_enabled
+    monkeypatch.setattr(srv.jobs, "index_job_refusal", lambda p, **kw: None)
+    monkeypatch.setattr(srv, "_WAIT_FOR_OTHER_CALLS_SECONDS", 5.0)
+    closed, seen = [], {}
+    monkeypatch.setattr(srv.common, "release_client", lambda: closed.append(1))
+
+    def start(p, s=None, *, release=None, **kw):
+        srv._tool_started()  # a search arrives right now
+        try:
+            began = _time.monotonic()
+            seen["busy"] = release() if release else (srv.common.release_client() or None)
+            seen["waited"] = _time.monotonic() - began
+        finally:
+            srv._tool_finished()
+        return {"started": not seen["busy"], "reason": seen["busy"], "path": None, "pid": None, "sources": None}
+
+    monkeypatch.setattr(srv.jobs, "start_index_job", start)
+    result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
+    assert result["started"] is False and "another griot tool call" in result["reason"]
+    assert closed == [] and seen["waited"] < 1.0
+
+
 async def _index_via_client(srv, mode, path, action, monkeypatch, with_callback=True):
     started, asked = [], []
     monkeypatch.setattr(srv.jobs, "start_index_job",
-                        lambda p, sources=None: started.append(p) or {"started": True, "path": p, "pid": 1,
+                        lambda p, sources=None, **kw: started.append(p) or {"started": True, "path": p, "pid": 1,
                                                                        "sources": ["code"], "reason": None})
 
     async def callback(ctx, params):

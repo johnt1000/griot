@@ -309,3 +309,16 @@ async def test_a_title_sequence_in_a_message_leaves_nothing_of_itself(git_repo):
     repos.add_repo(str(git_repo.path))
     query = (await _suggest(path=str(git_repo.path))).structured_content["candidates"][0]["query"]
     assert query == "Fix login bug"
+
+
+@pytest.mark.anyio
+async def test_an_index_another_call_is_opening_is_not_said_to_be_another_process(registered, monkeypatch):
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
+
+    def opening(*, wait=True):
+        raise common.CollectionBusyError(common.COLLECTION_NAME, common.QDRANT_PATH, "is being opened", in_this_process=True)
+
+    monkeypatch.setattr(common, "get_client", opening)
+    out = (await _suggest(path=str(registered.path))).structured_content
+    assert out["indexed"] is None and "another call is opening the index" in out["note"]
+    assert "another griot process" not in out["note"]

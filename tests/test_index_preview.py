@@ -294,6 +294,7 @@ async def test_the_tool_does_not_close_the_index_under_another_call(project, mon
     that call: the preview waits its turn instead."""
     ran = []
     monkeypatch.setattr(jobs, "_run_dry_run", lambda *a, **k: ran.append(1) or subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(mcp_server, "_WAIT_FOR_OTHER_CALLS_SECONDS", 0.2)  # it waits this long for the other call
     mcp_server._tool_started()  # some other tool call, still running
     try:
         async with Client(mcp_server.mcp) as client:

@@ -65,7 +65,7 @@ Check which griot tools you have (they appear as `mcp__griot__*`):
 
 | Situation | Path |
 |---|---|
-| `griot_index_repo` is available | **Path A** (MCP). It releases this server's handle before starting, so it works in every case this server controls. |
+| `griot_index_repo` is available | **Path A** (MCP). It lets go of this server's handle before starting. When another griot tool call is using the index it waits a few seconds and then answers that it is in use: call it again. |
 | griot MCP attached, `griot_index_repo` missing, `multi` mode (the default) | Path B, once no griot MCP tool has been called for the idle window (default 30s). |
 | griot MCP attached, `griot_index_repo` missing, `single` mode | Path B works only if no griot tool has been used yet this session. Otherwise it **will fail**: tell the user and offer the fixes below, and do not retry. |
 | No griot MCP server attached | **Path B** (CLI). |
@@ -108,7 +108,8 @@ there: it would silently override `griot profiles use`.
    many chunks would be embedded, how many are up to date and how many stale
    points would be removed (`held_back` when a plain run would leave them:
    read `notes`), plus an estimated cost; it embeds and removes nothing, and
-   releases the server's handle itself. From a shell,
+   lets go of the server's handle itself (once no other griot tool call is
+   using the index). From a shell,
    `griot index all --repo <name> --dry-run` does the same (free, but it
    opens the collection too, so the Step 1 rule applies). Tell the user the
    numbers before the real run. Re-indexing an unchanged repo embeds almost
