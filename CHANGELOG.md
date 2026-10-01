@@ -75,6 +75,19 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **`griot assist install --scope global` follows `CLAUDE_CONFIG_DIR`.**
+  Claude Code keeps its user files in the directory that variable names and
+  does not read `~/.claude` when it is set; the installer wrote to
+  `~/.claude` regardless and reported success for skills, an agent, an
+  instructions block and tool rules that nothing loaded. All of them now go
+  where the variable points (a leading `~` is the home directory), and the
+  harness's own `claude mcp add` already did. A value that is not an
+  absolute path is refused. Because the MCP tool reads the variable from the
+  server's environment, which a project's `.mcp.json` can set, its question
+  now names the resolved directories and says when the variable chose them.
+  Installing no longer tightens the mode of a directory that already
+  existed, and a destination under something that is not a directory is
+  refused before anyone is asked. opencode is unchanged.
 - **`griot stats` no longer counts an evening's spend twice.** The daily
   total resets at local midnight and the report grouped it by UTC date, so a
   local day that crossed midnight UTC was summed under two dates. Spend is

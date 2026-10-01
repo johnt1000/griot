@@ -1524,7 +1524,23 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE) ->
 
 def _assist_install_question(harness: str, scope: str) -> str:
     targets_desc = "every detected harness" if harness == "all" else harness
-    return (f"Install griot's skills and agents for {targets_desc} at {scope} scope. Files with the same "
+    # The directories, not only "global": where a global install writes
+    # depends on the environment this server was started with
+    # (CLAUDE_CONFIG_DIR), and that comes from whoever configured the
+    # server, which can be a project's own file. The person asked has to see
+    # the place to be able to say no to it.
+    targets = harnesses.detect_harnesses() if harness == "all" else [h for h in harnesses.HARNESSES if h.id == harness]
+    places = []
+    for target in targets:
+        # Resolved: a directory on the way can be a link, and the question
+        # has to give the place the files land in, not the name that leads
+        # there.
+        skills, agents = (os.path.realpath(p) for p in harnesses.destinations(target, scope))
+        chosen_by = harnesses.user_dir_set_by(target, scope)
+        origin = f" (the place {chosen_by} names in this server's environment)" if chosen_by else ""
+        places.append(f"{_shown(skills, 300)} and {_shown(agents, 300)}{origin}")
+    into = f", into {'; '.join(places)}" if places else ""
+    return (f"Install griot's skills and agents for {targets_desc} at {scope} scope{into}. Files with the same "
             f"names are overwritten, edits included, and a future coding session there will load and follow "
             f"them. Deleting them removes them.")
 
@@ -1567,7 +1583,9 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
                                ) -> AssistInstallOutput:
     """Installs griot's bundled Claude Code/opencode Skill and Agent files
     into a harness's own config dir (.claude/, .opencode/, or their global
-    equivalents) — the same files `griot assist install` writes from a
+    equivalents; for Claude Code the global one is where CLAUDE_CONFIG_DIR
+    points when this server was started with it, and the question names the
+    resolved directories) — the same files `griot assist install` writes from a
     terminal (see harnesses.py). "all" (the default) installs into every
     harness detect_harnesses() finds present on this machine; an explicit
     harness id ("claude-code"/"opencode") installs into it directly,
