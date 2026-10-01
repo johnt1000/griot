@@ -98,11 +98,16 @@ there: it would silently override `griot profiles use`.
    repo's **directory name**, not the path.
 2. Know the active profile: `griot profiles list` (or `griot_index_status`
    → `embed_profile`). `openai-small` and `gemini` are paid.
-3. On a paid profile, get the size first:
-   `griot index all --repo <name> --dry-run` (free, but it opens the
-   collection too, so the Step 1 rule applies). Tell the user how many
-   chunks will be embedded before the real run. Re-indexing an unchanged
-   repo embeds almost nothing (content-hash reuse).
+3. On a paid profile, get the size first. With the MCP server attached,
+   `griot_index_preview(path="/abs/path/to/repo")` returns, per source, how
+   many chunks would be embedded, how many are up to date and how many stale
+   points would be removed (`held_back` when a plain run would leave them:
+   read `notes`), plus an estimated cost; it embeds and removes nothing, and
+   releases the server's handle itself. From a shell,
+   `griot index all --repo <name> --dry-run` does the same (free, but it
+   opens the collection too, so the Step 1 rule applies). Tell the user the
+   numbers before the real run. Re-indexing an unchanged repo embeds almost
+   nothing (content-hash reuse).
 
 ## Path A — `griot_index_repo`
 

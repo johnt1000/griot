@@ -134,7 +134,7 @@ The server sends instructions when it connects: what griot covers, when to searc
 
 `griot_search` takes an optional `group_by_document`: off by default (up to three chunks of one document, so it can answer in some depth without taking every slot), on when you want breadth (the best chunk of each document, so the same number of results reaches more files, commits and PRs). `repos` and `source_types` narrow a search to some repositories and to some kinds of source (`code`, `commit`, `tag`, `branch`, `merge_request`, `release`, `issue`); a repository with nothing indexed, or a kind that does not exist, is an error rather than an empty result. `griot search` takes the same as `--repo`, `--source-type` and `--group-by-document`.
 
-The server's own tool list is the inventory (your client shows it), and [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md) maps each tool to its CLI command. The read-only ones cover search, index and spend status, the usage report, the lists of repositories, profiles and curated cases, which credentials are configured, and the self-check of the index.
+The server's own tool list is the inventory (your client shows it), and [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md) maps each tool to its CLI command. The read-only ones cover search, index and spend status, the usage report, the lists of repositories, profiles and curated cases, which credentials are configured, the self-check of the index, and a preview of what an index run would embed and remove (`griot_index_preview`: free, and available whether or not indexing through MCP is enabled).
 
 Four prompts, which clients surface as slash commands:
 

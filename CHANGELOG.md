@@ -10,6 +10,17 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_index_preview` says what an index run would do.** Per source:
+  how many chunks would be embedded, how many are up to date, how many
+  stale points a plain run would remove and how many it would hold back
+  (more than half of a repository), and on a profile that bills an estimate
+  of the cost. It runs the same `--dry-run` the CLI has, in a subprocess:
+  nothing is embedded, removed or recorded. A dry run no longer creates an
+  empty collection for a profile that was never indexed. It is
+  there whether or not indexing through MCP is enabled, so that an agent can
+  say what a reindex would cost before anyone decides. The same paths are
+  allowed as for a real run. Read-only, and not among the tools the
+  installer offers to pre-approve: it reads the whole repository.
 - **`griot config` shows and changes the settings.** Every setting was a
   line in `<config>/.env` that took an editor, the variable's name and a
   guess at what a valid value is. `griot config list` shows each one, the

@@ -283,6 +283,7 @@ out on purpose, because every one written here went stale.
 | Curate a case | `golden-set add` | `griot_golden_set_add` | dialog, or `confirm` where nobody can be asked |
 | Remove a case | `golden-set remove` | `griot_golden_set_remove` | dialog, or `confirm` where nobody can be asked |
 | Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | dialog, or `confirm` where nobody can be asked |
+| What an index run would do | `index ... --dry-run` | `griot_index_preview` (always there; one repository per call) | — (read-only, not pre-approved: it reads the whole repository) |
 | Install Claude Code/opencode skills+agent | `assist install` | `griot_assist_install` | **human only** |
 | Add griot's block to the GLOBAL instructions file (`~/.claude/CLAUDE.md`, or under `CLAUDE_CONFIG_DIR`) | `assist install --scope global` (asks; needs a terminal) | none, by design | CLI only |
 | Register griot's MCP server with the harness | `assist install` (asks; `--mcp` answers) | none, by design | CLI only |
@@ -300,15 +301,15 @@ out on purpose, because every one written here went stale.
 | `mcp` | It is the command that starts this server. |
 | `config list`, `config get` | Nothing against it: a read-only view of the settings in force is planned (see the roadmap). |
 | `audit` | Nothing against it either: it lists locations, never values. Planned as a read-only tool. |
-| `index --dry-run` | Planned as a read-only preview, so that an agent can say what a reindex would do before anyone decides. |
 | `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |
 
 Three tools expose less than their CLI counterpart, and the differences
 matter enough to state:
 
-- `griot_index_repo`: no `--dry-run`, no `--repo`, no `--profile`, no
-  `--prune`, and one `path` per call rather than "every registered repo".
+- `griot_index_repo`: no `--repo`, no `--profile`, no `--prune`, and one
+  `path` per call rather than "every registered repo". Its dry run is a tool
+  of its own, `griot_index_preview`.
 - `griot_assist_install`: copies the skills and the agent, and nothing else.
   Registering the server, the instructions block and the pre-approval of
   tools are the three steps of the installer that decide what an agent may
@@ -328,7 +329,7 @@ has no CLI counterpart at all — it exists to say "not through here" and
 name the command that does work.
 
 The gap, then, is not coverage. It is a set of deliberate choices, each
-listed above, and three read-only views that are planned.
+listed above, and two read-only views that are planned.
 
 ## The management surface
 

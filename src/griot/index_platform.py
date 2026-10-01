@@ -188,9 +188,7 @@ def main(argv=None):
         return
 
     if args.dry_run:
-        pending, up_to_date = common.count_pending(all_documents, desc="Checking platform")
-        print(f"\n[dry-run] {pending} chunks would need to be (re)embedded, {up_to_date} are already up to date.")
-        common.report_redactions()
+        common.dry_run(all_documents, source="platform", unit="chunks", desc="Checking platform")
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing platform")
