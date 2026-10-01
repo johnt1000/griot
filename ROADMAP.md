@@ -25,9 +25,8 @@ what "done for a public release" still means.
 
 ## Next
 
-- **Cheap indexing speed-ups that were measured or spotted and not done:**
-  one embedding batch size for every profile, and a new HTTP connection per
-  embedding call.
+- **A cheap indexing speed-up that was spotted and not done:** a new HTTP
+  connection per embedding call.
 
 ## Considered, not scheduled
 

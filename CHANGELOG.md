@@ -478,6 +478,25 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Performance
 
+- **Local indexing is faster and takes a fraction of the memory.** A local
+  model was handed 128 texts at once, a number taken from a rule of thumb
+  and never measured on the chunks griot cuts (up to 1500 characters). It
+  is handed 8 now. Measured on chunks of this repository: with `bge-small`,
+  128 chunks took 56 s and 3.0 GB before and 31 s and 0.7 GB after; with
+  `jina-code`, the default, 2.0 chunks per second and 1.4 GB at 8 against
+  0.35 chunks per second and 2.8 GB at 64, and no answer in fifteen
+  minutes at 128. Throughput is flat from 4 to 16 texts and falls after
+  that; memory grows with every step. Only two of the local models were
+  measured: the others get the same size, which is the cautious one.
+- **An OpenAI-compatible profile sends 128 texts per request instead of
+  50.** 50 is what Gemini's batch call was tuned for and applied to every
+  API profile. The embeddings endpoint takes 2048 inputs and 300,000 tokens
+  per request: 128 chunks of code or English are well under that, and an
+  index run makes two and a half times fewer requests. A round of text
+  that costs more than a token per character (Chinese, emoji) is cut into
+  requests by its size in bytes, which bounds its tokens, so it cannot go
+  over the limit; a request that fails takes only its own texts with it.
+  Each profile now says its own batch sizes.
 - **The branches source no longer runs two git processes per branch.** It
   ran one for the last commit of every remote branch and one for what each
   has ahead of the default branch. The last commits of all branches are
