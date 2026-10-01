@@ -18,7 +18,7 @@ Data leaves your machine when **you** configure it to, plus that one download:
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
 
-The spend circuit breaker (daily + 5-minute velocity ceilings) bounds how much paid traffic can happen before griot refuses further calls.
+The spend circuit breaker (daily + 5-minute velocity ceilings) bounds how much paid traffic can happen before griot refuses further calls. It counts each call by the tokens the provider reports; when a provider reports none, the call is counted from the size of the text instead (an estimate, and griot says so), so that a call is never free to the ceiling.
 
 ## What stays on disk, and how it's protected
 
