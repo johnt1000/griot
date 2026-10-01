@@ -84,6 +84,22 @@ that file ship silently, which is the exact failure the scan exists to catch.
 Its behaviour is verified in both directions — the repository reports clean,
 and a realistic token planted in it is still reported.
 
+What the pipeline itself runs is pinned. Each GitHub Action is named by the
+commit it is (a tag can be moved to other code by whoever owns the action),
+the checkout leaves no token behind for later steps, and everything
+installed comes from `uv.lock`, which records a hash for every package:
+the dependencies, the build backend and the tool that checks the built
+package. The build stops when the lock no longer matches `pyproject.toml`
+or a hash does not match. Dependabot proposes the updates of the actions
+and of the lock, so a new version arrives as a change to review; the
+version of `uv` that does the installing is set in the workflow and raised
+by hand. For someone installing griot from the package index nothing is
+locked, as for any library: the two dependencies griot is written directly
+against (`qdrant-edge-py`, `mcp`) are held below the version that may
+change their interface, and the rest resolve to whatever is current. If you
+want the exact set the tests ran on, install from a checkout with
+`uv sync --locked`.
+
 A secret scan is a backstop, not a control. Nothing in this repository should
 ever contain a credential in the first place: `griot auth set` reads keys with
 `getpass` (never echoed, never in argv) and writes them to `<config>/.env` at

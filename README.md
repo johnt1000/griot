@@ -235,8 +235,8 @@ Text is scanned for credential-shaped values (private keys, a list of provider t
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest -q     # no test ever calls a real API or needs credentials
+uv sync --locked --extra dev   # the versions CI runs (or: pip install -e ".[dev]")
+uv run pytest -q               # no test ever calls a real API or needs credentials
 ```
 
 ## License

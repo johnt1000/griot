@@ -63,9 +63,12 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
 ## Running the tests
 
 ```bash
-pip install -e ".[dev]"
-pytest -q
+uv sync --locked --extra dev    # the versions CI runs, from uv.lock
+uv run pytest -q
 ```
+
+or, without uv, `pip install -e ".[dev]"` and `pytest -q` (which resolves
+whatever versions are current, not the locked ones).
 
 The suite is hermetic: it never calls a paid API, never reads a real
 credential, and asserts after every test that it did not touch your real
@@ -75,6 +78,15 @@ key, that is a design problem with the change.
 CI runs the suite on Python 3.10 and 3.13 — the floor the package declares
 and a current release. It also scans for committed secrets and installs the
 built wheel in a clean environment.
+
+What CI runs is pinned, and `tests/test_supply_chain.py` holds it so: a
+GitHub Action is referenced by commit (with its version in a comment), and
+everything installed comes from `uv.lock`, the build backend included.
+When you change a dependency in `pyproject.toml`, run `uv lock` and commit
+the lock with it — `--locked` fails the build otherwise. A new command in a
+workflow that fetches or installs anything has to be added to the list in
+that test, which is the moment to check that it installs from the lock.
+Dependabot opens the routine updates.
 
 **Manual verification is not hermetic.** If you run the `griot` binary
 directly (not through pytest) to smoke-test a change, export

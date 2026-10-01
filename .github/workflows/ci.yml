@@ -15,6 +15,15 @@ concurrency:
 permissions:
   contents: read
 
+# What runs here is pinned (tests/test_supply_chain.py holds it so): an action
+# is named by the commit it is, with its version beside it for a person to
+# read, because a tag can be moved to other code by whoever owns the action;
+# dependencies come from uv.lock, which has a hash for every package, and
+# `--locked` stops the build when the lock no longer matches pyproject.toml.
+# Dependabot (.github/dependabot.yml) proposes the updates of both, so each
+# one arrives as a change to review instead of on its own. The version of uv
+# itself is the one thing here raised by hand.
+
 jobs:
   test:
     name: tests (py${{ matrix.python }})
@@ -28,35 +37,39 @@ jobs:
         # ship broken to anyone on the version the package claims to support.
         python: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.6"
           python-version: ${{ matrix.python }}
-          cache: pip
+          enable-cache: true
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: uv sync --locked --extra dev
 
       - name: Run tests
         # No GRIOT_CONFIG_DIR/GRIOT_DATA_DIR here on purpose: tests/conftest.py
         # points both at a session tempdir before importing griot, and an
         # autouse fixture asserts after every test that the real XDG paths were
         # not touched. Setting them here would mask a regression in that guard.
-        run: pytest -q
+        run: uv run --no-sync pytest -q
 
   secrets:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           # Full history: a credential removed in a later commit is still in
           # the repository until the history is rewritten, and shallow clone
           # would report the tree as clean while it sits one commit back.
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
@@ -65,20 +78,27 @@ jobs:
     name: package builds and installs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.6"
           python-version: "3.13"
-          cache: pip
+          enable-cache: true
 
       - name: Build
+        # The build backend comes from the lock as well (the `build` group in
+        # pyproject.toml), and without a matching hash nothing is installed.
         run: |
-          pip install build twine
-          python -m build
+          uv export --locked --only-group build --output-file /tmp/build.txt
+          uv build --build-constraints /tmp/build.txt --require-hashes
 
       - name: Check metadata
-        run: twine check dist/*
+        run: |
+          uv sync --locked --only-group build
+          uv run --no-sync twine check dist/*
 
       - name: Install the wheel in a clean environment and run it
         # [real bug, 2026-08-21] A packaging defect once left files out of the
@@ -86,9 +106,12 @@ jobs:
         # them straight from the source tree. Installing the built artefact
         # somewhere with no source directory is the only thing that catches a
         # missing file or an undeclared dependency.
+        # The wheel's dependencies are held to the versions (and hashes) of
+        # the lock, like everything else this workflow installs.
         run: |
-          python -m venv /tmp/fresh
-          /tmp/fresh/bin/pip install dist/*.whl
+          uv export --locked --no-dev --no-emit-project --output-file /tmp/locked.txt
+          uv venv /tmp/fresh
+          uv pip install --python /tmp/fresh/bin/python --constraint /tmp/locked.txt dist/*.whl
           cd /tmp
           /tmp/fresh/bin/griot --version
           /tmp/fresh/bin/griot --help > /dev/null

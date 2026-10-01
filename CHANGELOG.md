@@ -411,6 +411,18 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **What the build runs and installs is pinned.** The CI named its actions
+  by a tag, which the owner of an action can move to other code, and
+  installed the newest version of every dependency on each run although the
+  repository carries a lock file with a hash per package. Actions are now
+  referenced by commit, the checkout leaves no token behind for later
+  steps, and everything installed comes from `uv.lock` with its hash
+  checked: the dependencies, the wheel's smoke test, the build backend and
+  the metadata checker (the build fails when the lock is out of date).
+  Dependabot proposes the updates of the actions and of the lock. For an installation from
+  the package index, `qdrant-edge-py` and `mcp`, which griot calls
+  directly, are held below the version that may change their interface
+  (`<0.9`, `<3`).
 - **The directory that holds griot's data is closed to other users.** The
   index, the logs and the configuration were each written 0600 inside 0700
   directories, but `<data>/griot` itself was made on the way to `logs/` by

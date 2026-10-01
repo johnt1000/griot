@@ -1,0 +1,242 @@
+"""What the build runs and installs is pinned.
+
+The continuous integration named its actions by a tag (`actions/checkout@v4`),
+which whoever owns the action can move to other code, and installed the
+dependencies with whatever versions were newest that day, although the
+repository carries a lock file with a hash for every package. A release of
+any dependency, or a moved tag, ran in the build with nobody having looked.
+
+An action is named by the commit it is, everything installed comes from the
+lock (the build backend included), and a bot proposes the updates so that
+each one is a reviewed change. For someone installing griot, the two
+dependencies whose interfaces griot is written against (the vector store
+and the MCP SDK) are held below the version that may change them.
+
+The workflows are read as YAML, not matched line by line: a check that goes
+by how a line is written is passed by writing the line another way."""
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+from packaging.requirements import Requirement
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # the floor griot supports
+    import tomli as tomllib
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
+WORKFLOWS = sorted(path for path in WORKFLOW_DIR.iterdir() if path.suffix in (".yml", ".yaml"))
+PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
+LOCK = tomllib.loads((ROOT / "uv.lock").read_text())
+
+# Every command of a workflow that fetches or installs code is one of these,
+# word for word. Each was looked at: it installs from uv.lock, or under a
+# constraint made from it, or installs nothing at all. A new one fails the
+# test until it is added here, which is the moment to look at it.
+COMMANDS_LOOKED_AT = {
+    "uv sync --locked --extra dev",
+    "uv run --no-sync pytest -q",
+    "uv export --locked --only-group build --output-file /tmp/build.txt",
+    "uv build --build-constraints /tmp/build.txt --require-hashes",
+    "uv sync --locked --only-group build",
+    "uv run --no-sync twine check dist/*",
+    "uv export --locked --no-dev --no-emit-project --output-file /tmp/locked.txt",
+    "uv venv /tmp/fresh",
+    "uv pip install --python /tmp/fresh/bin/python --constraint /tmp/locked.txt dist/*.whl",
+}
+# A program that brings code or packages from somewhere else.
+FETCHES = re.compile(r"(?<![\w.-])(pip3?|uvx?|pipx|conda|npm|npx|yarn|pnpm|curl|wget|apt|apt-get|brew|cargo|gem|docker|git)"
+                     r"(?![\w.-])")
+
+
+def _documents():
+    return [(workflow, yaml.safe_load(workflow.read_text())) for workflow in WORKFLOWS]
+
+
+def _every(node, key):
+    """Every value under `key`, at any depth."""
+    if isinstance(node, dict):
+        for name, value in node.items():
+            if name == key:
+                yield value
+            yield from _every(value, key)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _every(item, key)
+
+
+def _uses():
+    return [(workflow.name, value) for workflow, document in _documents() for value in _every(document, "uses")]
+
+
+def _steps():
+    return [(workflow.name, step) for workflow, document in _documents()
+            for job in document["jobs"].values() for step in job.get("steps", [])]
+
+
+def _commands():
+    """Each command a workflow runs: one per line, a line that ends in a
+    backslash joined to the next."""
+    found = []
+    for workflow, document in _documents():
+        for script in _every(document, "run"):
+            for line in re.sub(r"\\\n\s*", " ", script).splitlines():
+                line = " ".join(line.split())
+                if line and not line.startswith("#"):
+                    found.append((workflow.name, line))
+    return found
+
+
+# --- the actions ------------------------------------------------------------------------------
+
+
+def test_there_is_something_to_check():
+    assert WORKFLOWS and len(_uses()) >= 4 and len(_commands()) >= 8
+
+
+@pytest.mark.parametrize("where,used", _uses())
+def test_an_action_is_named_by_the_commit_it_is(where, used):
+    """A tag or a branch can be moved to other code by whoever owns the
+    action; a commit cannot. (An image or a local action has no commit to
+    name: neither is used, and one that appears is looked at then.)"""
+    action, _, ref = str(used).rpartition("@")
+    assert re.fullmatch(r"[\w.-]+/[\w./-]+", action), f"{where}: {used} is not an action of a repository"
+    assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{where}: {used} is not named by a commit"
+
+
+@pytest.mark.parametrize("where,used", _uses())
+def test_the_version_that_commit_is_stands_beside_it(where, used):
+    """For a person to read, and for the bot that proposes the next one."""
+    text = (WORKFLOW_DIR / where).read_text()
+    assert re.search(re.escape(str(used)) + r"[ \t]+#[ \t]*v\d+\.\d+\.\d+[ \t]*$", text, re.M), f"{where}: {used}"
+
+
+def test_a_workflow_has_no_more_rights_than_it_needs():
+    for workflow, document in _documents():
+        assert document.get("permissions") == {"contents": "read"}, workflow.name
+        for name, job in document["jobs"].items():
+            wider = {what: level for what, level in (job.get("permissions") or {}).items() if level not in ("read", "none")}
+            assert not wider, f"{workflow.name}: job {name} asks for {wider}"
+        triggers = document.get("on", document.get(True))  # YAML 1.1 reads a bare `on` as true
+        named = set(triggers) if isinstance(triggers, (dict, list)) else {triggers}
+        assert not named & {"pull_request_target", "workflow_run"}, "runs with the repository's rights on code from a fork"
+
+
+def test_a_checkout_leaves_no_credential_behind():
+    """The token checkout uses stays in .git/config for every later step
+    unless it is told otherwise, and later steps run what was installed."""
+    checkouts = [(where, step) for where, step in _steps() if str(step.get("uses", "")).startswith("actions/checkout@")]
+    assert checkouts
+    for where, step in checkouts:
+        assert (step.get("with") or {}).get("persist-credentials") is False, f"{where}: {step}"
+
+
+# --- what a workflow installs -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("where,command", [(w, c) for w, c in _commands() if FETCHES.search(c)])
+def test_a_command_that_fetches_or_installs_was_looked_at(where, command):
+    assert command in COMMANDS_LOOKED_AT, (
+        f"{where}: `{command}` fetches or installs code and is not on the list in this test. Add it there once it "
+        "installs from uv.lock (or under a constraint made from it), never the newest version of the day.")
+
+
+def test_the_list_holds_nothing_the_workflows_no_longer_run():
+    """An entry nobody runs is a permission nobody is using."""
+    assert COMMANDS_LOOKED_AT == {command for _, command in _commands() if FETCHES.search(command)}
+
+
+def test_the_tests_run_on_what_the_lock_file_says():
+    """`--locked`: from uv.lock, and the build stops when the lock no longer
+    matches pyproject.toml."""
+    commands = [command for _, command in _commands()]
+    assert "uv sync --locked --extra dev" in commands and not any("pip install -e" in command for command in commands)
+
+
+def test_the_installer_of_the_build_is_itself_a_fixed_version():
+    installs = [(where, step) for where, step in _steps() if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")]
+    assert installs, "uv is what installs everything else"
+    for where, step in installs:
+        version = str((step.get("with") or {}).get("version"))
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version), f"{where}: setup-uv installs uv {version}"
+
+
+def test_the_build_backend_is_in_the_lock_too():
+    """[build-system] is resolved when the package is built, outside the
+    lock. The `build` group repeats it so that the lock pins it, and the
+    packaging job hands the lock to the build as a constraint."""
+    backend = {Requirement(text).name for text in PROJECT["build-system"]["requires"]}
+    group = {Requirement(text).name for text in PROJECT["dependency-groups"]["build"]}
+    assert backend and backend <= group
+    assert backend <= {package["name"] for package in LOCK["package"]}
+
+
+# --- the lock file ------------------------------------------------------------------------------
+
+
+def _asked(requirements, where):
+    return {(Requirement(text).name, tuple(sorted(Requirement(text).extras)), str(Requirement(text).specifier), where)
+            for text in requirements}
+
+
+def _locked(entries, where=None):
+    found = set()
+    for entry in entries:
+        extra = re.search(r"extra == '([a-z-]+)'", entry.get("marker", ""))  # the Python part is uv's own spelling
+        specifier = str(Requirement(f"x{entry.get('specifier', '')}").specifier)
+        found.add((entry["name"], tuple(sorted(entry.get("extras", []))), specifier, where or (extra[1] if extra else None)))
+    return found
+
+
+def test_the_lock_file_is_what_the_project_file_asks_for():
+    """Read from the two files, with no resolver and no network: the lock
+    records the requirements it was made from. A dependency added to the
+    project and not to the lock would be installed by nobody's choice (and
+    `uv sync --locked` stops the build on it)."""
+    project = PROJECT["project"]
+    own = next(package for package in LOCK["package"] if package["name"] == project["name"])
+
+    asked = _asked(project["dependencies"], None)
+    for extra, requirements in project.get("optional-dependencies", {}).items():
+        asked |= _asked(requirements, extra)
+    assert _locked(own["metadata"]["requires-dist"]) == asked
+
+    for group, requirements in PROJECT.get("dependency-groups", {}).items():
+        assert _locked(own["metadata"]["requires-dev"][group], group) == _asked(requirements, group)
+
+
+def test_every_locked_package_has_a_hash():
+    def files(package):
+        return package.get("wheels", []) + ([package["sdist"]] if "sdist" in package else [])
+
+    from_an_index = [package for package in LOCK["package"] if package.get("source", {}).get("registry")]
+    without = [package["name"] for package in from_an_index
+               if not files(package) or not all(str(file.get("hash", "")).startswith("sha256:") for file in files(package))]
+    assert len(from_an_index) > 50 and without == []
+
+
+# --- for someone who installs griot -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name,below", [("qdrant-edge-py", "<0.9"), ("mcp", "<3")])
+def test_a_dependency_whose_interface_griot_is_written_against_has_a_ceiling(name, below):
+    """Before 1.0 a minor version may change the interface, and a major one
+    always may. griot calls both of these directly, all over."""
+    requirement = next(r for r in map(Requirement, PROJECT["project"]["dependencies"]) if r.name == name)
+    bounds = {str(part) for part in requirement.specifier}
+    assert below in bounds and any(bound.startswith(">=") for bound in bounds), str(requirement)
+
+
+# --- and the updates come as changes to review --------------------------------------------------
+
+
+def test_a_bot_proposes_the_updates_of_the_actions_and_of_the_lock():
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text())
+    assert config["version"] == 2
+    assert sorted(update["package-ecosystem"] for update in config["updates"]) == ["github-actions", "uv"]
+    assert all(update["directory"] == "/" and update["schedule"]["interval"] for update in config["updates"])
