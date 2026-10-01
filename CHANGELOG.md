@@ -182,6 +182,19 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot assist install` offers to pre-approve griot's read-only tools.**
+  A harness asks a person before each tool call unless its settings allow
+  the tool, and an agent that has to ask before every search mostly does not
+  search. For Claude Code the installer shows the allow rules (one per
+  read-only tool, as the server itself marks them; the quality check keeps
+  asking) and the file, and adds them to `permissions.allow` after a typed
+  `y`: `~/.claude/settings.json` with `--scope global`, otherwise the
+  project's personal `.claude/settings.local.json`. Every other setting
+  keeps its value, a rule or pattern already under `deny` or `ask` is left
+  alone, and a file griot cannot edit safely (not plain JSON settings, a key
+  given twice, read-only) is not touched. A rule matches any MCP server
+  named `griot`. No flag answers yes, no MCP tool does it, and
+  `--no-allow-tools` skips the question.
 - **`griot stats` reports the state of the index, not only activity in a
   window.** It opens with an `Attention:` block when something needs someone
   (the last indexing run died, today's spend reached the ceiling, the

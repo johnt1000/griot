@@ -50,6 +50,13 @@ With a local embedding profile, remember that each open session runs its own
 server, and each one loads the model on its first search (`griot profiles
 list` shows how much memory each profile is estimated to take).
 
+The same command then offers to let the agent call griot's read-only tools
+(search, status, lists, usage) without asking the user each time: it shows
+the allow rules and the settings file, and adds them only after the user
+types `y` at a terminal. This step is the user's: there is no flag that
+answers yes and no tool that does it, so do not try to do it for them. griot
+adds no rule for the tools that change anything, nor for the quality check.
+
 ## Register a repo
 
 ```bash

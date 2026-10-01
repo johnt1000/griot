@@ -111,6 +111,27 @@ Subagents often do not look for griot on their own: when you hand research to on
 
 mcp = MCPServer("griot", instructions=SERVER_INSTRUCTIONS)
 
+# Marked read-only, and still not something to run without a person: it
+# embeds one query per sampled point (billed on a paid profile, up to the
+# sample ceiling) and records a trend point. A search costs one embedding.
+_READ_ONLY_BUT_ASKED = frozenset({"griot_quality_check"})
+
+
+def tools_safe_to_preapprove() -> list[str]:
+    """The tools a harness may be told to run without asking: the ones this
+    server itself marks read-only, minus the exceptions above. Asked of the
+    registered tools, not kept as a list, so that a new tool is in or out by
+    its own annotation. `griot assist install` offers these and only these;
+    tests/test_tool_approval.py holds the result to what a real client sees."""
+    names = []
+    for tool in mcp._tool_manager.list_tools():
+        read_only = getattr(tool.annotations, "read_only_hint", None) is True
+        human_only = (tool.meta or {}).get("anthropic/requiresUserInteraction")
+        if read_only and not human_only and tool.name not in _READ_ONLY_BUT_ASKED:
+            names.append(tool.name)
+    return sorted(names)
+
+
 # Cap on limit ([review], the design notes): without it, a large value
 # doesn't cost more in the local profile (jina-code/bge-m3) but bloats the
 # agent's context with low-relevance snippets for no good reason.
