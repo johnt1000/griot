@@ -26,6 +26,8 @@ import sys
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from griot import FALSE_WORDS, TRUE_WORDS  # the package itself: not the configuration
+
 
 class _NotValid(ValueError):
     """A value that is not valid for the setting it was given to."""
@@ -75,7 +77,7 @@ SETTINGS = [
     Setting("gitea-hosts", "GRIOT_GITEA_HOSTS", "hosts"),
 ]
 
-_TRUE, _FALSE = ("true", "yes", "on", "1"), ("false", "no", "off", "0")
+_TRUE, _FALSE = TRUE_WORDS, FALSE_WORDS
 _HOST = re.compile(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
@@ -246,6 +248,34 @@ def in_force(setting: Setting) -> tuple[str | None, str]:
     if in_file is not None:
         return in_file, "file"
     return default_of(setting), "default"
+
+
+def running_with(setting: Setting) -> dict:
+    """What THIS process started with, for one that outlives edits to the
+    file (the MCP server): {value, source, in_file, restart_needed}.
+
+    in_force() answers for a process that has just read the file. A server
+    read it once: the value it runs with is the one in its environment
+    (exported where it was started, or put there by the file at that
+    moment), and the file may say something else by now. `restart_needed`
+    is that difference, when a restart would apply it: under an exported
+    variable the file's value is not used before or after."""
+    from griot import common
+
+    in_file = _in_file(setting)
+    default = default_of(setting)
+    if setting.variable in common.ENVIRONMENT_BEFORE_ENV_FILE:
+        # Present, even empty: the file does not override what is there.
+        value, source = common.ENVIRONMENT_BEFORE_ENV_FILE[setting.variable], "environment"
+    elif setting.variable in os.environ:
+        value, source = os.environ[setting.variable], "file"
+    else:
+        value, source = default, "default"
+    a_new_process = in_file if in_file is not None else default
+    # An empty line and no line are the same thing when the default is empty
+    # too (`GRIOT_PROJECT=`): "" and None are compared as one.
+    return {"value": value, "source": source, "in_file": in_file,
+            "restart_needed": source != "environment" and (a_new_process or None) != (value or None)}
 
 
 def persisted(setting: Setting) -> str | None:

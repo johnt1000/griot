@@ -564,4 +564,5 @@ async def test_no_mcp_tool_changes_a_setting():
     from griot import mcp_server
     async with Client(mcp_server.mcp) as client:
         names = [t.name for t in (await client.list_tools()).tools]
-    assert not [name for name in names if "config" in name or "setting" in name]
+    # One tool reads them (tests/test_config_tool.py); none writes.
+    assert [name for name in names if "config" in name or "setting" in name] == ["griot_config_list"]

@@ -18,7 +18,7 @@ import requests
 from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
-from griot import ConfigurationError, UnknownEmbedProfile, logdb, redaction
+from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -418,7 +418,7 @@ def log_questions_enabled() -> bool:
     question text without losing the metrics (latency, sources, spend).
     Read at call time (not at import time) so it can be controlled
     per-invocation."""
-    return os.getenv("GRIOT_LOG_QUESTIONS", "true").lower() not in ("0", "false")
+    return os.getenv("GRIOT_LOG_QUESTIONS", "true").strip().lower() not in FALSE_WORDS
 
 
 def _clean_project(name: str) -> str | None:
@@ -503,6 +503,10 @@ def _check_env_file_permissions(env_path: Path) -> None:
 # GITLAB_PERSONAL_ACCESS_TOKEN) already come from the shell (~/.bashrc /
 # ~/.zshrc).
 _check_env_file_permissions(ENV_PATH)
+# What the environment itself said, before the file is read into it. A
+# process that outlives edits to the file (the MCP server) has no other way
+# to tell a variable that was exported from one the file gave it at start.
+ENVIRONMENT_BEFORE_ENV_FILE = {name: value for name, value in os.environ.items() if name.startswith("GRIOT_")}
 load_dotenv(dotenv_path=ENV_PATH)
 
 # Rename RAG_* -> GRIOT_*: values under the
