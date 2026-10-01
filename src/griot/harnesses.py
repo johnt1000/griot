@@ -985,7 +985,8 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
           "repositories, profiles and settings, and report status and usage (each call is logged).\n"
           "  griot_search embeds the query, which on a paid embedding profile costs a fraction of a "
           "cent per search.\n"
-          "  griot adds no rule for the tools that change something, nor for the quality check.\n"
+          "  griot adds no rule for the tools that change something, nor for the read-only ones that cost or read "
+          "far more than a search does (the quality check is one).\n"
           "  A rule matches any MCP server named `griot`, whoever defines it: in a project that ships its "
           "own server under that name, these rules apply to that one.")
     if kept_out:

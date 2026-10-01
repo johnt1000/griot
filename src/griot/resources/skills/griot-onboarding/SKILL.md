@@ -57,7 +57,8 @@ The same command then offers to let the agent call griot's read-only tools
 the allow rules and the settings file, and adds them only after the user
 types `y` at a terminal. This step is the user's: there is no flag that
 answers yes and no tool that does it, so do not try to do it for them. griot
-adds no rule for the tools that change anything, nor for the quality check.
+adds no rule for the tools that change anything, nor for the read-only ones
+that cost or read far more than a search does (the quality check is one).
 
 ## Register a repo
 

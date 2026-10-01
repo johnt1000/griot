@@ -70,6 +70,38 @@ def test_a_credential_shaped_value_is_replaced_and_the_rest_is_kept(rule):
     assert out.startswith("before\n") and out.endswith("\nafter")
 
 
+# The formats that are recognised by a fixed prefix.
+PREFIXED = ["aws-access-key-id", "github-token", "gitlab-token", "slack-token", "stripe-key", "stripe-webhook-secret",
+            "anthropic-key", "openai-key", "google-api-key", "google-oauth-secret", "npm-token", "pypi-token",
+            "huggingface-token", "sendgrid-key", "digitalocean-token", "shopify-token", "age-secret-key",
+            "telegram-bot-token", "jwt"]
+
+
+def _whole(rule: str) -> str:
+    """The whole value the rule's own positive case holds (POSITIVE keeps
+    only a piece of some: the piece that must not survive)."""
+    detector = next(d for d in redaction.DETECTORS if d.rule == rule)
+    return detector.pattern.search(POSITIVE[rule][0]).group(0)
+
+
+@pytest.mark.parametrize("rule", PREFIXED)
+@pytest.mark.parametrize("before", ["fix_", "backup-", "deploy/", "v1.", "KEY="])
+def test_a_token_glued_to_what_comes_before_it_is_still_replaced(rule, before):
+    """A branch named `fix_<token>`, a file `backup_<token>.sh`. The pattern
+    began at a word boundary, and an underscore is a word character: after
+    one, the token was not seen at all."""
+    out, rules = redaction.redact(before + _whole(rule))
+    assert POSITIVE[rule][1] not in out and rules
+
+
+@pytest.mark.parametrize("rule", ["aws-access-key-id", "github-token", "stripe-key", "stripe-webhook-secret", "npm-token",
+                                  "huggingface-token", "digitalocean-token", "shopify-token", "age-secret-key"])
+def test_a_token_followed_by_an_underscore_is_still_replaced(rule):
+    """`<token>_old`: the pattern ended at a word boundary too."""
+    out, rules = redaction.redact("name " + _whole(rule) + "_old")
+    assert POSITIVE[rule][1] not in out and rules
+
+
 @pytest.mark.parametrize("rule", list(POSITIVE))
 def test_running_it_again_changes_nothing(rule):
     once, _ = redaction.redact(POSITIVE[rule][0])

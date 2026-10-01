@@ -82,7 +82,8 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 
-from griot import TRUE_WORDS, ask, auth, cli, common, config, golden_set, harnesses, jobs, logdb, quality_check, repos, stats
+from griot import (TRUE_WORDS, ask, auth, cli, common, config, golden_set, harnesses, jobs, logdb, quality_check,
+                   redaction, repos, stats)
 
 # What the server tells an agent about itself before any tool is loaded. An
 # agent sees only tool NAMES until it loads them, and nothing told it when
@@ -120,6 +121,9 @@ _READ_ONLY_BUT_ASKED = frozenset({
     # Changes nothing, but reads every file of a repository and runs for as
     # long as an index does.
     "griot_index_preview",
+    # Costs nothing and changes nothing, but it reads every stored chunk,
+    # holding the index while it does, to say where credentials are.
+    "griot_audit",
 })
 
 
@@ -262,6 +266,34 @@ class ProfileEntry(TypedDict):
 class ProfilesListOutput(TypedDict):
     profiles: list[ProfileEntry]
     active: str
+
+
+class AuditPlace(TypedDict):
+    # The label a search result has for the same source: a file, a commit,
+    # a pull request. Never the value found there.
+    where: str
+    repo: str | None
+    source_type: str | None
+    rules: list[str]
+    count: int
+
+
+class AuditRepoCount(TypedDict):
+    repo: str | None
+    count: int
+
+
+class AuditOutput(TypedDict):
+    profile: str
+    # Stored points read. With complete=false the reading stopped at the
+    # ceiling: what is below is of that part only.
+    scanned: int
+    complete: bool
+    total: int
+    by_repo: list[AuditRepoCount]
+    places: list[AuditPlace]
+    places_omitted: int
+    note: str
 
 
 class ConfigEntry(TypedDict):
@@ -1006,6 +1038,71 @@ def _active_profile() -> str:
     nothing with no entry marked is_active."""
     name = os.getenv("GRIOT_EMBED_PROFILE", common.ACTIVE_PROFILE_NAME)
     return name if name in common.EMBED_PROFILES else common.ACTIVE_PROFILE_NAME
+
+
+# Every stored chunk is read and matched against the detectors, about half a
+# millisecond each, with the index held meanwhile: bounded per call. `repos`
+# reads one repository at a time; `griot audit` at a terminal has no ceiling.
+AUDIT_MAX_POINTS = 25_000
+AUDIT_PLACES_SHOWN = 200
+# A label is built from names a repository gives (a branch, a path): cut, so
+# that one of them cannot fill the answer.
+AUDIT_WHERE_MAX = 300
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_records_call
+def griot_audit(repos: list[str] | None = None) -> AuditOutput:
+    """Where the index of the active profile holds credential-looking
+    values: the places (the same labels search results carry) and the name
+    of the rule that matched, NEVER the values. What `griot audit` lists at
+    a terminal.
+
+    griot replaces such values before storing them, and again on the way
+    out of a search. What an older version indexed raw is still in the
+    store until its repository is indexed again: this finds it. Use it when
+    asked whether something sensitive was indexed, or before sharing an
+    index.
+
+    `repos` narrows the reading to those repositories (names as
+    griot_repos_list gives them). One call reads a bounded number of stored
+    points: when `complete` is false it stopped there, the counts are of
+    that part only, and `note` says how to read the rest. `by_repo` counts
+    every value found; `places` shows the first ones and `places_omitted`
+    how many more there are.
+
+    A finding is a place to look at, not proof: `note` says what to do."""
+    nothing = (f"Nothing is indexed for profile '{common.ACTIVE_PROFILE_NAME}', so nothing was audited. "
+               f"Index a repository first (`griot index all`).")
+    # A name with nothing indexed raises SearchFilterError, as in a search:
+    # an empty reading there would pass for a clean one.
+    found = redaction.audit_index(repos=repos, max_points=AUDIT_MAX_POINTS)
+    # Zero findings over zero points would read as a clean index.
+    if not found["indexed"] or found["scanned"] == 0:
+        raise RuntimeError(nothing)
+    counts: dict[str | None, int] = {}
+    for place in found["places"]:
+        counts[place["repo"]] = counts.get(place["repo"], 0) + place["count"]
+    by_repo = [{"repo": repo, "count": count}
+               for repo, count in sorted(counts.items(), key=lambda item: (-item[1], item[0] or ""))]
+    note = ("Locations and rule names only: the values are never returned. " if found["places"] else
+            "Nothing that looks like a credential was found in what was read. ")
+    if found["places"]:
+        note += redaction.AUDIT_ADVICE.replace("\n", " ")
+    omitted = max(0, len(found["places"]) - AUDIT_PLACES_SHOWN)
+    if omitted:
+        note += (f" `places` shows {AUDIT_PLACES_SHOWN} and leaves out {omitted} more place(s); `total` and "
+                 f"`by_repo` count all of them. Pass `repos` to see the places of one repository.")
+    note += (f" Only the index of the active profile ({common.ACTIVE_PROFILE_NAME}) was read: each profile has "
+             f"its own, and what another one holds is not covered by this.")
+    if not found["complete"]:
+        note += (f" The reading stopped at {found['scanned']} stored points and the index holds more: pass `repos` "
+                 f"to read one repository at a time, or run `griot audit` in a terminal, which reads everything.")
+    return {"profile": common.ACTIVE_PROFILE_NAME, "scanned": found["scanned"], "complete": found["complete"],
+            "total": found["total"], "by_repo": by_repo,
+            "places": [{**place, "where": place["where"][:AUDIT_WHERE_MAX]}
+                       for place in found["places"][:AUDIT_PLACES_SHOWN]],
+            "places_omitted": omitted, "note": note}
 
 
 _CONFIG_LIST_NOTE = (
