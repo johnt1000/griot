@@ -140,6 +140,14 @@ _LINE_BREAK = r"(?:\\[nr]|\r\n|\n|\r)"
 _BREAKS = rf"(?:{_INDENT}{_LINE_BREAK}){{1,6}}{_INDENT}"
 _MAYBE_BREAKS = rf"(?:{_INDENT}{_LINE_BREAK}){{0,6}}{_INDENT}"
 
+# Where a value recognised by its prefix may begin and end. Not a word
+# boundary: an underscore is a word character, so `fix_<token>` (a branch
+# name, a file name, a variable) did not begin at one and was not seen at
+# all, and `<token>_old` did not end at one. A letter or a digit on either
+# side still means it is part of something longer.
+_START = r"(?<![A-Za-z0-9])"
+_END = r"(?![A-Za-z0-9])"
+
 # Order matters twice: a specific format goes before a general one that would
 # also match it and name it wrongly, and the two generic assignment shapes go
 # last so they only see what no format claimed.
@@ -160,33 +168,33 @@ DETECTORS: tuple[Detector, ...] = (
         # END line follows: otherwise the first word after a cut-off key
         # would go with it.
         rf"(?:(?:{_BREAKS}{_B64}{{1,15}})?{_MAYBE_BREAKS}-----END {_KEY_LABEL}-----)?")),
-    Detector("aws-access-key-id", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b")),
+    Detector("aws-access-key-id", re.compile(rf"{_START}(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{{16}}{_END}")),
     Detector("aws-secret-access-key", re.compile(
         r"(?i)aws_?secret_?access_?key\W{1,4}([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])"), group=1),
-    Detector("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,})\b")),
-    Detector("gitlab-token", re.compile(r"\bgl(?:pat|rt|ptt|cbt|dt)-[A-Za-z0-9_-]{20,}")),
-    Detector("slack-token", re.compile(r"\bxox[baprse]-[A-Za-z0-9-]{10,}")),
+    Detector("github-token", re.compile(rf"{_START}(?:gh[pousr]_[A-Za-z0-9]{{36,}}|github_pat_[A-Za-z0-9_]{{36,}}){_END}")),
+    Detector("gitlab-token", re.compile(rf"{_START}gl(?:pat|rt|ptt|cbt|dt)-[A-Za-z0-9_-]{{20,}}")),
+    Detector("slack-token", re.compile(rf"{_START}xox[baprse]-[A-Za-z0-9-]{{10,}}")),
     Detector("slack-webhook", re.compile(
         r"hooks\.slack\.com/services/(T[A-Z0-9]{6,}/B[A-Z0-9]{6,}/[A-Za-z0-9]{20,})"), group=1),
     Detector("discord-webhook", re.compile(
         r"discord(?:app)?\.com/api/webhooks/(\d{15,}/[A-Za-z0-9_-]{50,})"), group=1),
-    Detector("stripe-key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
-    Detector("stripe-webhook-secret", re.compile(r"\bwhsec_[A-Za-z0-9]{32,}\b")),
+    Detector("stripe-key", re.compile(rf"{_START}(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{{16,}}{_END}")),
+    Detector("stripe-webhook-secret", re.compile(rf"{_START}whsec_[A-Za-z0-9]{{32,}}{_END}")),
     # Before the OpenAI shape, which would also match this one and name it wrongly.
-    Detector("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,}"), accept=lambda m: _looks_random(m.group(0))),
-    Detector("openai-key", re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}"),
+    Detector("anthropic-key", re.compile(rf"{_START}sk-ant-[A-Za-z0-9_-]{{32,}}"), accept=lambda m: _looks_random(m.group(0))),
+    Detector("openai-key", re.compile(rf"{_START}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{{32,}}"),
              accept=lambda m: _looks_random(m.group(0))),
-    Detector("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])")),
-    Detector("google-oauth-secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])")),
-    Detector("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
-    Detector("pypi-token", re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}")),
-    Detector("huggingface-token", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
-    Detector("sendgrid-key", re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")),
-    Detector("digitalocean-token", re.compile(r"\bdo[opr]_v1_[a-f0-9]{64}\b")),
-    Detector("shopify-token", re.compile(r"\bshp(?:at|ca|pa|ss)_[a-f0-9]{32}\b")),
-    Detector("age-secret-key", re.compile(r"\bAGE-SECRET-KEY-1[A-Z0-9]{58}\b")),
-    Detector("telegram-bot-token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}(?![A-Za-z0-9_-])")),
-    Detector("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    Detector("google-api-key", re.compile(rf"{_START}AIza[0-9A-Za-z_-]{{35}}(?![0-9A-Za-z_-])")),
+    Detector("google-oauth-secret", re.compile(rf"{_START}GOCSPX-[A-Za-z0-9_-]{{28}}(?![A-Za-z0-9_-])")),
+    Detector("npm-token", re.compile(rf"{_START}npm_[A-Za-z0-9]{{36}}{_END}")),
+    Detector("pypi-token", re.compile(rf"{_START}pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{{50,}}")),
+    Detector("huggingface-token", re.compile(rf"{_START}hf_[A-Za-z0-9]{{34,}}{_END}")),
+    Detector("sendgrid-key", re.compile(rf"{_START}SG\.[A-Za-z0-9_-]{{22}}\.[A-Za-z0-9_-]{{43}}(?![A-Za-z0-9_-])")),
+    Detector("digitalocean-token", re.compile(rf"{_START}do[opr]_v1_[a-f0-9]{{64}}{_END}")),
+    Detector("shopify-token", re.compile(rf"{_START}shp(?:at|ca|pa|ss)_[a-f0-9]{{32}}{_END}")),
+    Detector("age-secret-key", re.compile(rf"{_START}AGE-SECRET-KEY-1[A-Z0-9]{{58}}{_END}")),
+    Detector("telegram-bot-token", re.compile(rf"{_START}\d{{8,10}}:AA[A-Za-z0-9_-]{{33}}(?![A-Za-z0-9_-])")),
+    Detector("jwt", re.compile(rf"{_START}eyJ[A-Za-z0-9_-]{{8,}}\.eyJ[A-Za-z0-9_-]{{8,}}\.[A-Za-z0-9_-]{{8,}}")),
     # A password equal to the user name (postgres:postgres, test:test) is the
     # default of a local service, not something to protect. The user part
     # takes no bracket, so a marker left by an earlier detector (a token used
@@ -214,6 +222,15 @@ DETECTORS: tuple[Detector, ...] = (
 )
 
 
+# How many stored points one read of the audit asks for.
+AUDIT_PAGE = 1000
+
+# What to do about a finding, for the command and for the MCP tool.
+AUDIT_ADVICE = ("Search already replaces them on the way out, and indexing a repository again rewrites its chunks "
+                "without them.\nCheck whether each is real. One that is was stored here in plain text and, on a paid "
+                "profile, sent to the embedding API when it was indexed: rotate it.")
+
+
 def redact(text: str) -> tuple[str, list[str]]:
     """`text` with every credential-looking value replaced by a marker, and
     the rule of each replacement, in order. Running it again on its own
@@ -233,6 +250,69 @@ def redact(text: str) -> tuple[str, list[str]]:
     return text, found
 
 
+def audit_index(*, repos: list[str] | None = None, max_points: int | None = None) -> dict:
+    """Where the index of the active profile holds credential-looking
+    values: the data half of `griot audit`, for a caller that does not
+    print (the griot_audit MCP tool). Read-only, and opens nothing that
+    does not exist.
+
+    {indexed, scanned, complete, total, places: [{where, repo, source_type,
+    rules, count}]}: places and rule names, never the values. `repos`
+    narrows it to what is indexed under those names (a name with nothing
+    indexed raises common.SearchFilterError, as a search does). With
+    `max_points`, reading stops there and `complete` is False."""
+    # Imported here: common imports this module for the detectors.
+    import qdrant_edge as qe
+
+    from griot import ask, common
+
+    found = {"indexed": False, "scanned": 0, "complete": True, "total": 0, "places": []}
+    names, _ = common._checked_filters(repos, None)
+    if not common.collection_exists(common.COLLECTION_NAME):
+        return found
+    client = common.get_client()
+    scroll_filter = common._search_filter(client, names, [])
+    found["indexed"] = True
+    places: dict[str, dict] = {}
+    offset = None
+    while True:
+        batch = AUDIT_PAGE if max_points is None else min(AUDIT_PAGE, max_points - found["scanned"] + 1)
+        points, offset = client.scroll(qe.ScrollRequest(limit=batch, offset=offset, with_payload=True,
+                                                        with_vector=False, filter=scroll_filter))
+        if not points:
+            break  # nothing came back: an offset that is still set must not keep the loop going
+        for point in points:
+            if max_points is not None and found["scanned"] >= max_points:
+                # One point past the ceiling was asked for, to tell "this
+                # was all" from "there is more".
+                found["complete"] = False
+                break
+            found["scanned"] += 1
+            payload = point.payload or {}
+            content = payload.get("content")
+            # Text is what the indexers store; anything else has nothing to match.
+            rules = redact(content)[1] if isinstance(content, str) else []
+            if not rules:
+                continue
+            try:
+                label = ask.source_label(payload)
+            except Exception:  # noqa: BLE001 - a field of another type than the indexers write
+                # One odd point must not stop the audit of all the others.
+                label = f"point {point.id}"
+            where = common.shown(label)
+            repo, kind = payload.get("repo"), payload.get("source_type")
+            place = places.setdefault(where, {
+                "where": where, "repo": common.shown(str(repo)) if repo is not None else None,
+                "source_type": common.shown(str(kind)) if kind is not None else None, "rules": set(), "count": 0})
+            place["rules"].update(rules)
+            place["count"] += len(rules)
+            found["total"] += len(rules)
+        if offset is None or not found["complete"]:
+            break
+    found["places"] = [{**places[where], "rules": sorted(places[where]["rules"])} for where in sorted(places)]
+    return found
+
+
 def main(argv=None) -> int:
     """`griot audit`: where the index of the active profile holds
     credential-looking values. Read-only."""
@@ -242,34 +322,17 @@ def main(argv=None) -> int:
                     "values. Read-only. Exit status 1 when something is found.",
     )
     parser.parse_args(argv)
-    # Imported here: common imports this module for the detectors.
-    import qdrant_edge as qe
+    from griot import common
 
-    from griot import ask, common
-
-    if not common.collection_exists(common.COLLECTION_NAME):
+    found = audit_index()
+    if not found["indexed"]:
         print(f"Nothing is indexed for profile '{common.ACTIVE_PROFILE_NAME}'.")
         return 0
-    client = common.get_client()
-    places: dict[str, list[str]] = {}
-    total, offset = 0, None
-    while True:
-        points, offset = client.scroll(qe.ScrollRequest(limit=1000, offset=offset, with_payload=True, with_vector=False))
-        for point in points:
-            payload = point.payload or {}
-            rules = redact(payload.get("content") or "")[1]
-            if rules:
-                places.setdefault(common.shown(ask.source_label(payload)), []).extend(rules)
-                total += len(rules)
-        if offset is None:
-            break
-    if not places:
+    if not found["places"]:
         print(f"Found nothing that looks like a credential in the index of profile '{common.ACTIVE_PROFILE_NAME}'.")
         return 0
-    print(f"{total} credential-looking value(s) in {len(places)} place(s):")
-    for where in sorted(places):
-        print(f"  {where} ({', '.join(sorted(set(places[where])))})")
-    print("Search already replaces them on the way out, and indexing a repository again rewrites its chunks "
-          "without them.\nCheck whether each is real. One that is was stored here in plain text and, on a paid "
-          "profile, sent to the embedding API when it was indexed: rotate it.")
+    print(f"{found['total']} credential-looking value(s) in {len(found['places'])} place(s):")
+    for place in found["places"]:
+        print(f"  {place['where']} ({', '.join(place['rules'])})")
+    print(AUDIT_ADVICE)
     return 1

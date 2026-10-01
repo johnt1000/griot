@@ -10,6 +10,13 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_audit` tells an agent where the index holds credential-looking
+  values.** The same places `griot audit` lists at a terminal, with the
+  rule that matched and a count per repository, and never the values. One
+  call reads a bounded number of stored points and says so when it stopped
+  there; `repos` reads one repository at a time. Over nothing indexed it is
+  an error, not a clean result. It changes nothing, and it is still asked
+  about each time: the installer does not offer to pre-approve it.
 - **`griot_config_list` shows the settings an MCP server is running with.**
   `griot config list` answers for a new process; a server read the file
   once, when it started, and its environment can come from where it was
@@ -336,6 +343,14 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **A token glued to an underscore is recognised.** The formats known by
+  their prefix (GitHub, GitLab, Slack, Stripe, OpenAI, AWS key ids and the
+  rest) were matched from a word boundary, and an underscore is a word
+  character: `fix_<token>` as a branch or file name, or `<token>_old`, was
+  not seen at all, so it was stored and shown as it was. They now begin
+  and end wherever a letter or a digit does not continue them. What an
+  earlier version indexed this way is still in the store: `griot audit`
+  lists it, and indexing the repository again rewrites it.
 - **Credential-looking values are no longer embedded, stored or returned.**
   Indexed text used to go to the embedding provider and into the index as it
   was, and search returned it verbatim: a token in a tracked file, a commit
