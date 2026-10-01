@@ -324,7 +324,7 @@ def test_index_all_sources_does_not_affect_single_source_command(monkeypatch):
 def test_search_formats_results_without_chat(monkeypatch, capsys):
     search_calls = []
 
-    def fake_search(query, limit=5, diverse=False):
+    def fake_search(query, limit=5, **kwargs):
         search_calls.append((query, limit))
         return [
             FakeHit(0.912, {"source_type": "commit", "repo": "shop", "commit_hash": "abcdef1234", "content": "fix: fix shipping\n\ndetail"}),
@@ -349,7 +349,7 @@ def test_search_formats_results_without_chat(monkeypatch, capsys):
 
 
 def test_search_empty_results(monkeypatch, capsys):
-    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, **kwargs: [])
     rc = cli.main(["search", "nothing"])
     assert rc == 0
     assert "No results" in capsys.readouterr().out

@@ -178,6 +178,25 @@ def _cmd_index(args) -> int:
     return 0
 
 
+# The kinds `--source-type` takes, for the help text. A copy of
+# common.SOURCE_TYPES, because building the parser must not import the index
+# (see the module docstring); tests/test_cli_search_filters.py holds the two
+# together, and the search itself is what validates a value.
+SEARCH_SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "issue")
+
+
+def _at_least_one(text: str) -> int:
+    """An argparse type: a whole number from 1 up. Zero finds nothing and a
+    negative one reached the vector store as an overflow."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1 (got {value})")
+    return value
+
+
 def _cmd_search(args) -> int:
     """Raw search on the vector store: embeds the query and prints the hits
     with source label + score. NEVER calls chat_completion — this is the
@@ -185,7 +204,15 @@ def _cmd_search(args) -> int:
     profile); synthesis with an LLM is `griot ask`."""
     from griot import ask, common  # lazy: only imports qdrant/fastembed here
 
-    results = common.search(args.query, limit=args.limit, diverse=True)
+    try:
+        results = common.search(args.query, limit=args.limit, group_by_document=args.group_by_document,
+                                repos=args.repo, source_types=args.source_type, diverse=True)
+    except common.SearchFilterError as e:
+        # A filter that cannot match is refused by the search itself, for
+        # the same reason as in the MCP tool: "No results." would read as
+        # "nothing about this there". A usage error, hence the status.
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
     if not results:
         print("No results.")
         return 0
@@ -431,7 +458,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Searches the vector store and prints sources + score. Never calls any chat model.",
     )
     p_search.add_argument("query", help="Natural-language query")
-    p_search.add_argument("--limit", type=int, default=5, help="How many results (default: %(default)s)")
+    p_search.add_argument("--limit", type=_at_least_one, default=5, help="How many results (default: %(default)s)")
+    p_search.add_argument("--repo", action="append", metavar="NAME",
+                          help="Only this repository, by its directory name (repeat for several). "
+                               "One with nothing indexed is an error, not an empty result.")
+    p_search.add_argument("--source-type", action="append", metavar="KIND",
+                          help=f"Only this kind of source (repeat for several): {', '.join(SEARCH_SOURCE_TYPES)}")
+    p_search.add_argument("--group-by-document", action="store_true",
+                          help="The best chunk of each document, so --limit counts documents "
+                               "(default: up to three chunks of one document)")
     p_search.set_defaults(func=_cmd_search)
 
     for name, help_text in [
