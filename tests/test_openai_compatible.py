@@ -1,7 +1,7 @@
 """Tests for the generic HTTP adapter `request_style="openai_compatible"`
 (plan, section 9.2) — format `{model, input} -> data[].embedding`, reused
 today by the `openai-small` profile and, in the future, by Voyage/the
-`remote` backend. Same `requests.post` mocking pattern as
+`remote` backend. Same pattern of standing in for `common._http_post` as
 test_gemini_direct.py — no real network calls.
 """
 
@@ -53,7 +53,7 @@ def test_embed_texts_openai_compatible_calls_endpoint_and_records_spend(monkeypa
             "usage": {"total_tokens": 100},
         })
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     vectors = common.embed_texts(["text one", "text two"])
 
     assert vectors == [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
@@ -79,7 +79,7 @@ def test_embed_texts_openai_compatible_respects_data_index_order(monkeypatch):
             "usage": {"total_tokens": 10},
         })
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     vectors = common.embed_texts(["primeiro", "segundo"])
     assert vectors == [[1.0, 1.0, 1.0, 1.0], [9.0, 9.0, 9.0, 9.0]]
 
@@ -91,7 +91,7 @@ def test_embed_texts_openai_compatible_returns_none_list_on_http_error(monkeypat
     def fake_post(url, headers=None, json=None, timeout=None, allow_redirects=True):
         return FakeResponse(500, {})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     result = common.embed_texts(["a", "b", "c"])
     assert result == [None, None, None]
 
@@ -108,7 +108,7 @@ def test_embed_texts_openai_compatible_retries_on_429_then_succeeds(monkeypatch)
             return FakeResponse(429, {})
         return FakeResponse(200, {"data": [{"index": 0, "embedding": [1.0, 1.0, 1.0, 1.0]}], "usage": {"total_tokens": 5}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     result = common.embed_texts(["text"])
     assert result == [[1.0, 1.0, 1.0, 1.0]]
     assert calls["n"] == 3
@@ -140,6 +140,6 @@ def test_embed_texts_openai_compatible_passes_extra_params(monkeypatch):
         captured["json"] = json
         return FakeResponse(200, {"data": [{"index": 0, "embedding": [1.0, 1.0, 1.0, 1.0]}], "usage": {"total_tokens": 5}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     common.embed_texts(["text"])
     assert captured["json"]["input_type"] == "document"

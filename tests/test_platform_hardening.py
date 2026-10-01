@@ -250,7 +250,7 @@ def test_openai_compatible_error_message_never_contains_underlying_text(monkeypa
     def fake_post(url, headers=None, json=None, timeout=None, allow_redirects=True):
         return Poisoned()
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     with pytest.raises(common.DirectAPIUnavailable) as exc:
         common._openai_compatible_post_with_retry("https://api.example.com/v1", {}, {})
     assert "SEGREDO-NA-URL" not in str(exc.value)
@@ -273,6 +273,6 @@ def test_openai_compatible_redirect_is_typed_error_not_json_crash(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None, allow_redirects=True):
         return Redirect()
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     with pytest.raises(common.DirectAPIUnavailable):
         common._openai_compatible_post_with_retry("https://api.example.com/v1", {}, {})

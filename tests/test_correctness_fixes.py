@@ -333,7 +333,7 @@ def openai_profile(monkeypatch):
 
 
 def test_the_reason_reaches_the_search_error_through_the_real_embedding_path(openai_profile, monkeypatch):
-    monkeypatch.setattr(common.requests, "post", lambda *a, **k: _Response(401))
+    monkeypatch.setattr(common, "_http_post", lambda *a, **k: _Response(401))
     with pytest.raises(RuntimeError) as error:
         common.search("anything")
     assert "could not be embedded" in str(error.value) and "401" in str(error.value)
@@ -344,7 +344,7 @@ def test_a_reason_from_an_earlier_failure_is_not_given_for_a_later_one(openai_pr
     the cause of today's failure."""
     common._note_embedding_failure("OLD: 429 rate limit")
     answer = {"data": [], "usage": {"total_tokens": 1}}  # a 200 that carries no vector for the text
-    monkeypatch.setattr(common.requests, "post", lambda *a, **k: _Response(200, answer))
+    monkeypatch.setattr(common, "_http_post", lambda *a, **k: _Response(200, answer))
     with pytest.raises(RuntimeError) as error:
         common.search("anything")
     assert "OLD" not in str(error.value) and "no vector" in str(error.value)
@@ -355,7 +355,7 @@ def test_a_call_that_succeeds_leaves_no_reason_behind(openai_profile, monkeypatc
     that fails says why today; this holds the promise for one that forgets."""
     common._note_embedding_failure("OLD: 429 rate limit")
     answer = {"data": [{"index": 0, "embedding": [0.1, 0.2]}], "usage": {"total_tokens": 1}}
-    monkeypatch.setattr(common.requests, "post", lambda *a, **k: _Response(200, answer))
+    monkeypatch.setattr(common, "_http_post", lambda *a, **k: _Response(200, answer))
     assert common.embed_texts(["anything"]) == [[0.1, 0.2]]
     assert common.last_embedding_failure() is None
 

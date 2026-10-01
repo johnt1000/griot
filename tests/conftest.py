@@ -157,7 +157,7 @@ def _reset_common_globals(monkeypatch, tmp_path):
 def fake_gemini_token(monkeypatch):
     """Fake GEMINI_TOKEN for tests that exercise the direct call path to
     Gemini (embed_texts 'direct' backend, chat_completion) without depending
-    on a real credential in the environment — requests.post is always mocked
+    on a real credential in the environment — common._http_post is always replaced
     in these tests, the network call never actually goes out."""
     monkeypatch.setattr(common, "GEMINI_TOKEN", "fake-token-for-tests")
 
@@ -216,6 +216,27 @@ class GitRepo:
 @pytest.fixture
 def git_repo(tmp_path) -> GitRepo:
     return GitRepo(tmp_path / "repo")
+
+
+# The real factory, for the one test file whose subject is the session itself
+# (tests/test_http_connection_reuse.py, which only reaches 127.0.0.1).
+REAL_NEW_HTTP_SESSION = common._new_http_session
+
+
+@pytest.fixture(autouse=True)
+def _no_test_opens_a_real_http_session(monkeypatch):
+    """The calls to embedding and chat APIs go through common._http_post(),
+    over a session the process keeps. Tests stand in for that function; one
+    that forgets would send a request to a real API, with whatever
+    credential the machine running the suite has. So the session cannot be
+    made here, and none is carried from one test to the next."""
+    def refuse():
+        raise AssertionError("a test tried to open a real HTTP session: stand in for common._http_post")
+
+    common._drop_http_session()
+    monkeypatch.setattr(common, "_new_http_session", refuse)
+    yield
+    common._drop_http_session()
 
 
 @pytest.fixture(autouse=True)

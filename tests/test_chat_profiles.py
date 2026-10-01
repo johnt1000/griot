@@ -61,7 +61,7 @@ def test_chat_completion_openai_compatible_calls_endpoint_and_records_spend(monk
             "usage": {"total_tokens": 100},
         })
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     answer = common.chat_completion("what is the capital of france?")
 
     assert answer == "Paris."
@@ -80,7 +80,7 @@ def test_chat_completion_openai_compatible_model_override(monkeypatch):
         captured["json"] = json
         return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 1}})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     common.chat_completion("question", model="gpt-4o")
 
     assert captured["json"]["model"] == "gpt-4o"
@@ -125,7 +125,7 @@ def test_chat_completion_openai_compatible_raises_runtime_error_on_failure(monke
     def fake_post(url, headers=None, json=None, timeout=None, allow_redirects=True):
         return FakeResponse(500, {})
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(common, "_http_post", fake_post)
     try:
         common.chat_completion("question")
         assert False, "should have raised RuntimeError"
