@@ -207,7 +207,15 @@ def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str 
 
     if path is None:
         return None
+    return repository_path_refusal(path, allow_env_roots=allow_env_roots)
 
+
+def repository_path_refusal(path: str, *, allow_env_roots: bool = True) -> str | None:
+    """Why `path` is not a repository griot may read on an agent's request,
+    or None: the allowlist and the "is a git work tree" check, without the
+    "an indexing run is in progress" ones. For a caller that reads the
+    repository and not the index (griot_golden_set_suggest), which a run
+    elsewhere is no reason to refuse."""
     # resolve() BEFORE any check: symlinks followed, the gate and the
     # subprocess see the same real destination.
     repo_path = Path(path).resolve()
@@ -238,7 +246,9 @@ def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str 
         except (OSError, subprocess.TimeoutExpired):
             is_valid_git_repo = False
     if not is_valid_git_repo:
-        return f"'{path}' invalid: must exist, be a directory, and be a git repository."
+        # Shown, not echoed: the path is the caller's own text, and it ends
+        # up in a tool result and a terminal.
+        return f"'{common.shown(str(path))[:300]}' invalid: must exist, be a directory, and be a git repository."
     return None
 
 

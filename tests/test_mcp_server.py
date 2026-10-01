@@ -1383,6 +1383,7 @@ async def test_list_tools_exposes_the_read_only_tools_by_default():
         "griot_profiles_list",
         "griot_config_list",
         "griot_audit",
+        "griot_golden_set_suggest",
         "griot_index_preview",  # what a run WOULD do: there whether or not indexing is enabled
         # Management surface: state-changing, gated by _confirmed()
         "griot_golden_set_add",
