@@ -265,6 +265,24 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **An annotated tag carries the hash of its commit.** What was stored as
+  `commit_hash` was the hash of the tag object, which names no commit and
+  matches nothing in the commits source. A tag of a tag is followed to the
+  commit at the end.
+- **A long tag message is cut into chunks.** A release note kept in a tag
+  was one document whatever its length: the model read only its start, and
+  an API that refuses an oversized input failed that tag on every run. It
+  is cut the way a commit message is; a tag that fits in one chunk keeps
+  its id. The subject is no longer repeated in the text of a tag that has
+  a body, and a signed tag's signature block is no longer part of it:
+  those tags are embedded again once.
+- **A detail that changed while the text stayed is written.** What decides
+  whether a document is embedded again is its text, so the fields stored
+  beside it were never updated on their own: a pull request merged without
+  a change of wording kept saying `opened`, and a tag corrected by the
+  entry above would have kept the wrong hash. They are now compared and
+  written without embedding anything, and the run reports how many points
+  that was.
 - **`griot golden-set suggest` offers only cases that can pass.** A
   candidate required every file its commit touched that still existed:
   files `griot index code` never reads (an image, a lock file, a file the
