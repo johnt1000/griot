@@ -1594,7 +1594,8 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     terminal (see harnesses.py). "all" (the default) installs into every
     harness detect_harnesses() finds present on this machine; an explicit
     harness id ("claude-code"/"opencode") installs into it directly,
-    without checking whether it's actually present.
+    without checking whether it's actually present. `scope` defaults to
+    "local" here (the CLI defaults to global): the narrower write.
 
     Cheap validation happens BEFORE asking anyone: an invalid `harness` or
     `scope` refuses immediately, with no confirmation spent on an argument

@@ -218,18 +218,20 @@ def test_main_install_default_harness_all_uses_detection(monkeypatch):
     assert install_calls == ["claude-code"]
 
 
-def test_main_install_no_harness_detected_prints_message_and_returns_zero(monkeypatch, capsys):
+def test_main_install_no_harness_detected_is_an_error_that_names_them(monkeypatch, capsys):
+    """It used to print the message and exit with status 0, as if something
+    had been installed."""
     monkeypatch.setattr(harnesses, "detect_harnesses", lambda candidates=None: [])
     calls = []
     monkeypatch.setattr(harnesses, "install", lambda *a, **k: calls.append(a))
 
     rc = harnesses.main(["install"])
 
-    assert rc == 0
+    assert rc == 1
     assert calls == []
-    out = capsys.readouterr().out
-    assert "claude-code" in out
-    assert "opencode" in out
+    err = capsys.readouterr().err
+    assert "claude-code" in err
+    assert "opencode" in err
 
 
 def test_known_harnesses_are_claude_code_and_opencode():

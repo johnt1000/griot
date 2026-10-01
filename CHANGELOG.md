@@ -131,6 +131,28 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Changed
 
+- **BREAKING: `griot assist install` installs for every project by default.**
+  `--scope` now defaults to `global` (the harness's user directory); pass
+  `--scope local` for the current project only. A bare install used to go
+  into whatever directory it was run in, and never offered the instructions
+  block.
+- **The installer asks in the order things depend on each other, and looks
+  before it asks.** The MCP server comes first: the installer asks the
+  harness what is registered under the name griot (`claude mcp get`). A
+  server that runs this griot is left alone, one that runs anything else
+  that is still there is pointed out and left alone, and one whose command
+  no longer exists is offered to be replaced, at the scope being installed
+  only (`--mcp` replaces it without asking). A broken registration at
+  another scope is never removed, only pointed out. The tool rules and the
+  instructions block come after it and are offered only when the server is
+  there: rules for a server that is not registered, and instructions to use
+  tools that do not exist, were worse than nothing. `--no-mcp` still means
+  "I look after the server myself", and the two are offered; they are also
+  offered when the harness's command line is not installed, since then
+  nothing could be looked at. It ends with a
+  summary of what was done, what was left out and what comes next.
+  `--skills-only` copies the files and asks nothing. With no supported
+  harness on the machine the command now exits with status 1.
 - **One document no longer takes every result.** `griot_search`,
   `griot search` and the context `griot ask` builds hold one document to
   three chunks (ungrouped; `group_by_document` still means one), and the

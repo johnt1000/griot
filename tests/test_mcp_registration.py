@@ -24,9 +24,14 @@ class _Run:
     """Stands in for the harness command and records what would have been run."""
 
     def __init__(self, returncode=0, output=""):
-        self.calls, self.returncode, self.output = [], returncode, output
+        self.calls, self.inspected, self.returncode, self.output = [], [], returncode, output
 
     def __call__(self, argv):
+        if list(argv[1:3]) == ["mcp", "get"]:
+            # The installer now looks at what is registered before it asks.
+            # Here nothing is: tests/test_install_flow.py covers the rest.
+            self.inspected.append(list(argv))
+            return type("Done", (), {"returncode": 0, "stdout": 'No MCP server named "griot".', "stderr": ""})()
         self.calls.append(list(argv))
         return type("Done", (), {"returncode": self.returncode, "stdout": self.output, "stderr": ""})()
 
