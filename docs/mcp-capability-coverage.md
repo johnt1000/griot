@@ -282,6 +282,7 @@ out on purpose, because every one written here went stale.
 | Register a repo | `repos add` | `griot_repos_add` | **human only** |
 | Unregister a repo | `repos remove` | `griot_repos_remove` | dialog, or `confirm` where nobody can be asked |
 | Delete a profile | `profiles delete` | `griot_profiles_delete` | **human only** |
+| Candidate cases from a git log | `golden-set suggest` *(asks about each and writes the approved ones)* | `griot_golden_set_suggest` *(returns the candidates and writes nothing; a bounded stretch of the log; asked about each time)* | — |
 | Curate a case | `golden-set add` | `griot_golden_set_add` | dialog, or `confirm` where nobody can be asked |
 | Remove a case | `golden-set remove` | `griot_golden_set_remove` | dialog, or `confirm` where nobody can be asked |
 | Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | dialog, or `confirm` where nobody can be asked |
@@ -299,7 +300,6 @@ out on purpose, because every one written here went stale.
 | `auth set`, `auth remove` | A secret does not travel through a chat channel. `griot_auth_guidance` answers with the command to run instead. |
 | `auth migrate` | It moves secrets between stores: same reason as `auth set`. |
 | `auth list` | Even a masked value lets someone confirm a stolen key is the right one, and gives an agent nothing beyond the `configured` boolean it already has. |
-| `golden-set suggest` | Interactive by nature — it walks the git log asking for case-by-case approval. |
 | `mcp` | It is the command that starts this server. |
 | `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |

@@ -10,6 +10,14 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot_golden_set_suggest` gives an agent candidate cases from a git
+  log.** What `griot golden-set suggest` offers at a terminal: a commit's
+  message as the question and the files it touched as what must come
+  back, for one registered repository, over a bounded stretch of its log.
+  It writes nothing: each candidate carries what `griot_golden_set_add`
+  takes, and a person confirms it there. It says how many commits it left
+  out and why, and whether the repository has anything indexed. Read-only,
+  and asked about each time.
 - **`griot_audit` tells an agent where the index holds credential-looking
   values.** The same places `griot audit` lists at a terminal, with the
   rule that matched and a count per repository, and never the values. One

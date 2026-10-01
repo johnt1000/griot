@@ -25,13 +25,6 @@ what "done for a public release" still means.
 
 ## Next
 
-- **Close the gap between the CLI and the MCP tools where it is only
-  reading.** Done: the dry run of an index (`griot_index_preview`), the
-  curated golden set through `griot_quality_check`, the settings a server
-  runs with (`griot_config_list`) and the audit of credential-looking
-  values (`griot_audit`). Still to do: candidates for the golden set from
-  the git log, without writing. What stays CLI-only, and why, is in
-  [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md).
 - **Reported by a code analysis, not fixed yet.** Each still needs a test
   that reproduces it before it is touched: tag indexing does not chunk a long
   tag message and takes the wrong hash for an annotated tag; releasing the collection after the idle window
