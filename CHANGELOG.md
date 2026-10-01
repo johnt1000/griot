@@ -411,6 +411,16 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **The directory that holds griot's data is closed to other users.** The
+  index, the logs and the configuration were each written 0600 inside 0700
+  directories, but `<data>/griot` itself was made on the way to `logs/` by
+  whichever command ran first, with the permissions of the day (0755), and
+  only an index run closed it afterwards. The model cache was open too.
+  Every directory griot itself makes is now 0700, the ones made on the
+  way included, and griot closes its own data and configuration
+  directories again when it finds them open, as an earlier version left
+  them. (What the embedding library makes inside the model cache keeps the
+  library's modes, under a closed directory.)
 - **A paid call whose answer reports no tokens is still counted.** The
   cost of a call was the token count the provider reported times the
   price. An answer without one (the field missing, null or zero) cost

@@ -63,8 +63,23 @@ _logger.setLevel(logging.INFO)
 # permission (an old install inherits the fix on its first write).
 
 def secure_mkdir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+    """`path` for its owner alone, and so is every directory made on the
+    way to it (see logdb.private_mkdir)."""
+    logdb.private_mkdir(path)
+
+
+def keep_own_directories_private() -> None:
+    """Closes griot's own two directories when they are there and open to
+    others. An earlier version left `<data>/griot` readable by every user of
+    the machine (it was made on the way to `logs/`, with the permissions of
+    the day), and what is inside is a readable copy of everything indexed.
+    A repair: a file system that refuses the change does not stop griot."""
+    for directory in (CONFIG_DIR, DATA_DIR):
+        try:
+            if directory.is_dir() and stat.S_IMODE(directory.stat().st_mode) & 0o077:
+                os.chmod(directory, 0o700)
+        except OSError:
+            pass
 
 
 def secure_append_line(path: Path, line: str) -> None:
@@ -549,6 +564,7 @@ def _check_env_file_permissions(env_path: Path) -> None:
 # GITLAB_PERSONAL_ACCESS_TOKEN) already come from the shell (~/.bashrc /
 # ~/.zshrc).
 _check_env_file_permissions(ENV_PATH)
+keep_own_directories_private()
 # What the environment itself said, before the file is read into it. A
 # process that outlives edits to the file (the MCP server) has no other way
 # to tell a variable that was exported from one the file gave it at start.
@@ -1427,6 +1443,9 @@ def get_embed_model():
         # Placing it inside DATA_DIR keeps the cache alongside the rest of
         # griot's data (qdrant_data/, logs/), persistent and under the
         # same user control.
+        # Made here, closed, before the library makes it with the
+        # permissions of the day.
+        secure_mkdir(DATA_DIR / "models")
         _embed_model = _text_embedding_class()(
             model_name=ACTIVE_PROFILE["model"], threads=6,
             cache_dir=str(DATA_DIR / "models"),
@@ -1542,7 +1561,7 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
             if (path / _EDGE_CONFIG_MARKER).exists():
                 opened = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
             else:
-                path.mkdir(parents=True, exist_ok=True)
+                secure_mkdir(path)  # and whatever is made on the way to it
                 cfg = qe.EdgeConfig(
                     vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
                 )

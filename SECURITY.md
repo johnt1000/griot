@@ -26,7 +26,7 @@ The spend circuit breaker (daily + 5-minute velocity ceilings) bounds how much p
 
 Protections applied:
 
-- Every file griot writes is mode `0600`; every directory `0700`. Pre-existing files are repaired to `0600` on the next write.
+- Every file griot writes is mode `0600`; every directory `0700`. Pre-existing files are repaired to `0600` on the next write. That goes for every directory griot itself makes, the ones made on the way to another included (`<data>/griot`, the model cache); what the embedding library makes inside the model cache keeps the library's modes, under a closed directory. griot also closes `<config>/griot` and `<data>/griot` again when it finds them open, taking a directory of that name to be its own. The directory you point it at (`~/.config`, `~/.local/share`) is yours and is left as it is.
 - API keys are sent in headers only — never in URLs — and error/log messages never interpolate provider exception text that could contain them.
 - Credentialed HTTP requests never follow redirects, and server-provided pagination URLs are refused if they point to a different host.
 - `GRIOT_LOG_QUESTIONS=false` keeps question text out of the persistent query log.

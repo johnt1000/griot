@@ -200,6 +200,34 @@ def _ensure_tool_calls_project_column(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def private_mkdir(path: Path) -> None:
+    """Makes `path`, and whatever is missing on the way to it, for its owner
+    alone (0700). A directory that was already there on the way keeps its
+    mode: it is not this code's to close.
+
+    `mkdir(parents=True)` gives the directories it makes on the way the
+    permissions of the day, so `<data>/griot`, made on the way to `logs/` by
+    whichever command ran first, was readable by every user of the machine
+    while everything inside it was closed. What protects a file is every
+    directory on the way to it."""
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            continue  # another process made it meanwhile: its own to close
+        os.chmod(directory, 0o700)  # mkdir's mode goes through the umask
+    if not path.is_dir():
+        # A file in the way. mkdir(exist_ok=True) refused it; changing its
+        # mode instead would make it executable and fail somewhere else.
+        raise NotADirectoryError(f"{path} exists and is not a directory")
+    os.chmod(path, 0o700)
+
+
 def _connect(log_dir: Path) -> sqlite3.Connection:
     # [real bug, found via a subprocess integration test] read paths
     # (get_index_status(), stats.load_window()) never call secure_mkdir()
@@ -207,8 +235,7 @@ def _connect(log_dir: Path) -> sqlite3.Connection:
     # `if path.is_file(): ...`, silently doing nothing on a fresh install.
     # sqlite3.connect() has no such tolerance: it raises if the parent
     # directory doesn't exist yet, so this must ensure it here instead.
-    log_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(log_dir, 0o700)
+    private_mkdir(log_dir)
     db_path = log_dir / DB_FILENAME
     # [review finding] sqlite3.connect() creates the physical file itself,
     # under the process umask, before any table exists — chmod()ing
