@@ -21,16 +21,20 @@ time any griot tool that reads it is called (`griot_search`,
   on the next call.
 - `GRIOT_MCP_CONCURRENCY_MODE=single`: for the server's whole life.
 
-The mode comes from the `env` of the project's `.mcp.json` `griot` entry,
-else from `<config>/.env`. Absent means `multi`. An older `.env` (generated
-before `multi` became the default) can carry an active
-`GRIOT_MCP_CONCURRENCY_MODE=single` line that pins the old behavior. Check
-only that setting, and never print the whole `.env`, which holds credentials:
+The mode comes from griot's own configuration (`<config>/.env`), unless the
+server was registered with an `env` of its own, which wins. Absent means
+`multi`. An older `.env` (generated before `multi` became the default) can
+carry an active `GRIOT_MCP_CONCURRENCY_MODE=single` line that pins the old
+behavior. Check only that setting, and never print the whole `.env`, which
+holds credentials:
 
 ```bash
-griot config get mcp-concurrency          # what griot's own configuration says
-grep GRIOT_MCP_CONCURRENCY_MODE .mcp.json  # what this project's server entry overrides, if anything
+griot config get mcp-concurrency   # what griot's own configuration says
+claude mcp get griot               # how the server is registered, and any env of its own
 ```
+
+A server registered by `griot assist install` has no `env`; a project that
+defines its own `griot` entry in `.mcp.json` may have one.
 
 So a `griot index ...` run through the shell **collides with your own MCP
 server**: until the idle window has passed in `multi` mode, until the
@@ -47,8 +51,8 @@ to do. Read it before doing anything else. The engine's raw error
 and in `griot.log`.
 
 `griot index ... --dry-run` collides the same way: it reads the collection
-to compare content hashes. A server in *another* session — another project
-whose `.mcp.json` uses the same `GRIOT_EMBED_PROFILE` — holds it the same way.
+to compare content hashes. A server in *another* session, in any project, on the same embedding
+profile holds it the same way.
 
 ## Step 1 — pick the indexing path
 
@@ -65,23 +69,26 @@ Whenever you take Path B with a griot MCP server attached, call no griot MCP
 tool until the run finishes. A tool call would reopen the collection and
 break the run.
 
-The fixes are the user's decision; offer them, don't make them. They go in
-the `env` of the project's `.mcp.json` `griot` entry, followed by a session
-restart so the server picks up the new environment:
+The fixes are the user's decision; offer them, don't make them. Each is a
+command the user runs in a terminal, followed by a session restart so the
+server starts with the new setting:
 
-```json
-"env": { "GRIOT_EMBED_PROFILE": "<profile>", "GRIOT_MCP_ENABLE_INDEX": "true" }
-```
+- `griot config set mcp-index true` enables `griot_index_repo` (Path A). It
+  asks for confirmation at an interactive terminal and has no flag that
+  answers, so it is the user's step. Indexing through MCP is off by default
+  because on a paid profile it spends money; enabled, it still only indexes
+  paths registered with `griot repos add` (or under `mcp-index-roots`), and
+  asks the user to confirm each run.
+- If the mode is `single`: `griot config unset mcp-concurrency` (the
+  default is `multi`). `multi` lets an idle server release the collection,
+  so Path B and other sessions on the same profile work after the idle
+  window. The cost is a short reopen on the first tool call after an idle
+  stretch.
 
-- `GRIOT_MCP_ENABLE_INDEX=true` enables `griot_index_repo` (Path A). It is
-  off by default because on a paid profile it spends money. It still only
-  indexes paths registered with `griot repos add` (or under
-  `GRIOT_MCP_INDEX_ROOTS`), and asks the user to confirm each run.
-- If either shows `single`: `griot config unset mcp-concurrency` (the
-  default is `multi`), and if the `.mcp.json` entry sets it, change it there
-  too (the server's own `env` takes precedence over `.env`). `multi` lets an idle server release the collection, so
-  Path B and other sessions on the same profile work after the idle window.
-  The cost is a short reopen on the first tool call after an idle stretch.
+Only when the project defines its own `griot` server with an `env` block do
+those settings have to change there instead: a variable in the server's own
+`env` wins over griot's configuration. Do not put `GRIOT_EMBED_PROFILE`
+there: it would silently override `griot profiles use`.
 
 ## Step 2 — before spending anything
 

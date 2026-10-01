@@ -13,7 +13,7 @@ Data leaves your machine when **you** configure it to, plus that one download:
 | Action | What is sent | To |
 |---|---|---|
 | first run of a local embedding profile | nothing of yours — the model is downloaded | huggingface.co |
-| indexing with a paid embedding profile | chunked content of code, commit messages, tags, branches, PRs/issues | OpenAI or Google, per your profile |
+| indexing with a paid embedding profile | chunked content of code, commit messages, tags, branches, PRs/issues and releases, with credential-looking values replaced first | OpenAI or Google, per your profile |
 | `griot search` / `griot_search` with a paid profile | the query text | same provider |
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
@@ -30,7 +30,7 @@ Protections applied:
 - API keys are sent in headers only — never in URLs — and error/log messages never interpolate provider exception text that could contain them.
 - Credentialed HTTP requests never follow redirects, and server-provided pagination URLs are refused if they point to a different host.
 - `GRIOT_LOG_QUESTIONS=false` keeps question text out of the persistent query log.
-- Each logged search and tool call also carries the **name** of the project it came from: the folder griot ran in (never its path), or exactly what you set in `GRIOT_PROJECT`. The home directory is not recorded as a project, and the name is stripped of control characters and cut at 100 characters. It is stored locally in `logs.db` and is never sent anywhere.
+- Each logged search and tool call also carries the **name** of the project it came from: the folder `CLAUDE_PROJECT_DIR` names or else the one griot ran in (never its path), or exactly what you set in `GRIOT_PROJECT`. The home directory is not recorded as a project, and the name is stripped of control characters and cut at 100 characters. It is stored locally in `logs.db` and is never sent anywhere.
 
 ## Encryption at rest — deliberate position
 
@@ -68,7 +68,7 @@ This does not decide whether a value is real, and it is built for precision: it 
 - **`griot assist install` writes only where it says.** The destination is a directory griot does not own (a project's `.claude/`, or yours). A destination file that is a symbolic link is refused, and in local scope so is a directory that leads out of the project; everything is checked before the first file is written, and `griot_assist_install` refuses before asking. In global scope the directories may be links (a `~/.claude` kept in a dotfiles checkout); only the skill and agent files may not. A file is written beside its destination and moved over it, so an existing file that shares its content with another name (a hard link) is replaced rather than written into. The global instructions file is the exception to all of this: it is yours, it is edited in place through a link if it is one, and only after you answer at a terminal (see the point above). The check and the write are two steps: it protects against what a repository ships, not against a process that swaps a directory for a link while the install runs.
 - **The spend ceilings must be numbers.** `GRIOT_SPEND_CEILING_USD`, `GRIOT_SPEND_VELOCITY_CEILING_USD` and the chat price variables are refused at start unless finite and zero or more. They are still read from the environment and from `<config>/.env`: whoever can set those can raise a ceiling, so the breaker bounds accidents, not someone who controls the configuration. `griot config set` asks at an interactive terminal, with no flag that answers, before it raises a ceiling, turns on indexing through MCP, adds a directory an agent may index, or points a platform token at another host; like the other CLI confirmations that is a guard against the easy path for an agent with a shell, not a boundary. No MCP tool changes a setting.
 - `griot_search` results carry an explicit note that retrieved content is **data, not instructions**. This is a mitigation, not a guarantee: content you indexed (commit messages, issues) is untrusted input to whatever agent reads it. Treat search output accordingly in your agent design.
-- Enabling `GRIOT_MCP_ENABLE_INDEX` in a committed config file means every clone of that project gets the tool enabled — prefer setting it outside version control.
+- Enabling `GRIOT_MCP_ENABLE_INDEX` in a committed config file means every clone of that project gets the tool enabled — prefer setting it outside version control: `griot config set mcp-index true` writes it to `<config>/.env`, and asks at a terminal first.
 
 ## Automated checks
 

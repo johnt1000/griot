@@ -60,17 +60,19 @@ griot is, and are recorded below so nobody re-derives the reasoning.
 
 ## Used today
 
-**Tools** (`@mcp.tool`) — fifteen by default, sixteen with indexing enabled, in two groups.
+**Tools** (`@mcp.tool`), in two groups. The server's `list_tools()` is the
+inventory, and the table under "CLI and MCP, side by side" maps each tool to
+its command; a list kept here in prose went stale more than once.
 
-*Read-only* (nine): `griot_search`, `griot_spend_status`,
-`griot_index_status`, `griot_quality_check`, `griot_repos_list`,
-`griot_profiles_list`, `griot_golden_set_list`, `griot_stats`,
-`griot_auth_guidance`.
+*Read-only*: search, index and spend status, the usage report, the lists of
+repositories, profiles and curated cases, which credentials are configured,
+and the self-check. Each carries `readOnlyHint`, which is also what the
+installer reads to decide which tools it may offer to pre-approve.
 
-*State-changing, behind `_confirmed()`* (seven): `griot_repos_add`,
-`griot_repos_remove`, `griot_profiles_delete`, `griot_golden_set_add`,
-`griot_golden_set_remove`, `griot_assist_install`, and `griot_index_repo`
-(registered only when `GRIOT_MCP_ENABLE_INDEX` is set).
+*State-changing, behind `_confirmed()`*: registering and removing a
+repository, deleting a profile, curating the golden set, installing the
+skills, and `griot_index_repo`, registered only when `GRIOT_MCP_ENABLE_INDEX`
+is set.
 
 All return `TypedDict`s so the SDK generates a real `output_schema` and
 clients receive `structured_content`.
@@ -85,7 +87,7 @@ a judgement or a strategy that is not in any tool's output.
 
 | Slash command | Carries |
 |---|---|
-| `/mcp__griot__stats` | How to read the usage report: trust `recent_reuse_rate` over `reuse_rate` when they disagree (a window spanning a fix averages two eras and describes neither), read a falling quality trend as an index regression, put spend against the ceiling, say so when the window is too thin to conclude anything. |
+| `/mcp__griot__stats` | How to read the usage report: start from what does not depend on the window (`attention`, how long ago the index was last written and searched, whether the last quality check is older than the index, the golden set's last result), then trust `recent_reuse_rate` over `reuse_rate` when they disagree (a window spanning a fix averages two eras and describes neither), read a falling quality trend as an index regression, put spend against the ceiling, say so when the window is too thin to conclude anything. |
 | `/mcp__griot__history` | A multi-source search strategy. griot indexes seven source types and "why is this like this" is rarely answered by one: code says what, the commit says when, the merge request says who argued, the issue says what problem started it. Left alone an agent searches once and stops. |
 | `/mcp__griot__health` | The distinction between the two checks — the self-check is mechanical (indexed points retrieve themselves; proves the pipeline, not usefulness), the golden set is curated (real questions). Either can pass while the other fails, and the failures mean opposite things. Also warns that the check bills on a paid profile. |
 | `/mcp__griot__overview` | Orientation, plus reading `exists`/`is_git` as the warnings they are — a registered path that is gone still lists, and indexing it fails or quietly indexes nothing. |
@@ -136,7 +138,7 @@ as an *accepted* outcome, and "nobody can be asked" is returned by the
 resolver, so it reaches the tool looking like a yes. `_confirmed()` therefore
 authorizes only an accept whose data is a `_Ask`, never merely an accept.
 
-Two consequences that shape any design here:
+Three consequences that shape any design here:
 
 1. **Branch on declared capability, not on client identity.**
    `ctx.client_capabilities.elicitation` is `None` when unsupported and an
@@ -251,16 +253,18 @@ already surface as `isError` with an actionable message.
 - **HTTP/SSE transports and custom routes** — griot is local and
   single-user; stdio is the right transport, and anything network-facing
   would reopen the threat-model questions settled in [lessons and debts](lessons-and-debts.md).
-- **Argument completion** — the arguments are few and simple (`days`,
-  `limit`, `collection`). Autocomplete would add protocol surface for no
-  real ergonomic gain.
+- **Argument completion** — most arguments are few and simple (`days`,
+  `limit`, `collection`). The two that take names, `repos` and
+  `source_types` of `griot_search`, are the natural candidates: the kinds are
+  seven fixed values listed in the description, and a repository name that
+  matches nothing is an error that says so. Completion would save that round
+  trip, at the cost of protocol surface few clients use. Still marginal.
 
 ## CLI and MCP, side by side
 
-Verified 2026-08-22 by reading the CLI's subparsers and calling
-`list_tools()` on a live server; updated 2026-09-02 when `assist install`
-landed on both sides. **24 CLI operations, 15 tools (16 with indexing
-enabled) and 4 prompts; 18 of the 24 have an equivalent.**
+Verified by reading the CLI's subparsers and calling `list_tools()` on a
+live server; last on 2026-10-01. The table is the mapping; counts are left
+out on purpose, because every one written here went stale.
 
 | Operation | CLI | MCP | Confirmation |
 |---|---|---|---|
@@ -281,6 +285,8 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 | Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | dialog, or `confirm` where nobody can be asked |
 | Install Claude Code/opencode skills+agent | `assist install` | `griot_assist_install` | **human only** |
 | Add griot's block to the GLOBAL instructions file (`~/.claude/CLAUDE.md`, or under `CLAUDE_CONFIG_DIR`) | `assist install --scope global` (asks; needs a terminal) | none, by design | CLI only |
+| Register griot's MCP server with the harness | `assist install` (asks; `--mcp` answers) | none, by design | CLI only |
+| Let the harness call the read-only tools without asking | `assist install` (asks; no flag answers) | none, by design | CLI only |
 
 ### CLI only — and why each one stays there
 
@@ -288,17 +294,25 @@ enabled) and 4 prompts; 18 of the 24 have an equivalent.**
 |---|---|
 | `ask` | Whoever calls an MCP tool already has an LLM. It needs retrieval, not a second synthesis it pays for. |
 | `auth set`, `auth remove` | A secret does not travel through a chat channel. `griot_auth_guidance` answers with the command to run instead. |
+| `auth migrate` | It moves secrets between stores: same reason as `auth set`. |
 | `auth list` | Even a masked value lets someone confirm a stolen key is the right one, and gives an agent nothing beyond the `configured` boolean it already has. |
 | `golden-set suggest` | Interactive by nature — it walks the git log asking for case-by-case approval. |
 | `mcp` | It is the command that starts this server. |
+| `config list`, `config get` | Nothing against it: a read-only view of the settings in force is planned (see the roadmap). |
+| `audit` | Nothing against it either: it lists locations, never values. Planned as a read-only tool. |
+| `index --dry-run` | Planned as a read-only preview, so that an agent can say what a reindex would do before anyone decides. |
 | `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |
 
-Two tools expose less than their CLI counterpart, and both differences
+Three tools expose less than their CLI counterpart, and the differences
 matter enough to state:
 
-- `griot_index_repo`: no `--dry-run`, no `--repo`, no `--profile`, and one
-  `path` per call rather than "every registered repo".
+- `griot_index_repo`: no `--dry-run`, no `--repo`, no `--profile`, no
+  `--prune`, and one `path` per call rather than "every registered repo".
+- `griot_assist_install`: copies the skills and the agent, and nothing else.
+  Registering the server, the instructions block and the pre-approval of
+  tools are the three steps of the installer that decide what an agent may
+  do, so each is a question at a terminal.
 - `griot_quality_check`: runs the **self-check only**. Nothing over MCP
   executes the curated golden set — `griot_golden_set_list` returns the
   cases, never a result of running them. An agent can replay a case by
@@ -313,7 +327,8 @@ split out because an agent usually wants one of them. `griot_auth_guidance`
 has no CLI counterpart at all — it exists to say "not through here" and
 name the command that does work.
 
-The gap, then, is not coverage. It is five deliberate choices.
+The gap, then, is not coverage. It is a set of deliberate choices, each
+listed above, and three read-only views that are planned.
 
 ## The management surface
 

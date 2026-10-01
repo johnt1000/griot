@@ -140,5 +140,5 @@ checked, or was checked before the index last changed; the golden set shows
 its size, the result and age of its last run, and cases that expect a
 repository that is not in `repos.json` (unless it was indexed with `--path`
 they can only fail: `griot quality-check` checks the index and says so case
-by case). If you're an agent, `griot_stats` (or the `stats`/`history`
-prompts above) gives you the same data without shelling out.
+by case). If you're an agent, `griot_stats` (or the `stats` prompt above)
+gives you the same data without shelling out.

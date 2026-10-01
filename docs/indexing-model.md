@@ -34,7 +34,10 @@ is skipped before it reaches the embedding model — a second run over
 unchanged repositories embeds nothing and costs nothing.
 
 The `repo` component is the repository's directory name, which is what makes
-the same file path in two different repositories two different points.
+the same file path in two different repositories two different points. For a
+`--path` run the id key is the name followed by a short hash of the path, so
+that two directories of the same name indexed that way do not share ids; the
+`repo` stored with the point is still the directory name.
 
 ### Why this is worth stating
 
@@ -48,13 +51,14 @@ source type, the natural key is the part to get right first.
 
 ## Payload schema
 
-Every point carries `source_type` and `content` (the indexed text), plus
-fields specific to its kind:
+Every point carries `source_type`, `content` (the indexed text) and
+`content_hash` (what decides whether it is embedded again), plus fields
+specific to its kind:
 
 | `source_type` | Additional fields |
 |---|---|
 | `code` | `repo`, `file_path`, `chunk_index` |
-| `commit` | `repo`, `commit_hash`, `author`, `date` |
+| `commit` | `repo`, `commit_hash`, `author`, `date`, `chunk_index` |
 | `tag` | `repo`, `tag_name`, `commit_hash`, `date` |
 | `branch` | `repo`, `branch_name`, `last_commit_hash`, `last_commit_date` |
 | `merge_request` | `repo`, `mr_iid`, `state`, `author`, `created_at`, `source_branch`, `target_branch`, `chunk_index` |
@@ -72,6 +76,11 @@ worth branching on: the same question is answered differently by code (what
 the implementation does now), a commit (when it changed), a merge request
 (what was argued before it was accepted) and an issue (what problem started
 it).
+
+Each result also carries `metadata`: the fields of the table above, except
+`content`, `content_hash`, `repo` and `source_type`, which are beside it or
+not for a reader. That is what to act on (open that file, show that commit,
+say when). `also_in` is added when the same thing was found in another place.
 
 `griot_search` takes `source_types` (and `repos`) to narrow a search to
 some kinds of source: commits and pull requests when the question is why
@@ -114,7 +123,8 @@ the one its own payload produces under the repository's key
 (`_point_ids_written_under`); anything else is left alone.
 
 Removal is skipped for a `--path` run, for a repository that is not registered
-or whose directory name another registered repository shares, when nothing was
+or whose directory name another registered repository shares, for a directory
+registered twice (by a symlink and by its real path), when nothing was
 read for that source, when a file could not be read (`code`), when a document
 failed, when the index lock is taken, and when more than half of the
 repository's points (above 100) would go, unless `--prune`. The run prints why.

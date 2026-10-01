@@ -10,16 +10,41 @@ what "done for a public release" still means.
 
 - **End-to-end MCP validation in a real project.** An agent calling
   `griot_search` against a real index, with the logs and `griot stats` output
-  read afterwards to decide what to improve. Partly underway: the
-  instrumentation that makes it measurable (per-tool call counts, query
-  surface, top-score distribution) is in place and recording. Real use has
-  already paid for itself: it showed that an attached MCP server kept the
-  collection open for its whole life, so indexing from the same session
-  failed. That is fixed (see the changelog) and the default concurrency mode
-  changed with it. What remains is reading a longer stretch of use to decide
-  about the two protocol gaps below.
+  read afterwards to decide what to improve. A first stretch of about six
+  weeks of real use has been read, and it changed the priorities: the main
+  problem was not retrieval but that agents with the server attached mostly
+  did not search. What followed is in the changelog: the server now tells
+  the agent when to use it, the installer registers it for every project and
+  offers to pre-approve the read-only tools, search can be narrowed and its
+  results say where, when and who, and `griot stats` reports the state of
+  the index instead of only activity in a window. What remains is reading a
+  second stretch of use, after those changes, to see whether agents search
+  on their own now and to decide about the two protocol gaps below.
 - **PyPI publication** — so that `pipx install griot` is the install
   instruction rather than a clone.
+
+## Next
+
+- **Close the gap between the CLI and the MCP tools where it is only
+  reading.** In order: a dry run of an index (how much would be embedded and
+  removed, at no cost) so that an agent can say what a reindex would do
+  before anyone decides; running the curated golden set through
+  `griot_quality_check`, not only the self-check; a read-only view of the
+  settings in force; choosing the sources of an index run; the audit of
+  credential-looking values; and candidates for the golden set from the git
+  log, without writing. What stays CLI-only, and why, is in
+  [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md).
+- **Reported by a code analysis, not fixed yet.** Each still needs a test
+  that reproduces it before it is touched: tag indexing does not chunk a long
+  tag message and takes the wrong hash for an annotated tag;
+  `griot golden-set suggest` can write cases that cannot pass and does not
+  write the file atomically; releasing the collection after the idle window
+  can race with a call that is opening it; a control character in a commit
+  message can stop the commits source.
+- **Cheap indexing speed-ups that were measured or spotted and not done:**
+  two git subprocesses per branch in the branches source, one embedding
+  batch size for every profile, and a new HTTP connection per embedding
+  call.
 
 ## Considered, not scheduled
 
@@ -31,11 +56,16 @@ what "done for a public release" still means.
 - **Platform adapters built ahead of confirmed demand.** Four of the five (GitLab self-hosted, Bitbucket Cloud, Azure DevOps, Gitea/Forgejo) have only ever been exercised against mocked HTTP — only GitHub has run against a real account. Kept rather than trimmed because each is small, behind one common interface, and covered by tests, unlike the removed dashboard's cost profile (see [lessons and debts](docs/lessons-and-debts.md#measure-before-deciding-whether-a-component-earns-its-place)). If one goes unused after the PyPI release, removing it is a one-file deletion, not a design change — but "built ahead of demand" is worth naming rather than leaving implicit.
 - **More CI steps.** The pipeline runs tests (3.10 and 3.13), a gitleaks scan over full history, and a build that installs the wheel in a clean environment. Deliberately not added yet: a linter (the codebase has no style CI and adding one now would produce a large mechanical diff over code that is being actively changed), `pip-audit` (worth it once there is a release to protect, and it fails on advisories in transitive dependencies nobody here can fix), and coverage reporting (a number that invites optimising the number). Each is a one-job addition when the reason for it becomes concrete.
 
-- **Broaden MCP protocol coverage** — griot uses 3 of the ~10 capabilities the protocol offers (tools, prompts — four of them — and elicitation). Two of the absences are genuine gaps worth revisiting: **resources** (the read-only tools that are really just data — repos, stats, collections — could be URI-addressed and client-cacheable) and **progress** (`griot_index_repo` returns immediately and leaves the agent polling; reporting progress is blocked on indexing running in a subprocess, which is a design change rather than a decorator). The rest are correctly absent. The management surface itself is now settled and implemented (fifteen tools, sixteen with indexing enabled, four prompts, a confirmation policy, and secrets deliberately excluded). Full mapping, with what implementing each would mean concretely: [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md). Not scheduled because both gaps reshape functionality that has never met a real agent — the end-to-end validation above produces the evidence that decides, and `tool_calls` now records it.
+- **Broaden MCP protocol coverage** — griot uses 3 of the ~10 capabilities the protocol offers (tools, prompts — four of them — and elicitation). Two of the absences are genuine gaps worth revisiting: **resources** (the read-only tools that are really just data — repos, stats, collections — could be URI-addressed and client-cacheable) and **progress** (`griot_index_repo` returns immediately and leaves the agent polling; reporting progress is blocked on indexing running in a subprocess, which is a design change rather than a decorator). The rest are correctly absent. The management surface itself is settled and implemented (the server's own `list_tools()` and `list_prompts()` are the inventory; a confirmation policy; secrets and settings deliberately excluded). Full mapping, with what implementing each would mean concretely: [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md). Not scheduled because both gaps reshape functionality that has never met a real agent — the end-to-end validation above produces the evidence that decides, and `tool_calls` now records it.
 
 - **Retention for logs.db.** Only `spend_events` is pruned (it has to be — it backs a 5-minute window). `runs`, `queries`, `quality_checks` and `tool_calls` grow forever. Small today (about 210 KB and a few hundred rows after roughly a month of daily use), but `tool_calls` records one row per MCP tool invocation, so an active agent session is the first thing that will grow it at a real rate. Wait for actual growth rather than guessing a policy: whether the right answer is a row cap, a day window, or nothing at all depends on how the MCP path actually gets used.
 - **Curated test cases from real queries.** `griot golden-set suggest` derives cases from git history only. The queries and MCP tool calls griot already logs could suggest cases from actual use instead, so quality tracking grows with how the tool is really used. The constraint is the one behind the rejected hash mirror below: the index must stay a derived, reproducible copy of the repositories, so this would feed the golden set, where a human already approves every case, and never write into the index. Open questions, none decided: what makes a query a good candidate (any query, only those the agent actually used in its answer, a score threshold) and what the command should look like. Not designed.
-- **SQLite FTS5 alongside vector search.** Embeddings are weak at exact identifiers — a function name, an error code, a commit hash — which is precisely what full-text search is good at. A real capability rather than a storage change, and it would complement retrieval instead of replacing it. Large, though: it duplicates the indexed corpus on disk, and search quality would then depend on merging two rankings.
+- **Keyword search alongside vector search.** Embeddings are weak at exact identifiers — a function name, an error code, a commit hash — which is precisely what full-text search is good at. A real capability rather than a storage change, and it would complement retrieval instead of replacing it. Two routes: SQLite FTS5, which duplicates the indexed corpus on disk and leaves two rankings to merge; or the vector store's own sparse (BM25) vectors, which a five-point prototype showed can be added to existing points without embedding them again. The second is the smaller change and the one to try first. Not scheduled because nothing measured yet says how often an exact identifier is what a search was after.
+- **The file path in the embedded text: measured, not adopted.** Prefixing each code chunk with `repo/path` before embedding is a known way to help queries that name a file. Measured on this repository (1,150 chunks, 35 queries with a known target file): with a small general model the mean reciprocal rank went from 0.49 to 0.59; with the default code model it went from 0.67 to 0.69 overall, up for queries that name the file (0.71 to 0.79) and down for queries about content only (0.63 to 0.57). Within noise on the default model, and the price is embedding every code chunk of every user again. Worth measuring again with a curated golden set on a paid profile before reopening.
+- **Freshness per repository.** `griot stats` says when the index was last written, for the whole collection. Which repository is behind its own HEAD is a different question, and the one an agent actually has before trusting a result.
+- **`griot doctor`.** One command that checks what the scattered error messages check one at a time: settings that parse, credentials for the active profiles, the collection opens, the MCP server is registered and its tools allowed, the hooks are installed.
+- **Filters on `griot ask`.** `griot search` and `griot_search` can be narrowed to repositories and kinds of source; `ask` still searches everything.
+- **The installer and opencode's configuration directory.** Claude Code's user directory follows `CLAUDE_CONFIG_DIR`. opencode's is assumed to be `~/.config/opencode`; whether it honours `XDG_CONFIG_HOME` or a variable of its own was not checked.
 - **Rejected: mirroring content hashes into SQLite.** Tempting, because `_split_pending()` does a Qdrant round-trip per batch to compare hashes, and a local table would be faster and would work even while another process holds the collection. Rejected because it creates a SECOND source of truth about the same fact: if the two diverge — a failed write, or a bulk cleanup of stale points — the mirror would report "unchanged" for a point that no longer exists. That is exactly the failure class this project has already been bitten by: an id-scheme mismatch that silently duplicated an index while every run reported success. Asking the store that actually holds the data is self-consistent by construction, and this is not a bottleneck anyway (a full reindex is dominated by embedding, not by the local read). A mirror used as an AUDIT reference is a different proposition — divergence would be the signal rather than a silent lie — but that is not this.
 
 - **Ship as a Claude Code plugin** (`/griot:stats` instead of `/mcp__griot__stats`). A plugin is a thin packaging shell — `.claude-plugin/plugin.json` naming the plugin and listing `commands/*.md`, plus a `.mcp.json` pointing at the `griot mcp` server that already exists — where the plugin name becomes the command namespace. Verified against the official Vercel plugin, which uses both layers at once: `/vercel:env` comes from its `commands/` list, while its MCP server is registered separately through `.mcp.json`. Deliberately NOT scheduled: it is a Claude Code convention, not part of MCP, so it trades portability for integration with one client — and griot has no PyPI release yet, so a third distribution channel would come before the second one exists.
