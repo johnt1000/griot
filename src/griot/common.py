@@ -1980,23 +1980,74 @@ def _split_pending(batch: list[dict], client: "qe.EdgeShard") -> list[dict]:
     return [doc for doc in batch if existing_hashes.get(doc["_point_id"]) != doc["_content_hash"]]
 
 
-def count_pending(documents: list[dict], desc: str = "Checking") -> tuple[int, int]:
-    """--dry-run mode: counts how many documents would need to be
-    (re)embedded vs how many are already up to date in Qdrant, WITHOUT
-    calling embed_texts or upsert — zero cost (local Qdrant read only).
-    Returns (pending, up_to_date). Useful for predicting the real size of a
-    rerun before committing hours of CPU (local) or money (gateway)."""
+def pending_summary(documents: list[dict], desc: str = "Checking") -> dict:
+    """What a run over `documents` would embed, WITHOUT calling embed_texts
+    or upsert: zero cost, a local read of the store only. `to_embed` and
+    `up_to_date` count documents; `to_embed_chars` is the size of what would
+    be sent, which is what a cost is estimated from."""
     client = get_client()
-    pending = 0
-    up_to_date = 0
+    pending = up_to_date = chars = 0
 
     for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
         batch = documents[i:i + INDEX_BATCH_SIZE]
         to_embed = _split_pending(batch, client)
         pending += len(to_embed)
         up_to_date += len(batch) - len(to_embed)
+        chars += sum(len(doc["content"]) for doc in to_embed)
 
-    return pending, up_to_date
+    return {"to_embed": pending, "up_to_date": up_to_date, "to_embed_chars": chars}
+
+
+def count_pending(documents: list[dict], desc: str = "Checking") -> tuple[int, int]:
+    """--dry-run mode: counts how many documents would need to be
+    (re)embedded vs how many are already up to date in Qdrant. Returns
+    (pending, up_to_date). Useful for predicting the real size of a rerun
+    before committing hours of CPU (local) or money (gateway)."""
+    summary = pending_summary(documents, desc=desc)
+    return summary["to_embed"], summary["up_to_date"]
+
+
+# About how many characters of indexed code and prose make one token, for an
+# ESTIMATE of what a run would cost (measured on a real index: 3.53). The
+# bill is computed from the provider's own token count, never from this.
+CHARS_PER_TOKEN_ESTIMATE = 3.5
+
+
+def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Checking",
+            prune_scope: dict | None = None) -> dict:
+    """`--dry-run` of one source: says what a run would embed and remove,
+    and does neither. The five indexers share it so that they report the same
+    way, to a person (the printed lines) and to a program: when
+    GRIOT_DRY_RUN_REPORT names a file, one JSON line per source is appended
+    to it. That is how the MCP preview reads the counts, instead of parsing
+    sentences written for a terminal."""
+    pruning: dict = {}
+    if collection_exists(COLLECTION_NAME):
+        summary = pending_summary(documents, desc=desc)
+    else:
+        # Nothing indexed under this profile yet: everything is to embed and
+        # nothing can be stale. Said without opening the collection, because
+        # opening one that does not exist CREATES it, and a dry run changes
+        # nothing.
+        summary = {"to_embed": len(documents), "up_to_date": 0,
+                   "to_embed_chars": sum(len(_without_credentials(doc["content"], doc["id"])) for doc in documents)}
+    print(f"\n[dry-run] {summary['to_embed']} {unit} would need to be (re)embedded, "
+          f"{summary['up_to_date']} are already up to date.")
+    report_redactions()
+    stale = 0
+    if prune_scope is not None and collection_exists(COLLECTION_NAME):
+        stale = prune_orphans(documents, dry_run=True, report=pruning, **prune_scope)
+    # `stale` is what a plain run would remove; `held_back` what it would
+    # leave because it is more than half of the repository (--prune removes it).
+    record = {"source": source, **summary, "stale": stale, "held_back": pruning.get("held_back", 0)}
+    report_path = os.getenv("GRIOT_DRY_RUN_REPORT")  # internal: set by jobs.run_index_preview, not a setting
+    if report_path:
+        try:
+            with open(report_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError as e:
+            print(f"Warning: could not write the dry-run report to {report_path}: {e}", file=sys.stderr)
+    return record
 
 
 def _secure_collection_dir(collection: str) -> None:
@@ -2264,7 +2315,8 @@ def _point_ids_written_under(client, repo: str, source_type: str, key: str) -> t
 
 
 def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, used_path: bool = False,
-                  incomplete=(), failed: int = 0, dry_run: bool = False, force: bool = False) -> int:
+                  incomplete=(), failed: int = 0, dry_run: bool = False, force: bool = False,
+                  report: dict | None = None) -> int:
     """Removes the points of `source_type` that this run did not produce, for
     each repository in `repo_paths`. Returns how many were removed (or, with
     dry_run, would be).
@@ -2339,6 +2391,10 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
                 print(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
                       f"by this run. That is more than half, so {outcome}: it usually means another branch is "
                       f"checked out or files went missing. If it is right, run again with --prune.")
+                # Counted for a caller that reads numbers and not this
+                # sentence: returned as zero, these looked like a clean index.
+                if report is not None:
+                    report["held_back"] = report.get("held_back", 0) + len(stale)
                 continue
             if dry_run:
                 print(f"[dry-run] {len(stale)} stale point(s) of {name} ({source_type}) would be removed: "

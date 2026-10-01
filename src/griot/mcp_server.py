@@ -114,7 +114,12 @@ mcp = MCPServer("griot", instructions=SERVER_INSTRUCTIONS)
 # Marked read-only, and still not something to run without a person: it
 # embeds one query per sampled point (billed on a paid profile, up to the
 # sample ceiling) and records a trend point. A search costs one embedding.
-_READ_ONLY_BUT_ASKED = frozenset({"griot_quality_check"})
+_READ_ONLY_BUT_ASKED = frozenset({
+    "griot_quality_check",
+    # Changes nothing, but reads every file of a repository and runs for as
+    # long as an index does.
+    "griot_index_preview",
+})
 
 
 def tools_safe_to_preapprove() -> list[str]:
@@ -1484,9 +1489,9 @@ def griot_overview_report() -> str:
         "directory that is not a repository — both stay registered and both fail or "
         "silently index nothing when a run reaches them.\n\n"
         "Close with one line on whether the index looks current. That comes from "
-        "griot_index_status's `last_indexed` (the timestamp of the most recent run) — "
-        "griot_stats carries activity over a window, not a date of last indexing. Keep "
-        "it short; this is orientation, not a report."
+        "griot_index_status's `last_indexed` (the most recent run: its timestamp, and "
+        "an `error` when it died without writing anything). Keep it short; this is "
+        "orientation, not a report."
     )
 
 
@@ -1636,6 +1641,78 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     ]
     changed = any(r["created"] or r["updated"] for r in results)
     return {"changed": changed, "message": f"Installed for {len(results)} harness(es).", "results": results}
+
+
+class IndexPreviewSource(TypedDict):
+    source: str
+    to_embed: int
+    up_to_date: int
+    # Points whose source is gone, which a plain run would remove.
+    stale: int
+    # Stale too, but more than half of the repository: a plain run leaves
+    # them, and only `griot index --prune` (CLI) removes them.
+    held_back: int
+
+
+class IndexPreviewOutput(TypedDict):
+    # False when the preview could not be made; `reason` then says why and
+    # the counts are zeros that mean nothing.
+    ok: bool
+    reason: str | None
+    path: str | None
+    profile: str
+    paid: bool
+    sources: list[IndexPreviewSource]
+    # What the numbers do not say by themselves (stale points held back, a
+    # directory indexed by path). Empty when there is nothing to add.
+    notes: list[str]
+    to_embed: int
+    up_to_date: int
+    stale: int
+    held_back: int
+    # An ESTIMATE, from the size of the text, on a profile that bills; null
+    # on a local one. The bill comes from the provider's own token count.
+    estimated_cost_usd: float | None
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_records_call
+def griot_index_preview(
+    path: str,
+    sources: list[Literal["code", "commits", "tags", "branches", "platform"]] | None = None,
+) -> IndexPreviewOutput:
+    """What indexing ONE local repository would do, without doing it: how
+    many chunks would be embedded, how many are already up to date, and how
+    many stale points (a deleted file, a deleted branch) a plain run would
+    remove, per source. Nothing is embedded or removed, no run is recorded,
+    and nothing is billed.
+
+    Use it before suggesting a reindex, to say what it would cost: on a
+    profile that bills, `estimated_cost_usd` is an estimate from the size of
+    the text. `to_embed` of zero everywhere means nothing new would be
+    embedded. `held_back` counts stale points a plain run would LEAVE,
+    because they are more than half of the repository; read `notes` when it
+    is not zero.
+
+    `path` must be registered (`griot repos add`) or under
+    GRIOT_MCP_INDEX_ROOTS, as for a real run. `sources` defaults to code,
+    commits, tags and branches; "platform" lists pull requests and issues
+    over the network with its own token, so ask for it explicitly. It reads
+    every file of the repository and can take as long as an index does; when
+    `ok` is false, `reason` says why and the counts mean nothing."""
+    def let_go() -> str | None:
+        # The subprocess needs the collection this server may be holding.
+        # Closing it under another tool call would pull the index from under
+        # that call (the idle reaper takes the same lock for the same
+        # reason): with one in flight besides this one, the preview waits.
+        with _inflight_lock:
+            if _inflight > 1:
+                return ("another griot tool call is using the index right now. Run the preview again when it "
+                        "has finished.")
+            common.release_client()
+        return None
+
+    return jobs.run_index_preview(path, sources, release=let_go)
 
 
 class IndexRepoOutput(TypedDict):

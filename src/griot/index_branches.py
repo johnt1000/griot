@@ -164,10 +164,7 @@ def main(argv=None):
         return
 
     if args.dry_run:
-        pending, up_to_date = common.count_pending(all_documents, desc="Checking branches")
-        print(f"\n[dry-run] {pending} branches would need to be (re)embedded, {up_to_date} are already up to date.")
-        common.report_redactions()
-        common.prune_orphans(all_documents, dry_run=True, **prune_scope)
+        common.dry_run(all_documents, source="branches", unit="branches", desc="Checking branches", prune_scope=prune_scope)
         return
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing branches")

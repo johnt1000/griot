@@ -26,9 +26,8 @@ what "done for a public release" still means.
 ## Next
 
 - **Close the gap between the CLI and the MCP tools where it is only
-  reading.** In order: a dry run of an index (how much would be embedded and
-  removed, at no cost) so that an agent can say what a reindex would do
-  before anyone decides; running the curated golden set through
+  reading.** The dry run of an index is done (`griot_index_preview`). Still to
+  do, in order: running the curated golden set through
   `griot_quality_check`, not only the self-check; a read-only view of the
   settings in force; choosing the sources of an index run; the audit of
   credential-looking values; and candidates for the golden set from the git

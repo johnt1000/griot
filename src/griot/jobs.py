@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -322,6 +323,109 @@ def start_index_job(
         }
 
     return {"started": True, "path": str(repo_path) if repo_path is not None else None, "pid": proc.pid, "sources": sources, "reason": None}
+
+
+def _run_dry_run(argv: list[str], env: dict, timeout: float) -> "subprocess.CompletedProcess":
+    """The subprocess of a preview. Its own function so that a test can
+    stand in for it without also standing in for the git calls the path
+    check makes."""
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+
+
+def _last_lines(text: str, count: int = 3) -> str:
+    """The end of a subprocess's output, as one line, without the progress
+    bars: they redraw themselves with carriage returns, and split only on
+    line breaks they came along with the message."""
+    lines = [segment.strip() for line in text.splitlines() for segment in line.split("\r")]
+    kept = [line for line in lines if line and "%|" not in line and "it/s]" not in line]
+    return common.printable(" ".join(kept[-count:]))[:400]
+
+
+def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_roots: bool = True,
+                      env: dict | None = None, timeout: float = 300, release=None) -> dict:
+    """What indexing `path` WOULD do, without doing it: the same
+    `griot index all --dry-run` a person runs, in a subprocess, with its
+    counts read back as data. Nothing is embedded, removed or recorded, and
+    no collection is created.
+
+    In a subprocess for the reason start_index_job() uses one: a dry run
+    opens the collection and reads every file, which does not belong in a
+    long-lived host. Unlike a real run it is waited for: there is nothing to
+    follow afterwards, the counts are the answer. The same paths are allowed
+    as for a real run, and for the same reason (it reads the repository).
+
+    release: lets go of this process's handle on the collection so that the
+    subprocess can open it, and returns a reason when it must not (another
+    call is using it). Defaults to common.release_client."""
+    result = {"ok": False, "reason": None, "path": None, "profile": common.ACTIVE_PROFILE_NAME,
+              "paid": common.ACTIVE_PROFILE["backend"] != "local", "sources": [], "notes": [],
+              "to_embed": 0, "up_to_date": 0, "stale": 0, "held_back": 0, "estimated_cost_usd": None}
+    refusal = index_job_refusal(path, allow_env_roots=allow_env_roots)
+    if refusal is not None:
+        return {**result, "reason": refusal}
+
+    repo_path = Path(path).resolve()
+    sources = list(dict.fromkeys(sources or DEFAULT_INDEX_SOURCES))  # asked for twice is asked for once
+    busy = (release or common.release_client)()  # the subprocess opens the same collection (see start_index_job)
+    if busy:
+        return {**result, "path": str(repo_path), "reason": busy}
+
+    argv = [sys.executable, "-m", "griot.cli", "index", "all", "--dry-run"]
+    repo_name = _repo_name_if_uniquely_registered(repo_path)
+    argv += ["--repo", repo_name] if repo_name is not None else ["--path", str(repo_path)]
+    argv += ["--sources", ",".join(sources)]
+
+    fd, report_path = tempfile.mkstemp(prefix="griot-dry-run-", suffix=".jsonl")
+    os.close(fd)
+    try:
+        try:
+            done = _run_dry_run(argv, {**(env if env is not None else os.environ),
+                                       "GRIOT_DRY_RUN_REPORT": report_path, "TQDM_DISABLE": "1"}, timeout)
+        except subprocess.TimeoutExpired:
+            return {**result, "path": str(repo_path),
+                    "reason": f"the dry run did not finish in {int(timeout)} seconds. Run `griot index all --dry-run` "
+                              f"in a terminal to see it through."}
+        if done.returncode != 0:
+            return {**result, "path": str(repo_path),
+                    "reason": _last_lines(done.stderr or done.stdout or "")
+                              or f"the dry run exited with status {done.returncode}."}
+        records = []
+        with open(report_path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    records.append(json.loads(line))
+    finally:
+        try:
+            os.unlink(report_path)
+        except OSError:
+            pass
+
+    # A source with nothing to look at (no tags, say) reports nothing: zeros.
+    by_source = {record["source"]: record for record in records}
+    rows = [{"source": source, **{key: by_source.get(source, {}).get(key, 0)
+                                  for key in ("to_embed", "up_to_date", "stale", "held_back")}}
+            for source in sources]
+    chars = sum(record.get("to_embed_chars", 0) for record in records)
+    price = common.ACTIVE_PROFILE.get("price_per_1m_tokens")
+    held_back = sum(row["held_back"] for row in rows)
+    notes = []
+    if held_back:
+        notes.append(f"{held_back} stale point(s) are more than half of what is indexed for this repository, so a "
+                     f"plain run leaves them (another branch checked out? files missing?). If they are really "
+                     f"gone, `griot index all --repo <name> --prune` in a terminal removes them; the MCP "
+                     f"indexing tool cannot.")
+    if repo_name is None:
+        notes.append("This directory is not registered under a name of its own, so it is indexed by path: stale "
+                     "points are never removed for it. `griot repos add` registers it.")
+    return {**result, "ok": True, "path": str(repo_path), "sources": rows, "notes": notes,
+            "to_embed": sum(row["to_embed"] for row in rows),
+            "up_to_date": sum(row["up_to_date"] for row in rows),
+            "stale": sum(row["stale"] for row in rows),
+            "held_back": held_back,
+            # An estimate from the size of the text; the bill comes from the
+            # provider's own token count.
+            "estimated_cost_usd": (round(chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * price, 4)
+                                   if result["paid"] and price is not None else None)}
 
 
 _quality_check_lock = threading.Lock()
