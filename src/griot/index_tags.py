@@ -23,10 +23,26 @@ def _repo_key_for_path(repo_path: Path) -> str:
     return f"{repo_path.name}-{digest}"
 
 
+def _commit_of(repo_path: Path, name: str) -> str | None:
+    """The commit a tag leads to, however many tags are on the way. Asked of
+    git only for a tag of a tag: for-each-ref peels one level."""
+    try:
+        done = common.run_git(repo_path, ["rev-parse", "--verify", "--quiet", "--end-of-options",
+                                          f"refs/tags/{name}^{{commit}}"], timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
 def list_tags(repo_path: Path) -> list[dict]:
+    # `objectname` of an annotated tag is the hash of the TAG OBJECT, which
+    # names no commit; `*objectname` is what it points at (empty for a
+    # lightweight tag, which is the commit itself). The message is asked for
+    # as subject and body: `contents` repeats the subject and, for a signed
+    # tag, ends with the signature block.
     fmt = FIELD_SEP.join([
-        "%(refname:short)", "%(objectname)", "%(creatordate:iso-strict)",
-        "%(subject)", "%(contents)",
+        "%(refname:short)", "%(objectname)", "%(objecttype)", "%(*objectname)", "%(*objecttype)",
+        "%(creatordate:iso-strict)", "%(subject)", "%(contents:body)",
     ]) + RECORD_SEP
     try:
         output = common.run_git(repo_path, ["for-each-ref", "refs/tags", f"--format={fmt}"], timeout=60).stdout
@@ -39,13 +55,21 @@ def list_tags(repo_path: Path) -> list[dict]:
         record = record.strip("\n")
         if not record:
             continue
-        name, commit_hash, date, subject, contents = record.split(FIELD_SEP)
+        name, object_hash, object_type, peeled_hash, peeled_type, date, subject, body = record.split(FIELD_SEP)
+        if object_type != "tag":
+            commit_hash = object_hash
+        elif peeled_type == "commit":
+            commit_hash = peeled_hash
+        else:
+            # A tag of a tag (or of something that is no commit at all: then
+            # the hash of what it points at is the best there is).
+            commit_hash = _commit_of(repo_path, name) or peeled_hash or object_hash
         tags.append({
             "name": name,
             "commit_hash": commit_hash,
             "date": date,
             "subject": subject,
-            "contents": contents.strip(),
+            "contents": body.strip(),
         })
     return tags
 
@@ -56,21 +80,31 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
     documents = []
     for tag in tags:
         text = tag["subject"]
-        if tag["contents"] and tag["contents"] != tag["subject"]:
+        if tag["contents"]:
             text = f"{tag['subject']}\n\n{tag['contents']}"
         if not text.strip():
             text = tag["name"]
-        documents.append({
-            "id": f"{key}:tag:{tag['name']}",
-            "content": text,
-            "metadata": {
-                "source_type": "tag",
-                "repo": repo_path.name,
-                "tag_name": tag["name"],
-                "commit_hash": tag["commit_hash"],
-                "date": tag["date"],
-            },
-        })
+        # A release tag can hold the whole release note. As ONE document an
+        # embedding model reads only its start, and an API that refuses an
+        # oversized input fails that tag on every run: cut like a commit
+        # message is. The id of a tag that fits in one chunk (nearly all of
+        # them) is deliberately unchanged, with no ':0' suffix, so that
+        # what is already indexed is recognised.
+        chunks = common.chunk_text(text, where=f"{repo_path.name} tag {tag['name']}")
+        for i, chunk in enumerate(chunks):
+            doc_id = f"{key}:tag:{tag['name']}" if len(chunks) == 1 else f"{key}:tag:{tag['name']}:{i}"
+            documents.append({
+                "id": doc_id,
+                "content": chunk,
+                "metadata": {
+                    "source_type": "tag",
+                    "repo": repo_path.name,
+                    "tag_name": tag["name"],
+                    "commit_hash": tag["commit_hash"],
+                    "date": tag["date"],
+                    "chunk_index": i,
+                },
+            })
     return documents
 
 

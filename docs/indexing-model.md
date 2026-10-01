@@ -15,7 +15,7 @@ content always lands on the same id:
 |---|---|
 | code | `repo:code:file_path:chunk_index` |
 | commit | `repo:commit:hash` — plus `:chunk_index` only when the message was long enough to split |
-| tag | `repo:tag:name` |
+| tag | `repo:tag:name` — plus `:chunk_index` only when the message was long enough to split |
 | branch | `repo:branch:name` |
 | merge/pull request | `repo:mr:iid:chunk_index` |
 | release | `repo:release:tag:chunk_index` |
@@ -31,7 +31,11 @@ An upsert onto an existing id **overwrites** rather than duplicating, so
 re-running any indexer over the same repository is safe with no cleanup
 first. Combined with a content hash — a chunk whose content has not changed
 is skipped before it reaches the embedding model — a second run over
-unchanged repositories embeds nothing and costs nothing.
+unchanged repositories embeds nothing and costs nothing. The fields stored
+beside the text are compared as well: when one changed and the text did not
+(a pull request that was merged, a tag that got the hash of its commit), it
+is written without embedding anything, and the run says how many points
+that was.
 
 The `repo` component is the repository's directory name, which is what makes
 the same file path in two different repositories two different points. For a
@@ -59,7 +63,7 @@ specific to its kind:
 |---|---|
 | `code` | `repo`, `file_path`, `chunk_index` |
 | `commit` | `repo`, `commit_hash`, `author`, `date`, `chunk_index` |
-| `tag` | `repo`, `tag_name`, `commit_hash`, `date` |
+| `tag` | `repo`, `tag_name`, `commit_hash` (the commit the tag leads to, not the tag object), `date`, `chunk_index` |
 | `branch` | `repo`, `branch_name`, `last_commit_hash`, `last_commit_date` |
 | `merge_request` | `repo`, `mr_iid`, `state`, `author`, `created_at`, `source_branch`, `target_branch`, `chunk_index` |
 | `release` | `repo`, `tag_name`, `released_at`, `chunk_index` |

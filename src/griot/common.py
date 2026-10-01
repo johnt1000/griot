@@ -1974,14 +1974,48 @@ def _split_pending(batch: list[dict], client: "qe.EdgeShard") -> list[dict]:
         doc["_point_id"] = stable_id(doc["id"])
         doc["_content_hash"] = hashlib.md5(doc["content"].encode()).hexdigest()
 
+    # The details stored beside the text are read too. What decides whether
+    # to embed is the text alone, so a detail that changed while the text
+    # stayed (a tag that got the hash of its commit, a pull request that was
+    # merged) was never written again: see _stale_details().
+    details = sorted({name for doc in batch for name in doc.get("metadata", {})})
     existing = client.retrieve(
         point_ids=[doc["_point_id"] for doc in batch],
-        with_payload=["content_hash"],
+        with_payload=["content_hash", *details],
         with_vector=False,
     )
-    existing_hashes = {str(r.id): (r.payload or {}).get("content_hash") for r in existing}
+    stored = {str(r.id): (r.payload or {}) for r in existing}
 
-    return [doc for doc in batch if existing_hashes.get(doc["_point_id"]) != doc["_content_hash"]]
+    pending = []
+    for doc in batch:
+        payload = stored.get(doc["_point_id"])
+        if payload is None or payload.get("content_hash") != doc["_content_hash"]:
+            pending.append(doc)
+            doc["_details_changed"] = False
+        else:
+            doc["_details_changed"] = any(payload.get(name) != value for name, value in doc.get("metadata", {}).items())
+    return pending
+
+
+def _write_stale_details(batch: list[dict], client: "qe.EdgeShard") -> int:
+    """For the documents of `batch` whose text is up to date and whose
+    stored details are not: writes the details, without embedding anything.
+    Returns how many. After _split_pending(), which marks them."""
+    stale = [doc for doc in batch if doc.get("_details_changed")]
+    written = 0
+    try:
+        for doc in stale:
+            try:
+                # Merges: the text, its hash and the vector stay as they are.
+                client.update(qe.UpdateOperation.set_payload([doc["_point_id"]], doc["metadata"]))
+                written += 1
+            except Exception as e:  # noqa: BLE001 - one point (gone since it was read) must not stop the others
+                log_and_print(f"Warning: could not update the stored details of {shown(doc['id'])}: {e}",
+                              level="warning", echo=False)
+    finally:
+        if written:
+            client.flush()
+    return written
 
 
 def pending_summary(documents: list[dict], desc: str = "Checking") -> dict:
@@ -2138,6 +2172,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         indexed = 0
         skipped = 0
         failed = 0
+        refreshed = 0  # among the skipped: text unchanged, stored details brought up to date
         consecutive_failed_batches = 0
         # Reset per run, not per process: a second index_documents() call
         # (griot index all makes five) must not inherit the previous
@@ -2149,6 +2184,10 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
             batch = documents[i:i + INDEX_BATCH_SIZE]
             to_embed = _split_pending(batch, client)
             skipped += len(batch) - len(to_embed)
+            try:
+                refreshed += _write_stale_details(batch, client)
+            except Exception as e:  # noqa: BLE001 - the text is intact; the details are tried again next run
+                log_and_print(f"Warning: could not update the stored details of unchanged points: {e}", level="warning")
             if not to_embed:
                 continue
 
@@ -2215,6 +2254,10 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         if indexed > 0:
             client.optimize()
 
+        if refreshed:
+            # Said, because nothing else shows it: these count as skipped
+            # (nothing was embedded), and something stored did change.
+            print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
         _secure_collection_dir(COLLECTION_NAME)
@@ -2265,7 +2308,7 @@ _PRUNE_GUARD_FRACTION = 0.5
 _PRUNE_ID_FIELDS = {
     "code": ["file_path", "chunk_index"],
     "commit": ["commit_hash", "chunk_index"],
-    "tag": ["tag_name"],
+    "tag": ["tag_name", "chunk_index"],
     "branch": ["branch_name"],
 }
 
@@ -2285,8 +2328,14 @@ def _ids_a_point_could_have(source_type: str, key: str, payload: dict) -> list[s
             return []
         base = f"{key}:commit:{payload['commit_hash']}"
         return [base, *{f"{base}:{i}" for i in (payload.get("chunk_index"), 0) if i is not None}]
-    field = {"tag": "tag_name", "branch": "branch_name"}[source_type]
-    return [f"{key}:{source_type}:{payload[field]}"] if payload.get(field) else []
+    if source_type == "tag":
+        # One point per tag, or one per chunk of a long message. A point
+        # written before tags were cut has no chunk number.
+        if not payload.get("tag_name"):
+            return []
+        base = f"{key}:tag:{payload['tag_name']}"
+        return [base] if payload.get("chunk_index") is None else [base, f"{base}:{payload['chunk_index']}"]
+    return [f"{key}:branch:{payload['branch_name']}"] if payload.get("branch_name") else []
 
 
 def _point_ids_written_under(client, repo: str, source_type: str, key: str) -> tuple[list, int]:
