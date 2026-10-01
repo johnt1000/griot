@@ -26,10 +26,9 @@ what "done for a public release" still means.
 ## Next
 
 - **Close the gap between the CLI and the MCP tools where it is only
-  reading.** The dry run of an index is done (`griot_index_preview`). Still to
-  do, in order: running the curated golden set through
-  `griot_quality_check`, not only the self-check; a read-only view of the
-  settings in force; choosing the sources of an index run; the audit of
+  reading.** Done: the dry run of an index (`griot_index_preview`) and the
+  curated golden set through `griot_quality_check`. Still to do, in order:
+  a read-only view of the settings in force; the audit of
   credential-looking values; and candidates for the golden set from the git
   log, without writing. What stays CLI-only, and why, is in
   [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md).

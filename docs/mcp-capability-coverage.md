@@ -89,7 +89,7 @@ a judgement or a strategy that is not in any tool's output.
 |---|---|
 | `/mcp__griot__stats` | How to read the usage report: start from what does not depend on the window (`attention`, how long ago the index was last written and searched, whether the last quality check is older than the index, the golden set's last result), then trust `recent_reuse_rate` over `reuse_rate` when they disagree (a window spanning a fix averages two eras and describes neither), read a falling quality trend as an index regression, put spend against the ceiling, say so when the window is too thin to conclude anything. |
 | `/mcp__griot__history` | A multi-source search strategy. griot indexes seven source types and "why is this like this" is rarely answered by one: code says what, the commit says when, the merge request says who argued, the issue says what problem started it. Left alone an agent searches once and stops. |
-| `/mcp__griot__health` | The distinction between the two checks — the self-check is mechanical (indexed points retrieve themselves; proves the pipeline, not usefulness), the golden set is curated (real questions). Either can pass while the other fails, and the failures mean opposite things. Also warns that the check bills on a paid profile. |
+| `/mcp__griot__health` | The distinction between the two checks — the self-check is mechanical (indexed points retrieve themselves; proves the pipeline, not usefulness), the golden set is curated (real questions). Either can pass while the other fails, and the failures mean opposite things. `griot_quality_check` returns both, apart; the prompt says how to read each, and that a golden set that was not run (`golden_check` null) is not a pass. Also warns that the check bills on a paid profile. |
 | `/mcp__griot__overview` | Orientation, plus reading `exists`/`is_git` as the warnings they are — a registered path that is gone still lists, and indexing it fails or quietly indexes nothing. |
 
 `history` is also what closes a gap the `griot_ask` decision left open
@@ -273,7 +273,7 @@ out on purpose, because every one written here went stale.
 | Today's spend | *(part of `stats`)* | `griot_spend_status` | — |
 | Usage report | `stats` | `griot_stats`, prompt `stats` | — |
 | Guided investigation | `ask` *(paid synthesis)* | prompt `history` *(synthesis in the caller's own LLM)* | — |
-| Quality check | `quality-check` *(self-check **and** golden set)* | `griot_quality_check` *(self-check only)* | — |
+| Quality check | `quality-check` *(self-check **and** golden set)* | `griot_quality_check` *(both; `golden_set=false` for the self-check alone)* | — |
 | List repos | `repos list` | `griot_repos_list` | — |
 | List profiles | `profiles list` | `griot_profiles_list` | — |
 | List golden set | `golden-set list` | `griot_golden_set_list` | — |
@@ -314,12 +314,16 @@ matter enough to state:
   Registering the server, the instructions block and the pre-approval of
   tools are the three steps of the installer that decide what an agent may
   do, so each is a question at a terminal.
-- `griot_quality_check`: runs the **self-check only**. Nothing over MCP
-  executes the curated golden set — `griot_golden_set_list` returns the
-  cases, never a result of running them. An agent can replay a case by
-  hand with `griot_search`, but the verdict comes from `griot
-  quality-check` in a terminal. The `health` prompt says so rather than
-  letting the agent infer a pass it never measured.
+- `griot_quality_check`: runs the self-check and the curated golden set,
+  and returns them apart. Two bounds the terminal command does not have:
+  the sample of the self-check and the number of curated cases are capped
+  per call (each embeds a query, which a paid profile bills), and a case's
+  `limit` is held to what `griot_search` allows (the case then carries
+  `limit_reduced_from`, since with fewer results it can fail here and pass
+  at a terminal). Past the cap on cases the
+  curated half is not run and `golden_set_not_run` says so; `griot
+  quality-check` in a terminal runs them all. It is not among the tools the
+  installer offers to pre-approve, for the same reason.
 
 ### MCP only
 

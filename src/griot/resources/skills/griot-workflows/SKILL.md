@@ -139,6 +139,6 @@ queries, and the quality-check trend. Quality says so when it was never
 checked, or was checked before the index last changed; the golden set shows
 its size, the result and age of its last run, and cases that expect a
 repository that is not in `repos.json` (unless it was indexed with `--path`
-they can only fail: `griot quality-check` checks the index and says so case
-by case). If you're an agent, `griot_stats` (or the `stats` prompt above)
+they can only fail: `griot quality-check`, and the `griot_quality_check`
+tool, check the index and say so case by case). If you're an agent, `griot_stats` (or the `stats` prompt above)
 gives you the same data without shelling out.
