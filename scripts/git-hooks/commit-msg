@@ -2,6 +2,19 @@
 # commit-msg. A commit message becomes public together with the history, so the
 # private terms the pre-commit hook refuses in files are refused here too.
 # Terms come from .git/sensitive-terms.txt (local, never committed).
+#
+# Which lines are the message? In an editor git offers a template whose
+# comment lines (the branch, the files) it takes out again afterwards, and
+# those are not read here. Every other line is, and so is a comment line
+# whenever git is going to KEEP it:
+#   - no editor ran (-m, -F, a merge with -m): nothing was a template, and
+#     git keeps a line that starts with #. git says so by running this hook
+#     with GIT_EDITOR=":".
+#   - commit.cleanup is verbatim, whitespace or scissors: comments stay.
+#   - core.commentChar is something else: a # line is not a comment at all.
+# One case cannot be seen from here: --cleanup=<mode> given on the command line
+# of a commit made in an editor. pre-push reads the message git actually
+# stored, so nothing kept that way is pushed.
 hooks_dir=$(cd "$(dirname "$0")" && pwd)
 . "$hooks_dir/common.sh"
 terms_file=$(terms_file_path) || exit 1
@@ -11,8 +24,21 @@ patterns=$(mktemp) || exit 1
 trap 'rm -f "$patterns"' EXIT
 write_active_terms "$terms_file" "$patterns" || exit 0
 
-# Lines starting with # are git's own template comments, not part of the message.
-if grep -v '^#' "$1" | grep -q -i -F -f "$patterns"; then
+comment=$(git config --get core.commentString 2>/dev/null || git config --get core.commentChar 2>/dev/null || true)
+[ -n "$comment" ] || comment='#'
+keeps_comments=0
+[ "${GIT_EDITOR:-}" = ":" ] && keeps_comments=1
+[ "$comment" = auto ] && keeps_comments=1   # git picks the character itself: none can be assumed
+case "$(git config --get commit.cleanup 2>/dev/null || true)" in
+  verbatim|whitespace|scissors) keeps_comments=1 ;;
+esac
+
+if [ "$keeps_comments" -eq 1 ]; then
+  cat "$1"
+else
+  awk -v comment="$comment" 'index($0, comment) != 1' "$1"
+fi | grep -q -a -i -F -f "$patterns"
+if [ $? -eq 0 ]; then
   printf 'commit-msg: the commit message contains a private term from sensitive-terms.txt. Reword it: messages become public with the history.\n' >&2
   exit 1
 fi

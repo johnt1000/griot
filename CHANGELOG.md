@@ -421,6 +421,34 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **What the git hooks refuse is refused by every route into the history.**
+  Three things went past them. A line of a commit message that starts with
+  `#` was taken for one of git's template comments and not read, although a
+  message given with `-m` or `-F` has no template and git keeps the line.
+  A merge that makes a commit runs `pre-merge-commit`, not `pre-commit`, so
+  nothing looked at what the other branch brought. And the list of files
+  that never belong knew `.env` but not `prod.env`, `.env-prod`, `.env~` or
+  `app.env.local`, nor a tracked link replaced by a real file; it goes by
+  the `.env` in a name now (a name without one, such as a bare `env`, is
+  still not recognised), and `.env.sample`, `.env.template` and `.env.dist`
+  are allowed beside `.env.example`. All three are closed. A cherry-pick, a
+  fast-forward merge, `git am` and most of a rebase run no commit hook at
+  all, so there is now a `pre-push` hook: it looks at every commit a push
+  would send that the remote does not have, for secrets, files that never
+  belong and private terms (in added lines, file names, commit and tag
+  messages, branch and tag names), and prints locations only. It refuses to
+  push when it could not read the changes, and a tag that points at a file
+  or a directory instead of a commit. A private list saved with Windows
+  line endings matched nothing, in every hook, and one that starts with a
+  byte order mark lost its first term; both match now. And every hook reads
+  bytes: in a UTF-8 locale a file in another encoding (or a file name) was
+  enough for a term on the same line, or the name itself, to go unseen at
+  commit time as well. A file git calls binary is still not read.
+- **A secret that only a merge commit holds is found.** gitleaks reads
+  `git log -p`, which prints no diff for a merge unless asked, so whatever a
+  merge itself added was never scanned, by `scripts/audit-history.sh` or by
+  anything else. The audit and the new `pre-push` hook ask for the changes
+  of merge commits as well.
 - **What the build runs and installs is pinned.** The CI named its actions
   by a tag, which the owner of an action can move to other code, and
   installed the newest version of every dependency on each run although the

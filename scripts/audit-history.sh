@@ -7,7 +7,8 @@
 #
 # Checks, over every commit reachable from any branch, tag or other ref
 # (merge commits included):
-#   1. secrets in history (gitleaks, same config as CI)
+#   1. secrets in history (gitleaks, same config as CI), in what a merge
+#      commit itself changed as well
 #   2. files that never belong, at any point in history (.env, keys, databases,
 #      logs, collection data)
 #   3. private terms in file contents
@@ -90,7 +91,8 @@ note_incomplete() { incomplete="${incomplete:+$incomplete; }$1"; }
 
 # Paths that ever existed. -m: without it `git log --name-only` omits merge
 # commits, so a file added only by a merge would be invisible.
-all_names() { git -c core.quotepath=off log --all -m --name-only --format= | sort -u; }
+# -z: the names as they are, not quoted and escaped.
+all_names() { git log --all -m --name-only -z --format= | tr '\0' '\n' | grep -v '^$' | sort -u; }
 
 # --- 1. secrets ---------------------------------------------------------------
 label="[1/6] secrets (gitleaks)"
@@ -98,9 +100,9 @@ if [ "$revisions" -eq 0 ]; then
   result "$label" "ok (no history)"
 else
   if [ -f "$root/.gitleaks.toml" ]; then
-    "$gitleaks_bin" git --no-banner --redact --exit-code "$LEAK_EXIT" --config "$root/.gitleaks.toml" . > "$work/secrets" 2>&1
+    "$gitleaks_bin" git --no-banner --redact --exit-code "$LEAK_EXIT" --log-opts="--all $GITLEAKS_MERGES" --config "$root/.gitleaks.toml" . > "$work/secrets" 2>&1
   else
-    "$gitleaks_bin" git --no-banner --redact --exit-code "$LEAK_EXIT" . > "$work/secrets" 2>&1
+    "$gitleaks_bin" git --no-banner --redact --exit-code "$LEAK_EXIT" --log-opts="--all $GITLEAKS_MERGES" . > "$work/secrets" 2>&1
   fi
   status=$?
   if [ "$status" -eq 0 ]; then
@@ -116,7 +118,7 @@ fi
 # --- 2. files that never belong ---------------------------------------------------
 label="[2/6] files that never belong"
 : > "$work/paths"
-[ "$revisions" -gt 0 ] && all_names | grep -i -E "$FORBIDDEN_PATHS_RE" | grep -v -i -E "$ALLOWED_PATHS_RE" > "$work/paths"
+[ "$revisions" -gt 0 ] && all_names | forbidden_paths > "$work/paths"
 if [ -s "$work/paths" ]; then
   result "$label" "FOUND" "$work/paths"
 else
@@ -151,7 +153,7 @@ else
   batch=(); n=0
   flush() {
     if [ "$n" -gt 0 ]; then
-      git grep -z -I -n -i -F -f "$patterns" "${batch[@]}" -- . 2>/dev/null | tr '\0' '\n' | awk 'NR % 3 == 1' >> "$work/content_hits"
+      in_caller_locale git grep -z -I -n -i -F -f "$patterns" "${batch[@]}" -- . 2>/dev/null | tr '\0' '\n' | awk 'NR % 3 == 1' >> "$work/content_hits"
     fi
     batch=(); n=0
   }
@@ -178,7 +180,7 @@ else
   # 5. messages: hash and date for a commit, the name for a tag; never the message
   grep_args=()
   while IFS= read -r term; do grep_args+=(--grep="$term"); done < "$patterns"
-  git log --all -i -F --date=short --format='commit %h (%ad)' "${grep_args[@]}" > "$work/msg_hits"
+  in_caller_locale git log --all -i -F --date=short --format='commit %h (%ad)' "${grep_args[@]}" > "$work/msg_hits"
   # `%(contents)` of a lightweight tag is its commit's message, already covered above.
   while read -r ref type; do
     if [ "$type" = tag ] && git for-each-ref --format='%(contents)' "$ref" | grep -q -i -F -f "$patterns"; then

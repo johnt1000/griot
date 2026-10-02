@@ -37,13 +37,13 @@ if [ "$mode" = check ]; then
   else
     fail "core.hooksPath is '${hooks_path:-unset}', expected scripts/git-hooks (run scripts/install-git-hooks.sh)"
   fi
-  for hook in pre-commit commit-msg; do
+  for hook in $HOOK_NAMES; do
     if [ -x "scripts/git-hooks/$hook" ]; then ok "$hook is executable"; else fail "scripts/git-hooks/$hook is not executable"; fi
   done
   if gitleaks_bin=$(find_gitleaks); then
     ok "gitleaks: $gitleaks_bin"
   else
-    fail "gitleaks not found (brew install gitleaks): commits are blocked until it is installed"
+    fail "gitleaks not found (brew install gitleaks): commits and pushes are blocked until it is installed"
   fi
   terms=$(terms_file_path)
   if [ ! -f "$terms" ]; then
@@ -60,7 +60,9 @@ if [ "$mode" = check ]; then
 fi
 
 git config core.hooksPath scripts/git-hooks
-chmod +x scripts/git-hooks/pre-commit scripts/git-hooks/commit-msg
+for hook in $HOOK_NAMES; do
+  chmod +x "scripts/git-hooks/$hook"
+done
 
 terms=$(terms_file_path)
 if [ ! -f "$terms" ]; then
@@ -69,7 +71,7 @@ if [ ! -f "$terms" ]; then
 fi
 
 if ! find_gitleaks >/dev/null; then
-  echo "warning: gitleaks not found. Commits are blocked until it is installed (brew install gitleaks)." >&2
+  echo "warning: gitleaks not found. Commits and pushes are blocked until it is installed (brew install gitleaks)." >&2
 fi
 
-echo "git hooks enabled: pre-commit and commit-msg (core.hooksPath = scripts/git-hooks)"
+echo "git hooks enabled: $HOOK_NAMES (core.hooksPath = scripts/git-hooks)"

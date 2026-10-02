@@ -205,7 +205,9 @@ def test_git_template_comments_in_the_message_are_not_scanned(repo, tmp_path):
     message = tmp_path / "MSG"
     message.write_text("docs: fine\n# Changes to be committed: acme-private/file.md\n")
 
-    result = subprocess.run([str(HOOKS / "commit-msg"), str(message)], capture_output=True, text=True, cwd=repo, env=repo.env)
+    # In an editor (git runs the hook with GIT_EDITOR=":" when there was none, and keeps such a line then).
+    result = subprocess.run([str(HOOKS / "commit-msg"), str(message)], capture_output=True, text=True, cwd=repo,
+                            env={**repo.env, "GIT_EDITOR": "vi"})
 
     assert result.returncode == 0
 

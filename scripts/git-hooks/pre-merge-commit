@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# pre-merge-commit. For a merge that makes a commit git runs this hook and NOT
+# pre-commit, so what the other branch brings (a branch made elsewhere, or
+# before the hooks were enabled) entered the history with nothing looking at
+# it. The merge result is staged when this runs, which is exactly what
+# pre-commit reads: the same checks, the same answers.
+#
+# A fast-forward makes no commit and runs no hook: pre-push covers that.
+exec "$(cd "$(dirname "$0")" && pwd)/pre-commit" "$@"

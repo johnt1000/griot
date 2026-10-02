@@ -2,6 +2,11 @@
 # pre-commit. This repository is public, so nothing sensitive may enter a
 # commit. Enable it for your clone with scripts/install-git-hooks.sh.
 #
+# It sees `git commit`, and (through pre-merge-commit) a merge that makes a
+# commit. A cherry-pick, a fast-forward, `git am` and most of a rebase run no
+# commit hook at all: pre-push is what looks at those, before anything is
+# public.
+#
 # Blocks the commit on any of:
 #   1. a secret in the staged changes (gitleaks, same config as CI)
 #   2. a staged file that never belongs in the repository (.env, databases,
@@ -41,9 +46,12 @@ if [ $? -ne 0 ]; then
 fi
 
 # --- 2. files that never belong -------------------------------------------------
-bad_paths=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR \
-  | grep -i -E "$FORBIDDEN_PATHS_RE" \
-  | grep -v -i -E "$ALLOWED_PATHS_RE")
+# Everything staged except a deletion. (Naming the kinds of change to look at
+# left one out: a tracked link replaced by a real file is a change of TYPE.)
+# -z: the names as they are. Without it git writes a name that holds a quote
+# or a control character inside quotes, with escapes, and `.env"` is no
+# longer a name that ends in `.env"`.
+bad_paths=$(git diff --cached --name-only -z --diff-filter=d | tr '\0' '\n' | forbidden_paths)
 if [ -n "$bad_paths" ]; then
   say "these staged files never belong in the repository:"
   printf '%s\n' "$bad_paths" | sed 's/^/  /' >&2
@@ -56,13 +64,13 @@ if [ -f "$terms_file" ]; then
   patterns=$(mktemp) || exit 1
   trap 'rm -f "$patterns"' EXIT
   if write_active_terms "$terms_file" "$patterns"; then
-    hits=$(git grep --cached -I -n -i -F -f "$patterns" -- . 2>/dev/null | cut -d: -f1,2)
+    hits=$(in_caller_locale git grep --cached -I -n -i -F -f "$patterns" -- . 2>/dev/null | cut -d: -f1,2)
     if [ -n "$hits" ]; then
       say "private terms from sensitive-terms.txt found in file contents (file:line):"
       printf '%s\n' "$hits" | sed 's/^/  /' >&2
       failed=1
     fi
-    name_hits=$(git -c core.quotepath=off ls-files | grep -i -F -f "$patterns")
+    name_hits=$(git ls-files -z | tr '\0' '\n' | grep -i -F -f "$patterns")
     if [ -n "$name_hits" ]; then
       say "private terms from sensitive-terms.txt found in file or directory names:"
       printf '%s\n' "$name_hits" | sed 's/^/  /' >&2

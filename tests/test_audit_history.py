@@ -420,3 +420,46 @@ def test_a_long_history_says_it_may_take_a_while(repo):
     assert "1001 revisions" in result.stdout
     assert "may take" in result.stdout
     assert result.returncode == 0, result.stdout
+
+
+# --- a secret that only a merge commit holds ------------------------------------------------------
+# gitleaks reads `git log -p`, which prints no diff for a merge commit unless
+# it is asked to: whatever a merge itself added (a conflict "resolved" by
+# pasting a key in) was never scanned.
+
+
+def test_the_audit_asks_for_the_changes_of_merge_commits_too(repo, tmp_path):
+    args_file = tmp_path / "gitleaks-args"
+    recorder = write_script(tmp_path / "gitleaks-recorder", f'echo "$@" > {args_file}\nexit 0\n')
+    commit(repo, {"a.md": "x\n"})
+
+    audit(repo, GITLEAKS_BIN=recorder)
+
+    args = args_file.read_text()
+    assert "--diff-merges=first-parent" in args and "--all" in args, "every ref, as before, and merges with their diff"
+
+
+@needs_gitleaks
+def test_a_secret_only_a_merge_commit_holds_is_found(repo):
+    token = "ghp_" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36))
+    commit(repo, {"a.md": "x\n"})
+    evil_merge(repo, {"leak.py": f'TOKEN = "{token}"\n'})
+
+    result = audit(repo, GITLEAKS_BIN=REAL_GITLEAKS)
+
+    assert result.returncode == 1 and "FOUND" in result.stdout
+    assert token not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("name", ['.env"', ".env\tx", "caf\u00e9/.env~"])
+def test_a_file_that_never_belonged_is_found_under_a_name_git_would_print_in_quotes(repo, name):
+    """git writes a name that holds a quote, a control character or (by
+    default) a letter outside ASCII inside quotes, with escapes: read that
+    way, `.env"` no longer ends in `.env"`."""
+    commit(repo, {name: "KEY=value\n"})
+    commit(repo, remove=[name])
+
+    result = audit(repo)
+
+    assert result.returncode == 1 and "never belong" in result.stdout and "FOUND" in result.stdout
+    assert name in result.stdout
