@@ -33,16 +33,28 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   .gitleaks.toml .` on the history, and you will see what it will see.
   `scripts/install-git-hooks.sh` does this for you on every commit: it enables
   a `pre-commit` hook that scans what you staged with gitleaks, refuses files
-  that never belong in the repository (`.env`, databases, logs, collection
+  that never belong in the repository (a file with `.env` in its name other
+  than a template such as `.env.example`, databases, keys, logs, collection
   data) and, if you list them in `.git/sensitive-terms.txt`, private names of
-  your own, plus a `commit-msg` hook that applies the same list to the message.
+  your own, plus a `commit-msg` hook that applies the same list to the
+  message. A merge that makes a commit goes through the same checks
+  (`pre-merge-commit`). A cherry-pick, a fast-forward, `git am` and most of a
+  rebase run no commit hook at all, so a `pre-push` hook looks at every commit
+  a push would send that the remote does not have yet: secrets in what they
+  change, files that never belong, and your private terms in the lines they
+  add, in file names, in commit and tag messages and in the name of the
+  branch or tag. What it finds cannot be fixed by a new
+  commit on top; the commit that holds it has to change before it is pushed.
   The list lives inside `.git`, so it is never committed. It is matched
   against file contents and against file and directory names, but not against
   binary files (gitleaks cannot read those either), and a missing list only
-  prints a warning. The hooks need gitleaks installed and block the commit
-  when it is missing. `scripts/install-git-hooks.sh --check` reports whether
+  prints a warning. Matching ignores case; for a letter with an accent that
+  is only certain where git does the searching itself (file contents at
+  commit time, commit messages at push time), so list an accented name in
+  the spellings you actually use. The hooks need gitleaks installed and block the commit
+  or the push when it is missing. `scripts/install-git-hooks.sh --check` reports whether
   they are active and able to run.
-  The hooks only look at what you are about to commit. `scripts/audit-history.sh`
+  The hooks only look at what you are about to commit or push. `scripts/audit-history.sh`
   looks back over every commit reachable from any branch or tag, merges
   included, for the same things (secrets, files that never belong, your
   private terms in contents, file names, commit and tag messages, and branch

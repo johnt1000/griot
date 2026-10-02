@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# pre-push. A push is the moment anything becomes public, and the one place
+# every commit passes. The commit hooks see `git commit` and a merge; a
+# cherry-pick, a fast-forward, `git am`, most of a rebase, a commit made with
+# --no-verify or before the hooks were enabled reach a branch with nothing
+# having looked at them.
+#
+# Looks at the commits this push would send that the remote does not have yet
+# and blocks the push on any of:
+#   1. a secret in what they change (gitleaks, same config as CI), and in the
+#      lines a merge commit itself adds, which gitleaks does not see in a
+#      history on its own
+#   2. a file that never belongs, added or changed by one of them, even if a
+#      later commit removed it again: the commit that added it is still sent
+#   3. a private term from .git/sensitive-terms.txt in a line one of them
+#      ADDS, in the name of a file one of them adds or changes, in a commit
+#      message, in the message of an annotated tag, or in the name of a branch
+#      or tag being pushed
+# Only LOCATIONS are printed, never the matching text. A file git calls
+# binary is not read, here or by any other check.
+#
+# What the remote already has is not looked at again: a term put on the list
+# today may be published already, and the push that takes it out must go
+# through. scripts/audit-history.sh is what reads the whole history.
+#
+# Fails CLOSED: without gitleaks nothing is pushed, and neither is anything
+# when the changes could not be read or a ref points at something that is not
+# a commit (a tagged file or directory, which has no commit to look at).
+# Deleting a branch on the remote sends nothing and is never blocked. What is
+# found here cannot be fixed by a new commit on top: the commit that holds it
+# has to change (amend, rebase) before it is pushed, and a real credential has
+# to be revoked.
+set -u
+
+hooks_dir=$(cd "$(dirname "$0")" && pwd)
+. "$hooks_dir/common.sh"
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+remote=${1:-}
+failed=0
+
+say() { printf 'pre-push: %s\n' "$*" >&2; }
+indent() { sed 's/^/  /' >&2; }
+
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT
+: > "$work/revs"; : > "$work/ranges"; : > "$work/refs"; : > "$work/tags"
+
+# `git push <url>` hands the URL over as the name: there are no remote-tracking
+# refs to measure from then.
+known_remote=0
+if [ -n "$remote" ] && git remote get-url "$remote" >/dev/null 2>&1; then
+  known_remote=1
+fi
+
+# --- what this push sends ---------------------------------------------------------
+# One line per ref: <local ref> <local id> <remote ref> <remote id>.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_sha:-}" ] || continue
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac   # all zeros: the ref is being deleted
+  printf '%s\n' "${remote_ref#refs/}" >> "$work/refs"
+  if ! git rev-parse -q --verify "$local_sha^{commit}" >/dev/null 2>&1; then
+    say "$remote_ref points at something that is not a commit (a tagged file or directory), which cannot be checked."
+    failed=1
+    continue
+  fi
+
+  # Everything reachable from what is pushed, minus what the remote has: the
+  # tip it reported for this ref, when that commit is here to measure from
+  # (after someone else's push it is not), and every branch of it this clone
+  # knows about.
+  range=$local_sha
+  have=""
+  case "$remote_sha" in
+    *[!0]*) git cat-file -e "$remote_sha^{commit}" 2>/dev/null && have=$remote_sha ;;
+  esac
+  [ "$known_remote" -eq 1 ] && have="${have:+$have }--remotes=$remote"
+  [ -n "$have" ] && range="$range --not $have"
+  # shellcheck disable=SC2086  # a list of arguments, split on purpose
+  if ! git rev-list $range > "$work/these"; then
+    say "could not list the commits $local_ref would send, so nothing was checked."
+    exit 1
+  fi
+  if [ -s "$work/these" ]; then
+    cat "$work/these" >> "$work/revs"
+    printf '%s\n' "$range" >> "$work/ranges"
+  fi
+
+  # An annotated tag is an object of its own, with a message (and may point at
+  # another tag).
+  object=$local_sha
+  while [ "$(git cat-file -t "$object" 2>/dev/null)" = tag ]; do
+    printf '%s %s\n' "$object" "${remote_ref#refs/tags/}" >> "$work/tags"
+    object=$(git cat-file -p "$object" | sed -n '1s/^object //p')
+  done
+done
+sort -u "$work/revs" -o "$work/revs"
+
+# added_lines WHERE MERGES_ONLY: prints the text of every line a commit of
+# $work/revs adds, and (when WHERE is a file) writes "rev:path" there, one
+# for each line printed, in the same order. The text goes from one program to
+# the next and is never written anywhere.
+#   --cc: for a merge, the lines the merge itself added. They carry one + per
+#     parent; a line that came from one side carries fewer.
+#   tr: a NUL in a line ends the line for some awks.
+# (Bytes, not characters: see LC_ALL in common.sh. A file git itself calls
+# binary has no lines here at all, as in every other check.)
+# Returns 0 only when git, tr and awk all succeeded AND every commit was
+# seen: a search that did not read everything has not found nothing. Whatever
+# reads the lines must read them all (see `drained` below), or the programs
+# here are stopped halfway and that reads as a failure.
+added_lines() {
+  local status
+  rm -f "$work/seen"
+  git log --stdin --no-walk --root --cc -p -U0 --no-color --no-ext-diff --no-textconv --encoding=UTF-8 \
+      --format='commit %H' < "$work/revs" \
+    | tr '\0' ' ' \
+    | awk -v where="$1" -v merges_only="$2" -v seen="$work/seen" '
+        /^commit [0-9a-f]+$/ { rev = substr($0, 8, 7); commits++; in_hunk = 0; next }
+        /^diff /             { path = ""; in_hunk = 0; next }
+        !in_hunk && /^\+\+\+ / {
+          path = substr($0, 5); sub(/\t$/, "", path)
+          if (path == "/dev/null") path = ""
+          else if (substr(path, 1, 1) == "\"") { path = substr(path, 2, length(path) - 2); sub(/^b\//, "", path) }
+          else sub(/^b\//, "", path)
+          next
+        }
+        /^@@/ { parents = match($0, /[^@]/) - 2; if (parents < 1) parents = 1; in_hunk = 1; next }
+        in_hunk && path != "" && (parents > 1 || !merges_only) {
+          marks = substr($0, 1, parents)
+          if (marks ~ /^\++$/ && length(marks) == parents) {
+            if (where != "") print rev ":" path > where
+            print substr($0, parents + 1)
+          }
+        }
+        END { print commits + 0 > seen }' 2>/dev/null
+  status=("${PIPESTATUS[@]}")
+  [ "${status[0]}" -eq 0 ] && [ "${status[1]}" -eq 0 ] && [ "${status[2]}" -eq 0 ] \
+    && [ "$(cat "$work/seen" 2>/dev/null)" = "$(wc -l < "$work/revs" | tr -d ' ')" ]
+}
+
+# drained COMMAND...: runs the command on the lines it is given, then reads
+# whatever the command left unread, and returns the command's own status.
+drained() {
+  local status
+  "$@"
+  status=$?
+  cat > /dev/null
+  return "$status"
+}
+
+unreadable() {
+  say "the changes of the commits being pushed could not be read, so they were not checked and nothing is pushed."
+  exit 1
+}
+
+# --- 1. secrets ---------------------------------------------------------------
+if [ -s "$work/revs" ]; then
+  if ! gitleaks_bin=$(find_gitleaks); then
+    say "gitleaks not found, so secrets cannot be checked. Install it (brew install gitleaks) or set GITLEAKS_BIN."
+    exit 1
+  fi
+  while IFS= read -r range; do
+    if [ -f "$root/.gitleaks.toml" ]; then
+      "$gitleaks_bin" git --no-banner --redact --config "$root/.gitleaks.toml" --log-opts="$range" . >&2
+    else
+      "$gitleaks_bin" git --no-banner --redact --log-opts="$range" . >&2
+    fi
+    if [ $? -ne 0 ]; then
+      say "gitleaks reported a finding in the commits being pushed, or failed to run (see above)."
+      failed=1
+    fi
+  done < "$work/ranges"
+
+  # gitleaks reads `git log -p`, which prints nothing for a merge commit, so
+  # what a merge itself added is handed over separately. (Asking git log for
+  # the whole change of a merge instead would bring along everything the
+  # merged branch holds, the remote's own findings included.)
+  if [ -n "$(git rev-list --no-walk --min-parents=2 --stdin < "$work/revs" | head -n 1)" ]; then
+    if [ -f "$root/.gitleaks.toml" ]; then
+      added_lines "" 1 | drained "$gitleaks_bin" stdin --no-banner --redact --config "$root/.gitleaks.toml" >&2
+    else
+      added_lines "" 1 | drained "$gitleaks_bin" stdin --no-banner --redact >&2
+    fi
+    status=("${PIPESTATUS[@]}")
+    [ "${status[0]}" -eq 0 ] || unreadable
+    if [ "${status[1]}" -ne 0 ]; then
+      say "gitleaks reported a finding in what a merge commit being pushed adds, or failed to run (see above). It cannot say where when it is handed lines: \`git show --cc <commit>\` shows what each of these merges added:"
+      git rev-list --no-walk --min-parents=2 --abbrev-commit --stdin < "$work/revs" | indent
+      failed=1
+    fi
+  fi
+fi
+
+# --- 2. files that never belong -------------------------------------------------
+# Added or changed by a commit being sent. -c: for a merge, what the merge
+# itself changed (without it a merge lists nothing); what each side brought is
+# in that side's own commits.
+# -z: the names as they are, not quoted and escaped.
+git log --stdin --no-walk --root -c --name-only -z --diff-filter=d --format= < "$work/revs" > "$work/names.z" || unreadable
+tr '\0' '\n' < "$work/names.z" | grep -v '^$' | sort -u > "$work/names"
+bad_paths=$(forbidden_paths < "$work/names")
+if [ -n "$bad_paths" ]; then
+  say "these files never belong in the repository, and a commit being pushed adds or changes them:"
+  printf '%s\n' "$bad_paths" | indent
+  failed=1
+fi
+
+# --- 3. private terms -------------------------------------------------------------
+# added_term_hits PATTERNS: "rev:path" for every file in which a commit being
+# pushed ADDS a line that holds a term. Only where the lines are is kept.
+added_term_hits() {
+  local status
+  : > "$work/where"
+  added_lines "$work/where" 0 | grep -n -a -i -F -f "$1" | cut -d: -f1 > "$work/which"
+  status=("${PIPESTATUS[@]}")
+  [ "${status[0]}" -eq 0 ] || return 1
+  awk 'NR == FNR { wanted[$1] = 1; next } FNR in wanted' "$work/which" "$work/where" | sort -u
+}
+
+terms_file=$(terms_file_path) || exit 1
+patterns="$work/patterns"
+if [ ! -f "$terms_file" ]; then
+  say "warning: $terms_file is missing, so private names are NOT being checked (scripts/install-git-hooks.sh creates it)."
+elif write_active_terms "$terms_file" "$patterns"; then
+  if [ -s "$work/revs" ]; then
+    hits=$(added_term_hits "$patterns") || unreadable
+    if [ -n "$hits" ]; then
+      say "private terms from sensitive-terms.txt in lines the commits being pushed add (commit:file):"
+      printf '%s\n' "$hits" | indent
+      failed=1
+    fi
+    name_hits=$(grep -i -F -f "$patterns" "$work/names")
+    if [ -n "$name_hits" ]; then
+      say "private terms from sensitive-terms.txt found in file or directory names:"
+      printf '%s\n' "$name_hits" | indent
+      failed=1
+    fi
+    grep_args=()
+    while IFS= read -r term; do grep_args+=(--grep="$term"); done < "$patterns"
+    message_hits=$(in_caller_locale git log --stdin --no-walk -i -F --encoding=UTF-8 --date=short --format='commit %h (%ad)' "${grep_args[@]}" < "$work/revs") || unreadable
+    if [ -n "$message_hits" ]; then
+      say "private terms from sensitive-terms.txt found in the messages of these commits:"
+      printf '%s\n' "$message_hits" | indent
+      failed=1
+    fi
+  fi
+  while read -r object name; do
+    # The message is what follows the first blank line of a tag object.
+    if git cat-file -p "$object" | sed '1,/^$/d' | grep -q -a -i -F -f "$patterns"; then
+      say "private terms from sensitive-terms.txt found in the message of tag $name."
+      failed=1
+    fi
+  done < "$work/tags"
+  ref_hits=$(grep -i -F -f "$patterns" "$work/refs")
+  if [ -n "$ref_hits" ]; then
+    say "private terms from sensitive-terms.txt found in a branch or tag name being pushed:"
+    printf '%s\n' "$ref_hits" | indent
+    failed=1
+  fi
+fi
+
+if [ "$failed" -ne 0 ]; then
+  say "push blocked. A new commit on top does not fix this: the commit that holds it is still sent. Change that commit (amend or rebase) and push again; revoke any real credential first. A real false positive belongs in .gitleaks.toml (secrets) or sensitive-terms.txt (terms)."
+  exit 1
+fi
+exit 0

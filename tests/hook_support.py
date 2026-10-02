@@ -3,6 +3,7 @@
 isolated environment every git call in it uses."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,7 +39,19 @@ def make_env(gitleaks_bin, author_email="maintainer@example.com"):
 
 
 def git(repo, *args, env=None):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env)
+    # errors="replace": a hook prints a file name as it is, and a name need not be valid UTF-8.
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, errors="replace", env=env)
+
+
+def make_repo(path, gitleaks_bin):
+    """A new repository on `main` with this repository's hooks enabled and
+    its gitleaks configuration."""
+    path.mkdir()
+    env = make_env(gitleaks_bin)
+    assert git(path, "init", "-q", "-b", "main", env=env).returncode == 0
+    assert git(path, "config", "core.hooksPath", str(HOOKS), env=env).returncode == 0
+    shutil.copy(REPO_ROOT / ".gitleaks.toml", path / ".gitleaks.toml")
+    return Repo(path, env)
 
 
 def write_script(path, body):
