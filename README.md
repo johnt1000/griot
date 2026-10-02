@@ -128,7 +128,7 @@ or in `.mcp.json`:
 }
 ```
 
-Leave `env` out unless you want this project to differ from your own configuration: a variable set there wins over `griot config` and `griot profiles use` for that server. `GRIOT_PROJECT` is the one that belongs there.
+Leave `env` out unless you want this project to differ from your own configuration. A variable set there wins over `griot config` for that server only where it narrows what your configuration says: one that would turn on indexing through MCP, add a directory an agent may index, raise a spend ceiling, send a platform token to another host, switch to a profile that calls an API or let an index run fail for longer is ignored (the server says so on stderr and in `griot_config_list`). Those are set with `griot config set` and `griot profiles use`, or, for a profile, with `--profile` in the server's `args`. `GRIOT_PROJECT` is the one that belongs in `env`. A server also refuses to start with its configuration or data directory inside the project it was started in.
 
 The server sends instructions when it connects: what griot covers, when to search it first and when to read or grep instead. A client that passes server instructions on to the agent (Claude Code does) needs nothing installed for that.
 

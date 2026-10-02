@@ -107,7 +107,8 @@ def normalized(setting: Setting, raw: str) -> str:
             raise _NotValid(f"{setting.name} takes a finite number, zero or more (got {raw!r}).")
         return text
     if kind == "count":
-        if not text.isdigit() or int(text) < 1:
+        # isascii: "²" and "٣" are digits to isdigit() and an error to int().
+        if not (text.isascii() and text.isdigit()) or int(text) < 1:
             raise _NotValid(f"{setting.name} takes a whole number from 1 up (got {raw!r}).")
         return str(int(text))
     if kind in ("flag", "enable"):
@@ -272,10 +273,12 @@ def running_with(setting: Setting) -> dict:
     else:
         value, source = default, "default"
     a_new_process = in_file if in_file is not None else default
+    ignored = common.ENVIRONMENT_IGNORED.get(setting.variable)
     # An empty line and no line are the same thing when the default is empty
     # too (`GRIOT_PROJECT=`): "" and None are compared as one.
     return {"value": value, "source": source, "in_file": in_file,
-            "restart_needed": source != "environment" and (a_new_process or None) != (value or None)}
+            "restart_needed": source != "environment" and (a_new_process or None) != (value or None),
+            "environment_ignored": ignored_sentence(setting.variable, ignored) if ignored else None}
 
 
 def persisted(setting: Setting) -> str | None:
@@ -299,6 +302,87 @@ def _amount(text: str | None) -> float | None:
 
 
 # --- a change that widens something ---------------------------------------------------------
+
+
+def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, str]:
+    """For a server: (why `raw`, the value its environment gives `setting`,
+    is not taken, or None when it may be; the value in the form it was
+    measured in).
+
+    It may be taken when it widens nothing next to what the person's own
+    file says (or the default, where the file is silent): the measure
+    `griot config set` asks a person about, for the same reason. Each of
+    these lets griot spend more, lets an agent do more, or sends something
+    somewhere else.
+
+    The second part matters as much as the first. A value measured in one
+    form and left in the environment in another is read by the code that
+    uses it in its own way: `~/code` was measured expanded and read as a
+    folder named `~`, and `work/link/..` was measured as `work` and read
+    as wherever the link leads, one level up. What a server obeys is what
+    was measured, so the caller puts THIS form in force.
+
+    Called while common.py is loading (see ENVIRONMENT_ONLY_NARROWS), so
+    only what common has defined by then is used."""
+    from griot import common
+
+    old = persisted(setting)
+    if setting.variable == "GRIOT_EMBED_PROFILE":
+        name = raw.strip()
+        chosen = common.EMBED_PROFILES.get(name)
+        if chosen is None:
+            return None, raw  # refused where profiles are read, with the list of the ones there are
+        if name == (old or "").strip() or chosen["backend"] == "local":
+            return None, name  # the person's own choice, or nothing leaves the machine
+        return "that profile sends what is indexed and searched to an API", raw
+    if setting.kind not in ("ceiling", "enable", "roots", "url", "hosts", "count") \
+            and setting.variable != "GRIOT_LOG_QUESTIONS":
+        return None, raw
+    try:
+        return _measured(setting, raw, old)
+    except ValueError:
+        # _NotValid is one, and so is whatever else a value nobody thought of
+        # raises on the way: what cannot be measured is not known to be narrow.
+        return "it is not a value this setting takes", raw
+
+
+def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, str]:
+    new = normalized(setting, raw)
+    if setting.kind == "roots":
+        # As the code that uses them finds them: `~` expanded, links
+        # followed, and only then `..` (normalized() took `..` out as
+        # text, which is what the file gets and is then read as such).
+        new = ":".join(dict.fromkeys(os.path.realpath(os.path.expanduser(part)) for part in _split(raw, ":")))
+    try:
+        # As the readers take it ("yes" in the file is on).
+        old = normalized(setting, old) if old else old
+    except _NotValid:
+        pass  # measured against what the file says, as it says it
+    if setting.variable == "GRIOT_LOG_QUESTIONS":
+        turned_off = (old or "").strip().lower() in _FALSE
+        return ("the file turns the logging of questions off" if turned_off and new == "true" else None), new
+    if setting.kind == "count":
+        before = old if old and old.isascii() and old.isdigit() else default_of(setting)
+        return ("it lets an index run go on failing for longer" if int(new) > int(before or 0) else None), new
+    if setting.kind == "url":
+        # Any host but the one in force: back to the default is another host
+        # too, when the file names your own.
+        return ("it sends the GitLab token to another host" if new != (old or default_of(setting)) else None), new
+    if _question(setting, old, new) is None:
+        return None, new
+    return {"ceiling": "it raises a spend ceiling", "enable": "it turns on indexing through MCP",
+            "roots": "it adds a directory an agent may index",
+            "hosts": "it sends the Gitea token to another host"}[setting.kind], new
+
+
+def ignored_sentence(variable: str, ignored: dict) -> str:
+    """What a person reads about a value the server did not take."""
+    setting = next(s for s in SETTINGS if s.variable == variable)
+    how = (f"`griot profiles use <name>`" if variable == "GRIOT_EMBED_PROFILE"
+           else f"`griot config set {setting.name} <value>`")
+    return (f"{variable} in the environment this server was started with was ignored: {ignored['reason']}, and a "
+            f"server takes from its environment only what narrows your own configuration. To set it for real, run "
+            f"{how} in a terminal.")
 
 
 def _question(setting: Setting, old: str | None, new: str | None) -> str | None:

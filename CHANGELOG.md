@@ -421,6 +421,28 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Security
 
+- **An MCP server obeys its environment only where that narrows
+  (BREAKING for a server configured through its `env`).** A server is
+  started by whoever registered it, and a registration can come with a
+  project: a `.mcp.json` in a cloned repository could name `griot mcp`
+  with an `env` that turned on indexing through MCP, added directories an
+  agent may index, raised the spend ceilings, pointed a platform token at
+  another host or switched a local embedding profile for one that calls
+  an API, and the server did as told. For a server, a variable that would
+  widen what your own `<config>/.env` says is now ignored, with a line on
+  stderr and an `environment_ignored` field in `griot_config_list`; one
+  that narrows is obeyed, in the form it was measured in (a directory as
+  the real path it names), and so is `--profile` on the command line. A
+  value the setting cannot take no longer stops the server: it is ignored
+  like one that widens (a profile name that does not exist still stops
+  it, as before). A server also refuses to start when its configuration or data
+  directory is inside the project it was started in, so that a repository
+  cannot bring its own settings and index and have them served with your
+  credentials. If your own registration turned something on through
+  `env`, set it with `griot config set` (or `griot profiles use`) instead.
+  Commands at a terminal are unchanged: they obey the shell they run in.
+  Not covered: variables that are not griot's settings (a proxy, a
+  certificate bundle, a credential) in a server's `env`.
 - **What the git hooks refuse is refused by every route into the history.**
   Three things went past them. A line of a commit message that starts with
   `#` was taken for one of git's template comments and not read, although a
