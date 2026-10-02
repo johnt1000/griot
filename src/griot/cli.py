@@ -19,6 +19,7 @@ import importlib
 import os
 import sys
 
+import griot
 from griot import ConfigurationError, UnknownEmbedProfile, __version__
 
 # Full pipeline order: code
@@ -609,6 +610,7 @@ def _main(argv=None) -> int:
     argv, profile = _extract_profile_override(argv)
     if profile is not None:
         os.environ["GRIOT_EMBED_PROFILE"] = profile
+        griot.PROFILE_FROM_COMMAND_LINE = profile
     argv, chat_profile = _extract_chat_profile_override(argv)
     if chat_profile is not None:
         os.environ["GRIOT_CHAT_PROFILE"] = chat_profile
@@ -648,6 +650,10 @@ def _main(argv=None) -> int:
                 # a broken file points at: it must not need that file.
                 return config.main(argv[1:])
             config.before_configuration_loads(argv[1:])
+        if argv[0] == "mcp":
+            # Before the configuration is read (see the flag): a server does
+            # not take its environment at its word.
+            griot.ENVIRONMENT_ONLY_NARROWS = True
         from griot import common
         common.ensure_env_template()
         return _run_module(_MODULES[argv[0]], argv[1:])

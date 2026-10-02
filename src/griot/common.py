@@ -20,6 +20,7 @@ import requests
 from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
+import griot as _package
 from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
@@ -33,6 +34,77 @@ from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, r
 # (mkdir parents=True exist_ok=True).
 CONFIG_DIR = Path(os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))) / "griot"
 DATA_DIR = Path(os.getenv("GRIOT_DATA_DIR", os.getenv("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))) / "griot"
+
+
+
+def _is_inside(directory: Path, root: Path) -> bool:
+    """Whether `directory` is `root` or below it (both already resolved)."""
+    return directory == root or root in directory.parents
+
+
+def _own_home() -> Path:
+    """The home directory the system has on record for this user: HOME is
+    part of the environment, and the environment is what is in question."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    except (ImportError, KeyError, OSError):  # no such record (or not POSIX): what the environment says
+        return Path.home().resolve()
+
+
+def _project_of(start: Path, home: Path) -> Path | None:
+    """The project a server started in `start` serves: the repository that
+    folder is in (the nearest directory above with a `.git`), or the folder
+    itself when there is none. A repository that holds the person's own home
+    directory (dotfiles kept at `~`) is not a project somebody handed over,
+    so below it the project is the folder alone; and None when the folder
+    itself is the home directory or holds it."""
+    start = start.resolve()
+    root = next((folder for folder in (start, *start.parents) if (folder / ".git").exists()), start)
+    if _is_inside(home, root):
+        root = start
+    return None if _is_inside(home, root) else root
+
+
+def _is_the_project_s(directory: Path, project: Path, home: Path) -> bool:
+    """Whether `directory` (resolved) is one the project could have supplied:
+    inside it, and not the place griot uses by default. That place is the
+    person's own even when the project around it is theirs too (`~/.config`
+    kept in a repository), and no project can make a directory of its own
+    be it."""
+    by_default = {(home / ".config" / "griot").resolve(), (home / ".local" / "share" / "griot").resolve()}
+    return _is_inside(directory, project) and directory not in by_default
+
+
+def _refuse_directories_inside_the_project() -> None:
+    """A server does not take its configuration, or keep its data, inside
+    the project it serves. A project can carry its own registration of the
+    server (`.mcp.json`) and with it the variables that say where these
+    directories are: pointed into the repository, the repository's own
+    repos.json, .env and index would decide what the server may index, spend
+    and reach, with the person's credentials (the keychain does not depend
+    on these directories). Nothing is created before this is checked."""
+    try:
+        here = Path.cwd()
+    except OSError as e:
+        raise ConfigurationError(f"This MCP server was started in a working directory that cannot be read ({e}), so "
+                                 f"it cannot tell which project it serves. Start it from a directory that exists.")
+    home = _own_home()
+    project = _project_of(here, home)
+    if project is None:
+        return
+    for what, directory in (("configuration", CONFIG_DIR), ("data", DATA_DIR)):
+        if _is_the_project_s(Path(os.path.abspath(directory)).resolve(), project, home):
+            raise ConfigurationError(
+                f"griot's {what} directory ({directory}) is inside the project this MCP server was started in "
+                f"({project}). A server does not take its {what} from the project it serves: the project could "
+                f"then decide what the server may index, spend and reach. Remove GRIOT_CONFIG_DIR, GRIOT_DATA_DIR, "
+                f"XDG_CONFIG_HOME, XDG_DATA_HOME and HOME from the `env` of the server's registration, or point "
+                f"them outside the project.")
+
+
+if _package.ENVIRONMENT_ONLY_NARROWS:
+    _refuse_directories_inside_the_project()
 
 # User-editable config — lives in CONFIG_DIR, never inside the installed
 # code (site-packages is immutable/shared). The indexers and quality_check
@@ -728,6 +800,54 @@ def _resolve_profile(name: str) -> dict:
         )
     return EMBED_PROFILES[name]
 
+
+# What a server's environment said and the server did not take: {variable:
+# {"value", "reason"}}. Empty for a command at a terminal.
+ENVIRONMENT_IGNORED: dict[str, dict] = {}
+
+
+def _take_from_the_environment_only_what_narrows() -> None:
+    """For an MCP server (see griot.ENVIRONMENT_ONLY_NARROWS): each setting
+    whose value in the environment would WIDEN what the person's own file
+    says goes back to the file's value, or to the default where the file is
+    silent, before anything reads it. What was ignored is kept, to be said
+    on stderr once the server is up and in griot_config_list.
+
+    Done here, on os.environ itself: every reader below takes its value
+    from there, and so does every process the server starts (an index run
+    reads the environment it inherits)."""
+    from dotenv import dotenv_values
+
+    from griot import config
+
+    in_file = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    for setting in config.SETTINGS:
+        variable = setting.variable
+        if variable not in ENVIRONMENT_BEFORE_ENV_FILE:
+            continue
+        raw = ENVIRONMENT_BEFORE_ENV_FILE[variable]
+        if variable == "GRIOT_EMBED_PROFILE" and raw == _package.PROFILE_FROM_COMMAND_LINE:
+            continue  # `--profile`: in the command a person approved, not in its environment
+        reason, measured = config.measured_from_environment(setting, raw)
+        if reason is None:
+            # Obeyed, in the form it was measured in: every reader below,
+            # and every process this one starts, reads that and nothing else.
+            os.environ[variable] = ENVIRONMENT_BEFORE_ENV_FILE[variable] = measured
+            continue
+        ENVIRONMENT_IGNORED[variable] = {"value": raw, "reason": reason}
+        del ENVIRONMENT_BEFORE_ENV_FILE[variable]
+        if in_file.get(variable) is not None:
+            os.environ[variable] = in_file[variable]
+        else:
+            os.environ.pop(variable, None)
+
+
+# Whether the configuration was read the way a server reads it. The flag is
+# looked at once, here: a process that sets it after this module loaded has
+# changed nothing, and mcp_server.main() refuses to serve on that.
+ENVIRONMENT_WAS_NARROWED = _package.ENVIRONMENT_ONLY_NARROWS
+if ENVIRONMENT_WAS_NARROWED:
+    _take_from_the_environment_only_what_narrows()
 
 ACTIVE_PROFILE_NAME = os.getenv("GRIOT_EMBED_PROFILE", "jina-code")
 if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:

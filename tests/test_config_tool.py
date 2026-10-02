@@ -170,7 +170,10 @@ def test_a_yes_or_no_is_read_the_way_the_command_that_sets_it_reads_it(word, mon
 @pytest.mark.parametrize("word,registered", [("yes", True), ("on", True), ("true", True), ("1", True),
                                              ("no", False), ("", False)])
 def test_indexing_through_mcp_is_enabled_by_every_spelling_of_yes(tmp_path, word, registered):
-    out = _server(tmp_path, GRIOT_MCP_ENABLE_INDEX=word)
+    # In the file: it is the person's own configuration that turns it on (a real
+    # server ignores the variable in its environment, see
+    # test_mcp_environment_only_narrows.py).
+    out = _server(tmp_path, file=f"GRIOT_MCP_ENABLE_INDEX={word}\n")
     assert ("griot_index_repo" in out["tools"]) is registered
     assert out["by_name"]["mcp-index"]["value"] == word
 

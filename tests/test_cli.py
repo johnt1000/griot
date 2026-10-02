@@ -133,6 +133,9 @@ def test_mcp_subcommand_runs_the_real_server(monkeypatch):
 
     calls = []
     monkeypatch.setattr(mcp_server_module.mcp, "run", lambda *a, **kw: calls.append((a, kw)))
+    # In this process the configuration loaded long ago, as a library: a real
+    # server reads it as a server (tests/test_mcp_environment_only_narrows.py).
+    monkeypatch.setattr(mcp_server_module.common, "ENVIRONMENT_WAS_NARROWED", True)
 
     rc = cli.main(["mcp"])
 

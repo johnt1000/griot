@@ -10,6 +10,22 @@ TRUE_WORDS = ("true", "yes", "on", "1")
 FALSE_WORDS = ("false", "no", "off", "0")
 
 
+# Set by the two ways an MCP server starts (`griot mcp`, and
+# `python -m griot.mcp_server`) BEFORE the configuration loads. A server is
+# started by whoever registered it, and a registration can come with the
+# project it serves (a `.mcp.json` in a cloned repository), so its
+# environment is not the person's own word: common.py then obeys a value in
+# it only where that narrows what the person's configuration file says, and
+# refuses a configuration or data directory inside the project. A command at
+# a terminal leaves this alone and obeys the shell it runs in.
+ENVIRONMENT_ONLY_NARROWS = False
+# The profile given as `--profile` on the command line, when there was one.
+# cli.py puts it in the environment for the configuration to read; it is in
+# the command a person approves when a server is registered, which the `env`
+# beside it is not, so it is not treated as the environment's.
+PROFILE_FROM_COMMAND_LINE: str | None = None
+
+
 class ConfigurationError(ValueError):
     """A setting griot cannot start with. Defined here, not in common.py: it
     is raised while common.py is being imported, and the CLI has to be able

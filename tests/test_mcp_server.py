@@ -1785,6 +1785,7 @@ def test_main_runs_mcp_server(monkeypatch):
     # multi is the default, so main() would otherwise leave a real reaper
     # thread running for the rest of the test session.
     monkeypatch.setattr(mcp_server, "_start_idle_reaper", lambda *a, **kw: None)
+    monkeypatch.setattr(common, "ENVIRONMENT_WAS_NARROWED", True)  # as in a process started as the server
 
     mcp_server.main()
 
@@ -2254,6 +2255,7 @@ def test_main_starts_the_idle_reaper_before_serving(monkeypatch):
     order = []
     monkeypatch.setattr(mcp_server, "_start_idle_reaper", lambda *a, **k: order.append("reaper"))
     monkeypatch.setattr(mcp_server.mcp, "run", lambda **k: order.append("run"))
+    monkeypatch.setattr(common, "ENVIRONMENT_WAS_NARROWED", True)  # as in a process started as the server
 
     mcp_server.main()
 

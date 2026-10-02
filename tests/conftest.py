@@ -224,6 +224,18 @@ REAL_NEW_HTTP_SESSION = common._new_http_session
 
 
 @pytest.fixture(autouse=True)
+def _no_test_leaves_this_process_marked_as_a_server():
+    """`griot mcp` marks its process before the configuration loads (see
+    griot.ENVIRONMENT_ONLY_NARROWS). A test that runs that command in this
+    process must not leave the mark for the tests after it."""
+    import griot
+
+    yield
+    griot.ENVIRONMENT_ONLY_NARROWS = False
+    griot.PROFILE_FROM_COMMAND_LINE = None
+
+
+@pytest.fixture(autouse=True)
 def _no_test_opens_a_real_http_session(monkeypatch):
     """The calls to embedding and chat APIs go through common._http_post(),
     over a session the process keeps. Tests stand in for that function; one

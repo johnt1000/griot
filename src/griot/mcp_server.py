@@ -85,6 +85,19 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 
+import griot
+
+if __name__ == "__main__":
+    # Started as the server, without the CLI in front (which sets this for
+    # `griot mcp`). Before the configuration loads; and a setting it cannot
+    # start with is one line, as it is through the CLI.
+    griot.ENVIRONMENT_ONLY_NARROWS = True
+    try:
+        import griot.common  # noqa: F401
+    except griot.ConfigurationError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(2)
+
 from griot import (TRUE_WORDS, ask, auth, cli, common, config, golden_set, harnesses, jobs, logdb, quality_check,
                    redaction, repos, stats)
 
@@ -314,6 +327,10 @@ class ConfigEntry(TypedDict):
     in_file: str | None
     # The file changed since this server read it, and a restart applies it.
     restart_needed: bool
+    # Set when the environment this server was started with named a value
+    # for this setting that would have widened what the file says, and the
+    # server did not take it: the variable, why, and how to set it for real.
+    environment_ignored: str | None
     description: str
 
 
@@ -1232,7 +1249,11 @@ _CONFIG_LIST_NOTE = (
     "widens what griot may do, spend or reach is asked of a person there), and a running server keeps the "
     "values it started with: restart it to apply a change. Under source \"environment\" the file is not "
     "used: the value comes from where the server was started (for a registered server, the `env` of its "
-    "registration, or a `--profile` on its command line)."
+    "registration, or a `--profile` on its command line). A server takes a value from its environment only "
+    "where that narrows what the file says: one that would turn on indexing, add a directory to index, raise "
+    "a spend ceiling, reach another host, switch to a profile that calls an API or let an index run fail for "
+    "longer is ignored, and "
+    "`environment_ignored` says so for that setting."
 )
 
 
@@ -1263,7 +1284,9 @@ def griot_config_list() -> ConfigListOutput:
     registration; it wins over the file), "file" (griot's own .env, as it
     was at start) or "default". `in_file` is what the file says now, and
     `restart_needed` is true when that differs from what the server runs
-    with and a restart would apply it.
+    with and a restart would apply it. `environment_ignored` is set when
+    the server's environment named a value that would have widened the
+    setting and the server did not take it.
 
     Use it when griot does not behave as its configuration says: the wrong
     embedding profile, indexing through MCP not enabled, a spend ceiling
@@ -1283,6 +1306,7 @@ def griot_config_list() -> ConfigListOutput:
         "default": _setting_shown(config.default_of(setting)),
         "in_file": _setting_shown(state["in_file"]),
         "restart_needed": state["restart_needed"],
+        "environment_ignored": state["environment_ignored"],
         "description": descriptions.get(setting.variable, (None, ""))[1],
     } for setting, state in rows]
     return {"env_file": str(common.ENV_PATH), "settings": settings,
@@ -2370,7 +2394,17 @@ def main(argv=None) -> None:
     the tools, never calling mcp.run() — without that, the process imported
     everything and exited, never connecting via stdio. transport="stdio" is
     the SDK's default, made explicit here for clarity."""
+    if not common.ENVIRONMENT_WAS_NARROWED:
+        # Whatever imported the configuration did it as a command at a
+        # terminal would: the environment was taken at its word. Serving on
+        # that would be the hole this closes, with nothing said.
+        raise griot.ConfigurationError(
+            "The MCP server was started in a way that read its configuration before it knew it was a server. "
+            "Start it with `griot mcp` (or `python -m griot.mcp_server`).")
     _keep_stdout_for_the_protocol()
+    for variable, ignored in common.ENVIRONMENT_IGNORED.items():
+        # Now, not when the configuration loaded: stdout is the protocol's.
+        common.log_and_print(f"Warning: {config.ignored_sentence(variable, ignored)}", level="warning")
     _start_idle_reaper()
     mcp.run(transport="stdio")
 

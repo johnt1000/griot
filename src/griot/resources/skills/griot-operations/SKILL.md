@@ -22,7 +22,11 @@ time any griot tool that reads it is called (`griot_search`,
 - `GRIOT_MCP_CONCURRENCY_MODE=single`: for the server's whole life.
 
 The mode comes from griot's own configuration (`<config>/.env`), unless the
-server was registered with an `env` of its own, which wins. Absent means
+server was registered with an `env` of its own, which wins for this setting
+(a server ignores a variable in its `env` only where it would widen what the
+configuration allows: indexing, directories, spend ceilings, hosts, a
+profile that calls an API, how long an index run may go on failing). Absent
+means
 `multi`. An older `.env` (generated before `multi` became the default) can
 carry an active `GRIOT_MCP_CONCURRENCY_MODE=single` line that pins the old
 behavior. Check only that setting, and never print the whole `.env`, which
@@ -90,10 +94,13 @@ server starts with the new setting:
   window. The cost is a short reopen on the first tool call after an idle
   stretch.
 
-Only when the project defines its own `griot` server with an `env` block do
-those settings have to change there instead: a variable in the server's own
-`env` wins over griot's configuration. Do not put `GRIOT_EMBED_PROFILE`
-there: it would silently override `griot profiles use`.
+Only when the project defines its own `griot` server with an `env` block
+can the concurrency mode be set there instead. Indexing through MCP cannot
+be turned on from a server's `env`: a server ignores a variable that widens
+what griot's configuration allows, and `griot_config_list` says when it did
+(`environment_ignored`). Do not put `GRIOT_EMBED_PROFILE` there either: a
+local profile set there would silently override `griot profiles use`, and
+one that calls an API is ignored.
 
 ## Step 2 — before spending anything
 
