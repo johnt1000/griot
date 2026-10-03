@@ -51,7 +51,10 @@ def repo(tmp_path, stub_gitleaks):
 def remote(repo, tmp_path):
     """`repo` with one clean commit on main and an empty remote, `origin`."""
     path = tmp_path / "remote.git"
-    assert _git(tmp_path, "init", "-q", "--bare", str(path), env=repo.env).returncode == 0
+    # -b main: git's default branch name differs between installations (it
+    # was `master` on the CI runner), and a clone of a remote whose HEAD
+    # names a branch nobody pushed is an empty checkout on another branch.
+    assert _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(path), env=repo.env).returncode == 0
     assert _git(repo, "remote", "add", "origin", str(path), env=repo.env).returncode == 0
     _commit_file(repo, "README.md", "hello\n", "first")
     return path
@@ -564,7 +567,7 @@ def test_the_first_commit_of_a_repository_is_looked_at_whatever_git_was_told_abo
     """`log.showRoot=false` makes `git log` print no changes for a commit
     without a parent."""
     path = tmp_path / "remote.git"
-    assert _git(tmp_path, "init", "-q", "--bare", str(path), env=repo.env).returncode == 0
+    assert _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(path), env=repo.env).returncode == 0
     assert _git(repo, "remote", "add", "origin", str(path), env=repo.env).returncode == 0
     assert _git(repo, "config", "log.showRoot", "false", env=repo.env).returncode == 0
     _commit_file(repo, "prod.env", f"KEY={TERM}\n", "first", hooks=False)
