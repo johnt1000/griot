@@ -554,6 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
+        ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration); changes no setting, index or file of yours"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal
@@ -640,6 +641,11 @@ def _main(argv=None) -> int:
     # module's own parser sees --help directly, same as the module
     # docstring already promises) and keeps index/search/profiles on the
     # unchanged, strict build_parser()/parse_args() path.
+    if argv and argv[0] == "doctor":
+        # Before the configuration is read, like `config`: the check that
+        # matters most is the one for a file griot cannot start with.
+        from griot import doctor
+        return doctor.main(argv[1:])
     if argv and argv[0] in _MODULES:
         if argv[0] == "config":
             # Before the configuration is read: see the function. It is what

@@ -108,6 +108,18 @@ Re-running this over unchanged content costs nothing — griot skips any
 chunk whose content hash hasn't changed. See `griot-indexing` for the full
 incremental-indexing model.
 
+## When something does not work
+
+```bash
+griot doctor          # every check at once; changes no setting, index or file; says what to do
+```
+
+It covers what the error messages report one at a time: a setting the file
+holds that griot cannot start with, the profile's credential, the
+collection, the registered repositories (and whether their index is behind),
+spend, the MCP registration and tool approval, git, the log. Start there
+before reading `griot-troubleshooting`.
+
 ## First search
 
 ```bash

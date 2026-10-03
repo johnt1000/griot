@@ -302,6 +302,7 @@ out on purpose, because every one written here went stale.
 | `auth list` | Even a masked value lets someone confirm a stolen key is the right one, and gives an agent nothing beyond the `configured` boolean it already has. |
 | `mcp` | It is the command that starts this server. |
 | `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
+| `doctor` | A checklist for the person setting griot up: most of what it reads a tool already answers (`griot_config_list`, `griot_index_status`, `griot_repos_list`, `griot_spend_status`, `griot_profiles_list`), and what it adds (the file's permissions, the MCP registration, which tools still ask) is about the machine and the harness the agent runs in, which the agent cannot change. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |
 
 Three tools expose less than their CLI counterpart, and the differences

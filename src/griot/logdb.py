@@ -228,6 +228,14 @@ def private_mkdir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _nothing_logged_yet(log_dir: Path) -> bool:
+    """No database and no legacy file to migrate into one: nothing was ever
+    written. A READ then has nothing to open, and opening would create the
+    directory and the database on the way: looking at a status must not
+    leave files behind (`griot doctor`, day one)."""
+    return not (log_dir / DB_FILENAME).exists() and not any((log_dir / name).exists() for name, _ in _JSONL_SOURCES)
+
+
 def _connect(log_dir: Path) -> sqlite3.Connection:
     # [real bug, found via a subprocess integration test] read paths
     # (get_index_status(), stats.load_window()) never call secure_mkdir()
@@ -311,6 +319,8 @@ def migrate_legacy_json_file(log_dir: Path, legacy_path: Path, table: str) -> No
     marked done, so it is not retried on every single call."""
     if table not in _TABLES:
         raise ValueError(f"unknown table {table!r}")
+    if not legacy_path.exists() and _nothing_logged_yet(log_dir):
+        return  # nothing to carry over, and a READ asked for this: creating the log here would be its only effect
     conn = _connect(log_dir)
     try:
         marker = legacy_path.name
@@ -345,6 +355,8 @@ def read_since(log_dir: Path, table: str, days: int, now: datetime | None = None
     if table not in _TABLES:
         raise ValueError(f"unknown table {table!r}")
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    if _nothing_logged_yet(log_dir):
+        return []
     conn = _connect(log_dir)
     try:
         # table is validated against a fixed allowlist above, never
@@ -372,6 +384,8 @@ def read_recent(log_dir: Path, table: str, *, collection: str | None = None, lim
     if collection is not None and not _RECENT_TABLES[table]:
         raise ValueError(f"{table} records are not tied to a collection")
     where, args = ("WHERE collection = ? ", (collection,)) if collection is not None else ("", ())
+    if _nothing_logged_yet(log_dir):
+        return []
     conn = _connect(log_dir)
     try:
         rows = conn.execute(f"SELECT data FROM {table} {where}ORDER BY id DESC LIMIT ?", (*args, int(limit))).fetchall()
@@ -390,6 +404,8 @@ def most_recent_run_for_collection(log_dir: Path, collection: str) -> dict | Non
     timestamp, matching the original runs.jsonl invariant this replaces
     ("append-only, so the last matching line is always the most recent, no
     need to sort by timestamp")."""
+    if _nothing_logged_yet(log_dir):
+        return None
     conn = _connect(log_dir)
     try:
         row = conn.execute(
@@ -440,6 +456,8 @@ def read_spend_today(log_dir: Path, today: str) -> float:
     """Today's accumulated spend, or 0.0 when nothing was recorded today —
     a stored total from a PREVIOUS day reads as 0.0 rather than leaking
     into today's ceiling (same daily-reset semantics the JSON file had)."""
+    if _nothing_logged_yet(log_dir):
+        return 0.0
     conn = _connect(log_dir)
     try:
         row = conn.execute("SELECT spend_usd FROM spend_state WHERE id = 1 AND date = ?", (today,)).fetchone()
@@ -451,6 +469,8 @@ def read_spend_today(log_dir: Path, today: str) -> float:
 def read_spend_velocity(log_dir: Path, since: float) -> float:
     """Total spend recorded at or after `since` — the breaker's burst
     check, summed by SQLite over the indexed `at` column."""
+    if _nothing_logged_yet(log_dir):
+        return 0.0
     conn = _connect(log_dir)
     try:
         row = conn.execute("SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM spend_events WHERE at >= ?", (since,)).fetchone()
@@ -546,6 +566,8 @@ def _tool_call_rows(conn: sqlite3.Connection, cutoff: datetime) -> list[sqlite3.
 
 def read_tool_calls(log_dir: Path, days: int, now: datetime | None = None) -> list[dict]:
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    if _nothing_logged_yet(log_dir):
+        return []
     conn = _connect(log_dir)
     try:
         rows = _tool_call_rows(conn, cutoff)

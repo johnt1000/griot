@@ -47,7 +47,12 @@ griot ask "how does authentication work in this codebase?" --show-sources
 
 # 6. keep an eye on usage and spend
 griot stats
+
+# 7. when something does not work: every check at once, reads only
+griot doctor
 ```
+
+`griot doctor` checks the whole setup in one go and says what to do about each finding. It changes no setting, index or file of yours; two things happen on the way and are said: loading the configuration closes a `.env` left open to other users, as every griot command does, and asking the harness which server it has registered may start that server for a moment, as `griot assist install` does. It checks settings the file holds that griot cannot start with, the configuration file and directories closed to other users, the active profile and its credential, the collection, the registered repositories and whether their index is behind, today's spend against the ceiling, the MCP registration and which read-only tools still ask before every call, the variables a server would ignore, git, the log. Exit status 1 only when a check fails; a warning is something to know.
 
 `griot index all` runs the sources in order: `code`, `commits`, `tags`, `branches`, `platform`. Filter with `--sources code,commits`. Index an unregistered directory directly with `--path <dir>`.
 

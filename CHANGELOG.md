@@ -10,6 +10,21 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **`griot doctor`.** One command that checks what the scattered error
+  messages checked one at a time. It changes no setting, index or file of
+  yours (loading the configuration closes a `.env` left open to others, as
+  every command does, and asking the harness about its registration may
+  start the registered server for a moment; both are said). It checks:
+  settings the file
+  holds that griot cannot start with (the one check that runs even when the
+  configuration cannot load), the configuration file and directories closed
+  to other users, the active profile and its credential, the collection,
+  the registered repositories and whether their index is behind, today's
+  spend against the ceiling, the MCP registration (and a registration whose
+  command is gone), which read-only tools still ask before every call, the
+  variables a server started with this environment would ignore, git, the
+  log. Each says ok / warn / FAIL / skip with what to do; `--json` for one
+  document; exit status 1 only for a failure.
 - **Which repository is behind its own repository.** `griot stats` said
   when the index was last written, for the whole collection; the question
   an agent has before trusting a result is whether what griot holds about

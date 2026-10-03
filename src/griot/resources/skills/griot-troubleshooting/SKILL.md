@@ -8,6 +8,12 @@ description: Symptom-to-fix reference for griot failures - a locked/in-use colle
 Each entry below is verified against griot's actual source — the error
 messages quoted are the real ones the code raises, not paraphrases.
 
+Run `griot doctor` first: it performs every check below in one go (and a
+few more: the MCP registration, which read-only tools still ask, the
+variables a server would ignore), says ok / warn / FAIL per check with what
+to do, and changes no setting, index or file of yours. The entries here
+explain the failures it names.
+
 ## Collection locked / "another griot process still has it open"
 
 **Symptom**: an indexing or search command says `Another griot process holds

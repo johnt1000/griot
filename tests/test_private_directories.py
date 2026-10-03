@@ -101,12 +101,12 @@ def test_a_directory_that_cannot_be_closed_does_not_stop_griot(tmp_path, monkeyp
 
 
 def test_the_log_database_does_not_open_the_way_to_itself(tmp_path, monkeypatch):
-    """Reading the logs is what a new installation does first (`griot
-    stats`), and it made `<data>/griot` on the way with the default mode."""
+    """The first write to the log made `<data>/griot` on the way with the
+    default mode. (A read creates nothing at all since `griot doctor`.)"""
     old = os.umask(0o022)
     try:
         log_dir = tmp_path / "share" / "griot" / "logs"
-        logdb.read_recent(log_dir, "runs")
+        logdb.write_run(log_dir, {"timestamp": "2026-10-03T00:00:00+00:00", "script": "index_code.py"})
     finally:
         os.umask(old)
     assert _mode(log_dir) == 0o700 and _mode(log_dir.parent) == 0o700

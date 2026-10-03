@@ -478,3 +478,74 @@ def test_schema_creates_expected_tables(tmp_path):
     finally:
         conn.close()
     assert {"runs", "queries", "_jsonl_migrated"} <= names
+
+
+# --- a read of a log that was never written creates nothing ---------------------------------------
+# `griot doctor` and the status on day one READ the log; opening it would
+# create the directory and the database on the way, and looking must not
+# leave files behind.
+
+
+def test_reading_a_log_that_does_not_exist_creates_nothing(tmp_path):
+    from griot import logdb
+
+    log_dir = tmp_path / "never" / "logs"
+
+    assert logdb.read_recent(log_dir, "runs") == []
+    assert logdb.read_since(log_dir, "runs", 7) == []
+    assert logdb.most_recent_run_for_collection(log_dir, "c") is None
+    assert logdb.read_spend_today(log_dir, "2026-10-03") == 0.0
+    assert logdb.read_spend_velocity(log_dir, 0.0) == 0.0
+    assert logdb.read_tool_calls(log_dir, 7) == []
+    assert not log_dir.exists() and not log_dir.parent.exists()
+
+
+def test_a_log_directory_with_a_legacy_file_is_still_migrated_on_a_read(tmp_path):
+    """The guard is about nothing to open; a legacy runs.jsonl is something."""
+    import json
+
+    from griot import logdb
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "runs.jsonl").write_text(json.dumps({"timestamp": "2026-09-01T00:00:00+00:00", "script": "index_code.py"}) + "\n")
+
+    assert logdb.read_recent(log_dir, "runs") and (log_dir / logdb.DB_FILENAME).exists()
+
+
+def test_migrating_a_legacy_file_that_does_not_exist_creates_nothing(tmp_path):
+    """`griot stats` asks for this migration before it reads: on a fresh
+    install there is no legacy file, and nothing may be created on the way."""
+    from griot import logdb
+
+    log_dir = tmp_path / "never" / "logs"
+
+    logdb.migrate_legacy_json_file(log_dir, tmp_path / "never" / "quality_checks.jsonl", "quality_checks")
+
+    assert not log_dir.exists()
+
+
+def test_reading_todays_spend_creates_nothing_when_there_is_nothing_to_migrate(monkeypatch, tmp_path):
+    from griot import common
+
+    fresh = tmp_path / "fresh" / "griot"
+    monkeypatch.setattr(common, "LOG_DIR", fresh / "logs")
+    monkeypatch.setattr(common, "SPEND_STATE_PATH", fresh / ".spend_state.json")
+
+    assert common.get_spend_today() == 0.0
+    assert not fresh.exists()
+
+
+def test_a_legacy_spend_file_is_still_migrated_on_the_first_read(monkeypatch, tmp_path):
+    """The guard must not skip the one case the migration exists for."""
+    import json
+
+    from griot import common
+
+    fresh = tmp_path / "fresh" / "griot"
+    monkeypatch.setattr(common, "LOG_DIR", fresh / "logs")
+    monkeypatch.setattr(common, "SPEND_STATE_PATH", fresh / ".spend_state.json")
+    common.secure_mkdir(fresh)
+    (fresh / ".spend_state.json").write_text(json.dumps({"date": common._today(), "spend_usd": 1.25}))
+
+    assert common.get_spend_today() == 1.25 and (fresh / "logs").exists()

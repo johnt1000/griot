@@ -1421,7 +1421,12 @@ def _ensure_spend_state_migrated() -> None:
     """One-time import of a pre-SQLite .spend_state.json (see
     logdb.migrate_legacy_spend_file). Called from every spend read/write
     rather than at import time so it costs nothing until a paid call
-    actually happens; logdb tracks the marker, so it is idempotent."""
+    actually happens; logdb tracks the marker, so it is idempotent. With no
+    legacy file and no log yet there is nothing to migrate and nothing to
+    read: a READ of today's spend then creates no directory (griot doctor,
+    the status on day one)."""
+    if not SPEND_STATE_PATH.exists() and logdb._nothing_logged_yet(LOG_DIR):
+        return
     secure_mkdir(LOG_DIR)
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
 
