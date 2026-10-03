@@ -314,7 +314,23 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     checked, changed = _when(last_quality_at), _when(state.get("last_index_change_at"))
     changed_after_check = checked is not None and changed is not None and changed > checked
 
+    # Which repositories are behind their own repository (freshness.py), the
+    # most behind first, those whose history was rewritten last; and which
+    # have no code indexed at all. Absent from an older status dict, or when
+    # the caller did not look.
+    repositories = index_status.get("repositories") or []
+    repositories_behind = sorted(
+        ({"repo": r["repo"], "commits_behind": r.get("commits_behind"), "behind_sources": r.get("behind_sources") or []}
+         for r in repositories if r.get("behind")),
+        key=lambda r: (r["commits_behind"] is None, -(r["commits_behind"] or 0)))
+    repositories_without_code = [r["repo"] for r in repositories if "code" in (r.get("missing_sources") or [])]
     attention = []
+    if repositories_behind:
+        attention.append("the index is behind the repository in: " + ", ".join(_behind_phrase(r) for r in repositories_behind)
+                         + " — run `griot index all` (or the repository alone with --repo)")
+    if repositories_without_code:
+        attention.append("code never indexed in: " + ", ".join(repositories_without_code)
+                         + " — a search finds nothing in their files until `griot index code` runs")
     if last_indexed.get("error"):
         attention.append(f"the last indexing run did not finish: {last_indexed['error']}")
     if index_status.get("spend_ceiling_exceeded"):
@@ -378,6 +394,8 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # First, and not tied to the window: what someone has to act on.
         "attention": attention,
         "last_indexed_at": last_indexed_at,
+        "repositories_behind": repositories_behind,
+        "repositories_without_code": repositories_without_code,
         # The last run is the last ATTEMPT: one that died wrote nothing.
         "last_indexed_error": last_indexed.get("error") or None,
         **known,
@@ -488,6 +506,21 @@ def _sparkline(values: list[float]) -> str:
     return "".join(_SPARK_LEVELS[round((v - lo) / span * top)] for v in values)
 
 
+def _behind_phrase(report: dict) -> str:
+    """`one (3 commits; tags changed)`: the commits since for the sources
+    that follow HEAD, and the refs sources that changed."""
+    count = report.get("commits_behind")
+    parts = []
+    if count is None:
+        parts.append("the indexed commit is not in this history")
+    elif count:
+        parts.append(f"{count} commit{'s' if count != 1 else ''}")
+    changed = [source for source in report.get("behind_sources") or [] if source in ("tags", "branches")]
+    if changed:
+        parts.append(f"{' and '.join(changed)} changed")
+    return f"{report['repo']} ({'; '.join(parts) or 'behind'})"
+
+
 def format_stats(s: dict, days: int) -> str:
     lines = [
         f"griot — report (last {days} days)",
@@ -530,6 +563,8 @@ def format_stats(s: dict, days: int) -> str:
             searched_ago = _ago(s["last_query_at"], now)
             recency.append(f"last search {searched_ago}" if searched_ago else "never searched")
         lines.append(f"             {' · '.join(recency)}")
+    if s.get("repositories_behind"):
+        lines.append(f"             index behind in {', '.join(_behind_phrase(r) for r in s['repositories_behind'])}")
 
     reuse = f"{s['reuse_rate'] * 100:.1f}% reused" if s["reuse_rate"] is not None else "no reuse data"
     lines.append("")

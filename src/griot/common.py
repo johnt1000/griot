@@ -535,12 +535,22 @@ def log_run_summary(**fields) -> None:
     read and re-parsed in full on every griot stats call, with
     no rotation, so the cost grew unboundedly with history)."""
     from datetime import datetime, timezone
+
+    from griot import freshness
+    # `repo_paths` (the repositories the run covered) is not kept: what is
+    # kept is the HEAD each one was at, which is what tells, later, whether
+    # the index of that repository is behind it (freshness.py).
+    repo_paths = fields.pop("repo_paths", None)
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "profile": ACTIVE_PROFILE_NAME,
         "collection": COLLECTION_NAME,
         **fields,
     }
+    if repo_paths is not None:
+        snapshots = freshness.snapshot_of(repo_paths)
+        record["heads"] = {name: snapshot["head"] for name, snapshot in snapshots.items()}
+        record["refs"] = {name: snapshot["refs"] for name, snapshot in snapshots.items()}
     secure_mkdir(LOG_DIR)
     logdb.write_run(LOG_DIR, record)
 
@@ -3040,8 +3050,14 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             "error": record.get("error"),
         }
 
+    from griot import freshness
+
     return {
         "points_count": points_count,
+        # Per registered repository, whether its index is behind its HEAD
+        # and by how much (freshness.py): the question an agent has before
+        # trusting a result.
+        "repositories": freshness.repository_freshness(collection),
         # Why points_count is None when it is: "busy" (another process holds
         # the collection, routine with `griot mcp` running) or "unreadable:
         # <reason>" (it could not be opened at all). None when there is a count.

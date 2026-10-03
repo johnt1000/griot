@@ -290,7 +290,7 @@ def main(argv=None):
     print(f"\nIndexing completed in {elapsed:.2f}s.")
     print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
     common.log_run_summary(
-        script="index_code.py", repo=args.repo or args.path or "all",
+        script="index_code.py", repo=args.repo or args.path or "all", repo_paths=repo_paths_str,
         indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,
         duration_seconds=round(elapsed, 2),
         spend_today_usd=common.get_spend_today(),

@@ -119,7 +119,14 @@ results with visibly low scores that don't answer the query.
 
 **Cause**: this is a retrieval-quality question, not necessarily a bug —
 but it can also mean the index itself is broken (wrong embedding dimension,
-model swapped without reindexing, an empty/corrupted collection).
+model swapped without reindexing, an empty/corrupted collection), or simply
+behind: `griot_search` answers with `behind` (the repositories among its
+results whose index is behind them, with the commits made since) and
+`griot_index_status` says the same per registered repository and per
+source (`behind_sources`, `missing_sources` for a source that never ran).
+Behind means re-index that repository (`griot index all --repo <name>`),
+not that retrieval is weak; "code" among `missing_sources` means a search
+has nothing of its files at all.
 
 **Fix**: run the self-check first — it doesn't require any curated data and
 catches pipeline-level breakage:

@@ -10,6 +10,25 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **Which repository is behind its own repository.** `griot stats` said
+  when the index was last written, for the whole collection; the question
+  an agent has before trusting a result is whether what griot holds about
+  THIS repository is behind what the repository holds now. Every indexing
+  run now records what each repository it covered looked like (its HEAD,
+  and a fingerprint of its tag and remote-branch refs), and griot compares
+  that with the repository of the moment, each source by what it indexes:
+  code and commits by the commits made since (or "the indexed commit is
+  not in this history" when it is no longer an ancestor of HEAD: rewritten,
+  or another branch checked out), tags and branches by whether their refs
+  changed (all remote branches for the latter, the base included, since
+  each branch is described against it), and the platform source not at all
+  (pull requests live on the platform). `griot_index_status` carries, per
+  registered repository, `behind`, `behind_sources`, `commits_behind`,
+  `missing_sources` (never indexed) and the per-source detail;
+  `griot_search` names the repositories among its results that are behind
+  (`behind`, and a sentence in `note`); `griot stats` lists them under
+  attention and in its state lines, and names repositories whose code was
+  never indexed. A run from before this says nothing about freshness.
 - **`griot_golden_set_suggest` gives an agent candidate cases from a git
   log.** What `griot golden-set suggest` offers at a terminal: a commit's
   message as the question and the files it touched as what must come
