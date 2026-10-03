@@ -15,16 +15,17 @@ Named after the West African storyteller who keeps a community's history: griot 
 - **MCP server** — expose search/status/quality tools to Claude Code, opencode or any MCP client. Indexing via agent is off by default and path-allowlisted.
 - **Security-hardened** — API keys never in URLs or logs, 0600/0700 file modes on everything it writes, no credential ever follows a redirect. See [SECURITY.md](SECURITY.md).
 
-**Status:** v0.1.0, beta. One maintainer, used daily by its author. The CLI surface and the on-disk layout may still change between 0.x releases.
+**Status:** v0.2.0, beta. One maintainer, used daily by its author. The CLI surface and the on-disk layout may still change between 0.x releases.
 
 ## Installation
 
 ```bash
-git clone https://github.com/johnt1000/griot && cd griot
-pipx install .            # or: pipx install -e .  for an editable install
+pipx install griot-rag    # the distribution is griot-rag; the command is griot
 ```
 
-Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and caches it under your data directory; `griot profiles list` shows each profile's RAM tier against the RAM you actually have. A PyPI release (`pipx install griot`) is planned — see the [roadmap](ROADMAP.md). CI runs the suite on 3.10 and 3.13, scans for committed secrets, and installs the built wheel in a clean environment on every push.
+Or from a checkout: `git clone https://github.com/johnt1000/griot && cd griot && pipx install .` (`pipx install -e .` for an editable install).
+
+Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and caches it under your data directory; `griot profiles list` shows each profile's RAM tier against the RAM you actually have. CI runs the suite on 3.10 and 3.13, scans for committed secrets, and installs the built wheel in a clean environment on every push.
 
 ## Quickstart
 

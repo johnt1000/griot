@@ -117,10 +117,16 @@ def test_the_version_that_commit_is_stands_beside_it(where, used):
 
 
 def test_a_workflow_has_no_more_rights_than_it_needs():
+    """One exception, named: the job that publishes to PyPI holds an OpenID
+    token (`id-token: write`), in a protected environment, and nothing else."""
     for workflow, document in _documents():
         assert document.get("permissions") == {"contents": "read"}, workflow.name
         for name, job in document["jobs"].items():
             wider = {what: level for what, level in (job.get("permissions") or {}).items() if level not in ("read", "none")}
+            publishes = any("pypa/gh-action-pypi-publish@" in str(step.get("uses", "")) for step in job.get("steps", []))
+            if publishes:
+                assert wider == {"id-token": "write"} and job.get("environment"), f"{workflow.name}: job {name}"
+                continue
             assert not wider, f"{workflow.name}: job {name} asks for {wider}"
         triggers = document.get("on", document.get(True))  # YAML 1.1 reads a bare `on` as true
         named = set(triggers) if isinstance(triggers, (dict, list)) else {triggers}

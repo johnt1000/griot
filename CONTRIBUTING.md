@@ -72,6 +72,25 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   that can add a path to the indexing allowlist is a security boundary, not
   a convenience — see [SECURITY.md](SECURITY.md).
 
+## Releasing
+
+A release is a tag. The distribution on PyPI is `griot-rag` (the name
+`griot` there is somebody else's); the command and the import stay `griot`.
+
+1. Set the version in `pyproject.toml` and `src/griot/__init__.py` (one
+   number; `tests/test_release.py` holds them together), and turn the
+   changelog's top section into `## [X.Y.Z] — YYYY-MM-DD`.
+2. Run the suite and commit.
+3. `git tag vX.Y.Z` and push the tag.
+
+`.github/workflows/release.yml` then refuses a tag that is not the declared
+version (`scripts/release-check.py`), builds from `uv.lock` exactly as CI
+does, checks the metadata, and publishes through PyPI's trusted publishing:
+the `publish` job, in the `pypi` environment, is granted an OpenID token for
+that one step, and no API token lives in the repository. The project on
+PyPI has to name this repository, workflow and environment as its trusted
+publisher once, by hand.
+
 ## Running the tests
 
 ```bash

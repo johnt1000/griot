@@ -1,0 +1,176 @@
+"""A release is a tag, and what the tag publishes is what the tests ran on.
+
+The package is published to PyPI as `griot-rag` (the name `griot` is
+somebody else's there; the command and the import stay `griot`). Pushing a
+tag `vX.Y.Z` runs `.github/workflows/release.yml`: it builds the
+distribution from the lock, like CI does, checks that the tag is the
+version the package declares and that the changelog has a section for it,
+and publishes through PyPI's trusted publishing (an OpenID token the job is
+granted for that one step; no API token lives in the repository). The
+version is declared in one place and read everywhere."""
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+import griot
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # the floor griot supports
+    import tomli as tomllib
+
+ROOT = Path(__file__).resolve().parent.parent
+PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+RELEASE = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
+DISTRIBUTION = "griot-rag"
+
+
+def _steps(job):
+    return RELEASE["jobs"][job]["steps"]
+
+
+def _commands(job):
+    return "\n".join(step.get("run", "") for step in _steps(job))
+
+
+# --- the name and the version, in one place ---------------------------------------------------------
+
+
+def test_the_distribution_is_griot_rag_and_the_command_and_import_stay_griot():
+    assert PROJECT["name"] == DISTRIBUTION
+    assert PROJECT["scripts"] == {"griot": "griot.cli:main"}
+    assert griot.__name__ == "griot"
+
+
+def test_the_version_the_package_declares_is_the_one_the_code_says():
+    assert PROJECT["version"] == griot.__version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", PROJECT["version"])
+
+
+def test_the_changelog_has_a_section_for_the_version():
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert f"## [{PROJECT['version']}]" in changelog
+
+
+def test_the_readme_installs_the_distribution_by_name():
+    readme = (ROOT / "README.md").read_text()
+    assert f"pipx install {DISTRIBUTION}" in readme
+    assert f"v{PROJECT['version']}" in readme, "the status line names the current version"
+
+
+# --- the workflow -----------------------------------------------------------------------------------
+
+
+def test_a_release_is_a_version_tag():
+    triggers = RELEASE.get("on", RELEASE.get(True))
+    assert list(triggers) == ["push"] and triggers["push"] == {"tags": ["v*"]}
+
+
+def test_the_token_that_publishes_is_granted_to_the_publishing_job_alone():
+    assert RELEASE["permissions"] == {"contents": "read"}
+    jobs = RELEASE["jobs"]
+    publishing = [name for name, job in jobs.items()
+                  if any("pypa/gh-action-pypi-publish@" in str(step.get("uses", "")) for step in job["steps"])]
+    assert publishing == ["publish"]
+    assert jobs["publish"]["permissions"] == {"id-token": "write", "contents": "read"}
+    assert jobs["publish"]["environment"] == "pypi", "an environment the repository can protect"
+    for name, job in jobs.items():
+        if name != "publish":
+            assert "id-token" not in (job.get("permissions") or {})
+
+
+def test_the_publishing_step_gets_no_password():
+    [step] = [step for step in _steps("publish") if "pypa/gh-action-pypi-publish@" in str(step.get("uses", ""))]
+    assert not {"password", "user"} & set(step.get("with") or {}), "trusted publishing, not a token in a secret"
+
+
+def test_what_is_published_is_what_was_built_from_the_lock():
+    build = _commands("build")
+    assert "uv export --locked --only-group build --output-file /tmp/build.txt" in build
+    assert "uv build --build-constraints /tmp/build.txt --require-hashes" in build
+    assert "uv run --no-sync twine check dist/*" in build
+    assert RELEASE["jobs"]["publish"]["needs"] == "build"
+    uploads = [s for s in _steps("build") if "actions/upload-artifact@" in str(s.get("uses", ""))]
+    downloads = [s for s in _steps("publish") if "actions/download-artifact@" in str(s.get("uses", ""))]
+    assert uploads and downloads and uploads[0]["with"]["name"] == downloads[0]["with"]["name"]
+
+
+def test_the_build_refuses_a_tag_that_is_not_the_declared_version():
+    build = _commands("build")
+    # The check is a script of its own, so that it can be run here; it reads
+    # pyproject.toml and CHANGELOG.md and compares with the tag.
+    assert "scripts/release-check.py" in build
+    assert build.index("release-check.py") < build.index("uv build"), "before anything is built"
+
+
+@pytest.mark.parametrize("tag,ok", [("v0.2.0", True), ("v0.2.1", False), ("0.2.0", False), ("v0.2.0-rc1", False)])
+def test_the_release_check_itself(tmp_path, tag, ok, monkeypatch):
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## [0.2.0] — 2026-10-03\n\n- something\n")
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
+                          env={"GITHUB_REF_NAME": tag, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+
+    assert (done.returncode == 0) is ok, done.stdout + done.stderr
+    if not ok:
+        assert "0.2.0" in done.stderr and tag in done.stderr
+
+
+def test_the_release_check_wants_a_changelog_section(tmp_path):
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n- something\n")
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
+                          env={"GITHUB_REF_NAME": "v0.2.0", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+
+    assert done.returncode != 0 and "CHANGELOG" in done.stderr
+
+
+def test_the_release_check_refuses_a_section_still_marked_unreleased(tmp_path):
+    """CONTRIBUTING says to date the heading before tagging; this is what
+    makes a tag pushed without that step stop instead of publishing a
+    changelog that says the version was never released."""
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## [0.2.0] — unreleased\n\n- something\n")
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
+                          env={"GITHUB_REF_NAME": "v0.2.0", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+
+    assert done.returncode != 0 and "unreleased" in done.stderr and "YYYY-MM-DD" in done.stderr
+
+
+def test_the_release_check_passes_on_this_repository_once_its_section_is_dated(tmp_path):
+    """This repository, with the one step CONTRIBUTING leaves to the
+    maintainer done: the heading of the current version given a date."""
+    import shutil
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    shutil.copy(ROOT / "pyproject.toml", root / "pyproject.toml")
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    dated = re.sub(rf"^(## \[{re.escape(PROJECT['version'])}\]).*$", r"\1 — 2026-10-03", changelog, count=1, flags=re.M)
+    (root / "CHANGELOG.md").write_text(dated)
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
+                          env={"GITHUB_REF_NAME": f"v{PROJECT['version']}", "PATH": "/usr/bin:/bin"},
+                          capture_output=True, text=True)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_contributing_says_how_a_release_is_made():
+    text = (ROOT / "CONTRIBUTING.md").read_text()
+    assert "## Releasing" in text and "pyproject.toml" in text and "git tag" in text and DISTRIBUTION in text

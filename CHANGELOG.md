@@ -6,7 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While griot is `0.x`, the CLI surface and the on-disk layout may change
 between minor versions. Breaking changes are called out explicitly.
 
-## [Unreleased]
+## [0.2.0] — unreleased
+
+The first version published to PyPI, as `griot-rag` (the name `griot`
+there is somebody else's; the command and the import stay `griot`).
 
 ### Added
 
@@ -650,9 +653,10 @@ between minor versions. Breaking changes are called out explicitly.
   a local model is first used; `griot stats`, `griot repos list`
   and anything on an API profile never load it.
 
-## [0.1.0] — unreleased
+## [0.1.0] — never published
 
-First public release.
+What the repository held when it was made public; the first version on
+PyPI is 0.2.0.
 
 ### Added
 
@@ -709,5 +713,4 @@ First public release.
 - Apache-2.0 license, packaging metadata, and an English README.
 - Code, CLI-facing strings and tests are entirely in English (2026-08-20).
 
-[Unreleased]: https://github.com/johnt1000/griot/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/johnt1000/griot/releases/tag/v0.1.0
+[0.2.0]: https://github.com/johnt1000/griot/releases/tag/v0.2.0

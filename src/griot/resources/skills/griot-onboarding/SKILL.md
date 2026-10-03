@@ -18,9 +18,10 @@ MCP tools this skill pack sits alongside.
 ## Install
 
 ```bash
-git clone https://github.com/johnt1000/griot && cd griot
-pipx install .
+pipx install griot-rag    # the distribution is griot-rag; the command is griot
 ```
+
+(Or from a checkout: `git clone https://github.com/johnt1000/griot && cd griot && pipx install .`.)
 
 Requires Python >= 3.10 and `git`. If griot is already installed and
 attached as an MCP server in this project, you can skip straight to

@@ -20,8 +20,12 @@ what "done for a public release" still means.
   the index instead of only activity in a window. What remains is reading a
   second stretch of use, after those changes, to see whether agents search
   on their own now and to decide about the two protocol gaps below.
-- **PyPI publication** — so that `pipx install griot` is the install
-  instruction rather than a clone.
+- **PyPI publication** — so that `pipx install griot-rag` is the install
+  instruction rather than a clone (`griot` on PyPI is somebody else's). The
+  release workflow is in place (`.github/workflows/release.yml`: a tag
+  `vX.Y.Z` builds from the lock and publishes through trusted publishing);
+  what remains is the maintainer's: create the project on PyPI with that
+  publisher, and push the first tag.
 
 ## Next
 
