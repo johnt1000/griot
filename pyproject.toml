@@ -53,7 +53,7 @@ dependencies = [
     # the suite green on the new version. 0.8.0 is the oldest qdrant-edge-py
     # the suite has ever run on, so it is the floor.
     "qdrant-edge-py>=0.8.0,<0.9",
-    "mcp>=2.0.0,<3",
+    "mcp>=2.2.0,<3",
     # Declared explicitly although pydantic already pulls it in: mcp_server.py
     # imports TypedDict from here because pydantic rejects typing.TypedDict on
     # Python < 3.12, and relying on a transitive dependency for something this
@@ -61,7 +61,7 @@ dependencies = [
     "typing-extensions>=4.6",
     # Same reasoning as typing-extensions: mcp_server.py imports BaseModel from
     # pydantic directly, so it must not rely on `mcp` continuing to pull it in.
-    "pydantic>=2",
+    "pydantic>=2.13.5",
     # And again: mcp_server.py waits with anyio.sleep (the MCP SDK's own async
     # layer), which it imports directly.
     "anyio",
