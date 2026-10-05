@@ -651,6 +651,12 @@ keep_own_directories_private()
 # process that outlives edits to the file (the MCP server) has no other way
 # to tell a variable that was exported from one the file gave it at start.
 ENVIRONMENT_BEFORE_ENV_FILE = {name: value for name, value in os.environ.items() if name.startswith("GRIOT_")}
+# Every variable the environment set before the file was read, as a digest of
+# its value: enough to tell a credential exported in the shell from one the
+# file or the keychain gave, and whether the two differ, without keeping a
+# second copy of any secret (see credential_origin()).
+EXPORTED_BEFORE_ENV_FILE = {name: hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+                            for name, value in os.environ.items()}
 load_dotenv(dotenv_path=ENV_PATH)
 
 # Rename RAG_* -> GRIOT_*: values under the
@@ -1138,6 +1144,102 @@ def _keychain_delete(env_var: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# The files a shell reads at start where a variable is usually exported. Read
+# only to say WHERE (file and line), never what.
+_SHELL_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bashrc", ".bash_profile", ".profile",
+                ".config/fish/config.fish")
+
+
+def _shell_exports(env_var: str) -> list[str]:
+    """`~/.zshrc:17`-style places where a shell file sets `env_var`. zsh
+    reads its files from ZDOTDIR when that is set. A line that only sets it
+    for one command (`VAR=x command`) is not an export and is not counted;
+    what this does not recognise (a file sourced from another, say) ends
+    up as "exported in this shell" without a place, never a wrong one."""
+    home = Path.home()
+    name = re.escape(env_var)
+    pattern = re.compile(
+        rf"^\s*(?:(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)"
+        rf"|{name}=\S*\s*(?:#.*)?$"
+        rf"|set\s+-\w*x\w*\s+{name}\s)")
+    zdotdir = Path(os.environ["ZDOTDIR"]).expanduser() if os.environ.get("ZDOTDIR") else home
+    candidates = [(zdotdir if file.startswith(".z") else home) / file for file in _SHELL_FILES]
+    found = []
+    for path in candidates:
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+        found.extend(f"{shown}:{number}" for number, line in enumerate(lines, 1) if pattern.match(line))
+    return found
+
+
+def credential_origin(env_var: str) -> dict:
+    """Where the credential in force for `env_var` comes from, and whether
+    it hides the one griot stores. A credential exported in the shell wins
+    over the file and the keychain (load_dotenv does not override, and the
+    keychain fills only what is missing): right, and invisible, so every
+    place a credential is set, listed, removed or refused says it.
+
+    {"source": "environment" | "file" | "keychain" | None,
+     "stored": "file" | "keychain" | None,
+     "shadows_stored": the exported value differs from the stored one,
+     "exported_in": ["~/.zshrc:17", ...]}. No value is returned."""
+    from dotenv import dotenv_values
+
+    exported = env_var in EXPORTED_BEFORE_ENV_FILE
+    try:
+        in_file = (dotenv_values(ENV_PATH).get(env_var) or None) if ENV_PATH.exists() else None
+    except (OSError, ValueError):  # unreadable, or not text: nothing griot stores can be read there
+        in_file = None
+    in_keychain = None if in_file else _keychain_get(env_var)
+    stored_value = in_file or in_keychain
+    stored = "file" if in_file else ("keychain" if in_keychain else None)
+    # Not exported: what griot stores is what is in force (load_dotenv and
+    # the keychain injection put it in the environment at load).
+    source = "environment" if exported else stored
+    shadows = bool(exported and stored_value
+                   and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
+    return {"source": source, "stored": stored, "shadows_stored": shadows,
+            "exported_in": _shell_exports(env_var) if exported else []}
+
+
+def _provider_of(env_var: str) -> str | None:
+    return next((p for p, v in credential_env_vars().items() if v == env_var), None)
+
+
+def credential_hint(env_var: str) -> str:
+    """One sentence on where the credential in force came from and what to
+    do, for an API that refused it. Names places, never values. Called
+    inside exception handlers: whatever goes wrong here costs the hint, not
+    the error it would have explained."""
+    try:
+        return _credential_hint(env_var)
+    except Exception:
+        return ""
+
+
+def _credential_hint(env_var: str) -> str:
+    origin = credential_origin(env_var)
+    provider = _provider_of(env_var)
+    set_it = f"`griot auth set {provider}`" if provider else f"`griot auth set <provider>`"
+    if origin["source"] == "environment":
+        where = ", ".join(origin["exported_in"]) or "this shell (no shell file griot knows sets it)"
+        text = f"{env_var} came from the environment, exported in {where}"
+        if origin["shadows_stored"]:
+            text += (f"; it overrides the different key griot stores, so remove that export (and `unset {env_var}` "
+                     f"in open terminals) to use the stored one (`griot auth list` shows which is in use)")
+        else:
+            text += f"; replace it there, or remove the export and use {set_it}"
+        return text + "."
+    if origin["source"] == "file":
+        return f"{env_var} came from {ENV_PATH}; set a new one with {set_it}."
+    if origin["source"] == "keychain":
+        return f"{env_var} came from the OS keychain; set a new one with {set_it}."
+    return f"{env_var} is not set; set it with {set_it}."
 
 
 def _inject_keychain_credentials() -> None:
@@ -1973,7 +2075,8 @@ def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: 
             # only the status code — never str(e), which may contain the
             # request URL (and, in a future regression, an embedded secret)
             status = e.response.status_code if e.response is not None else "?"
-            raise GeminiUnavailable(f"HTTP error {status} from the Gemini API") from e
+            hint = f" {credential_hint('GEMINI_TOKEN')}" if status in (401, 403) else ""
+            raise GeminiUnavailable(f"HTTP error {status} from the Gemini API.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
                 raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
@@ -1991,7 +2094,8 @@ class DirectAPIUnavailable(Exception):
     embedding-exclusive."""
 
 
-def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict, max_rate_limit_retries: int = 5, max_connection_retries: int = 10) -> dict:
+def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict, max_rate_limit_retries: int = 5, max_connection_retries: int = 10,
+                                       credential_env: str | None = None) -> dict:
     """Generic POST for the {model, input} -> data[].embedding format
     (OpenAI/Voyage/remote — request_style="openai_compatible"). Same
     two-independent-retries philosophy as _gemini_post_with_retry, without
@@ -2026,7 +2130,8 @@ def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict,
             # a future provider with a key in a query param would silently
             # regress this.
             status = e.response.status_code if e.response is not None else "?"
-            raise DirectAPIUnavailable(f"HTTP error {status} on {url}") from e
+            hint = f" {credential_hint(credential_env)}" if credential_env and status in (401, 403) else ""
+            raise DirectAPIUnavailable(f"HTTP error {status} on {url}.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
                 raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
@@ -2091,6 +2196,7 @@ def _embed_one_openai_compatible_request(texts: list[str], api_key: str) -> list
     try:
         data = _openai_compatible_post_with_retry(
             ACTIVE_PROFILE["endpoint_url"], {"Authorization": f"Bearer {api_key}"}, body,
+            credential_env=credential_env_for_profile(ACTIVE_PROFILE_NAME, ACTIVE_PROFILE),
         )
     except DirectAPIUnavailable as e:
         log_and_print(f"Error in the embedding batch ({ACTIVE_PROFILE_NAME}): {e}", level="warning")
@@ -2195,6 +2301,7 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     try:
         data = _openai_compatible_post_with_retry(
             profile["endpoint_url"], {"Authorization": f"Bearer {api_key}"}, body,
+            credential_env=profile.get("api_key_env"),
         )
     except DirectAPIUnavailable as e:
         raise RuntimeError(f"Could not get a response from {ACTIVE_CHAT_PROFILE_NAME}: {e}") from e

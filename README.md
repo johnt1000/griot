@@ -98,6 +98,8 @@ Install the optional `keychain` extra (`pip install "griot[keychain]"`) and cred
 
 Platform tokens (only needed for `griot index platform`): `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`.
 
+A credential exported in your shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins over the one griot stores. When the two differ, `griot auth set`, `griot auth list`, `griot auth remove`, `griot doctor` and an API that refuses the key say so, naming the shell file and line (never the value): remove the export to use the stored key.
+
 The first time you run any `griot` command, `<config>/.env` is generated for you with every setting listed, mode 0600: most with their default written out, those whose default may still change commented out, and credentials empty. You rarely need to open it: `griot config list` shows each setting, the value in force and where it comes from, and `griot config set` changes one.
 
 ## MCP server

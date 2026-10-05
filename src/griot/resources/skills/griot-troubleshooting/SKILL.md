@@ -110,6 +110,13 @@ griot auth set <provider>          # hidden input; keychain, or <config>/.env at
 griot auth list                    # see what's currently configured (masked)
 ```
 
+**The key was set, and the API still refuses it (401/403).** A variable
+exported in the shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins
+over what `griot auth set` stores, in every terminal that sets it. The
+refusal names where the key came from; `griot auth list` and `griot
+doctor` (check `credentials`) say the same, with the shell file and line.
+Remove that export, and `unset` the variable in terminals already open.
+
 If you're upgrading from an older setup where credentials only ever lived
 in the plaintext `.env` file (before the OS-keychain integration existed),
 `griot auth migrate` moves everything already in that file into the
