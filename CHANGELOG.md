@@ -6,7 +6,7 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While griot is `0.x`, the CLI surface and the on-disk layout may change
 between minor versions. Breaking changes are called out explicitly.
 
-## [0.2.0] — unreleased
+## [0.2.0] — 2026-10-05
 
 The first version published to PyPI, as `griot-rag` (the name `griot`
 there is somebody else's; the command and the import stay `griot`).
