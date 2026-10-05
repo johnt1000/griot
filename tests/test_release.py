@@ -10,6 +10,7 @@ granted for that one step; no API token lives in the repository). The
 version is declared in one place and read everywhere."""
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -74,7 +75,7 @@ def test_the_token_that_publishes_is_granted_to_the_publishing_job_alone():
     assert RELEASE["permissions"] == {"contents": "read"}
     jobs = RELEASE["jobs"]
     publishing = [name for name, job in jobs.items()
-                  if any("pypa/gh-action-pypi-publish@" in str(step.get("uses", "")) for step in job["steps"])]
+                  if any("pypa/gh-action-pypi-publish@" in str(step.get("uses", "")) for step in job.get("steps", []))]
     assert publishing == ["publish"]
     assert jobs["publish"]["permissions"] == {"id-token": "write", "contents": "read"}
     assert jobs["publish"]["environment"] == "pypi", "an environment the repository can protect"
@@ -107,6 +108,17 @@ def test_the_build_refuses_a_tag_that_is_not_the_declared_version():
     assert build.index("release-check.py") < build.index("uv build"), "before anything is built"
 
 
+def _on_main(root):
+    """`root` as a repository whose HEAD is main's: what the release check
+    reads besides the two files (tests/test_pipeline.py covers the refusal)."""
+    env = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_AUTHOR_NAME": "M", "GIT_AUTHOR_EMAIL": "m@example.com",
+           "GIT_COMMITTER_NAME": "M", "GIT_COMMITTER_EMAIL": "m@example.com"}
+    for args in (["init", "-q", "-b", "main"], ["add", "."], ["commit", "-q", "-m", "release"],
+                 ["update-ref", "refs/remotes/origin/main", "HEAD"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, env=env)
+
+
 @pytest.mark.parametrize("tag,ok", [("v0.2.0", True), ("v0.2.1", False), ("0.2.0", False), ("v0.2.0-rc1", False)])
 def test_the_release_check_itself(tmp_path, tag, ok, monkeypatch):
     import subprocess
@@ -115,6 +127,7 @@ def test_the_release_check_itself(tmp_path, tag, ok, monkeypatch):
     root.mkdir()
     (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## [0.2.0] — 2026-10-03\n\n- something\n")
+    _on_main(root)
     done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
                           env={"GITHUB_REF_NAME": tag, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
 
@@ -130,6 +143,7 @@ def test_the_release_check_wants_a_changelog_section(tmp_path):
     root.mkdir()
     (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n- something\n")
+    _on_main(root)
     done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
                           env={"GITHUB_REF_NAME": "v0.2.0", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
 
@@ -146,6 +160,7 @@ def test_the_release_check_refuses_a_section_still_marked_unreleased(tmp_path):
     root.mkdir()
     (root / "pyproject.toml").write_text('[project]\nname = "griot-rag"\nversion = "0.2.0"\n')
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## [0.2.0] — unreleased\n\n- something\n")
+    _on_main(root)
     done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
                           env={"GITHUB_REF_NAME": "v0.2.0", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
 
@@ -164,6 +179,7 @@ def test_the_release_check_passes_on_this_repository_once_its_section_is_dated(t
     changelog = (ROOT / "CHANGELOG.md").read_text()
     dated = re.sub(rf"^(## \[{re.escape(PROJECT['version'])}\]).*$", r"\1 — 2026-10-03", changelog, count=1, flags=re.M)
     (root / "CHANGELOG.md").write_text(dated)
+    _on_main(root)
     done = subprocess.run([sys.executable, str(ROOT / "scripts" / "release-check.py"), str(root)],
                           env={"GITHUB_REF_NAME": f"v{PROJECT['version']}", "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True)

@@ -5,11 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The release runs this whole workflow on the tagged commit before it builds.
+  workflow_call:
 
 # A new push supersedes the run still going for the same ref. Nothing here
 # deploys, so cancelling in-flight work costs nothing and keeps the queue short.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -21,23 +23,33 @@ permissions:
 # dependencies come from uv.lock, which has a hash for every package, and
 # `--locked` stops the build when the lock no longer matches pyproject.toml.
 # Dependabot (.github/dependabot.yml) proposes the updates of both, so each
-# one arrives as a change to review instead of on its own. The version of uv
-# itself is the one thing here raised by hand.
+# one arrives as a change to review instead of on its own. Raised by hand: the
+# version of uv, of gitleaks (scripts/install-gitleaks.sh) and the runner
+# images, named by version so that a new operating system is a decision here
+# and not a date someone else picks.
 
 jobs:
   test:
-    name: tests (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # The names of the first two are checks main requires: renaming them
+    # leaves every pull request waiting for a check that never comes.
+    name: tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # The floor declared in pyproject (requires-python >= 3.10) and a
-        # current release. The floor is the one that actually catches things:
-        # syntax and typing that only newer Pythons accept would otherwise
-        # ship broken to anyone on the version the package claims to support.
-        python: ["3.10", "3.13"]
+        # The floor declared in pyproject (requires-python >= 3.10), a current
+        # release and the newest. The floor is the one that actually catches
+        # things: syntax and typing that only newer Pythons accept would
+        # otherwise ship broken to anyone on the version the package claims
+        # to support. macOS because its BSD tools behave differently from
+        # GNU's, which has caused real defects in the git hooks.
+        include:
+          - {os: ubuntu-24.04, python: "3.10", label: py3.10}
+          - {os: ubuntu-24.04, python: "3.13", label: py3.13}
+          - {os: ubuntu-24.04, python: "3.14", label: py3.14}
+          - {os: macos-15, python: "3.13", label: "macos, py3.13"}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -50,6 +62,13 @@ jobs:
       - name: Install
         run: uv sync --locked --extra dev
 
+      - name: Install gitleaks
+        # The tests that run the git hooks with the real scanner are skipped
+        # without it.
+        run: |
+          scripts/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
       - name: Run tests
         # No GRIOT_CONFIG_DIR/GRIOT_DATA_DIR here on purpose: tests/conftest.py
         # points both at a session tempdir before importing griot, and an
@@ -59,9 +78,9 @@ jobs:
 
   secrets:
     name: secret scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # Full history: a credential removed in a later commit is still in
@@ -69,16 +88,23 @@ jobs:
           # would report the tree as clean while it sits one commit back.
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+      - name: Install gitleaks
+        run: scripts/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
+
+      - name: Scan the history
+        # Every ref, and the changes of merge commits too: `git log -p`, which
+        # gitleaks reads, prints nothing for a merge unless asked, so whatever
+        # a merge itself added was never scanned (scripts/audit-history.sh and
+        # the pre-push hook ask the same).
+        run: >-
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --no-banner --redact --config .gitleaks.toml
+          --log-opts="--all --diff-merges=first-parent" .
 
   package:
     name: package builds and installs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

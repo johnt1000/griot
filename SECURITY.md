@@ -73,11 +73,17 @@ This does not decide whether a value is real, and it is built for precision: it 
 
 ## Automated checks
 
-Every push and pull request runs the full test suite on the oldest and a
-current supported Python, plus a [gitleaks](https://github.com/gitleaks/gitleaks)
-scan over the **full history** — a credential removed in a later commit still
-sits in the repository until the history is rewritten, so scanning only the
-current tree would report a clean state that isn't one.
+Every push and pull request runs the full test suite on the oldest, a
+current and the newest supported Python, on Linux and on macOS, plus a
+[gitleaks](https://github.com/gitleaks/gitleaks) scan over the **full
+history**, merge commits included — a credential removed in a later commit
+still sits in the repository until the history is rewritten, so scanning
+only the current tree would report a clean state that isn't one. gitleaks is
+installed by version and checksum (`scripts/install-gitleaks.sh`). `main`
+only takes a commit those checks passed on, and a release runs them again on
+the tagged commit, which has to be on `main`. GitHub's own secret scanning,
+with push protection, and Dependabot's security alerts and updates are on as
+well: they reach a push the local hooks never saw.
 
 The scan's allowlist (`.gitleaks.toml`) exempts specific literal fixtures,
 never whole files: allowing a path would let a real credential pasted into

@@ -16,13 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  ci:
+    # The whole CI, on the tagged commit, before anything is built: main is
+    # protected, but its owner can push past that, and a tag can point at a
+    # commit that never went through a pull request.
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: build from the lock
-    runs-on: ubuntu-latest
+    needs: ci
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The history of main, to tell whether the tagged commit is on it.
+          fetch-depth: 0
 
       - name: The tag is the version
         # Before anything is built: a tag is a name anyone can type. The
@@ -54,7 +63,7 @@ jobs:
   publish:
     name: publish to PyPI
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The environment is where the repository's settings can require a
     # reviewer before this job runs, and it is what PyPI's trusted publisher
     # is told to expect.
