@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While griot is `0.x`, the CLI surface and the on-disk layout may change
 between minor versions. Breaking changes are called out explicitly.
 
+## [Unreleased]
+
 ## [0.2.0] — 2026-10-05
 
 The first version published to PyPI, as `griot-rag` (the name `griot`
@@ -713,4 +715,5 @@ PyPI is 0.2.0.
 - Apache-2.0 license, packaging metadata, and an English README.
 - Code, CLI-facing strings and tests are entirely in English (2026-08-20).
 
+[Unreleased]: https://github.com/johnt1000/griot/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/johnt1000/griot/releases/tag/v0.2.0

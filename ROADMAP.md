@@ -5,8 +5,8 @@ with the reasoning. Shipped work is in the [changelog](CHANGELOG.md).
 
 ## Now
 
-What blocks a 1.0 tag — griot works and is used daily, but these two are
-what "done for a public release" still means.
+What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
+(`pipx install griot-rag`, since 0.2.0); what "done" still means is this:
 
 - **End-to-end MCP validation in a real project.** An agent calling
   `griot_search` against a real index, with the logs and `griot stats` output
@@ -20,12 +20,6 @@ what "done for a public release" still means.
   the index instead of only activity in a window. What remains is reading a
   second stretch of use, after those changes, to see whether agents search
   on their own now and to decide about the two protocol gaps below.
-- **PyPI publication** — so that `pipx install griot-rag` is the install
-  instruction rather than a clone (`griot` on PyPI is somebody else's). The
-  release workflow is in place (`.github/workflows/release.yml`: a tag
-  `vX.Y.Z` builds from the lock and publishes through trusted publishing);
-  what remains is the maintainer's: create the project on PyPI with that
-  publisher, and push the first tag.
 
 ## Next
 
