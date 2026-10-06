@@ -14,7 +14,7 @@ Data leaves your machine when **you** configure it to, plus that one download:
 |---|---|---|
 | first run of a local embedding profile | nothing of yours — the model is downloaded | huggingface.co |
 | indexing with a paid embedding profile | chunked content of code, commit messages, tags, branches, PRs/issues and releases, with credential-looking values replaced first | OpenAI or Google, per your profile |
-| `griot search` / `griot_search` with a paid profile | the query text | same provider |
+| `griot search` / `griot_search` with a paid profile (modes `vector` and `hybrid`; `keyword` sends nothing) | the query text | same provider |
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
 

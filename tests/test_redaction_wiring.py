@@ -428,7 +428,7 @@ def test_every_place_the_cli_prints_a_name_goes_through_the_same_cleaning(where,
     if where == "ask --show-sources":
         hit = _Hit("text")
         hit.payload["file_path"] = hostile + ".py"
-        monkeypatch.setattr(ask, "ask", lambda question, model, limit: ("answer", [hit]))
+        monkeypatch.setattr(ask, "ask", lambda question, model, limit, mode="vector": ("answer", [hit]))
         ask.main(["anything", "--show-sources"])
     elif where == "golden-set add":
         from griot import golden_set

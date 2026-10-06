@@ -63,7 +63,9 @@ async def test_the_instructions_say_when_to_use_it_and_when_not_to():
 @pytest.mark.anyio
 async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     instructions, _ = await _server()
-    assert len(instructions) <= 1600
+    # Raised from 1600 when keyword search came: the one place an agent learns
+    # that an exact identifier in ANOTHER repository is now worth a search.
+    assert len(instructions) <= 1700
 
 
 @pytest.mark.anyio
@@ -77,8 +79,9 @@ async def test_the_search_tool_description_leads_with_how_to_use_it():
     assert "do not use it" in " ".join(description.lower().split())
     assert "group_by_document" in description
     # Raised from 1300 when the filters and the metadata of a result had to
-    # be described. Still a ceiling: every agent that loads the tool reads it.
-    assert len(description) <= 1500
+    # be described, and to 1700 for the search modes. Still a ceiling: every
+    # agent that loads the tool reads it.
+    assert len(description) <= 1700
 
 
 def _stored_fields():
@@ -103,6 +106,8 @@ async def test_the_search_tool_description_names_only_arguments_it_has():
     returned = set(output["properties"]) | set(output["$defs"]["SearchResult"]["properties"])
     listed = set(tools["griot_repos_list"].output_schema["$defs"]["RepoEntry"]["properties"])
     allowed = set(tool.input_schema["properties"]) | returned | listed | set(common.SOURCE_TYPES)
+    # And the values `mode` takes, read from the schema the agent gets.
+    allowed |= set(tool.input_schema["properties"]["mode"]["enum"])
     # The names of stored fields are allowed ONLY in the paragraph that
     # introduces `metadata`. Anywhere else `author` or `state` in backticks
     # would read as an argument, which is the mistake this test exists for.

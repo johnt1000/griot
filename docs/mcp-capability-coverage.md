@@ -268,7 +268,8 @@ out on purpose, because every one written here went stale.
 
 | Operation | CLI | MCP | Confirmation |
 |---|---|---|---|
-| Vector search | `search` | `griot_search` (`group_by_document`, `repos`, `source_types`; `--group-by-document`, `--repo`, `--source-type` on the CLI) | — |
+| Search (by meaning, by keyword, or both) | `search` | `griot_search` (`group_by_document`, `repos`, `source_types`, `mode`; `--group-by-document`, `--repo`, `--source-type`, `--mode` on the CLI) | — |
+| Add keyword vectors to an older index | `index keywords` | — *(rewrites the whole collection; a person runs it)* | — |
 | Index status | *(part of `stats`)* | `griot_index_status` | — |
 | Today's spend | *(part of `stats`)* | `griot_spend_status` | — |
 | Usage report | `stats` | `griot_stats`, prompt `stats` | — |

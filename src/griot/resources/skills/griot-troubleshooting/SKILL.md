@@ -1,6 +1,6 @@
 ---
 name: griot-troubleshooting
-description: Symptom-to-fix reference for griot failures - a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
+description: Symptom-to-fix reference for griot failures - a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built yet", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
 ---
 
 # griot troubleshooting
@@ -157,6 +157,30 @@ case around the query you expect to work, and use `griot quality-check`
 (without `--skip-golden-set`) going forward to track whether retrieval
 quality holds or regresses across changes (e.g. switching embedding
 profiles).
+
+## Keyword search "is not built yet"
+
+**Symptom**: `griot search --mode keyword` (or `hybrid`, or `griot_search`
+with `mode` `keyword`/`hybrid`) fails with "Keyword search is not built yet
+for collection ...".
+
+**Cause**: the collection was indexed before griot stored keyword (BM25)
+vectors, and the vector store cannot add a vector to points it already
+holds. Vector search (the default mode) is unaffected.
+
+**Fix**: run, once, from a terminal:
+
+```bash
+griot index keywords
+```
+
+It embeds nothing and costs nothing: it copies the collection into one
+that has both vectors, reading the existing dense vectors back. It needs
+about as much free disk as the collection while it runs, and holds the
+collection until it finishes (so stop or wait for a running `griot mcp`
+session or index run first, as for any index run). Safe to run again; after
+an interruption it starts over. `griot doctor` and `griot_index_status`
+(`keyword_search`) say whether it has run.
 
 ## `griot stats` says "point count unavailable (collection in use)"
 
