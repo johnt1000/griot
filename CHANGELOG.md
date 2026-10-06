@@ -10,6 +10,16 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- An indexing run started from the MCP server (`griot_index_repo`) is no
+  longer lost when the server restarts. Previously, the next server said
+  nothing was running, would start a second run beside the first, and could
+  never report how the first one ended. The job registry is now kept in a
+  private `.index_jobs.json` in the data directory. A new server finds a run
+  that is still going (checking the pid and the process start time, so a
+  reused pid is not mistaken for it) and shows it again in
+  `griot_index_status` and `griot_index_wait`. For a run that ended in
+  between, it reports the exit status the run now records at the end of its
+  progress file.
 - **Keyword search beside vector search.** `griot search --mode
   keyword|hybrid`, `griot ask --mode` and `griot_search`'s `mode` find what
   embeddings rank poorly: an exact identifier, an error code, a file name, a
@@ -78,6 +88,51 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Changed
 
+- `griot index keywords` resumes an interrupted copy instead of starting
+  over. The partial copy left beside the collection is checked point by
+  point against the collection: points that changed or were added since are
+  copied again, and points deleted since are dropped. Only the missing or
+  changed points are written, and the copy takes the collection's place only
+  once it holds every point as it is now. A leftover copy that cannot be
+  opened, or that has no room for keyword vectors, is started over.
+- `griot config set log-retention-days` (and `griot config unset`) no longer
+  shortens the log retention without asking. A shorter window than the
+  configuration keeps is now asked about at an interactive terminal, the way
+  raising a spend ceiling is, and the question says how many searches and
+  MCP tool calls the next prune will delete (counted read-only from
+  `logs.db`). With no terminal it is refused and nothing changes. A longer
+  or equal window asks nothing, and the set itself never deletes anything:
+  the prune is still the next search's or tool call's.
+- A Dependabot pull request or commit that quotes an upstream release note
+  holding a "Generated with <assistant>" line or a Claude Code session link
+  no longer fails the attribution check (commit-msg, pre-push, the pull
+  request text check). The phrase and the link are now ignored where a `>`
+  or `<` comes before them on their line, so a Markdown quote or
+  Dependabot's HTML quote passes. Bullets, prose and a parenthesised title
+  are still refused, and a quote does not cover the lines after it. (debt
+  26)
+- Dependabot's lock updates no longer bring back another uv's form of
+  `uv.lock`: on its pull requests that change the lock, a workflow
+  (`.github/workflows/dependabot-lock.yml`) rewrites it with the uv the
+  workflows pin and commits it to the pull request. The job that runs uv has
+  a read-only token and builds nothing, and it stops when the rewrite would
+  change any version, source or hash (`scripts/lock-versions-unchanged.py`).
+  Only a second job, which runs nothing but git, can push. GitHub starts the
+  required checks on that commit once someone with write access approves
+  them ("Approve workflows to run"); CONTRIBUTING says so.
+- `griot stats` no longer counts reads of the MCP resources
+  (`griot://stats`, `griot://repos`, `griot://index-status`) as tool calls:
+  the report shows an "MCP tools" section (calls) and an "MCP resources"
+  section (reads), and `--json` and the MCP tool `griot_stats` carry the
+  same split. `tool_calls`/`failed_tool_calls` now hold tools only, and the
+  new `resource_reads`/`failed_resource_reads` hold the reads. "1 calls" now
+  reads "1 call". Resolves debt 25.
+- A server's environment may turn `GRIOT_UPDATE_CHECK` off but never back
+  on. When your own configuration turns off the doctor's check with PyPI for
+  a newer release, an `env` in an MCP server's registration that turns it on
+  is now ignored, and the server says so on stderr and in
+  `griot_config_list`. This matches what `GRIOT_LOG_QUESTIONS` already did
+  (decision 112).
 - Opening the index no longer re-checks the permissions of every file each
   time: only the directories that changed since the last check are listed
   again, with a full check after every index or prune run and at least every
@@ -132,6 +187,27 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- When the platform refused every fetch of a whole run, `griot index
+  platform` now records which repositories it refused (`refused_repos`), as
+  a run that is refused only in part already did. `griot doctor`, `griot
+  stats`, `griot_index_status` and `griot_stats` find the refusal in the
+  newest platform run, so a later code or commits run no longer hides it.
+  The run still has its error and still does not count as indexing the
+  platform (debt 19).
+- Where an exported credential came from is worded the same way in `griot
+  auth set`, `auth list`, `auth remove`, `griot doctor` and the hint added
+  when an API refuses the key (401/403). An export griot cannot place is
+  always "this shell (no shell file or direnv file griot knows sets it)".
+  For a file that direnv loaded, the advice is now to remove the line there;
+  direnv reloads its terminals by itself, after `direnv allow` if it asks.
+  It no longer says to `unset` the variable in open terminals, which is the
+  advice for a shell file. The value is never shown.
+- The MCP resources `griot://repos`, `griot://stats` and
+  `griot://index-status` no longer depend on a private attribute of the MCP
+  SDK (the server's tool manager). Each one is serialized by the SDK's
+  public structured-output conversion, built from its tool's function, so
+  the JSON stays equal to the tool's structured output, with null for a
+  field the answer leaves out (debt 24).
 - `griot stats` counts days and records the same way its other lines do.
   `--days N` is today since local midnight plus the N-1 local days before
   it, the days the spend ceiling counts. Before, the window was cut in UTC,

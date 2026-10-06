@@ -768,13 +768,13 @@ def _mcp_section(lines: list[str], heading: str, event: str, kind: str,
         return
     total = sum(counts.values())
     lines.append("")
-    lines.append(f"{heading}{total} {event}{'s' if total != 1 else ''} across {len(counts)} {kind}"
+    lines.append(f"{heading:<{len(_INDENT)}}{total} {event}{'s' if total != 1 else ''} across {len(counts)} {kind}"
                  f"{'s' if len(counts) > 1 else ''}, every profile")
     # Ordered by volume: during the MCP validation the top of this list
     # is the answer to "which tools earn their place".
     for name, count in sorted(counts.items(), key=lambda kv: -kv[1]):
         suffix = f" · {failed[name]} failed" if name in failed else ""
-        lines.append(f"             {name} {count}{suffix}")
+        lines.append(f"{_INDENT}{name} {count}{suffix}")
 
 
 def format_stats(s: dict, days: int, width: int | None = None) -> str:
@@ -985,9 +985,12 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
     # Two sections, not one heading over both: a resource read is logged like
     # a tool call, and summed under "MCP tools" it inflated the tool count
     # with reads that were never a tool call. Each heading names what it counts.
-    _mcp_section(lines, "MCP tools:   ", "call", "tool",
+    # [debt 36] "MCP reads:", not "MCP resources:": every heading fits the
+    # 13 columns of _INDENT, and the longer one pushed this value two
+    # columns right of the item lines under it and of every other heading.
+    _mcp_section(lines, "MCP tools:", "call", "tool",
                  s.get("tool_calls") or {}, s.get("failed_tool_calls") or {})
-    _mcp_section(lines, "MCP resources: ", "read", "resource",
+    _mcp_section(lines, "MCP reads:", "read", "resource",
                  s.get("resource_reads") or {}, s.get("failed_resource_reads") or {})
 
     quality = s.get("quality_trend") or []
