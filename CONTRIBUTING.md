@@ -145,7 +145,8 @@ you verified it. If it changes behaviour a user can see, add a line to
 
 `main` is protected: a change is expected to reach it through a pull
 request, and it only takes a commit whose CI passed on every job (`tests` on each Python and on macOS, `secret scan`,
-`package builds and installs`), on a branch that is up to date with
+`package builds and installs`) and whose pull request passed `pull request
+credits no assistant` (its title and description), on a branch that is up to date with
 `main`. When `main` moves first, bring it into the branch with a merge
 rather than a rebase and force-push, so a reviewer's view of the branch
 stays valid. Dependabot's pull requests are brought up to date by
