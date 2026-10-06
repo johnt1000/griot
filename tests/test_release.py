@@ -100,6 +100,54 @@ def test_what_is_published_is_what_was_built_from_the_lock():
     assert uploads and downloads and uploads[0]["with"]["name"] == downloads[0]["with"]["name"]
 
 
+def _cache_inputs(step):
+    """The inputs by which a setup action turns its built-in cache on:
+    setup-uv's `enable-cache`, setup-python's and setup-node's `cache`."""
+    return {key: value for key, value in (step.get("with") or {}).items() if key in ("enable-cache", "cache")}
+
+
+def test_no_job_of_the_release_reads_or_writes_a_cache():
+    """A cache is written by other runs (any push to main, any CI run on
+    another tag) and restored here into the job that builds what PyPI
+    serves: one poisoned entry would be published under the maintainer's
+    name. GitHub enforces `cache-mode: none` with the token it hands each
+    job, and it propagates to the CI this workflow calls; the inputs are
+    off too, because setup-uv turns its cache on by itself on a hosted
+    runner when `enable-cache` is left out."""
+    assert RELEASE.get("cache-mode") == "none"
+    for name, job in RELEASE["jobs"].items():
+        assert job.get("cache-mode", "none") == "none", f"job {name} widens the cache access of the release"
+        for step in job.get("steps", []):
+            used = str(step.get("uses", ""))
+            assert not used.startswith("actions/cache"), f"job {name}: {used}"
+            inputs = _cache_inputs(step)
+            assert all(value in (False, "false", "") for value in inputs.values()), f"job {name}: {used} {inputs}"
+            if used.startswith("astral-sh/setup-uv@"):
+                assert inputs.get("enable-cache") is False, f"job {name}: setup-uv caches unless told not to"
+
+
+def test_one_release_of_a_tag_runs_at_a_time_and_none_is_cut_short():
+    """Two runs of the same tag (a re-run, a tag deleted and pushed again)
+    must not publish side by side; and a run is never cancelled for the
+    next one, because cancelling the publishing job between the sdist and
+    the wheel leaves on PyPI a version that can never be uploaded whole."""
+    concurrency = RELEASE.get("concurrency") or {}
+    assert "github.ref" in str(concurrency.get("group", "")), concurrency
+    assert concurrency.get("cancel-in-progress") is False
+    # Not the group the called CI uses: a caller and a callee in one group
+    # wait for each other forever.
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    assert concurrency["group"] != ci["concurrency"]["group"]
+
+
+def test_the_publishing_token_says_why_it_is_granted():
+    """A permission beyond reading is the first line someone auditing the
+    workflow asks about; the answer sits on that line."""
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    lines = [line for line in text.splitlines() if re.match(r"\s*id-token:\s*write\b", line)]
+    assert lines and all(re.search(r"#\s*\S", line) for line in lines), lines
+
+
 def test_the_build_refuses_a_tag_that_is_not_the_declared_version():
     build = _commands("build")
     # The check is a script of its own, so that it can be run here; it reads
