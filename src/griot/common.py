@@ -288,6 +288,13 @@ def ensure_env_template() -> None:
     even if some other command never ran first)."""
     if ENV_PATH.exists():
         return
+    try:
+        target = _env_file_behind_links()
+    except ConfigurationError:
+        # A link that leads nowhere griot can write. This runs on every
+        # command, so it must not stop them all; the defaults apply, a write
+        # (env_file_set) raises with the reason, and `griot doctor` says so.
+        return
     from griot import auth  # lazy: auth.py imports common.py at module load, avoid the cycle
 
     lines = [
@@ -315,7 +322,28 @@ def ensure_env_template() -> None:
         lines.append(f"{prefix}{var}={default}")
 
     secure_mkdir(ENV_PATH.parent)
-    secure_write_text(ENV_PATH, "\n".join(lines) + "\n")
+    secure_write_text(target, "\n".join(lines) + "\n")
+
+
+def _env_file_behind_links() -> Path:
+    """The file ENV_PATH names, every symbolic link on the way followed
+    (relative ones from where the link sits, chains to their end). People
+    keep .env in a dotfiles checkout and link it into place; dotenv's
+    set_key()/unset_key() write a new file and rename it over the path they
+    are given, which on the link itself replaces the link with a regular
+    file. Given the file behind it, the rename lands there and the link
+    stays (the installer's apply_instructions() writes through a link in the
+    user's own directory the same way).
+
+    Raises ConfigurationError (the CLI prints it in one line, not as a
+    traceback), naming the link and where it leads, when the link points at
+    nothing that can be created: a directory that is gone, or a loop. griot
+    does not make directories in someone else's tree to satisfy a link."""
+    target = Path(os.path.realpath(ENV_PATH))
+    if ENV_PATH.is_symlink() and not target.exists() and (os.path.lexists(target) or not target.parent.is_dir()):
+        raise ConfigurationError(f"{ENV_PATH} is a symbolic link that leads to {target}, which does not exist and "
+                                f"cannot be created there. Point the link at a file, or remove it.")
+    return target
 
 
 def env_file_set(var: str, value: str) -> None:
@@ -338,8 +366,9 @@ def env_file_set(var: str, value: str) -> None:
     of .env would find odd. Not worth the complexity of post-processing
     the file to strip it."""
     ensure_env_template()
-    set_key(ENV_PATH, var, value)
-    ENV_PATH.chmod(0o600)
+    target = _env_file_behind_links()
+    set_key(target, var, value)
+    target.chmod(0o600)
 
 
 def env_file_unset(var: str) -> None:
@@ -349,7 +378,7 @@ def env_file_unset(var: str) -> None:
     would treat as "present and empty" rather than "unset"."""
     if not ENV_PATH.exists():
         return
-    unset_key(ENV_PATH, var)
+    unset_key(_env_file_behind_links(), var)
 
 
 _log_handler_lock = threading.Lock()
@@ -635,7 +664,12 @@ def _check_env_file_permissions(env_path: Path) -> None:
     GITLAB_PERSONAL_ACCESS_TOKEN) — if it exists with a permission more open
     than 0600 (readable by group/others), warns and tries to fix it with
     chmod 0600. If the chmod fails (e.g. file owned by someone else), only
-    the warning remains."""
+    the warning remains.
+
+    is_file(), stat() and chmod() all follow a symbolic link: when .env is a
+    link (into a dotfiles checkout), the file behind it is what holds the
+    secrets, so that is the one checked and closed; the link's own mode
+    protects nothing."""
     if not env_path.is_file():
         return
     mode = stat.S_IMODE(env_path.stat().st_mode)
