@@ -53,7 +53,7 @@ griot stats
 griot doctor
 ```
 
-`griot doctor` checks the whole setup in one go and says what to do about each finding. It changes no setting, index or file of yours; two things happen on the way and are said: loading the configuration closes a `.env` left open to other users, as every griot command does, and asking the harness which server it has registered may start that server for a moment, as `griot assist install` does. It checks settings the file holds that griot cannot start with, the configuration file and directories closed to other users, the active profile and its credential, the collection, the registered repositories and whether their index is behind, today's spend against the ceiling, the MCP registration and which read-only tools still ask before every call, the variables a server would ignore, git, the log. Exit status 1 only when a check fails; a warning is something to know.
+`griot doctor` checks the whole setup in one go and says what to do about each finding. It changes no setting, index or file of yours; two things happen on the way and are said: loading the configuration closes a `.env` left open to other users, as every griot command does, and asking the harness which server it has registered may start that server for a moment, as `griot assist install` does. It checks settings the file holds that griot cannot start with, the configuration file and directories closed to other users, the active profile and its credential, the collection, the registered repositories and whether their index is behind, today's spend against the ceiling, the MCP registration and which read-only tools still ask before every call, the variables a server would ignore, git, the log, and whether a newer griot was released. That last check is the one request griot makes about itself: it asks PyPI for the newest version of `griot-rag` and, when yours is behind, prints the command that upgrades it for how griot seems to be installed (it never runs it); offline it says it could not check. No other command asks, and `griot config set update-check false` turns it off. Exit status 1 only when a check fails; a warning is something to know.
 
 `griot index all` runs the sources in order: `code`, `commits`, `tags`, `branches`, `platform`. Filter with `--sources code,commits`. Index an unregistered directory directly with `--path <dir>`.
 
@@ -214,6 +214,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
+| `GRIOT_UPDATE_CHECK` | `false` keeps `griot doctor` from asking PyPI whether a newer griot was released |
 | `GRIOT_PROJECT` | name recorded with each `griot ask`, `griot_search` and MCP tool call so `griot stats` can show usage by project (default: the folder `CLAUDE_PROJECT_DIR` names, else the folder `griot` runs in; set it in the `env` of that project's MCP server entry, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |

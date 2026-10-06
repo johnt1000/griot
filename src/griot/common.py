@@ -258,6 +258,7 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
+    ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (no other command asks)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
     ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
@@ -572,6 +573,14 @@ def log_questions_enabled() -> bool:
     Read at call time (not at import time) so it can be controlled
     per-invocation."""
     return os.getenv("GRIOT_LOG_QUESTIONS", "true").strip().lower() not in FALSE_WORDS
+
+
+def update_check_enabled() -> bool:
+    """Whether `griot doctor` may ask PyPI for the newest release (the only
+    request griot makes to learn about itself; SECURITY.md has the row).
+    On unless turned off; an empty value is the default, as for every flag.
+    Read at call time, like log_questions_enabled."""
+    return os.getenv("GRIOT_UPDATE_CHECK", "true").strip().lower() not in FALSE_WORDS
 
 
 def _clean_project(name: str) -> str | None:
