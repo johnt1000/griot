@@ -266,6 +266,172 @@ def test_without_a_terminal_a_widening_change_is_refused_and_no_flag_answers(no_
         config.main(["set", name, value, "--yes"])
 
 
+# --- a shorter log retention deletes history: a person's to decide -------------------------
+
+
+def _logged(age_days: float, *, searches: int, calls: int) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from griot import logdb
+
+    at = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+    for i in range(searches):
+        logdb.write_query(common.LOG_DIR, {"timestamp": at, "question": f"q{i}"})
+    for _ in range(calls):
+        logdb.write_tool_call(common.LOG_DIR, "griot_search", ok=True, timestamp=at)
+
+
+def _kept() -> tuple[int, int]:
+    import sqlite3
+
+    from griot import logdb
+
+    conn = sqlite3.connect(common.LOG_DIR / logdb.DB_FILENAME)
+    try:
+        return tuple(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                     for table in ("queries", "tool_calls"))
+    finally:
+        conn.close()
+
+
+def test_a_shorter_retention_says_what_the_next_prune_deletes_and_asks(terminal):
+    """Debt 20: the window was written with no question, and the next search
+    deleted every older search and tool call, of every project. The person
+    reads how many before answering."""
+    _logged(200, searches=3, calls=2)
+    _logged(1, searches=1, calls=1)  # inside the new window, and the newest: kept either way
+    asked = terminal("y")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 0
+
+    assert len(asked) == 1
+    question = " ".join(asked[0].split())
+    assert "3 searches" in question and "2 MCP tool calls" in question and "30 days" in question
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == "30"
+
+
+def test_the_count_is_of_what_the_new_window_drops_not_of_everything(terminal):
+    _logged(200, searches=2, calls=1)
+    _logged(50, searches=4, calls=3)
+    _logged(1, searches=1, calls=1)
+    asked = terminal("y")
+
+    assert config.main(["set", "log-retention-days", "100"]) == 0
+
+    question = " ".join(asked[0].split())
+    assert "2 searches" in question and "1 MCP tool call " in question
+
+
+def test_a_shorter_retention_is_written_but_nothing_is_deleted_by_the_set_itself(terminal):
+    """The prune is the next search's or tool call's: `config set` writes a
+    setting and nothing else."""
+    _logged(200, searches=3, calls=2)
+    terminal("y")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 0
+
+    assert _kept() == (3, 2)
+
+
+def test_a_no_keeps_the_retention_and_the_history(terminal):
+    _logged(200, searches=3, calls=2)
+    common.env_file_set("GRIOT_LOG_RETENTION_DAYS", "365")
+    terminal("n")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 1
+
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == "365" and _kept() == (3, 2)
+
+
+def test_without_a_terminal_a_shorter_retention_is_refused_and_says_it_needs_one(no_terminal, capsys):
+    _logged(200, searches=3, calls=2)
+    before = _in_file("GRIOT_LOG_RETENTION_DAYS")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 2
+
+    err = " ".join(capsys.readouterr().err.split())
+    assert "interactive terminal" in err and "no flag" in err
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == before and _kept() == (3, 2)
+
+
+@pytest.mark.parametrize("value", ["365", "400"])
+def test_an_equal_or_longer_retention_asks_nothing(no_question, value):
+    _logged(200, searches=3, calls=2)
+    common.env_file_set("GRIOT_LOG_RETENTION_DAYS", "365")
+
+    assert config.main(["set", "log-retention-days", value]) == 0
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == value
+
+
+def test_a_shorter_retention_is_measured_against_the_file_not_the_default(no_question):
+    """The file keeps 30 days: 60 is longer than what is in force, though
+    shorter than the default of 365."""
+    common.env_file_set("GRIOT_LOG_RETENTION_DAYS", "30")
+
+    assert config.main(["set", "log-retention-days", "60"]) == 0
+
+
+def test_writing_the_default_retention_when_the_file_is_silent_asks_nothing(no_question):
+    """365 days is what is in force already: the same window, nothing more
+    deleted."""
+    common.env_file_unset("GRIOT_LOG_RETENTION_DAYS")
+
+    assert config.main(["set", "log-retention-days", "365"]) == 0
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == "365"
+
+
+def test_the_same_retention_written_another_way_asks_nothing(no_question):
+    """A hand-edited `0365` is the window griot reads as 365 days: writing
+    365 deletes nothing more. Compared as days, not as text."""
+    common.env_file_set("GRIOT_LOG_RETENTION_DAYS", "0365")
+
+    assert config.main(["set", "log-retention-days", "365"]) == 0
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == "365"
+
+
+def test_unsetting_a_retention_longer_than_the_default_asks_too(terminal):
+    """Back to the default from 1000 days is a shorter window, and the same
+    deletion."""
+    common.env_file_set("GRIOT_LOG_RETENTION_DAYS", "1000")
+    _logged(500, searches=2, calls=1)
+    _logged(1, searches=1, calls=1)  # the newest row of each table is never pruned
+    asked = terminal("n")
+
+    assert config.main(["unset", "log-retention-days"]) == 1
+
+    assert len(asked) == 1 and "2 searches" in " ".join(asked[0].split())
+    assert _in_file("GRIOT_LOG_RETENTION_DAYS") == "1000"
+
+
+def test_a_count_that_fails_still_asks_and_says_it_could_not_count(terminal, monkeypatch):
+    """A damaged logs.db is no reason to skip the question: the prune would
+    still delete whatever is in it."""
+    import sqlite3
+
+    from griot import logdb
+
+    def damaged(*args, **kwargs):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(logdb, "count_older_than", damaged)
+    asked = terminal("n")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 1
+
+    question = " ".join(asked[0].split())
+    assert "could not count" in question and "file is not a database" in question
+
+
+def test_a_shorter_retention_with_nothing_logged_still_asks_and_says_so(terminal):
+    """The window outlives what is in the file today: what is logged from
+    now on is kept for the shorter time too."""
+    asked = terminal("y")
+
+    assert config.main(["set", "log-retention-days", "30"]) == 0
+
+    assert len(asked) == 1 and "0 searches" in " ".join(asked[0].split())
+
+
 # What a change is measured against is what PERSISTS: the file, else the
 # default. The environment wins while it is set, but it is the caller's own
 # and gone with the shell: measured against it, exporting a wide value first

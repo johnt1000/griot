@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 
 import pytest
 import qdrant_edge as qe
@@ -229,6 +230,27 @@ def test_a_credential_in_a_stored_detail_is_not_made_findable_by_its_value(fake_
     assert common.search(token, mode="keyword") == []
 
 
+def test_a_credential_stored_raw_by_an_older_version_is_not_made_findable_by_its_value(fake_embeddings):
+    """An older griot stored some text raw, and it stays so until its
+    repository is indexed again: the keyword vector is made from the text as
+    it may leave griot (stored_text), not from the payload as stored. Today's
+    index_documents() replaces it before storing, so the point is written to
+    the store directly, as that older griot left it."""
+    token = "".join(("ghp_", "Z9y8X7w6V5u4T3s2R1q0", "P9o8N7m6L5k4J3i2"))
+    _legacy_collection()
+    shard = qe.EdgeShard.load(str(_active_path()))
+    shard.update(qe.UpdateOperation.upsert_points([qe.Point(
+        id=common.stable_id("alpha:code:old.py:0"),
+        vector={"dense": _vector("old", common.EMBED_DIM)},
+        payload={"source_type": "code", "repo": "alpha", "file_path": "src/old.py", "chunk_index": 0,
+                 "content": f"connect with {token} here"})]))
+    shard.flush()
+    shard.close()
+    common.build_keyword_index()
+    assert common.search("connect", mode="keyword"), "the chunk itself is indexed"
+    assert common.search(token, mode="keyword") == []
+
+
 # --- a collection made before keyword search ---------------------------------------------------
 
 
@@ -395,6 +417,163 @@ def test_an_interrupted_copy_is_started_over(legacy_index, monkeypatch):
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
 
+def _interrupted_copy(monkeypatch, points: int) -> list:
+    """Runs a build that dies once `points` keyword points were made, as a
+    process killed mid-copy would, with the copy written page by page
+    (_KEYWORD_BATCH = 2). Returns the list every point made from then on is
+    appended to, for counting what a later run copies."""
+    monkeypatch.setattr(common, "_KEYWORD_BATCH", 2)
+    real = common._point
+    made, armed = [], [True]
+
+    def point(point_id, dense, payload, *, keywords):
+        if keywords:
+            if armed[0] and len(made) == points:
+                armed[0] = False
+                raise KeyboardInterrupt
+            made.append(str(point_id))
+        return real(point_id, dense, payload, keywords=keywords)
+
+    monkeypatch.setattr(common, "_point", point)
+    common.release_client()
+    with pytest.raises(KeyboardInterrupt):
+        common.build_keyword_index()
+    common.release_client()
+    assert len(made) == points and not armed[0]
+    made.clear()
+    return made
+
+
+def test_an_interrupted_copy_resumes_where_it_stopped(legacy_index, monkeypatch):
+    """What was copied before the interruption is kept and not copied again:
+    on a large collection, starting over costs as long as the run that was
+    lost."""
+    before = _points()
+    made = _interrupted_copy(monkeypatch, 4)  # two full pages written, the third lost
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False, "the collection is untouched"
+
+    result = common.build_keyword_index()
+    assert result == {"rebuilt": True, "written": len(DOCS) - 4, "points": len(DOCS)}
+    assert len(made) == len(DOCS) - 4
+    common.release_client()
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+    after = _points()
+    assert after.keys() == before.keys()
+    for point_id, (payload, dense) in before.items():
+        assert after[point_id][0] == payload
+        assert after[point_id][1] == pytest.approx(dense, abs=1e-6)
+    assert _first_label("acquire_lock", mode="keyword") == "alpha/src/lock.py"
+    common.release_client()
+    assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
+
+
+def test_a_resumed_copy_follows_what_changed_in_the_collection_since(legacy_index, monkeypatch):
+    """Between the interruption and the next run an index run may change,
+    add or delete points. The copy kept from before must not bring back the
+    old version of a point, keep a deleted one or miss a new one."""
+    made = _interrupted_copy(monkeypatch, 4)
+    copied = sorted(_points(include_vectors=False))[:4]  # scroll order is id order
+    common.release_client()
+    changed, deleted = copied[0], copied[1]
+    client = common.get_client()
+    old = client.retrieve([changed], True, ["dense"])[0]
+    # Only the payload changes, as when an index run brings a point's stored
+    # details up to date without re-embedding it.
+    client.update(qe.UpdateOperation.upsert_points([qe.Point(
+        changed, {"dense": old.vector["dense"]},
+        {**old.payload, "content": "a brand new word: quetzalcoatl_marker", "content_hash": "changed"})]))
+    client.update(qe.UpdateOperation.delete_points([deleted]))
+    added = common.stable_id("gamma:code:added.py:0")
+    client.update(qe.UpdateOperation.upsert_points([qe.Point(
+        added, {"dense": _vector("added", common.EMBED_DIM)},
+        {"source_type": "code", "repo": "gamma", "file_path": "added.py", "chunk_index": 0,
+         "content": "freshly_added_identifier", "content_hash": "added"})]))
+    common.release_client()
+    before = _points()
+    common.release_client()
+
+    result = common.build_keyword_index()
+    assert result["rebuilt"] is True and result["points"] == len(DOCS)
+    assert changed in made and added in made
+    assert len(made) < len(DOCS), "the unchanged part of the copy was kept"
+    common.release_client()
+    after = _points()
+    assert after.keys() == before.keys()
+    for point_id, (payload, dense) in before.items():
+        assert after[point_id][0] == payload, point_id
+        assert after[point_id][1] == pytest.approx(dense, abs=1e-6), point_id
+    assert _first_label("quetzalcoatl_marker", mode="keyword") == common.source_label(after[changed][0])
+    assert _first_label("freshly_added_identifier", mode="keyword") == "gamma/added.py"
+
+
+def test_a_kept_copy_whose_vector_changed_alone_is_copied_again(legacy_index, monkeypatch):
+    """The payload is not the whole point: a dense vector that differs from
+    the collection's (a re-embedding under the same text) is copied again."""
+    made = _interrupted_copy(monkeypatch, 2)
+    first = sorted(_points(include_vectors=False))[0]
+    common.release_client()
+    client = common.get_client()
+    payload = client.retrieve([first], True, False)[0].payload
+    client.update(qe.UpdateOperation.upsert_points([qe.Point(
+        first, {"dense": _vector("re-embedded", common.EMBED_DIM)}, payload)]))
+    common.release_client()
+    before = _points()
+    common.release_client()
+    common.build_keyword_index()
+    assert first in made
+    common.release_client()
+    assert _points()[first][1] == pytest.approx(before[first][1], abs=1e-6)
+
+
+def test_a_kept_copy_that_cannot_be_opened_is_started_over(legacy_index):
+    common.release_client()
+    staging = common._keyword_rebuild_paths(_active_path())[0]
+    staging.mkdir()
+    (staging / common._EDGE_CONFIG_MARKER).write_text("not a config")
+    result = common.build_keyword_index()
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    common.release_client()
+    assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
+
+
+def test_a_kept_copy_made_without_the_keyword_vector_is_started_over(legacy_index):
+    """A leftover that is a shard but not one with room for the keyword
+    vector can never become the collection: resuming into it would fail on
+    every run."""
+    common.release_client()
+    staging = common._keyword_rebuild_paths(_active_path())[0]
+    common.secure_mkdir(staging)
+    qe.EdgeShard.create(str(staging), qe.EdgeConfig(
+        vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})).close()
+    result = common.build_keyword_index()
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_a_kept_copy_is_deleted_when_the_collection_needs_none(index):
+    """Keyword vectors already built (by an index run into a new collection,
+    say): a copy left from before is not the collection and is removed."""
+    common.release_client()
+    staging = common._keyword_rebuild_paths(_active_path())[0]
+    common.secure_mkdir(staging)
+    qe.EdgeShard.create(str(staging), common._collection_config()).close()
+    assert common.build_keyword_index()["rebuilt"] is False
+    common.release_client()
+    assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
+
+
+def test_a_kept_copy_is_deleted_when_the_collection_is_gone():
+    """The collection deleted after an interrupted build (griot profiles
+    delete, say): the copy of it has nothing left to become."""
+    common.QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+    staging = common._keyword_rebuild_paths(_active_path())[0]
+    common.secure_mkdir(staging)
+    qe.EdgeShard.create(str(staging), common._collection_config()).close()
+    assert common.build_keyword_index() == {"rebuilt": False, "written": 0, "points": 0}
+    assert not staging.exists()
+    assert not common.collection_exists(common.COLLECTION_NAME)
+
+
 def test_a_copy_that_came_out_short_never_takes_the_place(legacy_index, monkeypatch):
     """A scroll that stopped early (or points lost on the way) must leave the
     collection as it was, not replace it with less."""
@@ -488,6 +667,46 @@ def test_a_swap_interrupted_after_the_new_copy_is_in_place_is_finished(legacy_in
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
 
+def test_a_collection_in_place_beside_an_old_whole_copy_is_opened_as_it_is(legacy_index):
+    """A build that died after its second rename and before deleting the old
+    copy leaves a whole collection on each side. The one in place is the new
+    one: opening it must neither fail on it nor put the old one back over it
+    (the next build deletes the old copy)."""
+    common.release_client()
+    common.build_keyword_index()
+    common.release_client()
+    path = _active_path()
+    _, previous = common._keyword_rebuild_paths(path)
+    shutil.copytree(path, previous)
+
+    assert len(common.search("acquire_lock", limit=10)) == len(DOCS)
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_a_swap_whose_second_rename_fails_puts_the_collection_back_at_once(legacy_index, monkeypatch):
+    """Undone there and then, not left for the next open to find: until the
+    next open the collection's place would be empty, and anything that looks
+    at the directory (status, doctor, a backup) would see nothing indexed."""
+    common.release_client()
+    path = _active_path()
+    real_rename = os.rename
+    calls = []
+
+    def rename(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 2:
+            raise OSError("cross-device link")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(common.os, "rename", rename)
+    with pytest.raises(RuntimeError, match="left as it was"):
+        common.build_keyword_index()
+    monkeypatch.setattr(common.os, "rename", real_rename)
+    assert (path / common._EDGE_CONFIG_MARKER).exists()
+    assert not common._keyword_rebuild_paths(path)[1].exists()
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False
+
+
 def test_the_rebuilt_collection_is_closed_to_other_users(legacy_index):
     common.release_client()
     common.build_keyword_index()
@@ -566,11 +785,30 @@ def test_ask_takes_a_mode(index, monkeypatch, capsys):
     assert logdb.read_latest(common.LOG_DIR, "queries")["mode"] == "keyword"
 
 
+def test_ask_explains_a_legacy_collection_and_pays_for_nothing(legacy_index, monkeypatch, capsys):
+    from griot import ask
+    prompts = []
+    monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: prompts.append(prompt) or "answer")
+    assert ask.main(["acquire_lock", "--mode", "keyword"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and "griot index keywords" in err
+    assert prompts == []
+
+
 def test_index_status_says_whether_keyword_search_is_built(legacy_index):
     assert common.get_index_status()["keyword_search"] is False
     common.release_client()
     common.build_keyword_index()
     assert common.get_index_status()["keyword_search"] is True
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]"])
+def test_index_status_of_a_collection_whose_config_cannot_be_read_cannot_say(index, content):
+    """A status read answers whatever the config file holds: unreadable is
+    "cannot say" (None), never an exception that takes the status down."""
+    common.release_client()
+    (_active_path() / common._EDGE_CONFIG_MARKER).write_text(content)
+    assert common._keyword_search_status(common.COLLECTION_NAME) is None
 
 
 def test_index_status_of_a_collection_that_does_not_exist():

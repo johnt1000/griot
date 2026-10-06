@@ -161,7 +161,7 @@ def _cmd_index_keywords(rest: list) -> int:
                     "--mode keyword|hybrid` works on what was indexed before keyword search existed. Local: "
                     "embeds nothing and costs nothing. A collection made before keyword search is copied into a "
                     "new one, which needs about as much free disk as the collection while it runs. Safe to run "
-                    "again, and to run again after an interruption.")
+                    "again; run again after an interruption, it resumes the copy where it stopped.")
     parser.parse_args(rest)
     from griot import common
 

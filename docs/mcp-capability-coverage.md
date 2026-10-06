@@ -264,8 +264,10 @@ handled:
   the message (a corrupt `repos.json`, and which file to fix) would be lost.
   The read raises an `MCPError` carrying the tool's own message instead.
 - A read is not a tool call, so it would bypass `_records_call`. It goes
-  through it: recorded in `tool_calls` under its URI, and counted as a call
-  in flight, so the idle reaper does not close the collection under it.
+  through it: recorded in the `tool_calls` log table under its URI (and
+  reported by `griot stats` as `resource_reads`, apart from the tool
+  calls), and counted as a call in flight, so the idle reaper does not
+  close the collection under it.
 
 ## Gaps worth revisiting
 
@@ -460,8 +462,9 @@ of the tools were added on 2026-08-21 and 2026-08-22 and have
 never been called outside tests.
 The same held for resources, which is why they were added as copies of
 three tools rather than in their place: nothing is taken away from the
-surface agents use, and `tool_calls` (which records a resource read under
-its URI) now shows which of the two gets used.
+surface agents use, and `griot stats` now shows which of the two gets
+used: `tool_calls` next to `resource_reads` (a read is logged under its
+URI and counted apart).
 
 The end-to-end MCP validation (see ROADMAP) produces exactly the evidence
 that decides this, and as of 2026-08-22 griot records it: the `tool_calls`

@@ -107,4 +107,9 @@ write_active_terms() {
 # assistant by the forms assistants sign with (a model name, a vendor's
 # noreply address, an agent's name), not by a word a person can carry:
 # Claude is a given name, and people work at these vendors.
-ATTRIBUTION_PATTERN='^[[:space:]#]*co-authored-by:.*(claude (opus|sonnet|haiku|code|[0-9])|noreply@(anthropic|openai)\.com|chatgpt|copilot|gemini|codex|cursor ?agent|devin[ -]ai|aider|windsurf|codeium)|^[[:space:]#]*claude-session:|claude\.ai/code/session_|generated (with|by)[^a-z]{0,8}(claude|chatgpt|copilot|gemini|codex|cursor|devin|aider|windsurf)'
+# The session link and the "Generated with/by" phrase count anywhere on a
+# line except after a `>` or a `<` on it: that is quoted text (a Markdown
+# quote, or the HTML a Dependabot description quotes an upstream release note
+# in), and the credit there is for someone else's work. A bullet, prose or a
+# title in parentheses is not a quote and is still refused.
+ATTRIBUTION_PATTERN='^[[:space:]#]*co-authored-by:.*(claude (opus|sonnet|haiku|code|[0-9])|noreply@(anthropic|openai)\.com|chatgpt|copilot|gemini|codex|cursor ?agent|devin[ -]ai|aider|windsurf|codeium)|^[[:space:]#]*claude-session:|^[^<>]*claude\.ai/code/session_|^[^<>]*generated (with|by)[^a-z]{0,8}(claude|chatgpt|copilot|gemini|codex|cursor|devin|aider|windsurf)'

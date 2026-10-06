@@ -9,6 +9,7 @@ the tool function does not exercise.
 """
 
 import importlib
+import json
 import time
 
 import anyio
@@ -224,8 +225,11 @@ async def test_wait_returns_the_running_job_when_the_time_is_up(server_with_inde
     _register_job(monkeypatch, tmp_path, _FakeProc())  # never ends
 
     started = time.monotonic()
-    async with Client(server_with_index.mcp) as client:
-        out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 0})).structured_content
+    # fail_after: a wait that ignored its deadline would never return here,
+    # and a test that hangs does not fail, it stalls the whole suite.
+    with anyio.fail_after(3):
+        async with Client(server_with_index.mcp) as client:
+            out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 0})).structured_content
 
     assert time.monotonic() - started < 2
     assert out["running"] is True and out["job"]["pid"] == 777 and out["finished"] is None
@@ -261,3 +265,57 @@ async def test_wait_with_no_job_returns_at_once(server_with_index, lock_idle):
         out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 30})).structured_content
     assert (out["running"], out["job"], out["finished"]) == (False, None, None)
     assert out["waited_seconds"] < 2
+
+
+@pytest.mark.anyio
+async def test_a_run_whose_clock_is_ahead_was_updated_zero_seconds_ago(monkeypatch, tmp_path, lock_idle):
+    """The run writes its own time; a record from a moment the server has not
+    reached yet (clocks a little apart, a write between two reads) is fresh,
+    never a negative age an agent would have to make sense of."""
+    _register_job(monkeypatch, tmp_path, _FakeProc())
+    record = json.loads((tmp_path / "progress.json").read_text())
+    record["updated_at"] = time.time() + 60
+    (tmp_path / "progress.json").write_text(json.dumps(record))
+
+    async with Client(mcp_server.mcp) as client:
+        status = (await client.call_tool("griot_index_status", {})).structured_content
+
+    assert status["job"]["progress"]["seconds_since_update"] == 0
+
+
+@pytest.mark.anyio
+async def test_a_job_noticed_finished_after_now_finished_zero_seconds_ago(server_with_index, lock_idle):
+    jobs._registry[888] = {"path": None, "sources": ["code"], "started_at": time.time() - 30,
+                           "proc": _FakeProc(pid=888, exit_after=0), "progress_path": "/nonexistent",
+                           "finished": {"finished_at": time.time() + 60, "exit_code": 0, "progress": None}}
+
+    async with Client(server_with_index.mcp) as client:
+        out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 0})).structured_content
+
+    assert out["finished"]["pid"] == 888
+    assert out["finished"]["finished_seconds_ago"] == 0
+
+
+def _progress(current: str | None, *entries: tuple[str, str, int | None, int | None]) -> dict:
+    return {"current_source": current, "updated_at": None,
+            "sources": [{"source": source, "state": state, "chunks_total": total, "chunks_done": done,
+                         "indexed": None, "skipped": None, "failed": None}
+                        for source, state, total, done in entries]}
+
+
+def test_progress_never_counts_more_than_the_current_source():
+    """A count past its total (a record read mid-write, a recount) is still
+    one source at most: progress above the number of sources would tell a
+    client the run is further than done."""
+    progress, total, _ = mcp_server._progress_numbers(
+        ["code", "commits"], _progress("code", ("code", "embedding", 100, 150), ("commits", "pending", None, None)))
+    assert (progress, total) == (1.0, 2)
+
+
+def test_a_finished_current_source_counts_once():
+    """The current source done is in the count of done sources already; its
+    chunks must not add it a second time."""
+    progress, total, message = mcp_server._progress_numbers(
+        ["code", "commits"], _progress("code", ("code", "done", 100, 100), ("commits", "pending", None, None)))
+    assert (progress, total) == (1.0, 2)
+    assert message == "1 of 2 sources done"
