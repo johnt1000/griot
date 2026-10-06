@@ -42,7 +42,9 @@ def _what_a_client_is_offered() -> list[str]:
     """The oracle: what a real MCP client sees in tools/list, filtered by the
     policy (readOnlyHint, the human-only marker, the named exceptions). It
     reads only the public protocol, so a reshaped SDK internal cannot break
-    the test while the server still works."""
+    the test while the server still works. It shares the server's reading of
+    the markers, so it says nothing about whether that reading is right:
+    test_preapprove_by_behaviour.py holds the list to what each tool does."""
     async def listed():
         async with Client(mcp_server.mcp) as client:
             return (await client.list_tools()).tools

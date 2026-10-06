@@ -1,7 +1,7 @@
 """Keyword (BM25) search next to vector search.
 
-Embeddings are weak at exact identifiers (a function name, an error code, a
-commit hash). The store's own sparse vectors hold a BM25 representation of
+Embeddings are weak at exact strings: measured, at a commit hash above all
+(tests/test_keyword_claims.py has what keyword was found to be for). The store's own sparse vectors hold a BM25 representation of
 every point, written next to the dense one, so a search can match the words
 themselves: `mode="keyword"`, or `mode="hybrid"` for both rankings fused.
 
