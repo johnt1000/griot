@@ -139,7 +139,7 @@ def test_the_golden_set_appears_with_its_size_and_its_last_result():
              "last_golden_check": {"timestamp": _at(days=3), "passed": 4, "total": 6}}
     result, text = _report(state=state)
     assert result["golden_set"] == {"cases": 6, "unregistered_repos": [], "last_passed": 4, "last_total": 6,
-                                    "last_run_at": _at(days=3)}
+                                    "last_skipped": None, "last_run_at": _at(days=3)}
     assert "Golden set:" in text and "6 cases" in text
     assert "4 of 6 passed (3 days ago)" in text, "its own age, not the age of a later check that skipped it"
 

@@ -202,8 +202,10 @@ def load_state() -> dict:
         # The background check and `--skip-golden-set` record a check with
         # no golden part: the golden set's last result is in an older record.
         if last_golden is None and golden_check.get("total") is not None:
+            # `skipped` is 0 for a record from before cases had modes: none
+            # could be skipped then.
             last_golden = {"timestamp": record.get("timestamp"), "passed": golden_check.get("passed"),
-                           "total": golden_check.get("total")}
+                           "total": golden_check.get("total"), "skipped": golden_check.get("skipped") or 0}
         if last_quality and last_golden:
             break
 
@@ -412,6 +414,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         last_golden = state.get("last_golden_check") or {}
         golden = {"cases": curated.get("cases"), "unregistered_repos": list(curated.get("unregistered_repos") or []),
                   "last_passed": last_golden.get("passed"), "last_total": last_golden.get("total"),
+                  "last_skipped": last_golden.get("skipped"),
                   "last_run_at": last_golden.get("timestamp")}
 
     # [MCP validation] Which surface asked — the question "is the MCP path
@@ -1057,6 +1060,10 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
         n = golden.get("cases") or 0
         if golden.get("last_total") is not None:
             ran = f"last run: {golden['last_passed']} of {golden['last_total']} passed"
+            if golden.get("last_skipped"):
+                # Not failed, not passed: cases whose mode needs keyword
+                # search the collection did not have when they were run.
+                ran += f", {golden['last_skipped']} skipped"
             ran_ago = _ago(golden.get("last_run_at"), now)
             ran += f" ({ran_ago})" if ran_ago else ""
         else:
