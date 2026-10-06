@@ -114,13 +114,16 @@ griot auth list                    # see what's currently configured (masked)
 exported in the shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins
 over what `griot auth set` stores, in every terminal that sets it. The
 refusal names where the key came from; `griot auth list` and `griot
-doctor` (check `credentials`) say the same, with the shell file and line.
-Remove that export, and `unset` the variable in terminals already open.
+doctor` (check `credentials`) say the same, with the shell file and line
+(or the `.envrc`, or the `.env` it loads, when direnv set it). Remove that
+export, and `unset` the variable in terminals already open.
 
 If you're upgrading from an older setup where credentials only ever lived
 in the plaintext `.env` file (before the OS-keychain integration existed),
 `griot auth migrate` moves everything already in that file into the
-keychain in one pass. If you just ran `griot auth set` and a *running* MCP
+keychain in one pass. `griot auth list` and `griot doctor` say where each
+credential is kept and whether a keychain backend is reachable at all; with
+none, griot keeps credentials in the plaintext file. If you just ran `griot auth set` and a *running* MCP
 server still reports the key missing, that's expected — the server only
 resolves `.env` once, at process start, so it won't see a newly-set
 credential until restarted.
