@@ -2378,7 +2378,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             # used to vanish with the error of the half that came after it.
             quality_check._record_for_trend(common.COLLECTION_NAME, result, None)
             raise RuntimeError(
-                f"The curated golden set stopped before it finished: {e}. The self-check did run and is "
+                f"The curated golden set stopped before it finished: {common.sentence(str(e))} The self-check did run and is "
                 f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the

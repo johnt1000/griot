@@ -82,91 +82,98 @@ Resolved: a required check reads every pull request's title and description with
 
 Resolved: the run exits 1 naming it (#24), and `griot doctor` and `griot stats` name it too (#32). What is left is debt 19.
 
-### 18. The mutation evidence of 2026-10-06 needs checking again
+### 18. ~~The mutation evidence of 2026-10-06 needs checking again~~ — resolved
 
-The team runs of 2026-10-06 wrote their mutation specs from a brief that
-showed the `-k` field as `"-k expr"`. `mutate.py` expects the bare
-expression; with `-k` in it pytest errors on every mutant, and an error read
-as a killed mutant, so a run could report no survivors having tested
-nothing. One team noticed and fixed its own spec; the others reported "all
-killed". `mutate.py` now refuses such a field. The guards added that day
-(#21 to #42) should have their mutations run again.
+Resolved: the guards of #12 to #42 were mutated again with specs that select their tests; 15 survivors got a test and the rest are argued equivalent (#44, #45).
 
-### 19. A platform run where everything was refused records no `refused_repos`
+### 19. ~~A platform run where everything was refused records no `refused_repos`~~ — resolved
 
-When one repository is refused among others, the run records it and
-`griot doctor` names it (#32). When the platform refused every fetch of the
-whole run, the run records an `error` but not `refused_repos`, so it shows
-only while it is the newest run of all; a later code or commits run hides it.
+Resolved: the run records them, and doctor and stats read the newest platform run's refusals whatever ran after it (#59).
 
-### 20. A shorter log retention deletes history without asking
+### 20. ~~A shorter log retention deletes history without asking~~ — resolved
 
-`griot config set log-retention-days <fewer days>` deletes the searches and
-tool calls older than the new window at the next search, permanently, and a
-terminal asks nothing (a server environment is refused a shorter window).
-Treated as the person's own choice, like other settings that narrow.
+Resolved: shortening the retention says what the next prune will delete and asks; without a terminal it is refused (#52).
 
-### 21. `GRIOT_UPDATE_CHECK` can be turned on by a server's environment
+### 21. ~~`GRIOT_UPDATE_CHECK` can be turned on by a server's environment~~ — resolved
 
-The setting is not in the list of variables a server's environment may only
-narrow (decision 112), so a server environment could turn the PyPI check on.
-Without effect today: only `griot doctor` reads it, and the server never
-runs it.
+Resolved: a server's environment may turn it off, never on (#46).
 
-### 22. The progress of an index run does not survive a server restart
+### 22. ~~The progress of an index run does not survive a server restart~~ — resolved
 
-The job registry of `griot_index_wait` and the `job` of
-`griot_index_status` live in the server's memory. A restart loses the view
-of a run still going (the run itself goes on, and its lock still shows).
+Resolved: the job registry is kept in a private file and a restarted server picks up a run still going, checked against pid reuse (#57).
 
-### 23. `griot index keywords` starts over after an interruption
+### 23. ~~`griot index keywords` starts over after an interruption~~ — resolved
 
-It copies the collection with keyword vectors and swaps it in. Interrupted,
-it starts the copy over rather than continuing: it embeds nothing, so that
-costs local time only.
+Resolved: an interrupted copy resumes, re-copying only missing or changed points, and the swap still needs the whole copy verified (#56).
 
-### 24. The MCP resources read a private attribute of the SDK
+### 24. ~~The MCP resources read a private attribute of the SDK~~ — resolved
 
-The resources reuse each tool's output model through
-`mcp._tool_manager.get_tool(name).fn_metadata.output_model`, which is not a
-public API. An SDK upgrade that renames it breaks the reads loudly, and the
-tests that compare a resource with its tool catch it.
+Resolved for the resources (#53); `tools_safe_to_preapprove` still uses a private one, see debt 31.
 
-### 25. `griot stats` counts resource reads under "MCP tools"
+### 25. ~~`griot stats` counts resource reads under "MCP tools"~~ — resolved
 
-Resource reads are recorded with the tool calls (under their URI) and the
-report heads them all "MCP tools". Each is distinguishable by its name; the
-heading does not say resources are included.
+Resolved: tool calls and resource reads are counted apart (#50).
 
-### 26. A Dependabot description quoting a release note can fail the text check
+### 26. ~~A Dependabot description quoting a release note can fail the text check~~ — resolved
 
-Two parts of the attribution pattern are not anchored to the start of a
-line (the "generated with" phrase naming an assistant, and the session
-link). A Dependabot description that quotes an upstream release note holding
-one would fail the required check; the description then needs editing.
+Resolved: a quoted line passes, and a line that credits an assistant is still refused (#54).
 
-### 27. The lock goes back to Dependabot's form after each of its updates
+### 27. ~~The lock goes back to Dependabot's form after each of its updates~~ — resolved
 
-Each Dependabot lock update writes `uv.lock` with its own uv, so the marker
-churn of debt 14 returns until someone writes the lock again with the pinned
-uv. A CI step could refuse a lock not in the pinned form; it would fail every
-Dependabot lock update until then, which was judged worse.
+Resolved: Dependabot's lock pull requests get the lock rewritten with the pinned uv by a workflow that runs no pull request code with write rights; its commit needs one approval click to start the checks (#55).
 
-### 28. Where a credential came from is worded three ways
+### 28. ~~Where a credential came from is worded three ways~~ — resolved
 
-`griot auth set`, the 401/403 hint, `griot auth list`/`remove` and
-`griot doctor` say "this shell", or "no shell file or direnv file griot
-knows", for the same unknown origin, and the advice to remove an export is
-also given for a direnv file (direnv reloads by itself).
+Resolved: one helper words it everywhere, with direnv advice for a direnv file (#51).
 
-### 29. The management-surface table checks examples, not every read-only tool
+### 29. ~~The management-surface table checks examples, not every read-only tool~~ — resolved
 
-tests/test_confirmation_policy_docs.py checks that the read-only row of
-docs/mcp-capability-coverage.md names no tool wrongly, not that it names all
-of them (it lists examples). `griot_index_repo` is classified by its schema
-and the absence of the human-only marker, since the behavioural test of the
-marker does not register it.
+Resolved: the read-only row lists every read-only tool and is checked both ways; `griot_index_repo`'s confirmation is proven by behaviour (#58).
 
+
+### 30. The release build caches what it downloads
+
+`release.yml`'s build job sets up uv with `enable-cache: true`. A cache
+restored from another run can be poisoned, and the release build is the one
+place where that matters most (zizmor rates it high). zizmor also notes three
+low findings there: an `id-token` permission without a comment, job-level
+concurrency, and how the job names the repository's own workflow.
+
+### 31. `tools_safe_to_preapprove` lists tools through a private SDK attribute
+
+It uses `mcp._tool_manager.list_tools()`: the public `list_tools()` is
+async, and this function is called both from the CLI and from inside the
+async `griot_assist_install`.
+
+### 32. Below Python 3.13 the server sends tool descriptions indented
+
+Before 3.13 a docstring keeps its indentation, and the server sends it as it
+is: about 90 characters of spaces per `griot_search` listing, and the same
+for every other tool, prompt and resource. Registering each with its
+`inspect.cleandoc()` text would send the same thing on every Python.
+
+### 33. A platform run refused entirely is reported twice
+
+While that run is the newest of all, `griot doctor` and `griot stats` say
+both that the last indexing run failed and which repository was refused.
+
+### 34. `griot index keywords` does not say that it resumed
+
+After a resume it reports the points written in this run ("1 points
+copied"), which is accurate but does not say the copy continued an earlier
+one.
+
+### 35. Two pieces of code the mutations proved unreachable
+
+The environment check in `progress_begin` and the explicit
+`_secure_collection_dir` in `build_keyword_index`'s `finally` change nothing
+(equivalent mutants, #44): each is covered by another check. Kept on
+purpose by the team that found them; removing them is a small cleanup.
+
+### 36. The resources heading of `griot stats` is out of line
+
+"MCP resources: " is wider than the 13-column label every other heading
+uses, so its value starts two columns to the right.
 
 ---
 
