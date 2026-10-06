@@ -185,7 +185,7 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
     origin = common.credential_origin(env_var)
     if not origin["shadows_stored"]:
         return
-    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file griot knows)"
+    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file or direnv file griot knows)"
     print(f"Warning: {env_var} is also exported, with a different value, in {where}. The environment wins, so "
           f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
 

@@ -1196,6 +1196,27 @@ _SHELL_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bashrc", ".bash_p
                 ".config/fish/config.fish")
 
 
+def _shown_path(path: Path) -> str:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+
+
+def _lines_matching(path: Path, pattern: re.Pattern, groups: bool = False) -> list:
+    """`<path>:<line>` for every line of `path` that `pattern` matches (the
+    matches themselves with `groups`); a file that cannot be read (missing,
+    a directory, no permission) matches nothing: this only explains where
+    a credential came from, it must never be what fails."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    matches = ((number, pattern.match(line)) for number, line in enumerate(lines, 1))
+    if groups:
+        return [match for _, match in matches if match]
+    shown = _shown_path(path)
+    return [f"{shown}:{number}" for number, match in matches if match]
+
+
 def _shell_exports(env_var: str) -> list[str]:
     """`~/.zshrc:17`-style places where a shell file sets `env_var`. zsh
     reads its files from ZDOTDIR when that is set. A line that only sets it
@@ -1210,14 +1231,52 @@ def _shell_exports(env_var: str) -> list[str]:
         rf"|set\s+-\w*x\w*\s+{name}\s)")
     zdotdir = Path(os.environ["ZDOTDIR"]).expanduser() if os.environ.get("ZDOTDIR") else home
     candidates = [(zdotdir if file.startswith(".z") else home) / file for file in _SHELL_FILES]
-    found = []
-    for path in candidates:
+    return [place for path in candidates for place in _lines_matching(path, pattern)]
+
+
+# A `dotenv`/`dotenv_if_exists` call in an .envrc whose one argument, if
+# any, is a literal path. A path built from a variable is not guessed.
+_DIRENV_DOTENV_CALL = re.compile(r"""^\s*dotenv(?:_if_exists)?(?:\s+(?P<q>['"]?)(?P<path>[^\s'"$`]+)(?P=q))?\s*(?:#.*)?$""")
+
+
+def _direnv_exports(env_var: str) -> list[str]:
+    """Places where the file direnv loaded for this shell exports `env_var`.
+
+    direnv puts DIRENV_FILE (the file it evaluated) and DIRENV_DIR ("-" and
+    that file's directory; the only one older direnv sets) in the
+    environment it exports, so they name the file that was really loaded,
+    not one guessed from the current directory. The .envrc is evaluated by
+    bash, and only what it exports reaches the environment: a plain
+    `VAR=x` stays a shell variable and is not counted. A `.env` it loads
+    with `dotenv`/`dotenv_if_exists` (none: the `.env` beside it, as
+    source_env evaluates from that directory; a directory: its `.env`)
+    exports every key, `export` or not; so does the `.env` DIRENV_FILE
+    names when direnv's load_dotenv loads one directly. Other ways an
+    .envrc can set it (source_env, source_up, a variable path) are not
+    followed: they end up without a place, never a wrong one."""
+    if os.environ.get("DIRENV_FILE"):
+        loaded = Path(os.environ["DIRENV_FILE"])
+    elif os.environ.get("DIRENV_DIR", "").startswith("-") and len(os.environ["DIRENV_DIR"]) > 1:
+        loaded = Path(os.environ["DIRENV_DIR"][1:]) / ".envrc"
+    else:
+        return []
+    name = re.escape(env_var)
+    # direnv's own dotenv grammar (pkg/dotenv): optional export, key, then
+    # `=` (spaces allowed) or `:` and a space.
+    dotenv_key = re.compile(rf"^\s*(?:export\s+)?{name}(?:\s*=|:\s)")
+    if loaded.name == ".env":
+        return _lines_matching(loaded, dotenv_key)
+    exported = re.compile(
+        rf"^\s*(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)")
+    found = _lines_matching(loaded, exported)
+    for call in _lines_matching(loaded, _DIRENV_DOTENV_CALL, groups=True):
+        target = loaded.parent / (call["path"] or ".env")
         try:
-            lines = path.read_text(errors="replace").splitlines()
-        except OSError:
+            if target.is_dir():
+                target = target / ".env"
+        except OSError:  # under a directory that cannot be searched: nothing there can be read either
             continue
-        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-        found.extend(f"{shown}:{number}" for number, line in enumerate(lines, 1) if pattern.match(line))
+        found.extend(_lines_matching(target, dotenv_key))
     return found
 
 
@@ -1248,7 +1307,7 @@ def credential_origin(env_var: str) -> dict:
     shadows = bool(exported and stored_value
                    and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
     return {"source": source, "stored": stored, "shadows_stored": shadows,
-            "exported_in": _shell_exports(env_var) if exported else []}
+            "exported_in": _shell_exports(env_var) + _direnv_exports(env_var) if exported else []}
 
 
 def _provider_of(env_var: str) -> str | None:
@@ -1271,7 +1330,7 @@ def _credential_hint(env_var: str) -> str:
     provider = _provider_of(env_var)
     set_it = f"`griot auth set {provider}`" if provider else f"`griot auth set <provider>`"
     if origin["source"] == "environment":
-        where = ", ".join(origin["exported_in"]) or "this shell (no shell file griot knows sets it)"
+        where = ", ".join(origin["exported_in"]) or "this shell (no shell file or direnv file griot knows sets it)"
         text = f"{env_var} came from the environment, exported in {where}"
         if origin["shadows_stored"]:
             text += (f"; it overrides the different key griot stores, so remove that export (and `unset {env_var}` "
