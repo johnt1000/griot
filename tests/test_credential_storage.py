@@ -219,6 +219,27 @@ def test_set_says_the_fallback_to_the_plaintext_file_and_why(monkeypatch, capsys
     _no_secret_in(out)
 
 
+def test_set_says_a_reachable_keychain_refused_the_key_and_how_to_retry(monkeypatch, capsys):
+    """A backend that answers but refuses the write (a locked keychain, a
+    denied prompt): the fallback to the file happens with a keychain right
+    there, so the note names it and the command that retries, not the
+    no-backend advice."""
+    class _Refusing(_FakeKeyring):
+        def set_password(self, *a):
+            raise RuntimeError("locked")
+
+    monkeypatch.setitem(sys.modules, "keyring", _Refusing())
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: SECRET)
+
+    assert auth.cmd_set("openai") == 0
+
+    out = capsys.readouterr().out
+    assert "plaintext" in out and str(common.ENV_PATH) in out
+    assert "Fake Keyring" in out and "refused" in out and "griot auth migrate" in out
+    assert "no OS keychain backend" not in out
+    _no_secret_in(out)
+
+
 def test_migrate_with_keyring_but_no_backend_does_not_say_install_it(monkeypatch, capsys):
     class _FailBackend(_FakeKeyring):
         """keyring's `fail` backend: picked when nothing is reachable, refuses every write."""
