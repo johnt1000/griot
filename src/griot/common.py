@@ -2997,10 +2997,12 @@ def _write_progress() -> None:
 
 
 def progress_begin(sources: list[str]) -> None:
-    """Starts this run's record: every source it will run, all pending."""
+    """Starts this run's record: every source it will run, all pending.
+    Kept in memory whether or not a host named a file for it: the variable
+    is checked in one place, _write_progress(), which needs the path anyway
+    and is the only way the record leaves the process, so a run started
+    from a terminal writes nothing."""
     global _progress
-    if not os.getenv(INDEX_PROGRESS_ENV):
-        return
     _progress = {"current_source": None,
                  "sources": [{"source": source, "state": "pending", **dict.fromkeys(_PROGRESS_COUNT_FIELDS)}
                              for source in sources]}
@@ -3013,7 +3015,7 @@ def progress_end(exit_code: int | None) -> None:
     spawned, but a host that started after it (the MCP server restarted
     while the run went on) is not its parent and has no other way to learn
     how it ended. A no-op when no record was begun in this process."""
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return
     _progress["ended"] = True
     _progress["exit_code"] = exit_code
@@ -3021,7 +3023,7 @@ def progress_end(exit_code: int | None) -> None:
 
 
 def _current_progress_entry() -> dict | None:
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return None
     for entry in _progress["sources"]:
         if entry["source"] == _progress["current_source"]:
@@ -3033,7 +3035,7 @@ def progress_source(source: str, state: str) -> None:
     """A source changed state: "reading" when it starts (the repository is
     being listed and read, so how many chunks it has is not known yet),
     "done" or "failed" when it ends. The source becomes the current one."""
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return
     _progress["current_source"] = source
     entry = _current_progress_entry()
@@ -3523,11 +3525,13 @@ def build_keyword_index() -> dict:
                 client.optimize()
             return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count}
     finally:
-        # Closed before the permissions are repaired: the engine writes
-        # files of its own when a shard closes (a segment.json, with the
-        # process umask), and a repair before that would miss them.
+        # The engine writes files of its own when a shard closes (a
+        # segment.json, with the process umask): release_client() repairs
+        # the permissions after that close. Nothing here writes a file into
+        # the collection without its handle open (the renames move whole
+        # directories, their modes with them), so there is no repair to
+        # make when no handle is.
         release_client()
-        _secure_collection_dir(COLLECTION_NAME)
         release_lock()
 
 
