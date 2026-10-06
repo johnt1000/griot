@@ -290,6 +290,29 @@ def test_repositories_behind_their_index_are_a_warning(tmp_path, monkeypatch):
     assert "griot index all" in check["fix"]
 
 
+def test_a_repository_the_platform_refused_is_a_warning(tmp_path, monkeypatch):
+    """[debt 17 follow-up] The last platform run indexed the others and
+    could fetch nothing of this one: the doctor names it."""
+    from griot import freshness
+
+    repos = []
+    for name in ("good", "bad\x1b[2J"):
+        repo = tmp_path / name
+        repo.mkdir()
+        repos.append(repo)
+    monkeypatch.setattr(common, "load_repos", lambda: [str(r) for r in repos])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        {"repo": r.name, "path": str(r), "head": "a" * 40, "behind": False, "commits_behind": 0,
+         "behind_sources": [], "missing_sources": [], "platform_refused": r.name != "good",
+         "last_indexed_at": "2026-10-01T00:00:00+00:00", "sources": {}} for r in repos])
+
+    check = _by_name(doctor.run_checks())["repositories"]
+
+    assert check["status"] == "warn" and "refused" in check["detail"]
+    assert "bad?[2J" in check["detail"] and "good" not in check["detail"]
+    assert "griot auth list" in check["fix"]
+
+
 def test_spend_at_the_ceiling_is_a_warning(monkeypatch):
     monkeypatch.setattr(common, "get_spend_today", lambda: 3.0)
     monkeypatch.setattr(common, "SPEND_CEILING_USD", 3.0)

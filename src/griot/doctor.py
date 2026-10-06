@@ -38,6 +38,8 @@ OK, WARN, FAIL, SKIP = "ok", "warn", "FAIL", "skip"
 GIT = "git"
 # What the files and directories griot owns must be closed to.
 OTHERS = 0o077
+# How many of the entries open to others a report names (it counts them all).
+OPEN_ENTRIES_NAMED = 3
 
 
 def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict:
@@ -112,12 +114,42 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
+def _open_entries(data_dir: Path) -> list[str]:
+    """What under the data directory other users can read or enter. The
+    repair that closes the index's files is best-effort (a chmod that fails
+    twice is logged, not raised, so it never fails a search or an index
+    run): this is where what it left open shows up. Read only: lstat, so a
+    link is not followed out of the directory. The model cache is skipped:
+    the embedding library writes the downloaded weights with its own modes,
+    and they are public, not anything indexed."""
+    found = []
+    for root, dirs, files in os.walk(data_dir):
+        if Path(root) == data_dir:
+            dirs[:] = [d for d in dirs if d != "models"]
+        for name in dirs + files:
+            entry = os.path.join(root, name)
+            try:
+                st = os.lstat(entry)
+            except OSError:
+                continue  # gone while walking
+            if not stat.S_ISLNK(st.st_mode) and stat.S_IMODE(st.st_mode) & OTHERS:
+                found.append(entry)
+    return found
+
+
 def check_directories(common) -> dict:
     there = [d for d in (common.CONFIG_DIR, common.DATA_DIR) if d.is_dir()]
     open_ones = [str(d) for d in there if stat.S_IMODE(d.stat().st_mode) & OTHERS]
     if open_ones:
         return _check("directories", WARN, "readable by other users of this machine: " + ", ".join(open_ones),
                       "chmod 700 " + " ".join(open_ones))
+    inside = _open_entries(common.DATA_DIR) if common.DATA_DIR.is_dir() else []
+    if inside:
+        named = ", ".join(inside[:OPEN_ENTRIES_NAMED]) + (", ..." if len(inside) > OPEN_ENTRIES_NAMED else "")
+        return _check("directories", WARN,
+                      f"{len(inside)} entr{'y' if len(inside) == 1 else 'ies'} in {common.DATA_DIR} readable by other "
+                      f"users (a permission repair that failed, or a copy that reset modes): {named}",
+                      f"chmod -R go-rwx {common.DATA_DIR}")
     missing = [str(d) for d in (common.CONFIG_DIR, common.DATA_DIR) if d not in there]
     said = []
     if there:
@@ -146,26 +178,53 @@ def check_profile(common) -> dict:
 
 
 def check_credentials(common) -> dict:
-    """A credential exported in the shell overrides the one griot stores:
+    """Where each credential is kept, and what hides or exposes it. Names and
+    places, never values, and it moves nothing: a secret is moved only when
+    the person asks (`griot auth migrate`).
+
+    A credential exported in the shell overrides the one griot stores:
     `griot auth set` then changes nothing in that shell, and an API that
-    refuses the key looks like a bad new key. Places, never values."""
-    overridden, exported = [], []
+    refuses the key looks like a bad new key. A credential still in the
+    plaintext file while a keychain is reachable is one `griot auth migrate`
+    would protect (a warning); with no keychain reachable the file is griot's
+    fallback, which is said here instead of happening silently (a note: the
+    check stays OK, since nothing may be able to clear it)."""
+    from griot import auth
+
+    keychain = common.keychain_status()
+    overridden, exported, in_file, in_keychain = [], [], [], []
     for provider, env_var in sorted(common.credential_env_vars().items()):
         origin = common.credential_origin(env_var)
+        {"file": in_file, "keychain": in_keychain}.get(origin["stored"], []).append(env_var)
         if origin["source"] != "environment":
             continue
         where = ", ".join(origin["exported_in"]) or "this shell"
         (overridden if origin["shadows_stored"] else exported).append((env_var, where))
+
+    details, fixes = [], []
     if overridden:
-        return _check("credentials", WARN,
-                      "exported in the shell with a value other than the one griot stores, which it hides: "
-                      + "; ".join(f"{var} ({where})" for var, where in overridden),
-                      "remove the export from " + "; ".join(where for _, where in overridden)
-                      + ", and `unset` it in terminals already open")
+        details.append("exported in the shell with a value other than the one griot stores, which it hides: "
+                       + "; ".join(f"{var} ({where})" for var, where in overridden))
+        fixes.append("remove the export from " + "; ".join(where for _, where in overridden)
+                     + ", and `unset` it in terminals already open")
+    if in_file:
+        details.append(f"in plaintext in {common.ENV_PATH}: {', '.join(in_file)}")
+        if keychain["available"]:
+            fixes.append("`griot auth migrate` moves them into the OS keychain")
+        else:
+            # A note, not a warning: with no backend the file is where keys
+            # belong, and a container or headless server may never have one.
+            # A warning nobody can clear teaches people to skip the doctor.
+            details.append("once an OS keychain is reachable, `griot auth migrate` moves them there")
+    if in_keychain:
+        details.append(f"in the OS keychain: {', '.join(in_keychain)}")
     if exported:
-        return _check("credentials", OK, "from the shell, and griot stores no other value: "
-                      + "; ".join(f"{var} ({where})" for var, where in exported))
-    return _check("credentials", OK, "none is overridden by the shell")
+        details.append("from the environment, and griot stores no other value: "
+                       + "; ".join(f"{var} ({where})" for var, where in exported))
+    if not overridden:
+        details.append("none is overridden by the shell")
+    details.append(auth.keychain_phrase(keychain))
+    return _check("credentials", WARN if fixes else OK, "; ".join(details), "; ".join(fixes) or None)
 
 
 def check_index(common) -> dict:
@@ -209,15 +268,22 @@ def check_repositories(common) -> dict:
     reports = freshness.repository_freshness()
     behind = [r for r in reports if r.get("behind")]
     without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]
-    if behind or without_code:
+    from griot import stats
+    refused = stats.platform_refused_names(reports)
+    if behind or without_code or refused:
         parts = []
         if behind:
-            from griot import stats
             parts.append("index behind in " + ", ".join(stats._behind_phrase(r) for r in behind))
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
-        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts),
-                      "griot index all   # or one with --repo <name>")
+        if refused:
+            parts.append(stats.platform_refused_phrase(refused))
+        # A refusal is fixed with the token first: indexing again before
+        # that is refused again.
+        fix = "griot index all   # or one with --repo <name>"
+        if refused:
+            fix = "griot auth list   # check the platform's token, then: " + fix
+        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
 

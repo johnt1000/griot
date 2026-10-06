@@ -226,7 +226,8 @@ single-endpoint, loopback-only listener that dies after one request is a
 genuinely small thing, so this is not a hard
 "no". But it buys little: griot's providers use **static API keys**, not
 OAuth, and `griot auth set <provider>` already reads the key with
-`getpass` (never echoed, never in argv) and stores it in the OS keychain.
+`getpass` (never echoed, never in argv) and stores it in the OS keychain
+when one is reachable (else in `<config>/.env` at 0600).
 Routing the same secret through a browser and a local socket adds moving
 parts without removing an exposure.
 

@@ -805,6 +805,8 @@ def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = Non
     except Exception as e:  # noqa: BLE001 — instrumentation must not break the tool
         common.log_and_print(f"Warning: could not record the {tool} call: {e}",
                              level="warning", echo=False)
+        return
+    common.prune_logs_if_due()  # after the write: a prune never costs a call its record
 
 
 def _log_search(query: str, limit: int, results: list, elapsed: float, *,
@@ -892,6 +894,9 @@ class _WhyNoPointCount(TypedDict, total=False):
 
 class StatsOutput(_WhyNoPointCount):
     days: int
+    # Searches and tool calls older than this many days are deleted
+    # (GRIOT_LOG_RETENTION_DAYS): a longer `days` counts only this many.
+    log_retention_days: int
     # What is true now, whatever `days` is. `attention` is what someone has
     # to act on (a last run that died, a reached spend ceiling, a collection
     # that cannot be read); empty when there is nothing.
@@ -985,6 +990,11 @@ class RepositoryFreshness(TypedDict):
     # The sources that never ran for this repository: a repository with
     # "code" here has nothing a search can find in its files.
     missing_sources: list[str]
+    # True when the newest platform run that reached this repository could
+    # fetch nothing of it (the platform refused every request, an expired
+    # token say) while it answered for others: its pull requests and issues
+    # are missing or stale until the token is fixed and the platform indexed.
+    platform_refused: bool
     sources: dict[str, SourceFreshness]
 
 
@@ -1783,7 +1793,11 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
     return {
         "providers": [{"provider": s["provider"], "configured": s["configured"]}
                       for s in auth.provider_status()],
-        "how_to_set": "griot auth set <provider>    # hidden prompt; stores in the OS keychain",
+        # Not "stores in the OS keychain" flatly: with no backend reachable it
+        # goes to the plaintext .env, and checking here would read the keychain
+        # on every call. `griot auth list` says which, from a terminal.
+        "how_to_set": ("griot auth set <provider>    # hidden prompt; stores in the OS keychain when one is "
+                       "reachable, else in <config>/.env (plaintext, 0600); `griot auth list` says which"),
         "how_to_remove": "griot auth remove <provider>",
         "why_not_here": (
             "Credentials are never set through MCP: a value typed into a chat reaches the "
@@ -1809,6 +1823,8 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
     Read `attention` first: it holds what someone has to act on, whatever
     the window. `last_indexed_at`, `last_query_at`, `last_quality_check_at`
     and `golden_set` are likewise about now, not about the last `days` days.
+    Searches and tool calls are kept `log_retention_days` days: a longer
+    `days` counts only those.
 
     Reuse deserves attention: `reuse_rate` averages the whole window, so a
     window spanning a fix holds two eras whose average describes neither.
@@ -1828,6 +1844,7 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
     # without knowing what period it covers, and an agent that asked for a
     # non-default window shouldn't have to remember which it asked for.
     result["days"] = days
+    result["log_retention_days"] = common.LOG_RETENTION_DAYS
     return result
 
 

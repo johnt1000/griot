@@ -53,7 +53,7 @@ griot stats
 griot doctor
 ```
 
-`griot doctor` checks the whole setup in one go and says what to do about each finding. It changes no setting, index or file of yours; two things happen on the way and are said: loading the configuration closes a `.env` left open to other users, as every griot command does, and asking the harness which server it has registered may start that server for a moment, as `griot assist install` does. It checks settings the file holds that griot cannot start with, the configuration file and directories closed to other users, the active profile and its credential, the collection, the registered repositories and whether their index is behind, today's spend against the ceiling, the MCP registration and which read-only tools still ask before every call, the variables a server would ignore, git, the log. Exit status 1 only when a check fails; a warning is something to know.
+`griot doctor` checks the whole setup in one go and says what to do about each finding. It changes no setting, index or file of yours; two things happen on the way and are said: loading the configuration closes a `.env` left open to other users, as every griot command does, and asking the harness which server it has registered may start that server for a moment, as `griot assist install` does. It checks settings the file holds that griot cannot start with, the configuration file, the directories and everything the data directory holds (the model cache aside) closed to other users, the active profile and its credential, the collection, the registered repositories and whether their index is behind, today's spend against the ceiling, the MCP registration and which read-only tools still ask before every call, the variables a server would ignore, git, the log. Exit status 1 only when a check fails; a warning is something to know.
 
 `griot index all` runs the sources in order: `code`, `commits`, `tags`, `branches`, `platform`. Filter with `--sources code,commits`. Index an unregistered directory directly with `--path <dir>`.
 
@@ -94,11 +94,11 @@ griot auth remove openai   # asks first; --yes skips the question
 griot auth migrate         # moves every credential already in the plaintext file into the keychain
 ```
 
-Install the optional `keychain` extra (`pip install "griot[keychain]"`) and credentials go to the OS keychain — macOS Keychain, Linux Secret Service, Windows Credential Manager — instead of the plaintext file. Without it, or where no backend is reachable, griot falls back to `<config>/.env` at mode 0600. A credential set before the extra was installed stays in the file until you run `griot auth migrate` (or re-run `griot auth set` for that one provider).
+Install the optional `keychain` extra (`pip install "griot[keychain]"`) and credentials go to the OS keychain — macOS Keychain, Linux Secret Service, Windows Credential Manager — instead of the plaintext file. Without it, or where no backend is reachable, griot falls back to `<config>/.env` at mode 0600; `griot auth list` and `griot doctor` say which applies and where each credential is. A credential set before the extra was installed stays in the file until you run `griot auth migrate` (or re-run `griot auth set` for that one provider).
 
 Platform tokens (only needed for `griot index platform`): `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`.
 
-A credential exported in your shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins over the one griot stores. When the two differ, `griot auth set`, `griot auth list`, `griot auth remove`, `griot doctor` and an API that refuses the key say so, naming the shell file and line (never the value): remove the export to use the stored key.
+A credential exported in your shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins over the one griot stores. When the two differ, `griot auth set`, `griot auth list`, `griot auth remove`, `griot doctor` and an API that refuses the key say so, naming the shell file and line, or the direnv `.envrc` (never the value): remove the export to use the stored key.
 
 The first time you run any `griot` command, `<config>/.env` is generated for you with every setting listed, mode 0600: most with their default written out, those whose default may still change commented out, and credentials empty. You rarely need to open it: `griot config list` shows each setting, the value in force and where it comes from, and `griot config set` changes one.
 
@@ -214,6 +214,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
+| `GRIOT_LOG_RETENTION_DAYS` | days of searches and MCP tool calls kept in `logs/logs.db` (default 365); older ones are deleted, at most once a day, by the next search or tool call. Indexing runs and quality checks are kept |
 | `GRIOT_PROJECT` | name recorded with each `griot ask`, `griot_search` and MCP tool call so `griot stats` can show usage by project (default: the folder `CLAUDE_PROJECT_DIR` names, else the folder `griot` runs in; set it in the `env` of that project's MCP server entry, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |
