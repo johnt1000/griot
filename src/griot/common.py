@@ -1,3 +1,4 @@
+import atexit
 import hashlib
 import http.cookiejar
 import json
@@ -1540,7 +1541,6 @@ def acquire_lock(label: str | None = None) -> None:
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps({"pid": pid, "start_time": start_time, "label": label}))
 
-    import atexit
     atexit.register(release_lock)
 
 
@@ -1902,7 +1902,17 @@ def release_client() -> None:
         if _client is not None:
             _client.close()
             _client = None
+            # Closing rewrites each segment's segment.json with the process
+            # umask, after every repair that ran while the shard was open.
+            # Only the directories that changed are listed again.
+            _secure_collection_dir(COLLECTION_NAME)
         _client_last_used_at = None
+
+
+# A process that exits holding the shard (every CLI run) has the engine write
+# the same files when the handle is dropped on the way out: closing it here
+# first lets the repair above run after that write, not before it.
+atexit.register(release_client)
 
 
 # Options of the top-level `griot` command that take a value, so the value is
@@ -2714,8 +2724,10 @@ def _secure_collection_dir(collection: str, *, full: bool = False) -> None:
     sync, or restoring from an archive could reset the outer directories
     and leave the actual RAG content world-readable with nothing else
     standing in the way. Called with full=True at the end of every write
-    (index_documents(), prune_orphans()), and on every cold open in
-    get_client() (including every multi-mode idle-release reopen).
+    (index_documents(), prune_orphans()), on every cold open in
+    get_client() (including every multi-mode idle-release reopen), and
+    after every close in release_client(), which the engine follows with a
+    write of its own.
 
     On an open, a directory whose fingerprint (inode, mode, mtime, ctime)
     is the one recorded when it was last checked is not listed again: a

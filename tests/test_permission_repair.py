@@ -14,6 +14,7 @@ reported: the repair never raises (it runs inside search and indexing) and
 never prints (stdout is the MCP transport), so `griot doctor` is where a
 file still open to others shows up."""
 
+import json
 import os
 import stat
 import sys
@@ -150,6 +151,22 @@ def test_a_directory_opened_by_a_chmod_is_closed_and_its_files_checked(no_racy_w
             assert _mode(os.path.join(root, f)) == 0o600
 
 
+def test_a_link_to_a_directory_elsewhere_is_neither_followed_nor_chmodded(no_racy_window, tmp_path):
+    """chmod follows a link: closing one would close whatever it points at,
+    and walking into it would close everything there."""
+    name, path = _collection()
+    elsewhere = tmp_path / "shared"
+    elsewhere.mkdir()
+    (elsewhere / "public.txt").write_text("p")
+    os.chmod(elsewhere, 0o755)
+    os.chmod(elsewhere / "public.txt", 0o644)
+    os.symlink(elsewhere, path / "segments" / "link")
+
+    common._secure_collection_dir(name, full=True)
+
+    assert (_mode(elsewhere), _mode(elsewhere / "public.txt")) == (0o755, 0o644)
+
+
 def test_a_removed_directory_is_forgotten_not_an_error(no_racy_window):
     name, path = _collection()
     common._secure_collection_dir(name)
@@ -284,6 +301,59 @@ def test_a_directory_changed_just_now_is_not_remembered(monkeypatch):
     common._secure_collection_dir(name)
 
     assert any(s.endswith("f0.dat") for s in seen)
+
+
+# --- what the engine writes when it closes -----------------------------------------------------
+
+
+def _open_to_others(path) -> list[str]:
+    return [os.path.join(root, n) for root, dirs, files in os.walk(path) for n in dirs + files
+            if not os.path.islink(os.path.join(root, n)) and _mode(os.path.join(root, n)) & 0o077]
+
+
+@pytest.fixture
+def loose_umask():
+    """The umask most machines run with: what the engine's own writes get."""
+    previous = os.umask(0o022)
+    yield
+    os.umask(previous)
+
+
+_ONE_DOC = [{"id": "repo:code:a.py:0", "content": "a",
+             "metadata": {"source_type": "code", "repo": "repo", "file_path": "a.py", "chunk_index": 0}}]
+
+
+def test_a_release_leaves_nothing_the_engine_wrote_on_close_open(monkeypatch, loose_umask):
+    """Closing a shard rewrites each segment's segment.json with the process
+    umask, after every repair that ran while it was open (found on a real
+    collection by the doctor check below). The MCP server releases after
+    every idle spell."""
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
+    common.index_documents(_ONE_DOC)
+
+    common.release_client()
+
+    assert _open_to_others(common._collection_path(common.COLLECTION_NAME)) == []
+
+
+def test_a_process_that_exits_holding_the_collection_leaves_nothing_open(tmp_path):
+    """A CLI run never releases: the engine writes the same file when the
+    process drops the handle on its way out."""
+    import subprocess
+
+    script = (
+        "import os, json\n"
+        "os.umask(0o022)\n"
+        "from griot import common\n"
+        "common.embed_texts = lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts]\n"
+        f"common.index_documents(json.loads({json.dumps(json.dumps(_ONE_DOC))}))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+
+    collection = tmp_path / "data" / "griot" / "qdrant_data" / common.COLLECTION_NAME
+    assert collection.is_dir()
+    assert _open_to_others(collection) == []
 
 
 # --- a chmod that fails ------------------------------------------------------------------------

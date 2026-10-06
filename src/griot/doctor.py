@@ -145,7 +145,7 @@ def check_directories(common) -> dict:
                       "chmod 700 " + " ".join(open_ones))
     inside = _open_entries(common.DATA_DIR) if common.DATA_DIR.is_dir() else []
     if inside:
-        named = ", ".join(inside) + (", ..." if len(inside) > OPEN_ENTRIES_NAMED else "")
+        named = ", ".join(inside[:OPEN_ENTRIES_NAMED]) + (", ..." if len(inside) > OPEN_ENTRIES_NAMED else "")
         return _check("directories", WARN,
                       f"{len(inside)} entr{'y' if len(inside) == 1 else 'ies'} in {common.DATA_DIR} readable by other "
                       f"users (a permission repair that failed, or a copy that reset modes): {named}",
