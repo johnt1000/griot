@@ -46,26 +46,37 @@ async def listed():
     async with Client(mcp_server.mcp) as client:
         return (await client.list_tools()).tools
 
-print(json.dumps([
+print(json.dumps({"tools": [
     {"name": t.name, "meta": t.meta or {}, "input_schema": t.input_schema,
      "read_only_hint": t.annotations.read_only_hint if t.annotations else None}
     for t in anyio.run(listed)
-]))
+], "preapprove": mcp_server.tools_safe_to_preapprove()}))
 """
 
 
 @pytest.fixture(scope="module")
-def policy(tmp_path_factory):
+def listing(tmp_path_factory):
     """Module scope: the listing does not change between tests, and each
     child process pays the server's whole import."""
-    return _read_policy(tmp_path_factory.mktemp("policy"))
+    return _list_server(tmp_path_factory.mktemp("policy"))
+
+
+@pytest.fixture(scope="module")
+def policy(listing):
+    return _policy_of(listing["tools"])
 
 
 def _read_policy(base):
-    """{tool name: HUMAN | CONFIRM | NONE} for every tool the server can
-    register. griot_index_repo exists only with GRIOT_MCP_ENABLE_INDEX, and
-    it is the one state-changing tool off by default, so the documents name
-    it: the tools are listed by a child process that has it on."""
+    return _policy_of(_list_server(base)["tools"])
+
+
+def _list_server(base):
+    """What a real client lists for every tool the server can register, and
+    the tools `griot assist install` offers to pre-approve (asked of the same
+    server, so a conditional tool is on both sides). griot_index_repo exists
+    only with GRIOT_MCP_ENABLE_INDEX, and it is the one state-changing tool
+    off by default, so the documents name it: the tools are listed by a
+    child process that has it on."""
     # os.environ carries conftest's keyring isolation (PYTHON_KEYRING_BACKEND)
     # into the child; directories of its own keep its import off real ones.
     env = {**os.environ, "GRIOT_MCP_ENABLE_INDEX": "true",
@@ -74,7 +85,11 @@ def _read_policy(base):
                           text=True, stdin=subprocess.DEVNULL, timeout=120)
     assert done.returncode == 0, done.stderr
     # The last line: anything the import prints goes before the listing.
-    tools = json.loads(done.stdout.strip().splitlines()[-1])
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def _policy_of(tools):
+    """{tool name: HUMAN | CONFIRM | NONE}."""
     out = {}
     for tool in tools:
         name = tool["name"]
@@ -164,6 +179,51 @@ def test_readme_names_every_state_changing_tool_and_which_need_a_person(policy):
         "README: the tools that accept only a person's answer"
     counts = _counts_stated(text)
     assert counts and {c.lower() for c in counts} == {_NUMBER_WORDS[len(_of(policy, HUMAN))]}, counts
+
+
+def _sentences(text):
+    return re.split(r"(?<=\.)\s+(?=[A-Za-z`])", text.strip())
+
+
+def _not_preapproved(listing, policy):
+    """The read-only tools `griot assist install` leaves out of the allow
+    rules it offers, read from the server: a tool added to or dropped from
+    its exceptions changes what the README must say."""
+    asked = _of(policy, NONE) - set(listing["preapprove"])
+    # An empty set would make the checks below vacuous.
+    assert asked, "the server pre-approves every read-only tool"
+    return asked
+
+
+def test_readme_says_which_read_only_tools_are_left_to_the_client_to_ask(listing, policy):
+    """The sentence once said these tools "still ask each time", which read
+    as a confirmation of their own; none has one (each is NONE in the
+    policy, by construction of the set). What asks is the client, because
+    the installer offers no allow rule for them."""
+    text = _paragraph("README.md", "The server's own tool list is the inventory")
+    hits = [s for s in _sentences(text) if "read without changing anything" in s]
+    assert len(hits) == 1, hits
+    sentence = hits[0]
+    asked = _not_preapproved(listing, policy)
+
+    assert _code_names(sentence) == asked, {
+        "missing": asked - _code_names(sentence), "wrong": _code_names(sentence) - asked}
+    assert {c.lower() for c in _counts_stated(sentence)} == {_NUMBER_WORDS[len(asked)]}, sentence
+    assert "`griot assist install`" in sentence
+    assert "no confirmation of their own" in sentence
+    assert "your client asks" in sentence
+    # The sentences before it list the read-only tools that ARE pre-approved.
+    assert not _code_names(text.split(sentence)[0]) & asked
+
+
+def test_readme_install_section_counts_the_tools_it_leaves_out(listing, policy):
+    """The installer paragraph says which read-only tools get no allow rule;
+    it once named the quality check alone while four were left out."""
+    text = _paragraph("README.md", "The installer then **offers**")
+    hits = [s for s in _sentences(text) if s.startswith("griot adds no rule")]
+    assert len(hits) == 1, hits
+    asked = _not_preapproved(listing, policy)
+    assert {c.lower() for c in _counts_stated(hits[0])} == {_NUMBER_WORDS[len(asked)]}, hits[0]
 
 
 # --- SECURITY.md -------------------------------------------------------------------

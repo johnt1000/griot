@@ -1500,6 +1500,14 @@ def _provider_of(env_var: str) -> str | None:
     return next((p for p, v in credential_env_vars().items() if v == env_var), None)
 
 
+def sentence(text: str) -> str:
+    """`text` closed with exactly one mark. A message that carries another
+    one (a provider's error, which may end with credential_hint()) cannot
+    know whether it already ends its sentence: appending "." read ".."."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
 def credential_hint(env_var: str) -> str:
     """One sentence on where the credential in force came from and what to
     do, for an API that refused it. Names places, never values. Called
@@ -2997,10 +3005,12 @@ def _write_progress() -> None:
 
 
 def progress_begin(sources: list[str]) -> None:
-    """Starts this run's record: every source it will run, all pending."""
+    """Starts this run's record: every source it will run, all pending.
+    Kept in memory whether or not a host named a file for it: the variable
+    is checked in one place, _write_progress(), which needs the path anyway
+    and is the only way the record leaves the process, so a run started
+    from a terminal writes nothing."""
     global _progress
-    if not os.getenv(INDEX_PROGRESS_ENV):
-        return
     _progress = {"current_source": None,
                  "sources": [{"source": source, "state": "pending", **dict.fromkeys(_PROGRESS_COUNT_FIELDS)}
                              for source in sources]}
@@ -3013,7 +3023,7 @@ def progress_end(exit_code: int | None) -> None:
     spawned, but a host that started after it (the MCP server restarted
     while the run went on) is not its parent and has no other way to learn
     how it ended. A no-op when no record was begun in this process."""
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return
     _progress["ended"] = True
     _progress["exit_code"] = exit_code
@@ -3021,7 +3031,7 @@ def progress_end(exit_code: int | None) -> None:
 
 
 def _current_progress_entry() -> dict | None:
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return None
     for entry in _progress["sources"]:
         if entry["source"] == _progress["current_source"]:
@@ -3033,7 +3043,7 @@ def progress_source(source: str, state: str) -> None:
     """A source changed state: "reading" when it starts (the repository is
     being listed and read, so how many chunks it has is not known yet),
     "done" or "failed" when it ends. The source becomes the current one."""
-    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+    if _progress is None:
         return
     _progress["current_source"] = source
     entry = _current_progress_entry()
@@ -3381,12 +3391,12 @@ def _drop_points_not_in(new: "qe.EdgeShard", client: "qe.EdgeShard") -> None:
             break
 
 
-def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
+def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> tuple[int, int]:
     """Copies every point of `client` into a collection at `staging` made
     with the keyword vector: the dense vector and the payload as they are,
-    the keyword vector computed from the payload. Returns how many points
-    were written. Embeds nothing: the dense vectors are read back from the
-    store.
+    the keyword vector computed from the payload. Returns (points written,
+    points an interrupted earlier copy already held as they are now and
+    kept). Embeds nothing: the dense vectors are read back from the store.
 
     Resumes a copy an interrupted build left at `staging` instead of
     starting over: the copy itself is the record of what was done, written
@@ -3404,7 +3414,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
                       f"{new.info().points_count} points it holds are checked, not copied again.",
                       level="info", echo=False)
     try:
-        copied, offset = 0, None
+        copied, kept_count, offset = 0, 0, None
         with tqdm(total=total, desc="Adding keyword vectors") as progress:
             while True:
                 page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
@@ -3416,6 +3426,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
                         new.update(qe.UpdateOperation.upsert_points(
                             [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in stale]))
                     copied += len(stale)
+                    kept_count += len(page) - len(stale)
                     progress.update(len(page))
                 if offset is None:
                     break
@@ -3432,7 +3443,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
         new.optimize()
     finally:
         new.close()
-    return copied
+    return copied, kept_count
 
 
 def _swap_in(path: Path, staging: Path, previous: Path) -> None:
@@ -3476,7 +3487,10 @@ def build_keyword_index() -> dict:
     """Gives every point of the active collection a keyword vector, without
     embedding anything and without any paid call. Returns {"rebuilt": the
     collection was copied into one made with the keyword vector, "written":
-    keyword vectors written, "points": points in the collection}.
+    keyword vectors written by this run, "points": points in the collection,
+    "kept": points an interrupted earlier copy already held and this run
+    kept instead of writing again (0 when nothing was resumed)}. "written"
+    alone after a resume would read as a copy that covered only that much.
 
     A collection made before keyword search cannot take the vector in place
     (the engine refuses to add a vector to existing segments), so it is
@@ -3511,23 +3525,26 @@ def build_keyword_index() -> dict:
             if staging.exists() and not needs_copy:
                 shutil.rmtree(staging)
             if not collection_exists(COLLECTION_NAME):
-                return {"rebuilt": False, "written": 0, "points": 0}
-            rebuilt, written = False, 0
+                return {"rebuilt": False, "written": 0, "points": 0, "kept": 0}
+            rebuilt, written, kept = False, 0, 0
             if needs_copy:
-                written = _copy_into_keyword_collection(get_client(), staging)
+                written, kept = _copy_into_keyword_collection(get_client(), staging)
                 _swap_in(path, staging, previous)
                 rebuilt = True
             client = get_client()
             filled = _fill_missing_keyword_vectors(client)
             if filled:
                 client.optimize()
-            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count}
+            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count,
+                    "kept": kept}
     finally:
-        # Closed before the permissions are repaired: the engine writes
-        # files of its own when a shard closes (a segment.json, with the
-        # process umask), and a repair before that would miss them.
+        # The engine writes files of its own when a shard closes (a
+        # segment.json, with the process umask): release_client() repairs
+        # the permissions after that close. Nothing here writes a file into
+        # the collection without its handle open (the renames move whole
+        # directories, their modes with them), so there is no repair to
+        # make when no handle is.
         release_client()
-        _secure_collection_dir(COLLECTION_NAME)
         release_lock()
 
 
@@ -3957,6 +3974,14 @@ def _points_error(collection: str, error: Exception) -> str:
     return f"unreadable: {error}"
 
 
+def _names_or_none(value) -> list[str] | None:
+    """`value` when it is a non-empty list of strings, else None: a field a
+    run record should hold as names, read from a log that can be edited."""
+    if isinstance(value, list) and value and all(isinstance(name, str) for name in value):
+        return value
+    return None
+
+
 def get_index_status(collection: str | None = None, *, reuse_active_handle: bool = True) -> dict:
     """Snapshot of state for "does this collection have data? when was it
     last indexed? is any indexing running right now?" (section 2.4 of the
@@ -4050,6 +4075,15 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             # successful no-op — the exact illusion recording died runs
             # exists to remove.
             "error": record.get("error"),
+            # The repositories a platform run could fetch nothing of
+            # (index_platform.py), None for any other run. Lets `griot
+            # doctor` and `griot stats` say a run refused entirely once,
+            # by the line naming those repositories (stats.py::
+            # refusal_names_last_run), instead of twice. Anything but a list
+            # of names (a record edited by hand) is None: griot_index_status
+            # declares a list, and a value of another shape would fail the
+            # whole tool, not just this field.
+            "refused_repos": _names_or_none(record.get("refused_repos")),
         }
 
     from griot import freshness
@@ -4401,7 +4435,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # or the None becomes a type error from the vector store.
             raise RuntimeError(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
-                f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+                + sentence(last_embedding_failure() or "the embedding call returned nothing"))
 
     def nearest(points: int) -> list:
         """The best `points` hits in the mode asked: a wider window when the

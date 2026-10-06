@@ -2272,8 +2272,12 @@ def test_every_registered_tool_goes_through_records_call():
 
     lines = pathlib.Path(mcp_server.__file__).read_text().splitlines()
     unwrapped, seen = [], 0
+    # A bare @mcp.tool/@mcp.prompt would also skip _tool/_prompt, which clean
+    # the docstring the server sends: indented on Python < 3.13 otherwise.
+    bare = [line.strip() for line in lines if line.lstrip().startswith(("@mcp.tool(", "@mcp.prompt("))]
+    assert bare == [], "register through _tool/_prompt"
     for i, line in enumerate(lines):
-        if not line.lstrip().startswith("@mcp.tool("):
+        if not line.lstrip().startswith("@_tool("):
             continue
         seen += 1
         j, wrapped = i + 1, False
