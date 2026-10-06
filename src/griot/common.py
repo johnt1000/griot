@@ -1205,8 +1205,12 @@ def _keychain_delete(env_var: str) -> str:
     asked, so after it any exception is a failure."""
     try:
         import keyring
-    except Exception:
+    except ImportError:
         return KEYCHAIN_NOT_INSTALLED
+    except Exception:
+        # Installed but broken while loading: a key stored through it
+        # earlier may still be there, so this is not "not installed".
+        return KEYCHAIN_UNREACHABLE
     try:
         if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
             return KEYCHAIN_NOTHING_STORED

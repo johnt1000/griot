@@ -154,6 +154,23 @@ def test_keychain_delete_says_unreachable_when_the_delete_itself_is_refused(monk
     assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
 
 
+def test_keychain_delete_says_unreachable_when_keyring_is_installed_but_breaks_on_import(monkeypatch):
+    """Only a missing package means griot never stored anything there. A
+    package that is installed but fails while importing (a broken backend
+    plugin, say) may be hiding a stored key, so it is not "not installed"."""
+    import builtins
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "keyring":
+            raise RuntimeError("backend plugin failed to load")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "keyring", raising=False)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
+
+
 # --- credential_env_vars() (moved from auth._providers(), single source) --
 
 
