@@ -16,6 +16,9 @@
 #      ADDS, in the name of a file one of them adds or changes, in a commit
 #      message, in the message of an annotated tag, or in the name of a branch
 #      or tag being pushed
+#   4. a line that credits an AI assistant (ATTRIBUTION_PATTERN in
+#      common.sh) in a commit message or the message of an annotated tag,
+#      whether or not the terms list exists
 # Only LOCATIONS are printed, never the matching text. A file git calls
 # binary is not read, here or by any other check.
 #
@@ -259,6 +262,25 @@ elif write_active_terms "$terms_file" "$patterns"; then
     failed=1
   fi
 fi
+
+# --- 4. credits to an AI assistant ------------------------------------------------------
+# The same lines commit-msg refuses, in the messages of the commits being
+# sent: a cherry-pick or a rebase runs no commit hook. Independent of the
+# terms list.
+if [ -s "$work/revs" ]; then
+  credit_hits=$(in_caller_locale git log --stdin --no-walk -i -E --encoding=UTF-8 --date=short --format='commit %h (%ad)' --grep="$ATTRIBUTION_PATTERN" < "$work/revs") || unreadable
+  if [ -n "$credit_hits" ]; then
+    say "these commits have an attribution line in their message (an AI assistant as co-author, a session link, \"Generated with\"); the author of a commit here is the person who makes it:"
+    printf '%s\n' "$credit_hits" | indent
+    failed=1
+  fi
+fi
+while read -r object name; do
+  if git cat-file -p "$object" | sed '1,/^$/d' | grep -q -a -i -E "$ATTRIBUTION_PATTERN"; then
+    say "tag $name has an attribution line in its message (an AI assistant as co-author, a session link, \"Generated with\")."
+    failed=1
+  fi
+done < "$work/tags"
 
 if [ "$failed" -ne 0 ]; then
   say "push blocked. A new commit on top does not fix this: the commit that holds it is still sent. Change that commit (amend or rebase) and push again; revoke any real credential first. A real false positive belongs in .gitleaks.toml (secrets) or sensitive-terms.txt (terms)."

@@ -37,7 +37,14 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   than a template such as `.env.example`, databases, keys, logs, collection
   data) and, if you list them in `.git/sensitive-terms.txt`, private names of
   your own, plus a `commit-msg` hook that applies the same list to the
-  message. A merge that makes a commit goes through the same checks
+  message. The author of a commit is the person who makes it: `commit-msg`
+  also refuses a message that credits an AI assistant (as a co-author, with a
+  session link, or as "Generated with"), and `pre-push` refuses it in the
+  commits a push sends. Saying that a change concerns an assistant, such as
+  the Claude Code support, is fine. A pull request's description and the
+  message GitHub writes for a squash merge are made on the server, where no
+  hook runs: keep them free of such lines too. A merge that makes a commit
+  goes through the same checks
   (`pre-merge-commit`). A cherry-pick, a fast-forward, `git am` and most of a
   rebase run no commit hook at all, so a `pre-push` hook looks at every commit
   a push would send that the remote does not have yet: secrets in what they
