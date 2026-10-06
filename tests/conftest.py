@@ -35,6 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # any fixture ever runs. No monkeypatch fixture exists yet at this point —
 # this is a plain, permanent module-level override for the whole session.
 sys.modules["keyring"] = None
+# The line above covers this process only. A test that runs the real CLI in a
+# subprocess imports the real `keyring` there, and on a machine with the
+# keychain extra a fake credential reached the user's login keychain
+# (2026-10-06). Every subprocess inherits this environment: keyring's `fail`
+# backend makes it degrade to the file, as the test process does.
+# tests/test_suite_keychain_isolation.py holds it.
+os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.fail.Keyring"
 
 from griot import common, jobs  # noqa: E402
 
