@@ -114,15 +114,24 @@ def test_there_is_something_to_check():
     assert WORKFLOWS and len(_uses()) >= 4 and len(_commands()) >= 8
 
 
-# What names an action or workflow of this repository. GitHub resolves it to
-# the commit that is running, from its own copy; `./` reads whatever sits in
-# the workspace when the step starts, which an earlier step can have changed.
-SELF = "$/"
+# A workflow of this repository, called at job level. GitHub loads it from
+# the commit that is running before the job has a workspace, so `./` is safe
+# there. A STEP's `./` is read from the workspace when the step starts, which
+# an earlier step can have changed: no step uses a local action.
+SELF = "./.github/workflows/"
+
+
+def _called_workflows():
+    return {str(job["uses"]) for _, document in _documents() for job in (document.get("jobs") or {}).values()
+            if isinstance(job, dict) and "uses" in job}
 
 
 @pytest.mark.parametrize("where,used", _uses())
-def test_this_repository_is_named_in_the_form_the_workspace_cannot_change(where, used):
-    assert not str(used).startswith("./"), f"{where}: {used} is read from the workspace; write {SELF}{str(used)[2:]}"
+def test_no_step_reads_an_action_from_the_workspace(where, used):
+    if str(used) in _called_workflows():
+        assert str(used).startswith(SELF), f"{where}: {used} is not a workflow of this repository"
+        return
+    assert not str(used).startswith("./"), f"{where}: {used} is a step reading an action from the workspace"
 
 
 @pytest.mark.parametrize("where,used", _uses())
@@ -132,7 +141,7 @@ def test_an_action_is_named_by_the_commit_it_is(where, used):
     name: neither is used, and one that appears is looked at then.)"""
     if str(used).startswith(SELF):
         # A workflow of this repository, at the same commit: nothing to pin.
-        assert (ROOT / str(used)[len(SELF):]).is_file(), f"{where}: {used} does not exist"
+        assert (ROOT / str(used)[2:]).is_file(), f"{where}: {used} does not exist"
         return
     action, _, ref = str(used).rpartition("@")
     assert re.fullmatch(r"[\w.-]+/[\w./-]+", action), f"{where}: {used} is not an action of a repository"

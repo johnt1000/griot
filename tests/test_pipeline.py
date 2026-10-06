@@ -189,7 +189,7 @@ def test_ci_can_be_called_by_another_workflow():
 
 def test_a_release_runs_the_whole_ci_before_it_builds():
     jobs = RELEASE["jobs"]
-    assert jobs["ci"]["uses"] == "$/.github/workflows/ci.yml"
+    assert jobs["ci"]["uses"] == "./.github/workflows/ci.yml"
     assert jobs["build"]["needs"] == "ci"
     assert jobs["publish"]["needs"] == "build"
 

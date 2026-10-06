@@ -110,14 +110,11 @@ def test_no_job_of_the_release_reads_or_writes_a_cache():
     """A cache is written by other runs (any push to main, any CI run on
     another tag) and restored here into the job that builds what PyPI
     serves: one poisoned entry would be published under the maintainer's
-    name. `cache-mode: none` is GitHub's switch for every job, documented
-    to reach the CI this workflow calls too (not yet seen in a release
-    run); the inputs are off as well, so the build stays off the cache
-    without it, because setup-uv turns its cache on by itself on a hosted
-    runner when `enable-cache` is left out."""
-    assert RELEASE.get("cache-mode") == "none"
+    name. Every step of the release's own jobs stays off the cache, and
+    setup-uv turns its cache on by itself on a hosted runner when
+    `enable-cache` is left out, so it is told. The CI this workflow calls
+    keeps its cache: nothing it produces is published."""
     for name, job in RELEASE["jobs"].items():
-        assert job.get("cache-mode", "none") == "none", f"job {name} widens the cache access of the release"
         for step in job.get("steps", []):
             used = str(step.get("uses", ""))
             assert not used.startswith("actions/cache"), f"job {name}: {used}"
