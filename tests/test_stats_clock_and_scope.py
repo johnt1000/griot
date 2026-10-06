@@ -110,6 +110,26 @@ def test_a_day_without_a_midnight_opens_when_the_day_does(havana):
     assert stats.window_start(1, _utc(2026, 3, 8, 18)) == _utc(2026, 3, 8, 5)
 
 
+def test_a_midnight_placed_on_the_day_before_walks_forward_to_when_the_day_opens(havana, monkeypatch):
+    """Which side of a skipped midnight mktime picks depends on the Python
+    (3.10 answers 23:00 of the day before; newer ones 01:00 of the day), so
+    the test above passes on a newer Python without the walk ever running.
+    Here combine() answers as 3.10 does, and the window must still open at
+    the day's first instant, not before it and not past it."""
+    real = stats.datetime
+
+    class AsOnPython310(real):
+        @classmethod
+        def combine(cls, date, time_, tzinfo=None):
+            if date == real(2026, 3, 8).date():
+                # 23:00 CST on the 7th, as an aware moment: astimezone() keeps it there.
+                return real(2026, 3, 8, 4, tzinfo=timezone.utc).astimezone()
+            return real.combine(date, time_)
+
+    monkeypatch.setattr(stats, "datetime", AsOnPython310)
+    assert stats.window_start(1, _utc(2026, 3, 8, 18)) == _utc(2026, 3, 8, 5)
+
+
 def test_a_day_with_two_midnights_opens_at_the_first(havana):
     # 2026-11-01: 01:00 CDT goes back to 00:00 CST; the day began at the first 00:00 (04:00 UTC).
     assert stats.window_start(1, _utc(2026, 11, 1, 18)) == _utc(2026, 11, 1, 4)

@@ -253,6 +253,31 @@ def test_the_environment_cannot_turn_the_logging_of_questions_back_on(tmp_path):
     assert _value(off, "log-questions") == ("false", "environment")
 
 
+def test_the_environment_cannot_turn_the_check_for_a_newer_release_back_on(tmp_path):
+    """The doctor's request to PyPI is the person's to allow: a file that
+    turns it off stays off whatever the registration's `env` says, in any
+    spelling the readers take as on."""
+    for word in ("true", "ON", "1"):
+        on = _serve(tmp_path, file="GRIOT_UPDATE_CHECK=no\n", GRIOT_UPDATE_CHECK=word)
+
+        assert _value(on, "update-check") == ("no", "file")
+        assert on.settings["update-check"]["environment_ignored"]
+        assert "GRIOT_UPDATE_CHECK in the environment this server was started with was ignored" in on.stderr
+
+
+def test_the_environment_can_turn_the_check_off(tmp_path):
+    off = _serve(tmp_path, GRIOT_UPDATE_CHECK="false")
+    again = _serve(tmp_path, file="GRIOT_UPDATE_CHECK=true\n", GRIOT_UPDATE_CHECK="off")
+    same = _serve(tmp_path, file="GRIOT_UPDATE_CHECK=off\n", GRIOT_UPDATE_CHECK="false")
+    repeated = _serve(tmp_path, GRIOT_UPDATE_CHECK="true")  # on is the default: it widens nothing
+
+    assert _value(off, "update-check") == ("false", "environment")
+    assert _value(again, "update-check") == ("false", "environment")
+    assert _value(same, "update-check") == ("false", "environment")
+    assert _value(repeated, "update-check") == ("true", "environment")
+    assert "ignored" not in off.stderr + again.stderr + same.stderr + repeated.stderr
+
+
 def test_what_widens_nothing_is_obeyed_as_before(tmp_path):
     served = _serve(tmp_path, GRIOT_MCP_CONCURRENCY_MODE="single", GRIOT_PROJECT="a-project",
                     GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES="3")
