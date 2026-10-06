@@ -646,6 +646,9 @@ def pypi(monkeypatch):
     monkeypatch.setattr(doctor, "_latest_release", latest)
     monkeypatch.setattr(griot, "__version__", "0.2.1")
     monkeypatch.delenv("GRIOT_UPDATE_CHECK", raising=False)
+    # The suite itself runs from an editable install; the tests about the
+    # printed upgrade are about an installed griot unless they say otherwise.
+    monkeypatch.setattr(doctor, "development_install", lambda: None)
     return state
 
 
@@ -873,6 +876,21 @@ def test_the_warning_lists_the_commands_when_it_cannot_tell(monkeypatch, pypi):
     assert "pipx upgrade griot-rag" in fix and "uv tool upgrade griot-rag" in fix and " or " in fix
 
 
+def test_a_development_install_behind_the_release_is_told_to_update_the_checkout(monkeypatch, pypi):
+    """An installer would replace the checkout with the release: the doctor
+    must not print one there, the same refusal `griot update` makes."""
+    pypi["answer"] = "9.0.0"
+    monkeypatch.setattr(sys, "prefix", "/Users/you/code/griot/.venv")
+    monkeypatch.setattr(doctor, "development_install",
+                        lambda: "an editable install of file:///Users/you/code/griot")
+
+    check = _release()
+
+    assert check["status"] == "warn" and "9.0.0" in check["detail"]
+    assert "/Users/you/code/griot" in check["fix"] and "git pull" in check["fix"]
+    assert "install --upgrade" not in check["fix"] and "upgrade griot-rag" not in check["fix"]
+
+
 def test_the_upgrade_is_printed_never_run(monkeypatch, pypi):
     pypi["answer"] = "9.0.0"
 
@@ -923,13 +941,14 @@ def test_the_file_griot_writes_on_first_use_has_the_check_on_and_says_how_to_tur
     assert "\nGRIOT_UPDATE_CHECK=true\n" in text and "PyPI" in text
 
 
-# --- no other command asks PyPI -------------------------------------------------------------------
+# --- no other command asks PyPI (but `griot update`, run to upgrade) ------------------------------
 
 
-def test_only_doctor_knows_the_address_and_only_the_release_check_asks():
+def test_only_doctor_knows_the_address_and_only_the_release_check_and_update_ask():
     """Static, so that a command added later is held to it too: the address
     is in doctor.py alone, and the function that asks is called from the
-    release check alone."""
+    release check and, once, from `griot update` (whose whole purpose is the
+    upgrade; tests/test_update.py), nowhere else."""
     import pathlib
     import re
 
@@ -939,7 +958,8 @@ def test_only_doctor_knows_the_address_and_only_the_release_check_asks():
     holders = sorted(p.name for p in package.rglob("*.py") if "pypi.org" in p.read_text())
     assert holders == ["doctor.py"]
     callers = sorted(p.name for p in package.rglob("*.py") if re.search(r"_latest_release\(", p.read_text()))
-    assert callers == ["doctor.py"]
+    assert callers == ["doctor.py", "update.py"]
+    assert len(re.findall(r"(?<!def )_latest_release\(\)", (package / "update.py").read_text())) == 1
     source = (package / "doctor.py").read_text()
     assert len(re.findall(r"(?<!def )_latest_release\(\)", source)) == 1, "one call, in check_release"
     assert len(re.findall(r"(?<!def )check_release\(", source)) == 1, "called once, from run_checks"

@@ -114,14 +114,34 @@ def test_there_is_something_to_check():
     assert WORKFLOWS and len(_uses()) >= 4 and len(_commands()) >= 8
 
 
+# A workflow of this repository, called at job level. GitHub loads it from
+# the commit that is running before the job has a workspace, so `./` is safe
+# there. A STEP's `./` is read from the workspace when the step starts, which
+# an earlier step can have changed: no step uses a local action.
+SELF = "./.github/workflows/"
+
+
+def _called_workflows():
+    return {str(job["uses"]) for _, document in _documents() for job in (document.get("jobs") or {}).values()
+            if isinstance(job, dict) and "uses" in job}
+
+
+@pytest.mark.parametrize("where,used", _uses())
+def test_no_step_reads_an_action_from_the_workspace(where, used):
+    if str(used) in _called_workflows():
+        assert str(used).startswith(SELF), f"{where}: {used} is not a workflow of this repository"
+        return
+    assert not str(used).startswith("./"), f"{where}: {used} is a step reading an action from the workspace"
+
+
 @pytest.mark.parametrize("where,used", _uses())
 def test_an_action_is_named_by_the_commit_it_is(where, used):
     """A tag or a branch can be moved to other code by whoever owns the
     action; a commit cannot. (An image or a local action has no commit to
     name: neither is used, and one that appears is looked at then.)"""
-    if str(used).startswith("./.github/workflows/"):
+    if str(used).startswith(SELF):
         # A workflow of this repository, at the same commit: nothing to pin.
-        assert (ROOT / str(used)).is_file(), f"{where}: {used} does not exist"
+        assert (ROOT / str(used)[2:]).is_file(), f"{where}: {used} does not exist"
         return
     action, _, ref = str(used).rpartition("@")
     assert re.fullmatch(r"[\w.-]+/[\w./-]+", action), f"{where}: {used} is not an action of a repository"
@@ -131,7 +151,7 @@ def test_an_action_is_named_by_the_commit_it_is(where, used):
 @pytest.mark.parametrize("where,used", _uses())
 def test_the_version_that_commit_is_stands_beside_it(where, used):
     """For a person to read, and for the bot that proposes the next one."""
-    if str(used).startswith("./.github/workflows/"):
+    if str(used).startswith(SELF):
         return  # a workflow of this repository has no version of its own
     text = (WORKFLOW_DIR / where).read_text()
     assert re.search(re.escape(str(used)) + r"[ \t]+#[ \t]*v\d+\.\d+\.\d+[ \t]*$", text, re.M), f"{where}: {used}"

@@ -357,6 +357,65 @@ def test_a_process_that_exits_holding_the_collection_leaves_nothing_open(tmp_pat
     assert _open_to_others(collection) == []
 
 
+def _legacy_collection_with_one_point(monkeypatch):
+    """A collection as griot made it before keyword search (no sparse
+    vector configured), holding one point: building keyword search copies it."""
+    import qdrant_edge as qe
+
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
+    path = common._collection_path(common.COLLECTION_NAME)
+    common.secure_mkdir(path)
+    qe.EdgeShard.create(str(path), qe.EdgeConfig(
+        vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})).close()
+    common.index_documents(_ONE_DOC)
+    common.release_lock()
+    common.release_client()
+    return path
+
+
+def test_a_keyword_build_that_copies_the_collection_leaves_nothing_open(monkeypatch, loose_umask):
+    """The build's last close happens in its own `finally`, and the engine
+    writes segment.json on that close: the repair that follows it is
+    release_client()'s, the only one left after that close. Checked with no
+    release of the test's own afterwards, so nothing else repairs it."""
+    path = _legacy_collection_with_one_point(monkeypatch)
+
+    assert common.build_keyword_index()["rebuilt"] is True
+
+    assert common._client is None
+    assert _open_to_others(path) == []
+
+
+def test_a_keyword_build_that_fills_in_place_leaves_nothing_open(monkeypatch, loose_umask):
+    """A collection made with the keyword vector is written in place (no
+    copy) and optimized, then closed by the same `finally`."""
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
+    common.index_documents(_ONE_DOC)
+    common.release_lock()
+    monkeypatch.setattr(common, "_fill_missing_keyword_vectors", lambda client: client.optimize() or 1)
+
+    assert common.build_keyword_index()["written"] == 1
+
+    assert common._client is None
+    assert _open_to_others(common._collection_path(common.COLLECTION_NAME)) == []
+
+
+def test_a_keyword_build_that_fails_with_the_collection_open_leaves_nothing_open(monkeypatch, loose_umask):
+    """A failure after the handle is opened still goes through the close
+    and the repair after it."""
+    path = _legacy_collection_with_one_point(monkeypatch)
+
+    def fail(client, staging):
+        raise RuntimeError("stopped mid-copy")
+
+    monkeypatch.setattr(common, "_copy_into_keyword_collection", fail)
+    with pytest.raises(RuntimeError, match="mid-copy"):
+        common.build_keyword_index()
+
+    assert common._client is None
+    assert _open_to_others(path) == []
+
+
 # --- a chmod that fails ------------------------------------------------------------------------
 
 
