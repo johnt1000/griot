@@ -30,8 +30,8 @@ permissions:
 
 jobs:
   test:
-    # The names of the first two are checks main requires: renaming them
-    # leaves every pull request waiting for a check that never comes.
+    # Every one of these names is a check main requires: renaming one leaves
+    # every pull request waiting for a check that never comes.
     name: tests (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:

@@ -29,7 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CI = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
 RELEASE = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
 INSTALL_GITLEAKS = ROOT / "scripts" / "install-gitleaks.sh"
-REQUIRED_ON_MAIN = ["tests (py3.10)", "tests (py3.13)", "secret scan", "package builds and installs"]
+# The checks main's branch protection requires (set on GitHub, not in this
+# repository): keep this list and that setting the same.
+REQUIRED_ON_MAIN = ["tests (py3.10)", "tests (py3.13)", "tests (py3.14)", "tests (macos, py3.13)",
+                    "secret scan", "package builds and installs"]
 
 
 def _triggers(workflow):
