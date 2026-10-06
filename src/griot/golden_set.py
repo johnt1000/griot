@@ -307,10 +307,11 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
 def cmd_add(query: str, limit: int = 5) -> int:
     from griot import ask  # lazy — same pattern as cli.py, avoids pulling in qdrant/fastembed before needed
 
-    # What the golden-set check will search (vector: see
-    # quality_check.run_golden_set), so the results a person approves are
-    # the ones the case is later held to.
-    results = common.search(query, limit=limit, mode="vector")
+    # What the golden-set check will search (vector, shaped for a reader:
+    # see quality_check.run_golden_set), so the results a person approves
+    # are the ones the case is later held to.
+    from griot import quality_check  # lazy: quality_check imports this module
+    results = common.search(query, limit=limit, mode="vector", diverse=quality_check.GOLDEN_SET_DIVERSE)
     if not results:
         print("Error: search returned no results — nothing to approve.", file=sys.stderr)
         return 1
