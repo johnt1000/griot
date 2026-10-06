@@ -13,7 +13,9 @@ registered only if GRIOT_MCP_ENABLE_INDEX is set (conditional registration
 around @_tool(), empirically confirmed this works this way, see the design
 notes). Prompts are registered under short names, without a `griot_` prefix:
 clients compose the server segment themselves, so the prefix would say it
-twice.
+twice. A tool's or prompt's description is its docstring up to a
+`Maintainer notes:` line; what follows that line is never sent (see
+_description_for_agents()).
 
 Secrets are deliberately NOT in that ladder — see griot_auth_guidance.
 Confirming does not make a chat a safe channel for a token: the problem is
@@ -74,7 +76,7 @@ import anyio  # the MCP SDK's own async layer (declared in pyproject.toml: it is
 # transitive dependency of pydantic, so this adds nothing to install.
 from typing_extensions import NotRequired, TypedDict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mcp.server.elicitation import (
     AcceptedElicitation,
@@ -139,17 +141,42 @@ mcp = MCPServer("griot", instructions=SERVER_INSTRUCTIONS)
 # griot_search listing, read by every agent that loads it). Registering the
 # cleaned text ourselves makes the server send the same words on every Python.
 # The resources pass their description explicitly and need none of this.
+#
+# The description is also only the part of the docstring written for an
+# agent: the text up to a line reading MAINTAINER_NOTES_HEADING. What follows
+# it (why a tool is shaped this way, which review asked for a guard, which
+# function holds a check) is for whoever maintains griot and stays in the
+# source; it used to be sent to every client that listed the tools and
+# prompts. One rule for tools and prompts alike, held for everything a client
+# receives by tests/test_descriptions_for_agents.py.
+MAINTAINER_NOTES_HEADING = "Maintainer notes:"
+
+
+def _description_for_agents(fn) -> str:
+    """The cleaned docstring of `fn` up to its maintainer notes. Empty is
+    refused at registration: a tool with no description is one an agent
+    cannot choose, and only a client would otherwise notice."""
+    text = inspect.cleandoc(fn.__doc__ or "")
+    lines = text.split("\n")
+    if MAINTAINER_NOTES_HEADING in lines:
+        lines = lines[:lines.index(MAINTAINER_NOTES_HEADING)]
+    description = "\n".join(lines).strip()
+    if not description:
+        raise ValueError(f"{fn.__name__} has no description for agents before its maintainer notes")
+    return description
+
+
 def _tool(**kwargs):
-    """@mcp.tool(...), with the docstring cleaned as the description."""
+    """@mcp.tool(...), with the docstring's part for agents as the description."""
     def register(fn):
-        return mcp.tool(description=inspect.cleandoc(fn.__doc__ or ""), **kwargs)(fn)
+        return mcp.tool(description=_description_for_agents(fn), **kwargs)(fn)
     return register
 
 
 def _prompt(**kwargs):
-    """@mcp.prompt(...), with the docstring cleaned as the description."""
+    """@mcp.prompt(...), with the docstring's part for agents as the description."""
     def register(fn):
-        return mcp.prompt(description=inspect.cleandoc(fn.__doc__ or ""), **kwargs)(fn)
+        return mcp.prompt(description=_description_for_agents(fn), **kwargs)(fn)
     return register
 
 
@@ -1354,7 +1381,8 @@ def griot_spend_status() -> SpendStatusOutput:
     """Estimated spend today from the local circuit breaker, plus the
     configured ceilings and the active embedding profile — for an agent to
     check before deciding whether it's worth calling a paid operation again
-    (embedding/chat via GEMINI_TOKEN, griot's only real cost path)."""
+    (an embedding on a profile that bills: griot_profiles_list says which
+    do)."""
     return {
         "spend_today_usd": common.get_spend_today(),
         "daily_ceiling_usd": common.SPEND_CEILING_USD,
@@ -1377,9 +1405,9 @@ def griot_repos_list() -> ReposListOutput:
     "the registered repositories", not as "everything I am allowed to
     index".
 
-    Read-only and cheap: reads a small JSON file plus two stat() calls per
-    entry. It never opens the vector store or loads the embedding model, so
-    it cannot collide with an indexing run in progress."""
+    Read-only and cheap: reads a small file and checks each path on disk.
+    It never opens the vector store or loads the embedding model, so it
+    cannot collide with an indexing run in progress."""
     return _repos_list()
 
 
@@ -1618,13 +1646,16 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
                           ) -> ManagementOutput:
     """Registers a repository for bulk indexing (repos.json).
 
-    Changes state, so it does nothing on the first call: it reports what
-    would happen and waits. Confirm through your client if it can ask you,
-    or call again with confirm=true.
+    A person has to confirm it: through your client when it can ask them,
+    otherwise `griot repos add` in a terminal. confirm=true is not enough
+    here, because registering widens what griot may index and send to an
+    embedding provider.
 
     Registering does NOT index — it only makes the path eligible. Indexing
     is griot_index_repo (off by default) or `griot index all` in a
     terminal.
+
+    Maintainer notes:
 
     [security] This is the one management tool with no confirm= escape
     hatch. Registering WIDENS the indexing allowlist
@@ -1701,6 +1732,12 @@ async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Contex
     Irreversible: the vectors are gone and rebuilding them costs whatever
     that profile's embeddings cost. Refuses the active profile and any
     profile currently being indexed.
+
+    A person has to confirm it, through your client when it can ask them,
+    otherwise `griot profiles delete` in a terminal: confirm=true is not
+    enough for a loss that cannot be undone.
+
+    Maintainer notes:
 
     The consequence is stated in the confirmation question itself, so
     whoever answers decides on what it says rather than on the tool's
@@ -2066,9 +2103,9 @@ def _stats(days: int, all_profiles: bool = False) -> StatsOutput:
 def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
     """"Does this collection have data? when was it last indexed? is an
     indexing run happening right now?" — the check an agent wants to make
-    before trusting the RAG. Passes through to common.get_index_status()
-    (already covers day-1/empty collection, orphan lock, etc. — see
-    common.py).
+    before trusting the index. A collection never indexed has 0 points, not
+    an error; `points_count` is null while another process holds the
+    collection.
 
     `collection` is the collection of one embedding profile, as
     griot_profiles_list names them; leave it out for the active one.
@@ -2076,7 +2113,12 @@ def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
     `job` is the run griot_index_repo started from this server, with the
     progress its run records (per source: its state, chunks done of the
     total once known, and the counts); null when none is running. A run
-    started before the server restarted is still shown while it runs."""
+    started before the server restarted is still shown while it runs.
+
+    Maintainer notes:
+
+    Passes through to common.get_index_status(), which covers the day-1
+    and empty collection, the orphan lock, and the rest."""
     return _index_status(collection)
 
 
@@ -2175,8 +2217,13 @@ def griot_index_status_resource() -> IndexStatusOutput:
 
 
 @_prompt(name="stats", title="griot usage report")
-def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
-    """Summarize griot's index health and usage.
+def griot_stats_report(days: Annotated[int, Field(description=(
+        "How many local days the report covers, today included."))] = stats.DEFAULT_DAYS) -> str:
+    """Summarize griot's index health and usage: whether the index is worth
+    trusting now, with the numbers behind it (indexing runs, reuse, spend
+    against its ceiling, queries, the quality trend) over the last `days`.
+
+    Maintainer notes:
 
     [user-requested] A PROMPT, not a tool: MCP clients surface prompts as
     slash commands, so this is the on-demand report a person invokes — the
@@ -2214,8 +2261,14 @@ def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
 
 
 @_prompt(name="history", title="why is this the way it is")
-def griot_history_report(question: str) -> str:
-    """Investigate a question against the full indexed history, not just code.
+def griot_history_report(question: Annotated[str, Field(description=(
+        "The question to investigate, such as why something is the way it is or when it changed."))]) -> str:
+    """Investigate a question against the full indexed history, not just code:
+    several searches, one per kind of source (code, commits, pull requests,
+    issues, tags and releases), answered as a dated history with each claim
+    cited, and saying what the index could not answer.
+
+    Maintainer notes:
 
     [user-requested] The prompt that carries griot's actual premise. It
     indexes SEVEN source types, and "why is this like this" is almost never
@@ -2267,6 +2320,13 @@ def griot_history_report(question: str) -> str:
 @_prompt(name="health", title="is this index worth trusting")
 def griot_health_report() -> str:
     """Check whether the index is answering, and say what kind of failure it is.
+
+    Runs griot_quality_check after checking whether it would cost money, and
+    reads its two results apart: the self-check (is the index intact) and
+    the curated golden set (does search answer real questions). Ends with a
+    verdict: trust it, trust it for some things, or reindex.
+
+    Maintainer notes:
 
     Carries the one judgement that is not in any tool's output: griot has
     TWO checks that measure different things. The self-check
@@ -2333,7 +2393,12 @@ def griot_health_report() -> str:
 
 @_prompt(name="overview", title="what griot knows here")
 def griot_overview_report() -> str:
-    """Summarize what is indexed, for someone arriving cold.
+    """Summarize what is indexed, for someone arriving cold: which
+    repositories and how many points, under which embedding profile,
+    registered entries that can no longer be indexed, and whether the index
+    looks current.
+
+    Maintainer notes:
 
     Deliberately the thinnest of the four: the tools it calls are legible on
     their own. What it adds is reading repo_status()'s exists/is_git as the
@@ -2551,15 +2616,30 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     equivalents; for Claude Code the global one is where CLAUDE_CONFIG_DIR
     points when this server was started with it, and the question names the
     resolved directories) — the same files `griot assist install` writes from a
-    terminal (see harnesses.py). "all" (the default) installs into every
-    harness detect_harnesses() finds present on this machine; an explicit
-    harness id ("claude-code"/"opencode") installs into it directly,
-    without checking whether it's actually present. `scope` defaults to
-    "local" here (the CLI defaults to global): the narrower write.
+    terminal. "all" (the default) installs into every harness found present
+    on this machine; an explicit harness id ("claude-code"/"opencode")
+    installs into it directly, without checking whether it's actually
+    present. `scope` defaults to "local" here (the CLI defaults to global):
+    the narrower write.
 
-    Cheap validation happens BEFORE asking anyone: an invalid `harness` or
-    `scope` refuses immediately, with no confirmation spent on an argument
-    already known to be wrong.
+    An invalid `harness` or `scope` is refused at once, before anyone is
+    asked.
+
+    A person has to confirm it, through your client when it can ask them,
+    otherwise `griot assist install` in a terminal: confirm=true is not
+    enough, because the files are instructions a future session will load
+    and follow.
+
+    It never touches the harness's GLOBAL instructions file (~/.claude/
+    CLAUDE.md): `griot assist install --scope global` offers that only at an
+    interactive prompt of the CLI, because that file is loaded into every
+    project.
+
+    Maintainer notes:
+
+    The files and the harness detection live in harnesses.py
+    (detect_harnesses()). Cheap validation happens BEFORE asking anyone, so
+    no confirmation is spent on an argument already known to be wrong.
 
     [security] human_required=True, no confirm= escape hatch — like
     griot_repos_add/griot_profiles_delete, classified by EFFECT rather than
@@ -2567,12 +2647,7 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     destructive, but it writes instructions a FUTURE Claude Code/opencode
     session in that location will load and follow automatically, unreviewed
     by a person. `confirm` is an argument the AGENT supplies, so it guards
-    against mistakes and not at all against a compromised one.
-
-    It never touches the harness's GLOBAL instructions file (~/.claude/
-    CLAUDE.md): `griot assist install --scope global` offers that only at an
-    interactive prompt of the CLI, because that file is loaded into every
-    project."""
+    against mistakes and not at all against a compromised one."""
     targets, impossible = _assist_install_plan(harness, scope)
     if impossible:
         return {"changed": False, "message": impossible, "results": []}
@@ -2761,22 +2836,8 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         because it can spend money (paid embedding profile) without human
         confirmation along the way.
 
-        The allowlist gate, subprocess spawn, path/git validation, lock
-        pre-check, and handle-release-before-spawn all live in
-        griot.jobs.start_index_job(). They were extracted there for the web
-        host, since removed; the split still earns its place,
-        because jobs.py is importable without the `mcp` SDK and this tool
-        now reads the same checks TWICE — once cheaply via
-        jobs.index_job_refusal() before asking a human to confirm, once
-        inside start_index_job() when actually spawning.
-
-        [user-requested] Indexing is recurrent by nature — "I just merged a
-        big PR, reindex" — so forcing it to a terminal would be friction
-        with no security gain, unlike secrets. It spends money, hence the
-        confirmation; it widens NO boundary (the path was already
-        authorized by the operator, in repos.json or GRIOT_MCP_INDEX_ROOTS),
-        hence the confirm= fallback and no human_required. The spend
-        ceiling remains the independent protection against cost.
+        It is confirmed before it starts: through your client when it can
+        ask the user, otherwise by calling again with confirm=true.
 
         The run needs the index to itself. While another griot tool call is
         using it, this waits a few seconds for that call to finish, before
@@ -2784,9 +2845,29 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         in use: call it again.
 
         The run also removes indexed points whose source is gone (a deleted
-        file, a deleted branch), within the fences of common.prune_orphans.
-        Recoverable at the price of an embedding, so the same confirmation
-        covers it; the question says so."""
+        file, a deleted branch), unless they are more than half of the
+        repository. Recoverable at the price of an embedding, so the same
+        confirmation covers it; the question says so.
+
+        Maintainer notes:
+
+        The allowlist gate, subprocess spawn, path/git validation, lock
+        pre-check, and handle-release-before-spawn all live in
+        griot.jobs.start_index_job(). They were extracted there for the web
+        host, since removed; the split still earns its place,
+        because jobs.py is importable without the `mcp` SDK and this tool
+        now reads the same checks TWICE — once cheaply via
+        jobs.index_job_refusal() before asking a human to confirm, once
+        inside start_index_job() when actually spawning. Stale points are
+        removed within the fences of common.prune_orphans.
+
+        [user-requested] Indexing is recurrent by nature — "I just merged a
+        big PR, reindex" — so forcing it to a terminal would be friction
+        with no security gain, unlike secrets. It spends money, hence the
+        confirmation; it widens NO boundary (the path was already
+        authorized by the operator, in repos.json or GRIOT_MCP_INDEX_ROOTS),
+        hence the confirm= fallback and no human_required. The spend
+        ceiling remains the independent protection against cost."""
         # [review finding] Check what is cheap to check BEFORE asking anyone.
         # Confirmation is the expensive step here — it spends a person's
         # attention — and asking about a path that was never going to be
@@ -2833,6 +2914,8 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         success) and the progress it last recorded, where a failed source
         shows as "failed". The run's full output is in griot_index.log in
         griot's log directory.
+
+        Maintainer notes:
 
         [design] Registered with griot_index_repo, under the same setting:
         without it no run is ever started from here, and the tool would only
