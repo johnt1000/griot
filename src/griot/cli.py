@@ -164,7 +164,16 @@ def _cmd_index_keywords(rest: list) -> int:
     parser.parse_args(rest)
     from griot import common
 
-    result = common.build_keyword_index()
+    try:
+        result = common.build_keyword_index()
+    except common.CollectionBusyError:
+        raise  # main() names the process that holds it
+    except RuntimeError as e:
+        # The reasons build_keyword_index() stops on purpose (an index run
+        # holds the lock, a copy that came out short) are RuntimeErrors that
+        # say what to do; a traceback around them would read as a crash.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     if not result["points"]:
         print(f"Nothing is indexed in collection '{common.COLLECTION_NAME}' yet: an index run adds keyword "
               f"vectors as it writes.")

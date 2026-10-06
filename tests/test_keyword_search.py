@@ -432,6 +432,47 @@ def test_a_swap_interrupted_halfway_is_undone_on_the_next_open(legacy_index):
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is False
 
 
+def test_a_build_after_a_swap_interrupted_halfway_puts_the_collection_back_first(legacy_index):
+    """The build deletes what it finds beside the collection; the collection
+    itself, left aside by the interrupted swap, must be put back before that,
+    or the build would delete everything that was indexed."""
+    common.release_client()
+    path = _active_path()
+    os.rename(path, common._keyword_rebuild_paths(path)[1])
+    result = common.build_keyword_index()
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    common.release_client()
+    assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
+
+
+def test_another_process_opening_the_collection_mid_swap_leaves_it_whole(legacy_index, monkeypatch):
+    """Multi mode: another session may open the collection between the two
+    renames, and its open puts the old copy back. The build must then give
+    up with the old collection in place, never lose it or merge the two."""
+    common.release_client()
+    path = _active_path()
+    real_rename = os.rename
+    calls = []
+
+    def rename(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 2:
+            # What get_client() in the other process does on its way in.
+            common._restore_interrupted_keyword_swap(path)
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(common.os, "rename", rename)
+    with pytest.raises(RuntimeError, match="left as it was"):
+        common.build_keyword_index()
+    monkeypatch.setattr(common.os, "rename", real_rename)
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False
+    assert len(common.search("acquire_lock", limit=10)) == len(DOCS)
+    common.release_client()
+    assert common.build_keyword_index()["rebuilt"] is True
+    common.release_client()
+    assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
+
+
 def test_a_swap_interrupted_after_the_new_copy_is_in_place_is_finished(legacy_index):
     common.release_client()
     common.build_keyword_index()
@@ -472,6 +513,17 @@ def test_the_command_says_when_there_is_nothing_to_do(index, capsys):
     common.release_client()
     assert cli.main(["index", "keywords"]) == 0
     assert "already" in capsys.readouterr().out
+
+
+def test_the_command_says_why_it_could_not_build_without_a_traceback(legacy_index, monkeypatch, capsys):
+    """An index run holding the lock is a routine reason to stop, and the
+    message names it: a traceback around it would read as a crash."""
+    monkeypatch.setattr(common, "_read_lock", lambda: {"pid": 1, "start_time": 0.0, "label": None})
+    monkeypatch.setattr(common, "_lock_owner_is_alive", lambda info: True)
+    common.LOCK_PATH.write_text(json.dumps({"pid": 1, "start_time": 0.0, "label": None}))
+    assert cli.main(["index", "keywords"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and "already running" in err
 
 
 def test_the_command_is_not_part_of_index_all():
