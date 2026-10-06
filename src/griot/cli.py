@@ -631,7 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--mode", choices=SEARCH_MODES, default=None,
                           help="hybrid (default): by meaning and by the exact words, fused by rank; vector on an "
                                "index built before keyword search. vector: by meaning. keyword: by the exact "
-                               "words, for an identifier, an error code or a commit hash; embeds nothing. "
+                               "words alone, for a commit hash, an error code or where a name is used (the "
+                               "default finds where it is defined); embeds nothing. "
                                "Scores are on each mode's own scale.")
     p_search.set_defaults(func=_cmd_search)
 
