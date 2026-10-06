@@ -25,20 +25,17 @@ What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
 
 Known bugs, found on 2026-10-06 and not fixed yet:
 
-- **A test that signs a tag failed once on CI.** `tests/test_git_hardening.py`
-  (`test_reading_a_repository_never_runs_a_program_its_config_names[tags]`)
-  could not create a signed tag with its stand-in signing program on one
-  Linux run (#24), and passed when the job ran again. Unexplained; possibly a
-  race with the stand-in program.
-- **A stats test can fail if it runs exactly at local midnight.**
-  `test_griot_stats_has_the_same_scope_as_the_cli_through_the_protocol`
-  compares the report's window with a second `window_start(30)` taken a
-  moment later; across a midnight the two differ.
-- **The limit on `griot_search`'s description means two things.** The test
-  measures the docstring as Python keeps it: with its indentation before
-  3.13 and without it after, so the same text is 1692 characters on 3.10 and
-  1600 on 3.13. The limit should be on what the server sends, the same on
-  every Python.
+- **A test of tag names failed once under load.**
+  `tests/test_git_control_characters.py::test_the_tags_source_reads_every_tag`
+  read no tags (`set() == {'v1', 'v2'}`) once in a full run, and passed alone
+  and in the next full run.
+- **The `griot_search` error for a query that cannot be embedded ends with
+  `..`**: the hint ends its sentence and the message adds another period.
+- **README says four read-only MCP tools "still ask each time"** (quality
+  check, index preview, audit, golden-set suggest), but none of them asks:
+  all four are read-only with no confirmation.
+
+The three bugs of the previous round are fixed (#47, #48, #49).
 
 Nothing else is queued; what comes next is chosen from the list below.
 
