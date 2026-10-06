@@ -683,6 +683,12 @@ def format_stats(s: dict, days: int) -> str:
             lines.append(f"             most used sources: {breakdown}")
     else:
         lines.append("Queries:     none in the period")
+    # A window longer than the retention counts searches and tool calls over
+    # the retention only (prune_logs_if_due): say so, or a 400-day report
+    # reads as a year in which nobody searched before last spring.
+    if days > common.LOG_RETENTION_DAYS:
+        lines.append(f"             searches and tool calls are kept for {common.LOG_RETENTION_DAYS} days "
+                     f"(log-retention-days): older ones are not counted")
 
     tools = s.get("tool_calls") or {}
     if tools:
@@ -818,6 +824,9 @@ def main(argv=None) -> int:
                            quality_checks=load_quality_window(args.days),
                            tool_calls=load_tool_calls(args.days),
                            state=load_state())
+    # Both front ends, so `--json` and griot_stats say over how long the
+    # search and tool-call counts can reach.
+    result["log_retention_days"] = common.LOG_RETENTION_DAYS
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False))

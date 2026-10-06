@@ -66,6 +66,7 @@ SETTINGS = [
     Setting("spend-velocity-ceiling", "GRIOT_SPEND_VELOCITY_CEILING_USD", "ceiling"),
     Setting("max-failed-batches", "GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "count"),
     Setting("log-questions", "GRIOT_LOG_QUESTIONS", "flag"),
+    Setting("log-retention-days", "GRIOT_LOG_RETENTION_DAYS", "count"),
     Setting("project", "GRIOT_PROJECT", "text",
             elsewhere="It is per project: set GRIOT_PROJECT in the `env` of that project's MCP server entry. In this "
                       "file it would give every project the same name."),
@@ -371,6 +372,10 @@ def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, 
         return ("the file turns the logging of questions off" if turned_off and new == "true" else None), new
     if setting.kind == "count":
         before = old if old and old.isascii() and old.isdigit() else default_of(setting)
+        if setting.variable == "GRIOT_LOG_RETENTION_DAYS":
+            # The other way round: a shorter window deletes history, of every
+            # project, and a project's .mcp.json is not the person's own file.
+            return ("it deletes usage history your configuration keeps" if int(new) < int(before or 0) else None), new
         return ("it lets an index run go on failing for longer" if int(new) > int(before or 0) else None), new
     if setting.kind == "url":
         # Any host but the one in force: back to the default is another host
