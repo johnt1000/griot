@@ -9,6 +9,7 @@ They are text an agent acts on, so they are held to the tools: every tool and
 every argument they name must exist, or the agent follows a capability that
 is not there and reports work it did not do."""
 
+import inspect
 import re
 
 import pytest
@@ -65,7 +66,10 @@ async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     instructions, _ = await _server()
     # Raised from 1600 when keyword search came: the one place an agent learns
     # that an exact identifier in ANOTHER repository is now worth a search.
-    assert len(instructions) <= 1700
+    # A string literal at column 0, not a docstring, so it measures the same
+    # on every Python; measured like the tool description all the same, so
+    # moving the text into a docstring cannot change what the limit means.
+    assert _measured(instructions) <= 1700
 
 
 @pytest.mark.anyio
@@ -78,10 +82,39 @@ async def test_the_search_tool_description_leads_with_how_to_use_it():
     assert "registered repositories" in first and "all of them" in first, "its reach comes first"
     assert "do not use it" in " ".join(description.lower().split())
     assert "group_by_document" in description
+
+
+def _as_python_before_3_13_sends_it(description):
+    """The description as a server on Python 3.10 to 3.12 sends it. The SDK
+    passes the function's __doc__ through untouched (no inspect.cleandoc),
+    and before 3.13 the compiler kept the docstring's indentation, so every
+    line after the first arrives with the four spaces of the function body
+    (blank lines stay empty; the closing quotes sit on the last line)."""
+    first, *rest = inspect.cleandoc(description).split("\n")
+    return "\n".join([first] + [f"    {line}" if line else line for line in rest])
+
+
+def _measured(text):
+    """The length of the words an agent reads, the same on every Python:
+    inspect.cleandoc removes the indentation Python < 3.13 leaves in a
+    docstring, which is what 3.13 already does when it compiles one."""
+    return len(inspect.cleandoc(text))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("sent_by", ["this python", "python < 3.13"])
+async def test_the_search_tool_description_is_short_enough_on_every_python(sent_by):
+    _, tools = await _server()
+    description = tools["griot_search"].description
+    if sent_by == "python < 3.13":
+        description = _as_python_before_3_13_sends_it(description)
     # Raised from 1300 when the filters and the metadata of a result had to
-    # be described, and to 1700 for the search modes. Still a ceiling: every
-    # agent that loads the tool reads it.
-    assert len(description) <= 1700
+    # be described, then held at 1700 for the search modes, a number read on
+    # Python 3.10 where the same text measured 1692 with its indentation and
+    # 1600 without it on 3.13. The ceiling is on the words, measured the same
+    # on every Python, so a run on 3.13 cannot pass a text 3.10 would refuse.
+    # Still a ceiling: every agent that loads the tool reads it.
+    assert _measured(description) <= 1600
 
 
 def _stored_fields():
