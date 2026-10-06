@@ -961,9 +961,10 @@ class GoldenSetState(TypedDict):
     # The last time the golden set was run (griot_quality_check, or `griot
     # quality-check` in a terminal), or nulls. A PAST run: last_run_at says when.
     last_passed: int | None
+    # The cases that ran (passed or failed); skipped ones are not in it.
     last_total: int | None
-    # Of last_total, the cases not run: their mode needs keyword search the
-    # collection did not have. Neither passed nor failed.
+    # Apart from last_total, the cases not run: their mode needs keyword
+    # search the collection did not have. Neither passed nor failed.
     last_skipped: int | None
     last_run_at: str | None
 
@@ -1258,6 +1259,7 @@ class GoldenCheckCase(TypedDict):
 
 class GoldenCheck(TypedDict):
     note: str
+    # The cases that ran: passed + failed. Skipped ones are counted apart.
     total: int
     passed: int
     failed: int
@@ -2385,7 +2387,8 @@ def griot_health_report() -> str:
         "show what it returned instead. A case with `skipped` true was not run: it is a "
         "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
         "(`griot index keywords` builds them); report it as not measured, never as passing "
-        "or failing. A failed case with `limit_reduced_from` set "
+        "or failing: `total` counts only the cases that ran, so report \"8 of 8 passed, 2 "
+        "skipped\", never \"8 of 10\". A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "

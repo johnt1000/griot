@@ -164,7 +164,8 @@ def test_a_word_case_without_keyword_vectors_is_skipped_with_what_to_run(legacy_
     assert all("griot index keywords" in case["reason"] for case in skipped)
     assert [case["mode"] for case in skipped] == ["hybrid", "keyword"]
     assert result["cases"][0]["skipped"] is False
-    assert (result["total"], result["passed"], result["failed"], result["skipped"]) == (3, 1, 0, 2)
+    assert (result["total"], result["passed"], result["failed"], result["skipped"]) == (1, 1, 0, 2), \
+        "total is the cases that ran; skipped ones are apart"
     assert result["ran_by_mode"] == {"vector": 1}
 
 
@@ -236,13 +237,13 @@ def test_stats_says_how_many_cases_the_last_run_skipped(legacy_index):
     quality_check.main(["--sample-size", "2"])
     state = stats.load_state()
     assert state["last_golden_check"]["skipped"] == 1
-    assert state["last_golden_check"]["total"] == 2
+    assert state["last_golden_check"]["total"] == 1, "the cases that ran"
     record = logdb.read_latest(common.LOG_DIR, "quality_checks")
     assert record["collection"] == common.COLLECTION_NAME, "the trend stays per collection"
     status = {"points_count": 5, "embed_profile": "any", "spend_ceiling_exceeded": False, "last_indexed": None}
     result = stats.compute_stats([], [], status, state=state)
     assert result["golden_set"]["last_skipped"] == 1
-    assert "1 of 2 passed, 1 skipped" in stats.format_stats(result, 7)
+    assert "1 of 1 passed, 1 skipped" in stats.format_stats(result, 7)
 
 
 # --- griot golden-set review ---------------------------------------------------------------------

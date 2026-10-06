@@ -170,8 +170,9 @@ def run_golden_set(golden_set: list) -> dict:
 
     Each case is searched in its own mode (golden_set.case_mode). A keyword
     or hybrid case on a collection without keyword vectors is `skipped`:
-    counted apart from `passed` and `failed`, so it neither closes the gate
-    nor passes it. `ran_by_mode` counts the cases searched in each mode."""
+    counted apart from `passed` and `failed`, and outside `total` (the cases
+    that ran), so it neither closes the gate nor moves the pass rate.
+    `ran_by_mode` counts the cases searched in each mode."""
     results = []
     ran_by_mode: dict[str, int] = {}
     indexed: dict[str, bool] = {}
@@ -280,10 +281,16 @@ def run_golden_set(golden_set: list) -> dict:
             "top_results": [{"score": round(h.score, 3), "source_type": h.payload.get("source_type"), "repo": h.payload.get("repo")} for h in hits],
         })
     skipped = sum(1 for r in results if r.get("skipped"))
+    passed = sum(1 for r in results if r["passed"])
+    failed = sum(1 for r in results if not r["passed"] and not r.get("skipped"))
     return {
-        "total": len(results),
-        "passed": sum(1 for r in results if r["passed"]),
-        "failed": sum(1 for r in results if not r["passed"] and not r.get("skipped")),
+        # The cases that RAN, not every case: a skipped one measured nothing
+        # about search, and counted in the total it read as a dip in the pass
+        # rate ("8 of 10") for a reason that is not quality. It is reported
+        # apart instead ("8 of 8 passed, 2 skipped").
+        "total": passed + failed,
+        "passed": passed,
+        "failed": failed,
         "skipped": skipped,
         # How many cases were searched in each mode: a pass rate over a mix
         # of modes reads differently from one over vector searches alone.
