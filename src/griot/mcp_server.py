@@ -968,12 +968,16 @@ class StatsOutput(_WhyNoPointCount):
     queries_by_mode: dict[str, int]
     median_top_score: float | None
     empty_searches: int
-    # All three are reason/tool -> count maps built by stats._count_by(), not
-    # lists and not scalars. I declared two of them wrong from memory and the
+    # All five are reason/tool/URI -> count maps built by stats._count_by(),
+    # not lists and not scalars. I declared two of them wrong from memory and the
     # unit tests passed on mocks; a real protocol call rejected them.
     failure_reasons: dict[str, int]
     tool_calls: dict[str, int]
     failed_tool_calls: dict[str, int]
+    # Reads of the griot:// resources, counted apart from tool_calls: the two
+    # share a log table, not a meaning.
+    resource_reads: dict[str, int]
+    failed_resource_reads: dict[str, int]
     # Runs that died before counting anything. Reported apart
     # from total_failed: a failure is a run that counted failures, a dead run
     # counted nothing at all.
@@ -1944,7 +1948,9 @@ def griot_stats(days: int = stats.DEFAULT_DAYS, all_profiles: bool = False) -> S
     counts (runs, chunks, failures, queries, sources, quality trend) are
     those of the active profile's collection, the one the state lines are
     about; `all_profiles=true` counts every profile's (`scope` says which).
-    Spend and tool calls are always every profile's."""
+    Spend, tool calls and resource reads are always every profile's.
+    `tool_calls` counts tool calls only; reads of the griot:// resources are
+    in `resource_reads`."""
     return _stats(days, all_profiles)
 
 
@@ -2007,7 +2013,8 @@ def _index_status(collection: str | None) -> IndexStatusOutput:
 # clients that fetch context without spending a tool call or that let a
 # person attach it. They DUPLICATE the tools rather than replace them: the
 # tools are what agents are known to call, and which of the two gets used is
-# exactly what tool_calls will show (a read is recorded under its URI).
+# exactly what griot_stats shows: resource_reads next to tool_calls (a read
+# is logged like a tool call, under its URI, and counted apart).
 #
 # Two surfaces for one piece of data can drift apart, so neither surface has
 # its own code: each resource runs the function its tool runs, and is
