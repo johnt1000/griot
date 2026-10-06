@@ -23,19 +23,7 @@ What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
 
 ## Next
 
-Known bugs, found on 2026-10-06 and not fixed yet:
-
-- **A test of tag names failed once under load.**
-  `tests/test_git_control_characters.py::test_the_tags_source_reads_every_tag`
-  read no tags (`set() == {'v1', 'v2'}`) once in a full run, and passed alone
-  and in the next full run.
-- **The `griot_search` error for a query that cannot be embedded ends with
-  `..`**: the hint ends its sentence and the message adds another period.
-- **README says four read-only MCP tools "still ask each time"** (quality
-  check, index preview, audit, golden-set suggest), but none of them asks:
-  all four are read-only with no confirmation.
-
-The three bugs of the previous round are fixed (#47, #48, #49).
+The bugs found on 2026-10-06 are fixed: the tags test that failed once was another run deleting its temporary directory, which it now reports (#63); the error with two periods (#61); README's read-only tools (#62).
 
 Nothing else is queued; what comes next is chosen from the list below.
 

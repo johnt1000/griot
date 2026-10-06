@@ -10,6 +10,38 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- `griot update` upgrades griot itself (CLI only, deliberately not an MCP
+  tool). It asks PyPI for the newest `griot-rag` (always: `update-check`
+  governs only the doctor's automatic check) and works out whether griot was
+  installed with pipx, `uv tool` or pip in a virtual environment. It shows
+  the exact command and asks before running it; `--yes` answers the
+  question, and with no terminal and no `--yes` it runs nothing. The
+  installer runs from an argument list, never a shell string. Its output
+  streams as it runs and its exit status is the command's. Afterwards it
+  prints the version now installed and warns that running MCP servers keep
+  the old version until they are restarted. It refuses an editable or
+  development install (update the checkout instead) and an installation
+  whose method it cannot tell (it prints the candidate commands instead).
+  When up to date it runs nothing; offline it says it could not check and
+  exits non-zero. `griot doctor` shares the same detection: on an editable
+  install behind PyPI it now says to update the checkout (git pull) instead
+  of printing an installer command that would replace it.
+- **`griot golden-set review` curates golden-set cases from the questions
+  actually asked.** It offers questions asked more than once (the same
+  words, whatever the case, punctuation or word order, in any session or
+  project), then vector searches whose best result scored in the bottom
+  quarter of their collection (once it has at least 20). For each one, a
+  person at a terminal picks the logged result that should come back, and
+  the pick becomes a case through the same path as `golden-set add`. Only a
+  plain vector search over every repository, ungrouped, can become a case,
+  because that is the search `griot quality-check` runs. A keyword or hybrid
+  search, a narrowed search, a grouped search, or one logged before this
+  change is shown with the reason but cannot be picked. Questions already in
+  the golden set, and ones rejected earlier, are not offered again;
+  rejections are kept as digests in `golden_set_rejected.json`. Nothing is
+  ever written to the index. Each logged search now records, per result, the
+  fields a case matches on (null when a name looks like a credential), and
+  whether it was grouped by document.
 - An indexing run started from the MCP server (`griot_index_repo`) is no
   longer lost when the server restarts. Previously, the next server said
   nothing was running, would start a second run beside the first, and could
@@ -88,6 +120,50 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Changed
 
+- `hybrid` is now the default search mode of `griot search`, `griot ask` and
+  `griot_search`. It ranks by meaning and by the exact words, and fuses the
+  two rankings. It was measured on a throwaway index of this repository and
+  of a copy of click (default profile, MRR@10, vector / keyword / hybrid):
+  40 descriptive questions 0.67 / 0.64 / 0.76, 15 commit hashes 0.01 / 1.00
+  / 0.80, 40 function and class names 0.72 / 0.61 / 0.68 (hybrid's recall@10
+  the higher there). Where hybrid cannot run, the default searches by
+  meaning instead of failing. On a collection without keyword vectors it
+  says so and names `griot index keywords`; it does the same, without the
+  note, for a query with no word keyword search can match. An explicit
+  `--mode`/`mode` is still refused where it cannot run. Every result says
+  which mode ran: `mode` on `griot_search`, a `Mode:` line from `griot
+  search`, and the same line under `griot ask --show-sources`. The query log
+  and `griot stats` count the mode that ran. The quality check, the golden
+  set and the retrieval evaluation keep measuring vector search explicitly.
+- A release reads and writes no GitHub Actions cache: the build's `setup-uv`
+  has `enable-cache: false` (it caches by itself on hosted runners when left
+  out), so a poisoned cache entry cannot reach what is published to PyPI.
+  Two runs of the same tag wait for each other instead of one being
+  cancelled between uploads, and the `id-token` permission carries its
+  reason. zizmor's auditor persona reports no finding in any workflow (debt
+  30).
+- On Python 3.10 to 3.12 the MCP server no longer sends tool and prompt
+  descriptions with the docstring's indentation (about ninety spaces per
+  `griot_search` listing). Each tool and prompt is now registered with its
+  docstring cleaned (`inspect.cleandoc`), so a client receives the same text
+  on every Python.
+- `griot index keywords` now says when it resumed an interrupted copy, with
+  how many points the earlier copy already held and how many it copied now
+  ("Resumed an interrupted copy of collection 'X': N points were already
+  copied, M points copied now"). Before, it printed only the points written
+  in that run, and when the interrupted copy already held every point it
+  said the collection "already had" keyword vectors. A copy interrupted
+  before it held any point is reported as a fresh copy. A count of one point
+  is now singular ("1 point", not "1 points") (debt 34).
+- `griot stats`: the MCP resource section's heading (now "MCP reads:")
+  starts its value at the same column as every other heading and as the item
+  lines under it. It used to sit two columns to the right, in both plain and
+  charts output (debt 36).
+- The list of tools `griot assist install` offers to pre-approve now comes
+  from the MCP server's public `list_tools()` instead of a private part of
+  the MCP SDK that a later SDK release could rename without notice. The list
+  is unchanged, and it works from both the CLI and inside the server's event
+  loop.
 - `griot index keywords` resumes an interrupted copy instead of starting
   over. The partial copy left beside the collection is checked point by
   point against the collection: points that changed or were added since are
@@ -187,6 +263,25 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- While a platform run refused entirely is the newest run of all, `griot
+  doctor` and `griot stats` (and `griot_stats`'s `attention`) report it
+  once, by the line naming the refused repositories, instead of also saying
+  "the last indexing run failed: the platform refused every fetch (...)".
+  The generic line stays for every other failure, and for a refusal no other
+  line names. `griot_index_status`'s `last_indexed` now carries
+  `refused_repos`. (debt 33)
+- `griot search` and `griot_search` no longer end the error with "..". This
+  happened when a query could not be embedded because the provider refused
+  the credential: the reason already ended with the hint on where to set a
+  new key. `griot_quality_check` showed the same ".." when it carried that
+  error after the curated golden set stopped. Both messages now end with
+  exactly one period.
+- The README no longer says four read-only MCP tools (quality check, index
+  preview, audit, golden-set candidates) "still ask each time": they have no
+  confirmation of their own. `griot assist install` offers no allow rule for
+  them, so the client asks before each call. The installer paragraph, which
+  named only the quality check, now names all four. A test checks both
+  sentences against the server's annotations and the pre-approval list.
 - When the platform refused every fetch of a whole run, `griot index
   platform` now records which repositories it refused (`refused_repos`), as
   a run that is refused only in part already did. `griot doctor`, `griot
