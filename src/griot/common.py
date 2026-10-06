@@ -3575,7 +3575,8 @@ SEARCH_MAX_CHUNKS_PER_DOCUMENT = 3
 class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
-    places where the same thing was found among the best matches."""
+    places where the same thing was found among the matches the search
+    looked at (every window it fetched)."""
 
     __slots__ = ("id", "score", "payload", "also_in")
 
@@ -3598,10 +3599,11 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
     not by `content_hash`: the hash covers what was embedded, which may
     include more than the text.
 
-    Up to `limit` results: the store was asked for a multiple of `limit`,
-    and when that whole window is chunks of a few long documents there are
-    fewer slots to give. For the same reason `also_in` names the copies
-    found among the best matches, not every copy in the index."""
+    Up to `limit` results: when `hits` is all chunks of a few long
+    documents there are fewer slots to give (search() then asks the store
+    for a wider window, see SEARCH_MAX_EXTRA_WINDOWS). For the same reason
+    `also_in` names the copies found in `hits`, not every copy in the
+    index."""
     kept, taken, by_text = [], {}, {}
     for hit in hits:
         payload = hit.payload or {}
@@ -3632,6 +3634,22 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
 # slower than 8 — so over-fetching costs nothing and a short factor would
 # silently return fewer documents than asked for.
 _GROUPING_OVERFETCH = 6
+
+# How many more times a search for a reader asks the store, each time for a
+# window twice as wide, when the shaped list came back short of `limit` and
+# the store had more to give (it filled the window it was asked for). The
+# first window is not enough when its best matches are all chunks of two or
+# three long documents. Wider windows rather than the next one: Qdrant Edge
+# does not skip `offset` points, it returns `offset + limit` from the top
+# (checked on an EdgeShard: offset=10, limit=10 gave 20 points), and with
+# HNSW the search effort grows with the limit, so a narrower window need not
+# be a prefix of a wider one; replacing the window keeps one ranking.
+# Two at most, so the widest window is four times the first: measured on a
+# throwaway 20,000-point index (1536 dimensions), 48 points take 1 ms,
+# 192 take 2.3 ms and 900 take 8 ms, against an embedding of the query
+# that takes far longer. Past that, two documents so long that they fill
+# 24 times `limit` are what the query is about.
+SEARCH_MAX_EXTRA_WINDOWS = 2
 
 
 # The kinds of source an indexer writes as `source_type`, which is what a
@@ -3742,10 +3760,11 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     empty result.
 
     diverse is for whoever READS the results (an agent, a person, the chat
-    model): see _diversified. It returns SearchHit objects, up to `limit` of
-    them. Off by default
-    because the quality check and the golden set measure retrieval itself
-    and need every point, in the store's order."""
+    model): see _diversified. It returns SearchHit objects: `limit` of them
+    unless the store runs out, or the best matches are so few documents that
+    even the widest window (SEARCH_MAX_EXTRA_WINDOWS) cannot fill the list.
+    Off by default because the quality check and the golden set measure
+    retrieval itself and need every point, in the store's order."""
     repos, source_types = _checked_filters(repos, source_types)
     client = get_client()
     # Before the query is embedded: on a paid profile that call costs money,
@@ -3760,13 +3779,27 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
         raise RuntimeError(
             f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
             f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+
+    def nearest(points: int) -> list:
+        return client.query(
+            qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=points, with_payload=True,
+                            filter=only)
+        )
+
     fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
-    hits = client.query(
-        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True,
-                        filter=only)
-    )
+    hits = nearest(fetch)
     if diverse:
-        return _diversified(hits, limit, 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT)
+        per_document = 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT
+        kept = _diversified(hits, limit, per_document)
+        for _ in range(SEARCH_MAX_EXTRA_WINDOWS):
+            # A window that came back short of what was asked is everything
+            # the store has: a wider one would hold nothing new.
+            if len(kept) >= limit or len(hits) < fetch:
+                break
+            fetch *= 2
+            hits = nearest(fetch)
+            kept = _diversified(hits, limit, per_document)
+        return kept
     if not group_by_document:
         return hits
 
