@@ -14,7 +14,9 @@ happen on the way, and both are said: the configuration loading closes a
 configuration file left open to other users, as every griot command does
 (reported under settings); and asking a harness which server it has
 registered may start that server for a moment, as `griot assist install`
-does when it asks the same.
+does when it asks the same. One goes to the network: the release check asks
+PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off), and no
+other griot command makes that request.
 
 Loaded BEFORE the configuration (cli.py runs it without importing common
 first): the check that matters most is the one for a file griot cannot
@@ -24,6 +26,8 @@ start with, and it has to run when nothing else can.
 import argparse
 import json
 import os
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -36,6 +40,10 @@ OK, WARN, FAIL, SKIP = "ok", "warn", "FAIL", "skip"
 # The name of the check on git itself (a label: the one git call here goes
 # through common.run_git like every other).
 GIT = "git"
+# The name of the check on a newer release, and where it asks.
+RELEASE = "release"
+DISTRIBUTION = "griot-rag"
+PYPI_URL = f"https://pypi.org/pypi/{DISTRIBUTION}/json"
 # What the files and directories griot owns must be closed to.
 OTHERS = 0o077
 # How many of the entries open to others a report names (it counts them all).
@@ -424,6 +432,95 @@ def check_log(common) -> dict:
     return _check("log", OK, f"readable; last run {runs[0].get('timestamp')}" if runs else "readable; no run yet")
 
 
+def _latest_release() -> str:
+    """The newest version on PyPI, or an exception (requests.RequestException,
+    ValueError) when there is no answer to trust.
+
+    Through the session common.py keeps, which stores no cookie. Short timeout:
+    a doctor run offline must not hang on this. No redirect: the address is
+    PyPI's own, and an answer from anywhere else is not PyPI's."""
+    from griot import common
+
+    response = common._http_session().get(PYPI_URL, timeout=3, allow_redirects=False)
+    response.raise_for_status()
+    info = response.json()
+    info = info.get("info") if isinstance(info, dict) else None
+    version = info.get("version") if isinstance(info, dict) else None
+    if not isinstance(version, str):
+        raise ValueError("no version in PyPI's answer")
+    return version
+
+
+def _release_numbers(version: str) -> tuple[int, ...] | None:
+    """`0.10.1` as (0, 10, 1), with trailing zeros dropped so that 0.2 and
+    0.2.0 are the same release; None for anything else. A pre-release, a
+    development or a local version orders against a release by PEP 440
+    rules this does not carry (`packaging` is not a dependency of griot),
+    and comparing one by its numbers alone would be a guess."""
+    # [0-9], not \d: \d also takes digits of other scripts, which int() reads.
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)*", version):
+        return None
+    numbers = [int(part) for part in version.split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
+def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
+    """The command that upgrades griot where it runs, guessed from the
+    environment's location (pipx and `uv tool` each keep one per tool under a
+    directory of their own); every likely one when that says nothing. A guess,
+    which is why it is printed and never run."""
+    parts = Path(prefix).parts
+    if "pipx" in parts and "venvs" in parts:
+        return [f"pipx upgrade {DISTRIBUTION}"]
+    if "uv" in parts and "tools" in parts:
+        return [f"uv tool upgrade {DISTRIBUTION}"]
+    if prefix != base_prefix:
+        return [f"{shlex.quote(executable)} -m pip install --upgrade {DISTRIBUTION}"]
+    return [f"pipx upgrade {DISTRIBUTION}", f"uv tool upgrade {DISTRIBUTION}",
+            f"python3 -m pip install --upgrade {DISTRIBUTION}"]
+
+
+def _upgrade_fix(commands: list[str]) -> str:
+    if len(commands) == 1:
+        return commands[0]
+    return " or ".join(commands) + "   # whichever installed griot"
+
+
+def check_release(common) -> dict:
+    """Whether a newer griot was released. The one check that goes to the
+    network: on by default because nothing else tells a person a release
+    came out, and turned off with update-check (SECURITY.md has the row).
+
+    Never a failure: PyPI out of reach, or a version that cannot be compared
+    exactly, says nothing about this installation, so it is a skip that says
+    it could not tell (an ok would claim an answer it does not have)."""
+    import griot
+
+    if not common.update_check_enabled():
+        return _check(RELEASE, SKIP, "turned off (update-check is false): PyPI was not asked")
+    installed = griot.__version__
+    try:
+        newest = _latest_release()
+    # Every exception, not the ones requests documents: whatever stopped the
+    # answer, there is none, and the doctor's guard would turn the rest into
+    # a FAIL about an installation that has nothing wrong with it.
+    except Exception as e:
+        return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({type(e).__name__}); "
+                                     f"this is {installed}")
+    mine, theirs = _release_numbers(installed), _release_numbers(newest)
+    if mine is None or theirs is None:
+        return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
+    if mine < theirs:
+        return _check(RELEASE, WARN, f"{installed} is installed; {newest} is the newest release on PyPI",
+                      _upgrade_fix(_upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
+    if mine > theirs:
+        return _check(RELEASE, OK, f"{installed} is newer than the newest release on PyPI ({newest}): "
+                                   f"a version not released yet")
+    return _check(RELEASE, OK, f"{installed}, the newest release on PyPI")
+
+
 def run_checks(*, home: Path | None = None) -> list[dict]:
     """Every check, in the order a person reads them. The configuration is
     loaded here, not before: a file griot cannot start with is the first
@@ -438,7 +535,7 @@ def run_checks(*, home: Path | None = None) -> list[dict]:
         skipped = "skipped: the configuration did not load"
         checks.extend(_check(name, SKIP, skipped) for name in
                       ("directories", "profile", "credentials", "index", "repositories", "spend", "mcp registration",
-                       "tool approval", "server environment", "log"))
+                       "tool approval", "server environment", "log", RELEASE))
         return checks
     checks = [
         ("settings", lambda: check_settings(common.ENV_PATH, None, mode_before)),
@@ -453,6 +550,7 @@ def run_checks(*, home: Path | None = None) -> list[dict]:
         ("server environment", lambda: check_server_environment(common)),
         (GIT, lambda: check_git(common)),
         ("log", lambda: check_log(common)),
+        (RELEASE, lambda: check_release(common)),
     ]
     return [_guarded(name, check) for name, check in checks]
 
@@ -489,8 +587,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot doctor",
         description="Checks griot's setup: settings, profile and credential, index, repositories, spend, the MCP "
-                    "registration and tool approval, the environment a server would obey, git, the log. Reads only "
-                    "(changes no setting, index or file of yours). Exit status 1 only when a check fails.")
+                    "registration and tool approval, the environment a server would obey, git, the log, and whether "
+                    "a newer griot was released (asks PyPI; `griot config set update-check false` turns that off). "
+                    "Reads only (changes no setting, index or file of yours). Exit status 1 only when a check fails.")
     parser.add_argument("--json", action="store_true", help="One JSON document instead of the report")
     args = parser.parse_args(argv)
     checks = run_checks()

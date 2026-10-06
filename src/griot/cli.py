@@ -554,7 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
-        ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration); changes no setting, index or file of yours"),
+        ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration, a newer release); changes no setting, index or file of yours"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal

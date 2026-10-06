@@ -66,6 +66,7 @@ SETTINGS = [
     Setting("spend-velocity-ceiling", "GRIOT_SPEND_VELOCITY_CEILING_USD", "ceiling"),
     Setting("max-failed-batches", "GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "count"),
     Setting("log-questions", "GRIOT_LOG_QUESTIONS", "flag"),
+    Setting("update-check", "GRIOT_UPDATE_CHECK", "flag"),
     Setting("log-retention-days", "GRIOT_LOG_RETENTION_DAYS", "count"),
     Setting("project", "GRIOT_PROJECT", "text",
             elsewhere="It is per project: set GRIOT_PROJECT in the `env` of that project's MCP server entry. In this "
