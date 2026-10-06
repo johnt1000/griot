@@ -856,3 +856,190 @@ async def test_the_tools_name_a_repository_refused_by_a_whole_run_after_a_later_
     # newest platform run can still say the platform refused.
     assert not (status.get("last_indexed") or {}).get("error")
     assert any("refused" in line and "bad" in line for line in out["attention"])
+
+
+
+# --- a run refused entirely, said once -------------------------------------------------------------
+#
+# [debt 33] While a platform run refused entirely was the newest run of all,
+# `griot doctor` and `griot stats` said it twice: "the last indexing run
+# failed: the platform refused every fetch (...)" and the line naming the
+# refused repository. The line naming it says more, so it is the one kept;
+# the generic one stays for every run it does not cover.
+
+
+def _refusal_lines(lines):
+    return [line for line in lines if "refused" in line]
+
+
+def test_doctor_says_once_that_the_newest_run_was_refused_entirely(tmp_path, monkeypatch):
+    from griot import doctor
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"]))
+
+    index, repositories = doctor.check_index(common), doctor.check_repositories(common)
+
+    [line] = _refusal_lines([index["detail"], repositories["detail"]])
+    assert "bad" in line and "HTTP 401" not in line
+    assert "last indexed" not in index["detail"], "a run refused entirely indexed nothing"
+
+
+def test_stats_says_once_that_the_newest_run_was_refused_entirely(tmp_path, monkeypatch):
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"]))
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    [line] = _refusal_lines(s["attention"])
+    assert "bad" in line and "griot auth list" in line
+    # The run is still the last attempt, and still a failed one.
+    assert s["last_indexed_error"] == "the platform refused every fetch (HTTP 401)"
+
+
+def test_a_refused_repository_no_longer_registered_keeps_the_generic_line(tmp_path, monkeypatch):
+    """Nothing else names `gone` any more: the generic line is the only
+    trace of its refusal, so it stays."""
+    from griot import doctor
+
+    bad, gone = _repo(tmp_path, "bad"), _repo(tmp_path, "gone")
+    heads = {"bad": _git(bad, "rev-parse", "HEAD"), "gone": _git(gone, "rev-parse", "HEAD")}
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run(heads, refused=["bad", "gone"]))
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+    index = doctor.check_index(common)
+
+    assert any("last indexing run failed" in line and "HTTP 401" in line for line in s["attention"])
+    assert "last indexing run failed" in index["detail"] and index["status"] == "warn"
+
+
+def test_a_refused_run_that_names_no_repository_keeps_the_generic_line(tmp_path, monkeypatch):
+    """A run recorded before `refused_repos` existed names nothing: only
+    the generic line says it failed."""
+    from griot import doctor
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    record = _all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"])
+    del record["refused_repos"]
+    _write_runs(record)
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    assert any("last indexing run failed" in line for line in s["attention"])
+    assert "last indexing run failed" in doctor.check_index(common)["detail"]
+
+
+def test_a_run_that_died_after_a_refusal_keeps_the_generic_line(tmp_path, monkeypatch):
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": head}, refused=["bad"]),
+                _run("index_code.py", {"bad": head}, at="2026-10-03T10:00:00+00:00", error="collection busy"))
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    assert any("did not finish: collection busy" in line for line in s["attention"])
+    assert any("refused" in line and "bad" in line for line in s["attention"])
+
+
+@pytest.mark.anyio
+async def test_the_stats_tool_says_once_that_the_newest_run_was_refused_entirely(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"]))
+
+    async with Client(mcp_server.mcp) as client:
+        status = (await client.call_tool("griot_index_status", {})).structured_content
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    [line] = _refusal_lines(out["attention"])
+    assert "bad" in line
+    # The status keeps saying both, as data: the run failed, and which
+    # repository its platform refused.
+    assert status["last_indexed"]["error"] == "the platform refused every fetch (HTTP 401)"
+    assert [r["platform_refused"] for r in status["repositories"]] == [True]
+
+
+def _refused_report(name):
+    return {"repo": name, "path": f"/x/{name}", "head": "a" * 40, "behind": False, "commits_behind": 0,
+            "behind_sources": [], "missing_sources": [], "platform_refused": True, "sources": {}}
+
+
+@pytest.mark.parametrize("last,reports,expected", [
+    # A name with an escape sequence is compared as it is printed.
+    ({"error": "refused", "refused_repos": ["bad\x1b[2J"]}, [_refused_report("bad\x1b[2J")], True),
+    # No error: nothing generic to leave out.
+    ({"error": None, "refused_repos": ["bad"]}, [_refused_report("bad")], False),
+    # A repository not named by the refusal line keeps the generic line.
+    ({"error": "refused", "refused_repos": ["bad", "other"]}, [_refused_report("bad")], False),
+    ({"error": "refused", "refused_repos": []}, [], False),
+    ({"error": "refused", "refused_repos": None}, [_refused_report("bad")], False),
+    ({"error": "refused", "refused_repos": "bad"}, [_refused_report("bad")], False),
+    ({"error": "refused", "refused_repos": [None]}, [_refused_report("bad")], False),
+    # A number is not a repository's name, even one spelled like it.
+    ({"error": "refused", "refused_repos": [1]}, [_refused_report("1")], False),
+])
+def test_which_last_runs_the_refusal_line_already_names(last, reports, expected):
+    assert stats.refusal_names_last_run(last, reports) is expected
+
+
+def test_doctor_calls_a_refused_last_run_an_attempt_beside_the_points_count(monkeypatch):
+    """With the refusal said by the repositories check, the index check
+    reports the count, and the run as what it was: an attempt."""
+    from griot import doctor
+
+    monkeypatch.setattr(common, "get_index_status", lambda **k: {
+        "points_count": 12, "points_error": None, "collection": "c", "keyword_search": None,
+        "last_indexed": {"timestamp": "2026-10-02T10:00:00+00:00", "indexed": 0, "error": "the platform refused every fetch (HTTP 401)",
+                         "refused_repos": ["bad"]},
+        "repositories": [_refused_report("bad")]})
+
+    check = doctor.check_index(common)
+
+    assert check["status"] == "ok" and "12 points" in check["detail"]
+    assert "last indexing attempt 2026-10-02" in check["detail"] and "refused" not in check["detail"]
+
+
+@pytest.mark.anyio
+async def test_the_status_tool_names_the_repositories_a_run_refused(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"]))
+
+    async with Client(mcp_server.mcp) as client:
+        status = (await client.call_tool("griot_index_status", {})).structured_content
+
+    assert status["last_indexed"]["refused_repos"] == ["bad"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("edited", ["bad", [1], {"bad": True}])
+async def test_a_refused_list_edited_into_something_else_does_not_break_the_tools(tmp_path, monkeypatch, edited):
+    """griot_index_status declares a list of names: any other shape is
+    read as no names, and the generic line says the run failed."""
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=edited))
+
+    async with Client(mcp_server.mcp) as client:
+        status = await client.call_tool("griot_index_status", {})
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert not status.is_error and status.structured_content["last_indexed"]["refused_repos"] is None
+    assert any("last indexing run failed" in line for line in out["attention"])

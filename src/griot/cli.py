@@ -44,6 +44,7 @@ _MODULES = {
     "assist": "griot.harnesses",
     "audit": "griot.redaction",
     "config": "griot.config",
+    "update": "griot.update",
 }
 
 
@@ -178,12 +179,29 @@ def _cmd_index_keywords(rest: list) -> int:
     if not result["points"]:
         print(f"Nothing is indexed in collection '{common.COLLECTION_NAME}' yet: an index run adds keyword "
               f"vectors as it writes.")
-    elif not result["written"]:
-        print(f"All {result['points']} points of collection '{common.COLLECTION_NAME}' already have keyword vectors.")
+    elif not result["written"] and not result["rebuilt"]:
+        # A rebuilt collection is never a no-op, even with nothing written:
+        # a copy killed after its last page but before the swap is finished
+        # here, and the collection had no keyword vectors until then.
+        if result["points"] == 1:
+            print(f"The 1 point of collection '{common.COLLECTION_NAME}' already has keyword vectors.")
+        else:
+            print(f"All {result['points']} points of collection '{common.COLLECTION_NAME}' already have "
+                  f"keyword vectors.")
     else:
-        how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
-        print(f"{result['written']} points {how} in collection '{common.COLLECTION_NAME}' (embedded nothing). "
-              f"`griot search --mode keyword` and `--mode hybrid` now work.")
+        written, kept = result["written"], result["kept"]
+        written_text = f"{written} point{'s' if written != 1 else ''}"
+        if kept:
+            # The points written now are only what the interrupted copy
+            # lacked: alone they would read as a copy of that much of the
+            # collection.
+            done = (f"Resumed an interrupted copy of collection '{common.COLLECTION_NAME}': {kept} "
+                    f"point{' was' if kept == 1 else 's were'} already copied, {written_text} copied now")
+        else:
+            how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
+            done = f"{written_text} {how} in collection '{common.COLLECTION_NAME}'"
+        print(f"{done} (embedded nothing). `griot search` now runs hybrid by default, and `--mode keyword` and "
+              f"`--mode hybrid` work.")
     return 0
 
 
@@ -268,9 +286,10 @@ def _cmd_search(args) -> int:
     profile); synthesis with an LLM is `griot ask`."""
     from griot import ask, common  # lazy: only imports qdrant/fastembed here
 
+    mode, note = common.search_mode_for(args.query, args.mode)
     try:
         results = common.search(args.query, limit=args.limit, group_by_document=args.group_by_document,
-                                repos=args.repo, source_types=args.source_type, diverse=True, mode=args.mode)
+                                repos=args.repo, source_types=args.source_type, diverse=True, mode=mode)
     except common.SearchFilterError as e:
         # A filter that cannot match is refused by the search itself, for
         # the same reason as in the MCP tool: "No results." would read as
@@ -279,7 +298,6 @@ def _cmd_search(args) -> int:
         return 2
     if not results:
         print("No results.")
-        return 0
     for r in results:
         payload = r.payload or {}
         print(f"[{r.score:.3f}] {common.shown(ask.source_label(payload))}")
@@ -291,6 +309,11 @@ def _cmd_search(args) -> int:
         also_in = getattr(r, "also_in", None)
         if also_in:
             print(f"        same text in: {', '.join(common.shown(label) for label in also_in)}")
+    # Which mode ran, always: the default is not always what runs (see
+    # common.search_mode_for), and scores are on that mode's own scale.
+    print(f"Mode: {mode}")
+    if note:
+        print(note)
     return 0
 
 
@@ -603,9 +626,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--group-by-document", action="store_true",
                           help="The best chunk of each document, so --limit counts documents "
                                "(default: up to three chunks of one document)")
-    p_search.add_argument("--mode", choices=SEARCH_MODES, default="vector",
-                          help="vector: by meaning (default). keyword: by the exact words, for an identifier, an "
-                               "error code or a commit hash; embeds nothing. hybrid: both, fused by rank. "
+    # default None, not "hybrid": an explicit hybrid is refused where it cannot
+    # run, the default falls back to vector there (common.search_mode_for).
+    p_search.add_argument("--mode", choices=SEARCH_MODES, default=None,
+                          help="hybrid (default): by meaning and by the exact words, fused by rank; vector on an "
+                               "index built before keyword search. vector: by meaning. keyword: by the exact "
+                               "words, for an identifier, an error code or a commit hash; embeds nothing. "
                                "Scores are on each mode's own scale.")
     p_search.set_defaults(func=_cmd_search)
 
@@ -624,6 +650,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
         ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration, a newer release); changes no setting, index or file of yours"),
+        ("update", "Upgrades griot to the newest release on PyPI with the installer that installed it (pipx, uv tool, pip); shows the command and asks first"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal

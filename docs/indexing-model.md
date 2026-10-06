@@ -105,8 +105,8 @@ measure retrieval itself, point by point.
 ## Two vectors per point
 
 Each point carries two vectors. `dense` is the embedding of the text by the
-active profile's model: it is what a search by meaning (`--mode vector`, the
-default) compares. `bm25` is a sparse BM25 vector of the same text, computed
+active profile's model: it is what a search by meaning (`--mode vector`)
+compares. `bm25` is a sparse BM25 vector of the same text, computed
 locally by the vector store's own BM25 model (English stemming and
 stopwords), plus the identifying fields the text does not hold: `file_path`,
 `commit_hash` and `last_commit_hash` (whole, and abbreviated to 7 to 12
@@ -114,7 +114,17 @@ characters, as git abbreviates them), `tag_name`, `branch_name`,
 `source_branch` and `target_branch`. It is what a search by the exact words
 compares (`--mode keyword`): a function name, an error code, a file name, a
 commit hash. `--mode hybrid` runs both and fuses the two rankings (reciprocal
-rank fusion, k=60). A keyword search embeds nothing, so it costs nothing on
+rank fusion, k=60); it is the default of `griot search`, `griot ask` and
+`griot_search`, because, measured on 2026-10-06 on two repositories (MRR@10,
+vector / keyword / hybrid), it ranked descriptive questions at least as well
+as vector (0.67 / 0.64 / 0.76) and commit hashes far better (0.01 / 1.00 /
+0.80), while on function and class names it ranked a little below vector
+(0.72 / 0.61 / 0.68, with a higher recall@10). Where it cannot run, the
+default runs vector instead of failing: on a collection without keyword
+vectors (and then it says so, naming `griot index keywords`), or for a query
+with no word keyword search can match. Every result says which mode ran. The
+quality check, the golden set and the retrieval evaluation measure vector
+search explicitly, whatever the default. A keyword search embeds nothing, so it costs nothing on
 any profile; scores are on each mode's own scale and are not comparable
 across modes.
 
@@ -127,8 +137,9 @@ it holds the index lock and the collection, so nothing else can index or
 search that profile until it finishes. Run again, it writes nothing; run
 after an interruption, it starts the copy over (and a collection left aside
 halfway through the swap is put back the next time anything opens it). Until
-it has run, `--mode keyword` and `--mode hybrid` are refused with that
-command in the message, and vector search works as before. New points are
+it has run, an explicit `--mode keyword` or `--mode hybrid` is refused with
+that command in the message, and the default searches by meaning as before
+and says so. New points are
 written with both vectors once the collection has room for them.
 
 ## What is stored is not always what was read

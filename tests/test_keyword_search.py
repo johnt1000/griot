@@ -159,7 +159,9 @@ def test_hybrid_search_embeds_the_query_once(index, monkeypatch):
     assert calls == [["acquire_lock"]]
 
 
-def test_the_default_mode_is_vector_and_unchanged(index):
+def test_search_itself_still_defaults_to_vector(index):
+    """common.search()'s own default: the surfaces resolve theirs first
+    (common.search_mode_for), and what measures retrieval passes vector."""
     default = [(str(h.id), h.score) for h in common.search("acquire_lock", limit=5)]
     vector = [(str(h.id), h.score) for h in common.search("acquire_lock", limit=5, mode="vector")]
     assert default == vector
@@ -318,8 +320,7 @@ def test_building_keeps_every_point_as_it_was_and_embeds_nothing(legacy_index, m
 
     monkeypatch.setattr(common, "embed_texts", embedded)
     result = common.build_keyword_index()
-    assert result["rebuilt"] is True
-    assert result["written"] == len(DOCS)
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS), "kept": 0}
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
     after = _points()
     assert after.keys() == before.keys()
@@ -342,7 +343,7 @@ def test_building_twice_does_nothing_the_second_time(legacy_index):
     common.release_client()
     inode = os.stat(_active_path()).st_ino
     again = common.build_keyword_index()
-    assert again == {"rebuilt": False, "written": 0, "points": len(DOCS)}
+    assert again == {"rebuilt": False, "written": 0, "points": len(DOCS), "kept": 0}
     assert os.stat(_active_path()).st_ino == inode, "the collection was not rewritten"
 
 
@@ -358,14 +359,14 @@ def test_building_on_a_new_collection_fills_points_that_lack_a_keyword_vector(in
     common.release_client()
     inode = os.stat(_active_path()).st_ino
     result = common.build_keyword_index()
-    assert result == {"rebuilt": False, "written": 1, "points": len(DOCS) + 1}
+    assert result == {"rebuilt": False, "written": 1, "points": len(DOCS) + 1, "kept": 0}
     assert os.stat(_active_path()).st_ino == inode
     assert _first_label("legacy_identifier_here", mode="keyword") == "alpha/old.py"
 
 
 def test_building_when_nothing_is_indexed_creates_nothing():
     result = common.build_keyword_index()
-    assert result == {"rebuilt": False, "written": 0, "points": 0}
+    assert result == {"rebuilt": False, "written": 0, "points": 0, "kept": 0}
     assert not common.collection_exists(common.COLLECTION_NAME)
 
 
@@ -417,12 +418,12 @@ def test_an_interrupted_copy_is_started_over(legacy_index, monkeypatch):
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
 
-def _interrupted_copy(monkeypatch, points: int) -> list:
+def _interrupted_copy(monkeypatch, points: int, batch: int = 2) -> list:
     """Runs a build that dies once `points` keyword points were made, as a
     process killed mid-copy would, with the copy written page by page
-    (_KEYWORD_BATCH = 2). Returns the list every point made from then on is
-    appended to, for counting what a later run copies."""
-    monkeypatch.setattr(common, "_KEYWORD_BATCH", 2)
+    (_KEYWORD_BATCH = `batch`). Returns the list every point made from then
+    on is appended to, for counting what a later run copies."""
+    monkeypatch.setattr(common, "_KEYWORD_BATCH", batch)
     real = common._point
     made, armed = [], [True]
 
@@ -453,7 +454,7 @@ def test_an_interrupted_copy_resumes_where_it_stopped(legacy_index, monkeypatch)
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is False, "the collection is untouched"
 
     result = common.build_keyword_index()
-    assert result == {"rebuilt": True, "written": len(DOCS) - 4, "points": len(DOCS)}
+    assert result == {"rebuilt": True, "written": len(DOCS) - 4, "points": len(DOCS), "kept": 4}
     assert len(made) == len(DOCS) - 4
     common.release_client()
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
@@ -531,7 +532,7 @@ def test_a_kept_copy_that_cannot_be_opened_is_started_over(legacy_index):
     staging.mkdir()
     (staging / common._EDGE_CONFIG_MARKER).write_text("not a config")
     result = common.build_keyword_index()
-    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS), "kept": 0}
     common.release_client()
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
@@ -546,7 +547,7 @@ def test_a_kept_copy_made_without_the_keyword_vector_is_started_over(legacy_inde
     qe.EdgeShard.create(str(staging), qe.EdgeConfig(
         vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})).close()
     result = common.build_keyword_index()
-    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS), "kept": 0}
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
 
 
@@ -569,7 +570,7 @@ def test_a_kept_copy_is_deleted_when_the_collection_is_gone():
     staging = common._keyword_rebuild_paths(_active_path())[0]
     common.secure_mkdir(staging)
     qe.EdgeShard.create(str(staging), common._collection_config()).close()
-    assert common.build_keyword_index() == {"rebuilt": False, "written": 0, "points": 0}
+    assert common.build_keyword_index() == {"rebuilt": False, "written": 0, "points": 0, "kept": 0}
     assert not staging.exists()
     assert not common.collection_exists(common.COLLECTION_NAME)
 
@@ -619,7 +620,7 @@ def test_a_build_after_a_swap_interrupted_halfway_puts_the_collection_back_first
     path = _active_path()
     os.rename(path, common._keyword_rebuild_paths(path)[1])
     result = common.build_keyword_index()
-    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS)}
+    assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS), "kept": 0}
     common.release_client()
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
@@ -724,14 +725,101 @@ def test_the_command_builds_and_says_so(legacy_index, capsys):
     common.release_client()
     assert cli.main(["index", "keywords"]) == 0
     out = capsys.readouterr().out
-    assert f"{len(DOCS)}" in out and "embedded nothing" in out
+    assert f"{len(DOCS)} points copied into a collection with keyword vectors" in out
+    assert "embedded nothing" in out
+    # A fresh copy continued nothing, so it must not claim it did.
+    assert "Resumed" not in out
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_the_command_says_it_resumed_an_interrupted_copy_and_how_much_was_there(legacy_index, monkeypatch,
+                                                                                 capsys):
+    """After a resume, the points written in this run alone ('1 point
+    copied') read as if the copy had covered one point of the collection:
+    the message says it continued an earlier copy and what that copy held."""
+    _interrupted_copy(monkeypatch, len(DOCS) - 1)
+    capsys.readouterr()
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert (f"Resumed an interrupted copy of collection '{common.COLLECTION_NAME}': {len(DOCS) - 1} points "
+            f"were already copied, 1 point copied now (embedded nothing)") in out
+    assert "1 points" not in out
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_the_command_says_a_resumed_copy_that_held_one_point(legacy_index, monkeypatch, capsys):
+    _interrupted_copy(monkeypatch, 1, batch=1)
+    capsys.readouterr()
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert f"1 point was already copied, {len(DOCS) - 1} points copied now" in out
+
+
+def test_the_command_says_it_resumed_a_copy_that_already_held_every_point(legacy_index, monkeypatch, capsys):
+    """Killed after the last page was copied but before the copy took the
+    collection's place, the next run writes nothing and swaps the finished
+    copy in: that is a resume, not a collection that already had keyword
+    vectors (it had none until this run)."""
+    real_swap = common._swap_in
+
+    def swap_in(*args):
+        monkeypatch.setattr(common, "_swap_in", real_swap)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(common, "_swap_in", swap_in)
+    common.release_client()
+    with pytest.raises(KeyboardInterrupt):
+        common.build_keyword_index()
+    common.release_client()
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False, "the copy never took the place"
+    capsys.readouterr()
+
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert (f"Resumed an interrupted copy of collection '{common.COLLECTION_NAME}': {len(DOCS)} points "
+            f"were already copied, 0 points copied now (embedded nothing)") in out
+    assert "already have keyword vectors" not in out
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_a_copy_interrupted_before_it_held_anything_reads_as_a_fresh_one(legacy_index, monkeypatch, capsys):
+    """Interrupted inside its first page, the copy left holds no point: the
+    run that follows copies everything, and saying it resumed would claim
+    work that was never done."""
+    _interrupted_copy(monkeypatch, 1)
+    capsys.readouterr()
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert f"{len(DOCS)} points copied into a collection with keyword vectors" in out
+    assert "Resumed" not in out
 
 
 def test_the_command_says_when_there_is_nothing_to_do(index, capsys):
     common.release_client()
     assert cli.main(["index", "keywords"]) == 0
-    assert "already" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"All {len(DOCS)} points of collection '{common.COLLECTION_NAME}' already have keyword vectors." in out
+    assert "Resumed" not in out
+
+
+def test_the_command_counts_a_single_point_in_the_singular(fake_embeddings, capsys):
+    """'1 points' on a one-point collection, both when nothing is to do and
+    when the one point is filled in place."""
+    common.index_documents(DOCS[:1])
+    common.release_lock()
+    common.release_client()
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert f"The 1 point of collection '{common.COLLECTION_NAME}' already has keyword vectors." in out
+
+    client = common.get_client()
+    point = client.retrieve([common.stable_id(DOCS[0]["id"])], True, ["dense"])[0]
+    client.update(qe.UpdateOperation.upsert_points([qe.Point(point.id, {"dense": point.vector["dense"]},
+                                                             point.payload)]))
+    common.release_client()
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert f"1 point given keyword vectors in collection '{common.COLLECTION_NAME}'" in out
 
 
 def test_the_command_says_why_it_could_not_build_without_a_traceback(legacy_index, monkeypatch, capsys):
@@ -887,24 +975,32 @@ async def test_the_tool_searches_in_each_mode(index, mode):
         assert labels == ["alpha/src/lock.py"]
 
 
+def _modes_offered(tool) -> set:
+    """The values the tool's `mode` takes, as the schema an agent gets says:
+    an enum beside null, since leaving `mode` out is the default."""
+    schema = tool.input_schema["properties"]["mode"]
+    return {value for option in schema.get("anyOf", [schema]) for value in option.get("enum", [])}
+
+
 @pytest.mark.anyio
-async def test_the_tool_defaults_to_vector(index):
+async def test_the_tool_offers_every_mode_and_defaults_to_none_asked(index):
+    """No mode asked is the default (hybrid where it can run, see
+    tests/test_hybrid_default.py), told apart from an explicit hybrid."""
     async with Client(mcp_server.mcp) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-        schema = tools["griot_search"].input_schema["properties"]["mode"]
         result = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 5})
-    assert schema.get("default") == "vector"
-    assert set(schema.get("enum") or []) == set(common.SEARCH_MODES)
+    assert tools["griot_search"].input_schema["properties"]["mode"].get("default") is None
+    assert _modes_offered(tools["griot_search"]) == set(common.SEARCH_MODES)
     assert len(result.structured_content["results"]) == 5
 
 
 @pytest.mark.anyio
 async def test_the_tool_logs_the_mode(index):
     async with Client(mcp_server.mcp) as client:
-        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "hybrid"})
-        await client.call_tool("griot_search", {"query": "acquire_lock"})
+        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "keyword"})
+        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "vector"})
     modes = [q.get("mode") for q in logdb.read_recent(common.LOG_DIR, "queries", limit=2)]
-    assert modes == ["vector", "hybrid"], "newest first"
+    assert modes == ["vector", "keyword"], "newest first"
 
 
 @pytest.mark.anyio
@@ -934,7 +1030,7 @@ async def test_every_mode_the_server_instructions_name_is_one_the_tool_takes():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         named = set(re.findall(r"`mode=([a-z]+)`", client.instructions))
     assert named == {"keyword"}
-    assert named <= set(tools["griot_search"].input_schema["properties"]["mode"]["enum"])
+    assert named <= _modes_offered(tools["griot_search"])
 
 
 @pytest.mark.anyio
@@ -946,7 +1042,7 @@ async def test_the_history_prompt_names_a_mode_the_tool_takes():
     text = prompt.messages[0].content.text
     named = set(re.findall(r'mode="([a-z]+)"', text))
     assert named == {"keyword"}
-    assert named <= set(tools["griot_search"].input_schema["properties"]["mode"]["enum"])
+    assert named <= _modes_offered(tools["griot_search"])
 
 
 @pytest.mark.anyio

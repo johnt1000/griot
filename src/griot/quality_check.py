@@ -134,7 +134,9 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
                 failures.append({"id": str(point.id), "repo": point.payload.get("repo"),
                                  "reason": "no text to search with (the stored content is blank)"})
                 continue
-            results = common.search(content, limit=5)
+            # By meaning, explicitly: this measures the embeddings, whatever
+            # the surfaces default to (common.SEARCH_DEFAULT_MODE).
+            results = common.search(content, limit=5, mode="vector")
             match = next((r for r in results if str(r.id) == str(point.id)), None)
             if match is None:
                 failures.append({"id": str(point.id), "repo": point.payload.get("repo"), "reason": "did not appear even in its own top-5 search results"})
@@ -218,7 +220,9 @@ def run_golden_set(golden_set: list) -> dict:
                 "top_results": [],
             })
             continue
-        hits = common.search(case["query"], limit=case.get("limit", 5))
+        # Vector, explicitly: a case measures retrieval by meaning, and its
+        # pass rate must not move when the surfaces' default does.
+        hits = common.search(case["query"], limit=case.get("limit", 5), mode="vector")
         payloads = [h.payload for h in hits]
         missing = [exp for exp in case["must_include"] if not any(_matches(p, exp) for p in payloads)]
         results.append({

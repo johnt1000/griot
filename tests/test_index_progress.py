@@ -139,7 +139,25 @@ def test_nothing_is_written_without_the_variable(tmp_path, monkeypatch):
     common.progress_begin(["code"])
     common.progress_source("code", "reading")
     common.index_documents(_docs(2))
+    common.progress_source("code", "done")
+    common.progress_end(0)
     assert writes == []
+
+
+@pytest.mark.parametrize("with_variable", [False, True])
+def test_a_process_that_began_no_record_neither_writes_nor_fails(tmp_path, monkeypatch, with_variable):
+    """cli.main() ends every command with progress_end(), not only `index
+    all`: a `griot search` began no record, and must neither fail nor write
+    one, whatever its environment holds."""
+    path = tmp_path / "progress.json"
+    if with_variable:
+        monkeypatch.setenv(common.INDEX_PROGRESS_ENV, str(path))
+    else:
+        monkeypatch.delenv(common.INDEX_PROGRESS_ENV, raising=False)
+    monkeypatch.setattr(common, "_progress", None)
+    common.progress_source("code", "reading")
+    common.progress_end(0)
+    assert not path.exists()
 
 
 def test_a_progress_file_that_cannot_be_written_never_stops_the_run(tmp_path, monkeypatch):

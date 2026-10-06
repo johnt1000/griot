@@ -171,7 +171,8 @@ for collection ...".
 
 **Cause**: the collection was indexed before griot stored keyword (BM25)
 vectors, and the vector store cannot add a vector to points it already
-holds. Vector search (the default mode) is unaffected.
+holds. Vector search is unaffected, and a search that names no mode runs
+by meaning there instead of hybrid, saying so with the same command.
 
 **Fix**: run, once, from a terminal:
 

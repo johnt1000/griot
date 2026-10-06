@@ -21,6 +21,8 @@ def build_context(results: list) -> str:
 
 
 def ask(question: str, model: str | None, limit: int, mode: str = "vector") -> tuple[str, list]:
+    """`mode` is the one that runs: main() resolves the default first
+    (common.search_mode_for), because it logs and shows the mode that ran."""
     results = common.search(question, limit, diverse=True, mode=mode)
     context = build_context(results)
 
@@ -43,23 +45,30 @@ def main(argv=None):
     parser.add_argument("--model", default=None, help=f"Model to use within the active chat profile (profile default: {common.ACTIVE_CHAT_PROFILE['model']})")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="How many chunks to search for (default: %(default)s)")
     parser.add_argument("--show-sources", action="store_true", help="List the sources used as context")
-    parser.add_argument("--mode", choices=common.SEARCH_MODES, default="vector",
-                        help="How the context is searched: vector (by meaning, the default), keyword (by the exact "
-                             "words: an identifier, an error code, a hash) or hybrid (both)")
+    # None, not "hybrid": see the same flag of `griot search` (cli.py).
+    parser.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
+                        help="How the context is searched: hybrid (by meaning and by the exact words, the default; "
+                             "vector on an index built before keyword search), vector (by meaning) or keyword (by "
+                             "the exact words: an identifier, an error code, a hash)")
     args = parser.parse_args(argv)
 
     start_time = time.time()
+    mode, note = common.search_mode_for(args.question, args.mode)
     try:
-        answer, results = ask(args.question, model=args.model, limit=args.limit, mode=args.mode)
+        answer, results = ask(args.question, model=args.model, limit=args.limit, mode=mode)
     except common.SearchFilterError as e:
         # Raised before the chat model is called: nothing was paid for.
         print(f"Error: {e}", file=sys.stderr)
         return 2
     elapsed = time.time() - start_time
     print(answer)
+    if note:
+        # stderr: the answer on stdout stays the answer alone.
+        print(note, file=sys.stderr)
 
     if args.show_sources:
         print("\n--- sources ---")
+        print(f"Mode: {mode}")
         for r in results:
             payload = r.payload or {}
             print(f"- {common.shown(source_label(payload))} (score={r.score:.3f})")
@@ -76,8 +85,8 @@ def main(argv=None):
         model=args.model or common.ACTIVE_CHAT_PROFILE["model"],
         chat_profile=common.ACTIVE_CHAT_PROFILE_NAME, limit=args.limit,
         # Scores and results of the modes are not comparable: griot stats
-        # tells them apart by this.
-        mode=args.mode,
+        # tells them apart by this: the mode that ran, not the one asked for.
+        mode=mode,
         num_sources=len(results), duration_seconds=round(elapsed, 2),
         sources=[source_label(r.payload or {}) for r in results],
         # What `griot golden-set review` needs to turn this question into a
