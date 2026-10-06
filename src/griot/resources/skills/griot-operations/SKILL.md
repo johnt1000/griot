@@ -149,6 +149,9 @@ griot_index_repo(path="/abs/path/to/repo", sources=["commits"])  # a subset
   are then null on purpose, not zero. The run's full output goes to
   `griot_index.log` in griot's log directory
   (default `~/.local/share/griot/logs/`).
+- A restart of the session (or of the server) does not lose the run: the
+  run goes on, and the next server shows it in `griot_index_status` and
+  `griot_index_wait` again, or how it ended when it ended in between.
 - **Don't call `griot_search` while it runs.** The indexing process holds
   the collection, so a search fails until it finishes. `points_count` in
   `griot_index_status` reads null during the run. That means the collection

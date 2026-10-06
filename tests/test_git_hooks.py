@@ -81,7 +81,7 @@ def test_a_clean_commit_goes_through(repo):
 
 @pytest.mark.parametrize("name", [".env", ".env.local", "data.db", "collection.sqlite3", "server.pem", "logs/griot.log",
                                   "qdrant_data/x/segment.dat", "repos.json", "quality_golden_set.json",
-                                  ".spend_state.json", ".griot.lock",
+                                  ".spend_state.json", ".index_jobs.json", ".griot.lock",
                                   ".ENV", "config/.Env.production", ".envrc", "id_rsa", "home/.ssh/id_ed25519", "bundle.p12"])
 def test_files_that_never_belong_are_blocked(repo, name):
     _stage(repo, name)

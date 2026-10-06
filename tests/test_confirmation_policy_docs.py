@@ -194,7 +194,11 @@ _TOOL_FOR_COMMAND = {"index": "griot_index_repo"}
 
 
 def _tools_for_commands(cell):
-    names = set()
+    """The tools a cell names: CLI commands mapped to their tool, plus any
+    tool named directly as code (the read-only row does, since several
+    read-only tools have no CLI command of their own)."""
+    names = _code_names(cell)
+    cell = re.sub(r"`griot_[a-z_/]+`", "", cell)
     for command in re.findall(r"`([a-z][a-z /-]*)`", cell):
         head, *alts = command.split("/")
         words = head.split()
@@ -240,8 +244,10 @@ def test_the_management_surface_table_states_each_tools_policy(policy):
     # The two confirmed rows are the whole state-changing surface.
     assert stated[HUMAN] == _of(policy, HUMAN)
     assert stated[CONFIRM] == _of(policy, CONFIRM)
-    # The read-only row names examples, so each one only has to be right.
-    assert stated[NONE] and stated[NONE] <= _of(policy, NONE), stated[NONE] - _of(policy, NONE)
+    # The read-only row names every read-only tool, the conditional
+    # griot_index_wait included: a tool added later must be added there too.
+    assert stated[NONE] == _of(policy, NONE), {
+        "missing": _of(policy, NONE) - stated[NONE], "wrong": stated[NONE] - _of(policy, NONE)}
     # The secrets row says "never": no such tool may exist at all.
     assert stated[None] and not stated[None] & set(policy), stated[None] & set(policy)
 

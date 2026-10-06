@@ -200,7 +200,11 @@ Two readers:
   progress, while it runs. It also reports `running: true` for it while no
   lock is held: the lock covers the embedding of each source, not the
   listing and reading before it, and the status used to say "not running"
-  about a run in that phase.
+  about a run in that phase. The registry of runs is kept in
+  `.index_jobs.json` in the data directory, so a server that restarts while
+  a run goes on finds it again (the same process: its pid and its start
+  time) and, when the run ended in between, reports the exit status the run
+  recorded at its end.
 - `griot_index_wait(timeout_seconds)` blocks for at most 300 seconds
   (30 by default; 0 answers at once), reading the file about once a second
   and sending `notifications/progress` to a client that passed a progress
@@ -260,8 +264,10 @@ handled:
   the message (a corrupt `repos.json`, and which file to fix) would be lost.
   The read raises an `MCPError` carrying the tool's own message instead.
 - A read is not a tool call, so it would bypass `_records_call`. It goes
-  through it: recorded in `tool_calls` under its URI, and counted as a call
-  in flight, so the idle reaper does not close the collection under it.
+  through it: recorded in the `tool_calls` log table under its URI (and
+  reported by `griot stats` as `resource_reads`, apart from the tool
+  calls), and counted as a call in flight, so the idle reaper does not
+  close the collection under it.
 
 ## Gaps worth revisiting
 
@@ -410,7 +416,7 @@ over MCP, and under what mechanism.
 
 | Kind of operation | Over MCP | Mechanism |
 |---|---|---|
-| Read-only (`search`, `stats`, `repos list`, `profiles list`, `golden-set list`) | yes | plain tool |
+| Read-only: every tool the server marks `readOnlyHint=True`, all listed here (`griot_search`, `griot_stats`, `griot_spend_status`, `griot_index_status`, `griot_index_preview`, `griot_repos_list`, `griot_profiles_list`, `griot_golden_set_list`, `griot_golden_set_suggest`, `griot_quality_check`, `griot_audit`, `griot_config_list`, `griot_auth_guidance`; with `GRIOT_MCP_ENABLE_INDEX`, `griot_index_wait`) | yes | plain tool |
 | State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | a confirmation dialog when the client can ask (then `confirm=true` is ignored and a decline is final), `confirm=true` otherwise |
 | Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | a confirmation dialog only — `human_required=True`, no argument bypasses it; plus the `anthropic/requiresUserInteraction` marker |
 | **Secrets** (`auth set/list/remove`) | **never** | MCP answers with the CLI command to run |
@@ -456,8 +462,9 @@ of the tools were added on 2026-08-21 and 2026-08-22 and have
 never been called outside tests.
 The same held for resources, which is why they were added as copies of
 three tools rather than in their place: nothing is taken away from the
-surface agents use, and `tool_calls` (which records a resource read under
-its URI) now shows which of the two gets used.
+surface agents use, and `griot stats` now shows which of the two gets
+used: `tool_calls` next to `resource_reads` (a read is logged under its
+URI and counted apart).
 
 The end-to-end MCP validation (see ROADMAP) produces exactly the evidence
 that decides this, and as of 2026-08-22 griot records it: the `tool_calls`

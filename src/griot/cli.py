@@ -17,6 +17,7 @@ real module's help.
 import argparse
 import importlib
 import os
+import signal
 import sys
 
 import griot
@@ -160,7 +161,7 @@ def _cmd_index_keywords(rest: list) -> int:
                     "--mode keyword|hybrid` works on what was indexed before keyword search existed. Local: "
                     "embeds nothing and costs nothing. A collection made before keyword search is copied into a "
                     "new one, which needs about as much free disk as the collection while it runs. Safe to run "
-                    "again, and to run again after an interruption.")
+                    "again; run again after an interruption, it resumes the copy where it stopped.")
     parser.parse_args(rest)
     from griot import common
 
@@ -659,6 +660,33 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    """The command, plus how an indexing run ended, recorded where its host
+    reads its progress (common.progress_end(); a no-op for every other
+    command). Recorded here, the last place the exit status is known: the
+    run itself can stop on an exception that only this function turns into
+    one. The status is the one the interpreter will exit with, in the form
+    Popen.returncode gives it, so a host reading it learns what its own
+    child would have told it."""
+    status = None
+    try:
+        status = _main_with_errors_explained(argv)
+        return status
+    except SystemExit as e:
+        status = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        raise
+    except KeyboardInterrupt:
+        # An uncaught Ctrl-C makes the interpreter kill itself with SIGINT.
+        status = -signal.SIGINT
+        raise
+    except BaseException:
+        status = 1  # a traceback, then exit 1
+        raise
+    finally:
+        if "griot.common" in sys.modules:  # imported lazily: no run began without it
+            sys.modules["griot.common"].progress_end(status)
+
+
+def _main_with_errors_explained(argv=None) -> int:
     try:
         return _main(argv)
     except ConfigurationError as e:

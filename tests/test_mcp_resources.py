@@ -206,3 +206,59 @@ async def test_the_index_status_resource_reads_the_profile_in_effect_when_read(m
     async with Client(mcp_server.mcp) as client:
         read = await _read(client, "griot://index-status")
     assert seen == [None] and read["points_count"] == 3
+
+
+class _ToolManagerWithoutLookup:
+    """The SDK's tool manager as a later SDK release may leave it: everything
+    the server itself uses still works, but the lookup the resources once
+    reached into is gone. Private attributes change without notice."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def get_tool(self, name):
+        raise AttributeError("get_tool is private to the SDK")
+
+    def __getattr__(self, attr):
+        return getattr(self._real, attr)
+
+
+@pytest.mark.anyio
+async def test_the_resources_do_not_reach_into_the_sdks_private_tool_manager(monkeypatch, tmp_path):
+    """The resources used to serialize through
+    mcp._tool_manager.get_tool(name).fn_metadata.output_model, a private
+    attribute of the SDK. Every resource still reads, and still equals its
+    tool, with that lookup gone."""
+    _register(tmp_path)
+    monkeypatch.setattr(mcp_server, "_record_call", lambda *a, **k: None)
+    monkeypatch.setattr(mcp_server.mcp, "_tool_manager",
+                        _ToolManagerWithoutLookup(mcp_server.mcp._tool_manager))
+
+    async with Client(mcp_server.mcp) as client:
+        for uri, tool in RESOURCES.items():
+            called = await client.call_tool(tool, {})
+            read = await _read(client, uri)
+            expected = dict(called.structured_content)
+            # The moment a stats report was made is the one field two calls cannot share.
+            read.pop("generated_at", None)
+            expected.pop("generated_at", None)
+            assert read == expected, uri
+
+
+@pytest.mark.anyio
+async def test_a_key_the_tool_may_leave_out_reads_as_null_on_both_surfaces(monkeypatch):
+    """points_error, repositories and keyword_search may be absent from what
+    the tool's function returns. The tool's structured output gives an absent
+    one the value null; the resource has to do the same, not drop the key (a
+    plain serializer of the TypedDict would drop it, and the two surfaces
+    would disagree exactly when the answer is degraded)."""
+    monkeypatch.setattr(common, "get_index_status", lambda collection=None: {
+        "points_count": 3, "collection": "c", "embed_profile": "p", "running": False,
+        "pid": None, "path": None, "last_indexed": None, "spend_ceiling_exceeded": False})
+    async with Client(mcp_server.mcp) as client:
+        tool = await client.call_tool("griot_index_status", {})
+        read = await _read(client, "griot://index-status")
+
+    assert tool.is_error is False
+    assert read == tool.structured_content
+    assert "points_error" in read and read["points_error"] is None

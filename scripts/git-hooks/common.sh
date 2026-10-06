@@ -37,7 +37,7 @@ in_caller_locale() {
 # `environment.md` are not it. A name that carries no `.env` (a bare `env`,
 # `.flaskenv`) is not recognised: the rule is about the name, and gitleaks
 # is what reads the contents.
-FORBIDDEN_PATHS_RE='\.env(rc)?($|[^A-Za-z0-9])|(^|/)\.envs/|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.griot\.lock$'
+FORBIDDEN_PATHS_RE='\.env(rc)?($|[^A-Za-z0-9])|(^|/)\.envs/|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.index_jobs\.json$|\.griot\.lock$'
 # Templates of one, which hold names and no values.
 ALLOWED_PATHS_RE='\.env\.(example|sample|template|dist)$'
 
@@ -107,4 +107,9 @@ write_active_terms() {
 # assistant by the forms assistants sign with (a model name, a vendor's
 # noreply address, an agent's name), not by a word a person can carry:
 # Claude is a given name, and people work at these vendors.
-ATTRIBUTION_PATTERN='^[[:space:]#]*co-authored-by:.*(claude (opus|sonnet|haiku|code|[0-9])|noreply@(anthropic|openai)\.com|chatgpt|copilot|gemini|codex|cursor ?agent|devin[ -]ai|aider|windsurf|codeium)|^[[:space:]#]*claude-session:|claude\.ai/code/session_|generated (with|by)[^a-z]{0,8}(claude|chatgpt|copilot|gemini|codex|cursor|devin|aider|windsurf)'
+# The session link and the "Generated with/by" phrase count anywhere on a
+# line except after a `>` or a `<` on it: that is quoted text (a Markdown
+# quote, or the HTML a Dependabot description quotes an upstream release note
+# in), and the credit there is for someone else's work. A bullet, prose or a
+# title in parentheses is not a quote and is still refused.
+ATTRIBUTION_PATTERN='^[[:space:]#]*co-authored-by:.*(claude (opus|sonnet|haiku|code|[0-9])|noreply@(anthropic|openai)\.com|chatgpt|copilot|gemini|codex|cursor ?agent|devin[ -]ai|aider|windsurf|codeium)|^[[:space:]#]*claude-session:|^[^<>]*claude\.ai/code/session_|^[^<>]*generated (with|by)[^a-z]{0,8}(claude|chatgpt|copilot|gemini|codex|cursor|devin|aider|windsurf)'

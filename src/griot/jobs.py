@@ -27,6 +27,8 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
+
 from griot import common
 
 DEFAULT_INDEX_SOURCES: list[str] = ["code", "commits", "tags", "branches"]
@@ -142,11 +144,193 @@ def child_env(boot_env: dict, boot_file: dict) -> dict:
 
 
 _registry_lock = threading.Lock()
-# pid -> {"path": str | None, "sources": list[str], "started_at": float, "proc": Popen,
-#         "progress_path": str, "finished": None | {"finished_at", "exit_code", "progress"}}
+# pid -> {"path": str | None, "sources": list[str], "started_at": float,
+#         "proc": Popen | None, "process_start_time": float | None,
+#         "progress_path": str, "log_path": str,
+#         "finished": None | {"finished_at", "exit_code", "progress"}}
 # A job stays here after it ends, as the most recent finished one, until the
 # next one ends: an agent that waited on it asks how it ended after the fact.
+# `proc` is None for a job reloaded from disk (see _ensure_loaded()): this
+# process did not spawn it and cannot wait on it.
 _registry: dict[int, dict] = {}
+
+# The registry outlives the process that holds it. A job is a detached
+# subprocess that keeps running when the MCP server exits (a client restart,
+# a crash); with the registry only in memory, the next server said nothing
+# was running, would start a second run beside it (the lock is only held
+# while a source embeds), and could never say how the first one ended. So
+# every change is written here, and the first read in a new process loads it.
+# In the data directory, private: it names the repositories being indexed.
+JOBS_FILE_NAME = ".index_jobs.json"
+_loaded = False
+
+# What start_index_job names a progress file. A record read from disk is
+# data: one whose progress file is anything else is not ours, and is never
+# read, let alone removed.
+_PROGRESS_PREFIX = "griot-index-progress-"
+_PROGRESS_SUFFIX = ".json"
+
+# How far a process's start time may drift between two reads of it (float
+# rounding), as common._lock_owner_is_alive allows for the lock.
+_START_TIME_TOLERANCE_SECONDS = 1.0
+
+
+def _jobs_path() -> Path:
+    return common.DATA_DIR / JOBS_FILE_NAME
+
+
+def _same_process_alive(pid: int, process_start_time: float | None) -> bool:
+    """Whether the process a record names is still running: the pid alone
+    is not enough, since the system hands a dead process's pid to the next
+    one, so its start time must match the one recorded when the job began.
+    A record without one (it could not be read then) is never trusted. A
+    zombie has ended: it only waits for a parent to collect its status."""
+    if process_start_time is None:
+        return False
+    try:
+        process = psutil.Process(pid)
+        if process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        return abs(process.create_time() - process_start_time) <= _START_TIME_TOLERANCE_SECONDS
+    except psutil.Error:
+        # Gone, or not ours to look at (another user's process got the pid).
+        return False
+
+
+def _is_a_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_our_progress_file(path: str) -> bool:
+    candidate = Path(path)
+    return (candidate.name.startswith(_PROGRESS_PREFIX) and candidate.name.endswith(_PROGRESS_SUFFIX)
+            and os.path.realpath(candidate.parent) == os.path.realpath(tempfile.gettempdir()))
+
+
+def _record_from_disk(raw) -> dict | None:
+    """A registry entry (with its pid) from one record of the jobs file, or
+    None when the record is not whole and of the right kinds. The file is
+    griot's own, but it is read as data: what it holds decides which
+    process is reported as a run and which file is removed."""
+    if not isinstance(raw, dict):
+        return None
+    pid = raw.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    start_time = raw.get("process_start_time")
+    if start_time is not None and not _is_a_number(start_time):
+        return None
+    sources = raw.get("sources")
+    if not _is_a_number(raw.get("started_at")) \
+            or not (raw.get("path") is None or isinstance(raw.get("path"), str)) \
+            or not isinstance(sources, list) or not all(isinstance(source, str) for source in sources) \
+            or not isinstance(raw.get("progress_path"), str) or not _is_our_progress_file(raw["progress_path"]) \
+            or not isinstance(raw.get("log_path"), str):
+        return None
+    finished = raw.get("finished")
+    if finished is not None:
+        if not isinstance(finished, dict) or not _is_a_number(finished.get("finished_at")):
+            return None
+        exit_code = finished.get("exit_code")
+        if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+            return None
+        progress = finished.get("progress")
+        if progress is not None:
+            progress = common.index_progress_from(progress)
+            if progress is None:
+                return None
+        finished = {"finished_at": finished["finished_at"], "exit_code": exit_code, "progress": progress}
+    return {"pid": pid, "path": raw["path"], "sources": list(sources), "started_at": raw["started_at"],
+            "proc": None, "process_start_time": start_time, "progress_path": raw["progress_path"],
+            "log_path": raw["log_path"], "finished": finished}
+
+
+def _records_on_disk() -> list[dict]:
+    """The whole, well-formed records of the jobs file; none when there is
+    no file or it cannot be read as one (a damaged file is no job, never an
+    error in the tool that asked)."""
+    try:
+        data = json.loads(_jobs_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+        return []
+    return [record for record in map(_record_from_disk, data["jobs"]) if record is not None]
+
+
+def _record_to_disk(pid: int, info: dict) -> dict:
+    return {"pid": pid, "process_start_time": info.get("process_start_time"), "started_at": info["started_at"],
+            "path": info["path"], "sources": info["sources"], "progress_path": info["progress_path"],
+            "log_path": info.get("log_path"), "finished": info["finished"]}
+
+
+def _remove_progress_file(path: str) -> None:
+    if not _is_our_progress_file(path):
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _save() -> None:
+    """Writes the registry to the jobs file, atomically (a reader never sees
+    half of it). Keeps a running job another process recorded there and this
+    one does not know of: two MCP servers share the data directory, and the
+    one that loaded first must not erase the other's run by writing after it
+    started. Never fails the caller: the job is running whatever happens to
+    its record, and losing the record costs only the view after a restart.
+    Called with _registry_lock held."""
+    records = [_record_to_disk(pid, info) for pid, info in _registry.items()]
+    for other in _records_on_disk():
+        if other["pid"] not in _registry and other["finished"] is None \
+                and _same_process_alive(other["pid"], other["process_start_time"]):
+            records.append(_record_to_disk(other["pid"], other))
+    try:
+        common.secure_mkdir(common.DATA_DIR)
+        common.secure_write_text_atomic(_jobs_path(), json.dumps({"jobs": records}))
+    except OSError as e:
+        common.log_and_print(f"Warning: could not record the indexing job in {_jobs_path()}: {e}",
+                             level="warning", echo=False)
+
+
+def _ensure_loaded() -> None:
+    """On the first read in this process, takes back the jobs an earlier
+    process recorded: a job still running (the same process, see
+    _same_process_alive()) is followed again; one that ended is kept as
+    finished only if its run recorded how it ended (common.progress_end()),
+    since nothing else can tell this process its exit status; the rest are
+    dropped, with their progress files. Called with _registry_lock held."""
+    global _loaded
+    if _loaded:
+        return
+    _loaded = True
+    if not _jobs_path().exists():
+        return
+    for record in _records_on_disk():
+        pid = record.pop("pid")
+        if record["finished"] is None and not _same_process_alive(pid, record["process_start_time"]):
+            progress = common.read_index_progress(record["progress_path"])
+            _remove_progress_file(record["progress_path"])
+            if progress is None or not progress["ended"]:
+                continue  # how it ended is unknown: nothing true to say about it
+            record["finished"] = {"finished_at": time.time(), "exit_code": progress["exit_code"], "progress": progress}
+        _registry.setdefault(pid, record)
+    # Rewritten at once, so that what was dropped (a damaged record, a dead
+    # job) is not examined again by every process that starts after this one.
+    _save()
+
+
+def _keep_only_the_last_finished() -> bool:
+    """Only the most recent finished job is worth keeping: the one an agent
+    may still ask about. Whether any was dropped. Called with _registry_lock
+    held."""
+    finished = [pid for pid, info in _registry.items() if info["finished"] is not None]
+    stale = sorted(finished, key=lambda pid: _registry[pid]["finished"]["finished_at"])[:-1]
+    for pid in stale:
+        del _registry[pid]
+    return bool(stale)
+
 
 def running_index_job() -> dict | None:
     """[risk 4] common.index_lock_status()["running"] alone is NOT a
@@ -158,26 +342,30 @@ def running_index_job() -> dict | None:
     would report "idle" even though a job this process launched is very
     much still alive.
 
-    This in-process registry tracks jobs BY THE PROCESS THIS HOST ITSELF
-    SPAWNED — proc.poll() both answers "is it still alive" and reaps any
-    zombie (a Popen object whose process already exited but was never
-    waited on). Returns the first still-alive entry (in practice there's
-    at most one, since start_index_job() refuses to spawn a second job
-    while one is registered) or None."""
+    This registry tracks the jobs this host spawned — proc.poll() both
+    answers "is it still alive" and reaps any zombie (a Popen object whose
+    process already exited but was never waited on) — and those an earlier
+    host recorded on disk and that are still running (see _ensure_loaded()).
+    Returns the first still-alive entry (in practice there's at most one,
+    since start_index_job() refuses to spawn a second job while one is
+    registered) or None."""
     with _registry_lock:
+        _ensure_loaded()
         alive = None
+        changed = False
         for pid, info in _registry.items():
             if info["finished"] is not None:
                 continue
-            if info["proc"].poll() is None:
+            proc = info["proc"]
+            still_running = proc.poll() is None if proc is not None \
+                else _same_process_alive(pid, info["process_start_time"])
+            if still_running:
                 alive = {"pid": pid, "path": info["path"], "sources": info["sources"], "started_at": info["started_at"]}
             else:
                 _finish(info)
-        # Only the most recent finished job is worth keeping: the one an
-        # agent may still ask about.
-        finished = [pid for pid, info in _registry.items() if info["finished"] is not None]
-        for pid in sorted(finished, key=lambda pid: _registry[pid]["finished"]["finished_at"])[:-1]:
-            del _registry[pid]
+                changed = True
+        if _keep_only_the_last_finished() or changed:
+            _save()
         return alive
 
 
@@ -186,20 +374,25 @@ def _finish(info: dict) -> None:
     and the last progress its run wrote, read now because its file is removed
     now (nothing else would ever reclaim it). `finished_at` is when the end
     was noticed, which is when this host asked, not when the process exited.
-    Called with _registry_lock held."""
-    info["finished"] = {"finished_at": time.time(), "exit_code": info["proc"].returncode,
-                        "progress": common.read_index_progress(info["progress_path"])}
-    try:
-        os.unlink(info["progress_path"])
-    except OSError:
-        pass
+    The exit code is the process's own when this host spawned it, and
+    otherwise the one the run recorded at its end (None when it recorded
+    none: killed outright). Called with _registry_lock held."""
+    progress = common.read_index_progress(info["progress_path"])
+    if info["proc"] is not None:
+        exit_code = info["proc"].returncode
+    else:
+        exit_code = progress["exit_code"] if progress is not None else None
+    info["finished"] = {"finished_at": time.time(), "exit_code": exit_code, "progress": progress}
+    _remove_progress_file(info["progress_path"])
 
 
 def index_job_report() -> dict:
     """The job this host started, for an agent following it: `running` (its
     pid, path, sources, start time and the progress its run last recorded,
     or None) and `finished` (the most recent job that ended: the same, plus
-    its exit code and when its end was noticed, or None)."""
+    its exit code and when its end was noticed, or None). "This host"
+    includes the earlier processes on the same data directory whose jobs it
+    took back on its first read."""
     running = running_index_job()  # also notices a job that just ended
     with _registry_lock:
         if running is not None:
@@ -363,7 +556,7 @@ def start_index_job(
     # share one, created 0600 by mkstemp because it names the repository. In
     # the temporary directory, like the preview's report: a host that dies
     # mid-run leaves it where the system reclaims it, not in griot's data.
-    progress_fd, progress_path = tempfile.mkstemp(prefix="griot-index-progress-", suffix=".json")
+    progress_fd, progress_path = tempfile.mkstemp(prefix=_PROGRESS_PREFIX, suffix=_PROGRESS_SUFFIX)
     os.close(progress_fd)
     env = {**(env if env is not None else os.environ), common.INDEX_PROGRESS_ENV: progress_path}
 
@@ -382,15 +575,27 @@ def start_index_job(
         os.unlink(progress_path)
         return {"started": False, "reason": f"process died immediately (exit code {proc.returncode}) — see {log_path}.", "path": None, "pid": None, "sources": None}
 
+    # What tells this process apart from a later one given the same pid,
+    # for a host that reloads the record (_same_process_alive()). Read now,
+    # while the child cannot have been reaped: it was alive just above.
+    try:
+        process_start_time = psutil.Process(proc.pid).create_time()
+    except psutil.Error:
+        process_start_time = None  # followed by this host, never by a later one
+
     with _registry_lock:
+        _ensure_loaded()
         _registry[proc.pid] = {
             "path": str(repo_path) if repo_path is not None else None,
             "sources": sources,
             "started_at": time.time(),
             "proc": proc,
+            "process_start_time": process_start_time,
             "progress_path": progress_path,
+            "log_path": str(log_path),
             "finished": None,
         }
+        _save()
 
     return {"started": True, "path": str(repo_path) if repo_path is not None else None, "pid": proc.pid, "sources": sources, "reason": None}
 

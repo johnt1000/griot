@@ -273,7 +273,7 @@ def test_auth_set_without_a_place_says_direnv_was_looked_at_too(project, monkeyp
 
     auth.cmd_set("github")
 
-    assert "not in a shell file or direnv file griot knows" in capsys.readouterr().out
+    assert "no shell file or direnv file griot knows sets it" in capsys.readouterr().out
 
 
 def test_doctor_names_the_envrc(project):
