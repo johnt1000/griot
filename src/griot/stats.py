@@ -55,7 +55,14 @@ def window_start(days: int, now: datetime | None = None) -> datetime:
     which offset was in force at that moment."""
     now = now or datetime.now(timezone.utc)
     first_day = now.astimezone().date() - timedelta(days=days - 1)
-    return datetime.combine(first_day, time()).astimezone()
+    start = datetime.combine(first_day, time()).astimezone()
+    # A midnight the clock jumps over (a zone whose summer time starts at
+    # 00:00) does not exist, and which side of the gap mktime puts it on
+    # depends on the Python: 3.10 gives 23:00 of the day before. The day
+    # opens at its first instant, whatever the platform answered.
+    while start.astimezone().date() < first_day:
+        start += timedelta(minutes=15)
+    return start.astimezone()
 
 
 def _filter_by_days(records: list[dict], days: int, now_iso: str | None = None) -> list[dict]:
