@@ -1137,7 +1137,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     # [review] limit cap — clamp instead of reject: a limit>50 isn't a usage
     # error, it just doesn't need special handling (unlike a value <1, which
     # makes no sense at all and is also clamped to the minimum). Applied
-    # BEFORE common.search multiplies it for the grouped over-fetch, so the
+    # BEFORE common.search multiplies it for its wider fetch, so the
     # cap bounds what the agent gets rather than the internal fetch.
     limit = max(1, min(limit, SEARCH_LIMIT_MAX))
     started_at = time.time()
