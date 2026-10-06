@@ -13,8 +13,9 @@ reaches PyPI.
 - The tests run on the newest Python too, and on macOS: the BSD tools there
   behave differently, and that difference has caused real defects.
 
-The names of the jobs main requires are kept: renaming one would leave every
-pull request waiting for a check that never comes."""
+The names of the jobs main requires are kept, in whichever workflow runs on
+pull requests (ci.yml, pr-text.yml): renaming one would leave every pull
+request waiting for a check that never comes."""
 
 import platform
 import re
@@ -30,10 +31,11 @@ CI = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
 RELEASE = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
 PR_TEXT = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-text.yml").read_text())
 INSTALL_GITLEAKS = ROOT / "scripts" / "install-gitleaks.sh"
+WORKFLOWS = ROOT / ".github" / "workflows"
 # The checks main's branch protection requires (set on GitHub, not in this
 # repository): keep this list and that setting the same.
 REQUIRED_ON_MAIN = ["tests (py3.10)", "tests (py3.13)", "tests (py3.14)", "tests (macos, py3.13)",
-                    "secret scan", "package builds and installs"]
+                    "secret scan", "package builds and installs", "pull request credits no assistant"]
 
 
 def _triggers(workflow):
@@ -52,6 +54,22 @@ def _job_names(workflow):
     return names
 
 
+def _runs_on_pull_request(workflow):
+    # `on:` may be a single event, a list of events or a mapping of them.
+    triggers = _triggers(workflow)
+    if isinstance(triggers, str):
+        triggers = [triggers]
+    return "pull_request" in triggers
+
+
+def _pull_request_workflows():
+    # Every workflow, not only ci.yml: a required check can live in any
+    # workflow (pr-text.yml has one), and it is a pull request that waits for it.
+    paths = sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
+    workflows = {path.name: yaml.safe_load(path.read_text()) for path in paths}
+    return {name: workflow for name, workflow in workflows.items() if _runs_on_pull_request(workflow)}
+
+
 def _runs(job):
     return "\n".join(step.get("run", "") for step in job.get("steps", []))
 
@@ -59,8 +77,29 @@ def _runs(job):
 # --- the checks main requires still exist ---------------------------------------------------------
 
 
-def test_every_check_main_requires_is_still_a_job_of_ci():
-    assert set(REQUIRED_ON_MAIN) <= set(_job_names(CI))
+def test_every_check_main_requires_is_still_a_job_that_runs_on_pull_requests():
+    # A required name no pull request reports leaves every one of them waiting:
+    # the job has to exist under that name in a workflow pull requests trigger.
+    names = {name for workflow in _pull_request_workflows().values() for name in _job_names(workflow)}
+    assert set(REQUIRED_ON_MAIN) <= names
+
+
+def test_the_pull_request_text_check_is_one_main_requires():
+    # Not required, a pull request crediting an assistant could still be merged.
+    assert PR_TEXT["jobs"]["attribution"]["name"] in REQUIRED_ON_MAIN
+
+
+@pytest.mark.parametrize("on, expected", [
+    ("pull_request", True), ("pull_request_target", False), (["push", "pull_request"], True),
+    ({"pull_request": {"types": ["edited"]}}, True), ({"push": None}, False),
+])
+def test_a_pull_request_trigger_is_found_in_each_form_on_takes(on, expected):
+    assert _runs_on_pull_request({"on": on}) is expected
+
+
+def test_the_workflows_pull_requests_trigger_are_ci_and_pr_text_not_the_release():
+    assert {"ci.yml", "pr-text.yml"} <= set(_pull_request_workflows())
+    assert "release.yml" not in _pull_request_workflows()
 
 
 # --- runners ----------------------------------------------------------------------------------------

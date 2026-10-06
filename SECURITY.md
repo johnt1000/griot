@@ -30,6 +30,7 @@ Protections applied:
 - API keys are sent in headers only — never in URLs — and error/log messages never interpolate provider exception text that could contain them.
 - Credentialed HTTP requests never follow redirects, and server-provided pagination URLs are refused if they point to a different host.
 - `GRIOT_LOG_QUESTIONS=false` keeps question text out of the persistent query log.
+- Searches (with their question text) and MCP tool calls are deleted from `logs.db` after `GRIOT_LOG_RETENTION_DAYS` days (365 by default), overwritten in the file rather than only unlinked from the table. Indexing runs and quality checks are kept.
 - Each logged search and tool call also carries the **name** of the project it came from: the folder `CLAUDE_PROJECT_DIR` names or else the one griot ran in (never its path), or exactly what you set in `GRIOT_PROJECT`. The home directory is not recorded as a project, and the name is stripped of control characters and cut at 100 characters. It is stored locally in `logs.db` and is never sent anywhere.
 
 ## Encryption at rest — deliberate position
@@ -109,9 +110,16 @@ want the exact set the tests ran on, install from a checkout with
 
 A secret scan is a backstop, not a control. Nothing in this repository should
 ever contain a credential in the first place: `griot auth set` reads keys with
-`getpass` (never echoed, never in argv) and writes them to `<config>/.env` at
-mode 0600, outside the working tree, or to the OS keychain when `keyring` is
-installed.
+`getpass` (never echoed, never in argv) and stores them outside the working
+tree: in the OS keychain when the optional `keyring` package is installed and
+finds a backend, otherwise in `<config>/.env` in plaintext at mode 0600. The
+keychain is best-effort, not a guarantee: headless Linux without a Secret
+Service provider, and most containers, have none, and griot then keeps working
+with the file. `griot auth list` and `griot doctor` say where each credential
+is kept and whether a keychain backend is reachable. A credential already in
+the file is moved into the keychain only when you ask, with `griot auth
+migrate`; `griot doctor` names the ones still in the file (names, never
+values) when a keychain is there to take them.
 
 ## Reporting a vulnerability
 

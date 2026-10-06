@@ -26,6 +26,8 @@ permissions:
 
 jobs:
   attribution:
+    # A check main requires (tests/test_pipeline.py lists them): renaming it
+    # leaves every pull request waiting for a check that never comes.
     name: pull request credits no assistant
     runs-on: ubuntu-24.04
     steps:

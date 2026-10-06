@@ -30,8 +30,10 @@ permissions:
 
 jobs:
   test:
-    # Every one of these names is a check main requires: renaming one leaves
-    # every pull request waiting for a check that never comes.
+    # Every one of these names is a check main requires, as are `secret scan`,
+    # `package builds and installs` and pr-text.yml's job (tests/test_pipeline.py
+    # lists them all): renaming one leaves every pull request waiting for a
+    # check that never comes.
     name: tests (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
