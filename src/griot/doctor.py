@@ -431,14 +431,16 @@ def check_release(common) -> dict:
     exactly, says nothing about this installation, so it is a skip that says
     it could not tell (an ok would claim an answer it does not have)."""
     import griot
-    import requests
 
     if not common.update_check_enabled():
         return _check(RELEASE, SKIP, "turned off (update-check is false): PyPI was not asked")
     installed = griot.__version__
     try:
         newest = _latest_release()
-    except (requests.RequestException, ValueError) as e:
+    # Every exception, not the ones requests documents: whatever stopped the
+    # answer, there is none, and the doctor's guard would turn the rest into
+    # a FAIL about an installation that has nothing wrong with it.
+    except Exception as e:
         return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({type(e).__name__}); "
                                      f"this is {installed}")
     mine, theirs = _release_numbers(installed), _release_numbers(newest)

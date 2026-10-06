@@ -690,6 +690,20 @@ def test_pypi_that_cannot_be_reached_is_a_skip_never_a_failure(pypi):
         assert "could not ask PyPI" in check["detail"]
 
 
+@pytest.mark.parametrize("failure", [RecursionError("a JSON nested too deep"), UnicodeError("a bad header"),
+                                     RuntimeError("anything the HTTP stack raises that is not its own error")])
+def test_any_failure_to_ask_is_a_skip_never_a_failure(pypi, failure):
+    """The rule is that not hearing from PyPI says nothing about this
+    installation, whatever the exception: listing the ones requests raises
+    left the rest to the doctor's guard, which reports a FAIL."""
+    pypi["answer"] = failure
+
+    check = _release()
+
+    assert check["status"] == "skip" and "could not ask PyPI" in check["detail"]
+    assert doctor.exit_status([check]) == 0
+
+
 class _Response:
     def __init__(self, status=200, body=None, text=None):
         self.status_code, self._body, self._text = status, body, text
@@ -757,7 +771,7 @@ def test_an_answer_pypi_did_not_mean_is_an_error_the_check_turns_into_a_skip(mon
     assert check["status"] == "skip" and "could not ask PyPI" in check["detail"]
 
 
-@pytest.mark.parametrize("value", ["false", "no", "off", "0", "FALSE"])
+@pytest.mark.parametrize("value", ["false", "no", "off", "0", "FALSE", " false\n"])
 def test_the_check_can_be_turned_off_and_then_pypi_is_not_asked(monkeypatch, pypi, value):
     monkeypatch.setenv("GRIOT_UPDATE_CHECK", value)
 
@@ -767,7 +781,7 @@ def test_the_check_can_be_turned_off_and_then_pypi_is_not_asked(monkeypatch, pyp
     assert pypi["asked"] == 0
 
 
-@pytest.mark.parametrize("value", ["true", "", "yes"])
+@pytest.mark.parametrize("value", ["true", "", "yes", "on", "1", " "])
 def test_the_check_is_on_by_default_and_with_an_empty_value(monkeypatch, pypi, value):
     monkeypatch.setenv("GRIOT_UPDATE_CHECK", value)
 
@@ -780,6 +794,10 @@ def test_the_check_is_on_by_default_and_with_an_empty_value(monkeypatch, pypi, v
     ("/Users/you/.local/pipx/venvs/griot-rag", ["pipx upgrade griot-rag"]),
     ("/Users/you/.local/share/pipx/venvs/griot-rag", ["pipx upgrade griot-rag"]),
     ("/Users/you/.local/share/uv/tools/griot-rag", ["uv tool upgrade griot-rag"]),
+    # A folder named after the tool is not the tool's own directory: a
+    # project checked out as `pipx` or `uv` keeps a venv of its own.
+    ("/Users/you/code/pipx/.venv", ["/Users/you/code/pipx/.venv/bin/python -m pip install --upgrade griot-rag"]),
+    ("/Users/you/code/uv/.venv", ["/Users/you/code/uv/.venv/bin/python -m pip install --upgrade griot-rag"]),
 ])
 def test_the_upgrade_command_follows_where_griot_runs(prefix, expected):
     assert doctor._upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == expected
