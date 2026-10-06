@@ -37,7 +37,7 @@ in_caller_locale() {
 # `environment.md` are not it. A name that carries no `.env` (a bare `env`,
 # `.flaskenv`) is not recognised: the rule is about the name, and gitleaks
 # is what reads the contents.
-FORBIDDEN_PATHS_RE='\.env(rc)?($|[^A-Za-z0-9])|(^|/)\.envs/|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.griot\.lock$'
+FORBIDDEN_PATHS_RE='\.env(rc)?($|[^A-Za-z0-9])|(^|/)\.envs/|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(db|sqlite3?|pem|key|p12|pfx)$|(^|/)(logs|qdrant_data)/|(^|/)(repos|quality_golden_set)\.json$|\.spend_state\.json$|\.index_jobs\.json$|\.griot\.lock$'
 # Templates of one, which hold names and no values.
 ALLOWED_PATHS_RE='\.env\.(example|sample|template|dist)$'
 

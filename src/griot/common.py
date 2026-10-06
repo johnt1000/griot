@@ -2965,6 +2965,19 @@ def progress_begin(sources: list[str]) -> None:
     _write_progress()
 
 
+def progress_end(exit_code: int | None) -> None:
+    """The run is over: records that it ended and the status it exits with.
+    A host that started the run reads its exit status from the process it
+    spawned, but a host that started after it (the MCP server restarted
+    while the run went on) is not its parent and has no other way to learn
+    how it ended. A no-op when no record was begun in this process."""
+    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+        return
+    _progress["ended"] = True
+    _progress["exit_code"] = exit_code
+    _write_progress()
+
+
 def _current_progress_entry() -> dict | None:
     if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
         return None
@@ -3016,6 +3029,17 @@ def read_index_progress(path) -> dict | None:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return index_progress_from(data)
+
+
+def index_progress_from(data) -> dict | None:
+    """A run's record as read_index_progress() returns it, from its JSON
+    value, or None when it is not a whole record of ours. Also how the jobs
+    file's copy of a finished run's record is read back (jobs.py): parsing
+    its own output gives the same record.
+
+    `ended` is True only once the run said so (progress_end()), and only
+    then is `exit_code` its exit status (None when it is not a number)."""
     if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
         return None
     current = data.get("current_source")
@@ -3031,8 +3055,13 @@ def read_index_progress(path) -> dict | None:
         sources.append({"source": entry["source"], "state": entry["state"],
                         **{field: _count_or_none(entry.get(field)) for field in _PROGRESS_COUNT_FIELDS}})
     updated_at = data.get("updated_at")
+    ended = data.get("ended") is True
+    exit_code = data.get("exit_code")
     return {"current_source": current, "sources": sources,
-            "updated_at": updated_at if isinstance(updated_at, (int, float)) and not isinstance(updated_at, bool) else None}
+            "updated_at": updated_at if isinstance(updated_at, (int, float)) and not isinstance(updated_at, bool) else None,
+            "ended": ended,
+            # Negative is the signal that ended it, as Popen reports one.
+            "exit_code": exit_code if ended and isinstance(exit_code, int) and not isinstance(exit_code, bool) else None}
 
 
 # What the last check of each collection found, in this process only: a

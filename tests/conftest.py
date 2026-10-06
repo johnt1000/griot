@@ -99,6 +99,9 @@ def _reset_common_globals(monkeypatch, tmp_path):
     # test never started. Resetting to a fresh dict per test closes this
     # the same way _client/_embed_model are reset above.
     monkeypatch.setattr(jobs, "_registry", {})
+    # And the registry is reloaded from the jobs file in THIS test's data
+    # directory on its first read, as a new process would.
+    monkeypatch.setattr(jobs, "_loaded", False)
 
     # [security, real finding] common._keychain_get/_set/_delete lazily
     # `import keyring` inside each call — forcing sys.modules["keyring"] =

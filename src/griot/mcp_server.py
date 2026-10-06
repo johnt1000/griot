@@ -1082,7 +1082,8 @@ class FinishedIndexJob(TypedDict):
     sources: list[str]
     # 0 is success; negative is the signal that ended it.
     exit_code: int | None
-    # Since this server noticed the end, which is when it was next asked.
+    # Since this server noticed the end, which is when it was next asked (for
+    # a run that ended while no server was up, when this one first looked).
     finished_seconds_ago: float
     progress: IndexProgress | None
 
@@ -1130,7 +1131,9 @@ class IndexStatusOutput(_IndexStatusMayLack):
     spend_ceiling_exceeded: bool
     # The run griot_index_repo started from THIS server, while it runs, with
     # how far it got. Null when there is none (a run from a terminal shows
-    # only in running/pid/path).
+    # only in running/pid/path). "This server" includes the earlier server
+    # processes on the same data directory: jobs.py keeps the registry on
+    # disk, so a restart does not lose a run still going.
     job: IndexJob | None
 
 
@@ -1978,7 +1981,8 @@ def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
 
     `job` is the run griot_index_repo started from this server, with the
     progress its run records (per source: its state, chunks done of the
-    total once known, and the counts); null when none is running."""
+    total once known, and the counts); null when none is running. A run
+    started before the server restarted is still shown while it runs."""
     return _index_status(collection)
 
 
