@@ -10,6 +10,7 @@ nobody reads "refused" as "forbidden" and nobody looks for a flag that is
 not there."""
 
 import dataclasses
+import re
 
 import pytest
 
@@ -62,6 +63,12 @@ def test_raising_a_ceiling_refusal_names_the_terminal(no_terminal, capsys):
     assert "interactive terminal" in err and "no flag" in err
 
 
+def test_shortening_the_log_retention_refusal_names_the_terminal(no_terminal, capsys):
+    assert config.main(["set", "log-retention-days", "30"]) == 2
+    err = _refusal(capsys)
+    assert "interactive terminal" in err and "no flag" in err
+
+
 @pytest.fixture
 def claude(monkeypatch, tmp_path):
     """The real harness, its user directory moved under tmp_path."""
@@ -105,6 +112,9 @@ def _help(capsys, main, argv) -> str:
     (harnesses.main, ["install"]),
 ], ids=["repos-add", "profiles-delete", "config-set", "assist-install"])
 def test_help_says_it_asks_at_an_interactive_terminal(capsys, main, argv):
-    out = _help(capsys, main, argv)
+    # The description, not the whole help: an option's own help can say "no
+    # flag" about one question (assist install's --no-instructions does) and
+    # stand in for a description that no longer says it about the command.
+    out = re.split(r" (?:positional arguments|options):", _help(capsys, main, argv))[0]
     assert "interactive terminal" in out
     assert "no flag" in out

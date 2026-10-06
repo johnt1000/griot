@@ -247,8 +247,8 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     quality checks of that collection count, the same collection the state
     lines are about; None counts every profile. Spend is never scoped (money
     is spent per account, whichever collection a call was for), and MCP tool
-    calls cannot be (they record no collection). since is when the window
-    opened (window_start()), echoed so the report can name it."""
+    calls and resource reads cannot be (they record no collection). since is
+    when the window opened (window_start()), echoed so the report can name it."""
     # Spend is read from everything in the window, before the scope narrows
     # it: the breaker's daily total is one number for the whole account.
     spend_records = runs + queries
@@ -273,6 +273,8 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     total_indexed = sum(r.get("indexed") or 0 for r in runs)
     total_skipped = sum(r.get("skipped") or 0 for r in runs)
     total_failed = sum(r.get("failed") or 0 for r in runs)
+    reads = [c for c in (tool_calls or []) if _is_resource_read(c.get("tool"))]
+    tools = [c for c in (tool_calls or []) if not _is_resource_read(c.get("tool"))]
 
     # [review finding] A dead run (an earlier decision: died before counting
     # anything, counts written as None on purpose) is a run that HAPPENED —
@@ -527,8 +529,11 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # of those failed. Counted separately rather than as a success rate:
         # "called 40 times, 40 failed" and "called 40 times, 2 failed" are
         # different problems, and a single percentage blurs them. A read of
-        # an MCP resource counts here too, under its URI (griot://repos), so
-        # it stands next to the tool it duplicates without being mistaken for it.
+        # an MCP resource is logged in the same table, under its URI
+        # (griot://repos), but counted apart in resource_reads: summed with
+        # the tools, three reads of griot://stats read as three tool calls,
+        # and the question the resources raise (does anyone read them, or
+        # only the tools they duplicate?) needs the two side by side.
         # [user-requested] WHY documents failed, grouped by reason. A
         # systemic failure (bad credential, oversized input) repeats one
         # reason across every document, so the grouping is the diagnosis —
@@ -536,9 +541,18 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # Runs recorded before this field existed simply contribute nothing.
         "failure_reasons": _count_by(
             [f for r in runs for f in (r.get("failures") or [])], "reason"),
-        "tool_calls": _count_by(tool_calls or [], "tool"),
-        "failed_tool_calls": _count_by([c for c in (tool_calls or []) if not c.get("ok")], "tool"),
+        "tool_calls": _count_by(tools, "tool"),
+        "failed_tool_calls": _count_by([c for c in tools if not c.get("ok")], "tool"),
+        "resource_reads": _count_by(reads, "tool"),
+        "failed_resource_reads": _count_by([c for c in reads if not c.get("ok")], "tool"),
     }
+
+
+def _is_resource_read(name: str | None) -> bool:
+    """Whether a logged call is a resource read: resources are recorded under
+    their URI. An MCP tool name is letters, digits, '_', '-' and '.', so a
+    scheme separator can only belong to a URI, whatever its scheme."""
+    return "://" in (name or "")
 
 
 def _count_by(records: list[dict], key: str) -> dict[str, int]:
@@ -745,6 +759,24 @@ def platform_refused_phrase(names: list[str]) -> str:
             + " in the last platform run: nothing of " + ("it" if len(names) == 1 else "them") + " was indexed")
 
 
+def _mcp_section(lines: list[str], heading: str, event: str, kind: str,
+                 counts: dict[str, int], failed: dict[str, int]) -> None:
+    """Appends one MCP usage section (tools or resources), or nothing when
+    there is nothing to count. Every profile, whatever the scope: neither a
+    tool call nor a resource read records a collection."""
+    if not counts:
+        return
+    total = sum(counts.values())
+    lines.append("")
+    lines.append(f"{heading}{total} {event}{'s' if total != 1 else ''} across {len(counts)} {kind}"
+                 f"{'s' if len(counts) > 1 else ''}, every profile")
+    # Ordered by volume: during the MCP validation the top of this list
+    # is the answer to "which tools earn their place".
+    for name, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        suffix = f" · {failed[name]} failed" if name in failed else ""
+        lines.append(f"             {name} {count}{suffix}")
+
+
 def format_stats(s: dict, days: int, width: int | None = None) -> str:
     """The report as text. `width` None is the plain form, the same for
     every reader; a width (see _chart_width()) draws the trends as charts
@@ -943,23 +975,20 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
         lines.append("Queries:     none in the period")
     # A window longer than the retention counts searches and tool calls over
     # the retention only (prune_logs_if_due): say so, or a 400-day report
-    # reads as a year in which nobody searched before last spring.
+    # reads as a year in which nobody searched before last spring. Resource
+    # reads live in the tool-call table, so the same pruning applies to them.
     if days > common.LOG_RETENTION_DAYS:
-        lines.append(f"             searches and tool calls are kept for {common.LOG_RETENTION_DAYS} days "
+        lines.append(f"             searches, tool calls and resource reads are kept for "
+                     f"{common.LOG_RETENTION_DAYS} days "
                      f"(log-retention-days): older ones are not counted")
 
-    tools = s.get("tool_calls") or {}
-    if tools:
-        failed = s.get("failed_tool_calls") or {}
-        lines.append("")
-        # Every profile, whatever the scope: a tool call records no collection.
-        lines.append(f"MCP tools:   {sum(tools.values())} calls across {len(tools)} tool"
-                     f"{'s' if len(tools) > 1 else ''}, every profile")
-        # Ordered by volume: during the MCP validation the top of this list
-        # is the answer to "which tools earn their place".
-        for tool, count in sorted(tools.items(), key=lambda kv: -kv[1]):
-            suffix = f" · {failed[tool]} failed" if tool in failed else ""
-            lines.append(f"             {tool} {count}{suffix}")
+    # Two sections, not one heading over both: a resource read is logged like
+    # a tool call, and summed under "MCP tools" it inflated the tool count
+    # with reads that were never a tool call. Each heading names what it counts.
+    _mcp_section(lines, "MCP tools:   ", "call", "tool",
+                 s.get("tool_calls") or {}, s.get("failed_tool_calls") or {})
+    _mcp_section(lines, "MCP resources: ", "read", "resource",
+                 s.get("resource_reads") or {}, s.get("failed_resource_reads") or {})
 
     quality = s.get("quality_trend") or []
     if quality:

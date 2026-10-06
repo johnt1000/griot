@@ -83,6 +83,7 @@ from mcp.server.elicitation import (
 )
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
+from mcp.server.mcpserver.tools import Tool
 from mcp.shared.exceptions import MCPError
 from mcp.types import INTERNAL_ERROR, ToolAnnotations
 
@@ -968,12 +969,16 @@ class StatsOutput(_WhyNoPointCount):
     queries_by_mode: dict[str, int]
     median_top_score: float | None
     empty_searches: int
-    # All three are reason/tool -> count maps built by stats._count_by(), not
-    # lists and not scalars. I declared two of them wrong from memory and the
+    # All five are reason/tool/URI -> count maps built by stats._count_by(),
+    # not lists and not scalars. I declared two of them wrong from memory and the
     # unit tests passed on mocks; a real protocol call rejected them.
     failure_reasons: dict[str, int]
     tool_calls: dict[str, int]
     failed_tool_calls: dict[str, int]
+    # Reads of the griot:// resources, counted apart from tool_calls: the two
+    # share a log table, not a meaning.
+    resource_reads: dict[str, int]
+    failed_resource_reads: dict[str, int]
     # Runs that died before counting anything. Reported apart
     # from total_failed: a failure is a run that counted failures, a dead run
     # counted nothing at all.
@@ -1082,7 +1087,8 @@ class FinishedIndexJob(TypedDict):
     sources: list[str]
     # 0 is success; negative is the signal that ended it.
     exit_code: int | None
-    # Since this server noticed the end, which is when it was next asked.
+    # Since this server noticed the end, which is when it was next asked (for
+    # a run that ended while no server was up, when this one first looked).
     finished_seconds_ago: float
     progress: IndexProgress | None
 
@@ -1130,7 +1136,9 @@ class IndexStatusOutput(_IndexStatusMayLack):
     spend_ceiling_exceeded: bool
     # The run griot_index_repo started from THIS server, while it runs, with
     # how far it got. Null when there is none (a run from a terminal shows
-    # only in running/pid/path).
+    # only in running/pid/path). "This server" includes the earlier server
+    # processes on the same data directory: jobs.py keeps the registry on
+    # disk, so a restart does not lose a run still going.
     job: IndexJob | None
 
 
@@ -1429,8 +1437,8 @@ _CONFIG_LIST_NOTE = (
     "used: the value comes from where the server was started (for a registered server, the `env` of its "
     "registration, or a `--profile` on its command line). A server takes a value from its environment only "
     "where that narrows what the file says: one that would turn on indexing, add a directory to index, raise "
-    "a spend ceiling, reach another host, switch to a profile that calls an API or let an index run fail for "
-    "longer is ignored, and "
+    "a spend ceiling, reach another host, switch to a profile that calls an API, let an index run fail for "
+    "longer or turn back on the logging of questions or the check for a newer release is ignored, and "
     "`environment_ignored` says so for that setting."
 )
 
@@ -1944,7 +1952,9 @@ def griot_stats(days: int = stats.DEFAULT_DAYS, all_profiles: bool = False) -> S
     counts (runs, chunks, failures, queries, sources, quality trend) are
     those of the active profile's collection, the one the state lines are
     about; `all_profiles=true` counts every profile's (`scope` says which).
-    Spend and tool calls are always every profile's."""
+    Spend, tool calls and resource reads are always every profile's.
+    `tool_calls` counts tool calls only; reads of the griot:// resources are
+    in `resource_reads`."""
     return _stats(days, all_profiles)
 
 
@@ -1978,7 +1988,8 @@ def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
 
     `job` is the run griot_index_repo started from this server, with the
     progress its run records (per source: its state, chunks done of the
-    total once known, and the counts); null when none is running."""
+    total once known, and the counts); null when none is running. A run
+    started before the server restarted is still shown while it runs."""
     return _index_status(collection)
 
 
@@ -2007,22 +2018,31 @@ def _index_status(collection: str | None) -> IndexStatusOutput:
 # clients that fetch context without spending a tool call or that let a
 # person attach it. They DUPLICATE the tools rather than replace them: the
 # tools are what agents are known to call, and which of the two gets used is
-# exactly what tool_calls will show (a read is recorded under its URI).
+# exactly what griot_stats shows: resource_reads next to tool_calls (a read
+# is logged like a tool call, under its URI, and counted apart).
 #
 # Two surfaces for one piece of data can drift apart, so neither surface has
 # its own code: each resource runs the function its tool runs, and is
-# serialized by the output model the SDK built for that tool, which is what
-# turns the tool's dict into the structured content a client receives (it
-# drops undeclared keys, and renders values as JSON the same way). A
+# serialized by the SDK's own structured-output conversion, built from the
+# tool function itself, which is what turns the tool's dict into the
+# structured content a client receives (it drops undeclared keys, gives a
+# key the answer may lack the value null, and renders values as JSON the
+# same way). A plain TypeAdapter of the declared TypedDict would differ on
+# that null. Built through the SDK's public Tool.from_function, not looked up
+# in the server's private tool manager, whose shape a release may change. A
 # resource has no arguments, so it is the tool at its defaults.
 #
 # Not listed here, as the tools are not: list_resources() is the inventory.
 
 
-def _resource(uri: str, tool: str, description: str):
-    """Registers `fn` as the resource `uri`, a JSON copy of what `tool`
-    returns, recorded and counted in flight like a tool call: two of these
-    open the collection, which the idle reaper must not close under them."""
+def _resource(uri: str, tool, description: str):
+    """Registers `fn` as the resource `uri`, a JSON copy of what the tool
+    function `tool` returns, recorded and counted in flight like a tool call:
+    two of these open the collection, which the idle reaper must not close
+    under them."""
+    # Built once, from the very function registered as the tool, so the
+    # declared return type (and with it the output model) cannot be another.
+    converter = Tool.from_function(tool, structured_output=True).fn_metadata
     def register(fn):
         def read() -> str:
             try:
@@ -2033,8 +2053,7 @@ def _resource(uri: str, tool: str, description: str):
                 # thing the message is for: which file to fix. The tool's
                 # error reaches the agent as isError; this is the same text.
                 raise MCPError(code=INTERNAL_ERROR, message=str(e)) from e
-            model = mcp._tool_manager.get_tool(tool).fn_metadata.output_model
-            return json.dumps(model.model_validate(value).model_dump(mode="json", by_alias=True))
+            return json.dumps(converter.convert_result(value).structured_content)
         read.__name__ = fn.__name__
         recorded = _records_call(read, name=uri)
         mcp.resource(uri, name=fn.__name__, description=description, mime_type="application/json")(recorded)
@@ -2042,7 +2061,7 @@ def _resource(uri: str, tool: str, description: str):
     return register
 
 
-@_resource("griot://repos", "griot_repos_list",
+@_resource("griot://repos", griot_repos_list,
            # Carries the tool's own caveat: "registered" is not "everything
            # an index run may accept" (GRIOT_MCP_INDEX_ROOTS adds paths).
            "The repositories registered for indexing: name, path, whether the path still exists and "
@@ -2052,7 +2071,7 @@ def griot_repos_resource() -> ReposListOutput:
     return _repos_list()
 
 
-@_resource("griot://stats", "griot_stats",
+@_resource("griot://stats", griot_stats,
            f"The usage report for the last {stats.DEFAULT_DAYS} days: indexing runs and reuse, spend, "
            "queries, tool calls, quality trend, and `attention` (what someone has to act on). The same "
            "data as the griot_stats tool at its default window; call the tool for another window.")
@@ -2060,7 +2079,7 @@ def griot_stats_resource() -> StatsOutput:
     return _stats(stats.DEFAULT_DAYS)
 
 
-@_resource("griot://index-status", "griot_index_status",
+@_resource("griot://index-status", griot_index_status,
            "Whether the active profile's collection has data, when it was last indexed and whether an "
            "indexing run is happening now. The same data as the griot_index_status tool for the active "
            "collection; call the tool for another profile's collection.")

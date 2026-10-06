@@ -125,13 +125,29 @@ You can trigger Dependabot actions by commenting on this PR:
 """
 
 
+# Release notes that hold a credit, quoted the two ways a quote reaches a
+# description: in Dependabot's HTML, and as a Markdown quote. The upstream
+# project's credit is not this pull request's.
+DEPENDABOT_QUOTING_A_CREDIT = DEPENDABOT_BODY.replace("""</ul>
+</blockquote>""", """<li>Generated with Copilot by upstream</li>
+<li><a href="https://claude.ai/code/session_01AbCdEf">https://claude.ai/code/session_01AbCdEf</a></li>
+</ul>
+<p>\U0001F916 Generated with <a href="https://claude.com/claude-code">Claude Code</a></p>
+</blockquote>""") + """
+> Generated with Copilot by upstream
+> https://claude.ai/code/session_01AbCdEf
+"""
+
+
 @pytest.mark.parametrize("title,body", [
     ("fix: the search returns the newest commit first", "Two lines.\r\n\r\nWith Windows line endings.\r\n"),
     ("docs: what Claude reviewed in the release", "Co-authored-by: Claude Martin <claude.martin@example.com>"),
     ("feat: griot installs its skills for Claude Code", "griot now supports Claude Code and opencode.\n"),
     ("build(deps): bump astral-sh/setup-uv from 10.2.0 to 10.3.0", DEPENDABOT_BODY),
     ("chore: a pull request with no description", ""),
-], ids=["plain", "a person named Claude", "mentions Claude Code", "dependabot", "empty body"])
+    ("build(deps): bump astral-sh/setup-uv from 10.2.0 to 10.3.0", DEPENDABOT_QUOTING_A_CREDIT),
+], ids=["plain", "a person named Claude", "mentions Claude Code", "dependabot", "empty body",
+        "dependabot quoting a credit"])
 def test_text_that_credits_no_assistant_passes(title, body):
     done = _run(title, body)
 
@@ -144,7 +160,10 @@ def test_text_that_credits_no_assistant_passes(title, body):
     ("fix: something", "See https://claude.ai/code/session_01AbCdEf", "description, line 1"),
     ("fix: something", "Claude-Session: https://example.com/x", "description, line 1"),
     ("fix: something (Generated with Claude Code)", "", "title"),
-], ids=["generated with", "co-author", "session link", "session trailer", "in the title"])
+    ("fix: something", "Body.\n\n- Generated with Copilot\n", "description, line 3"),
+    ("fix: something", "> Quoted.\n\nhttps://claude.ai/code/session_01AbCdEf\n", "description, line 3"),
+], ids=["generated with", "co-author", "session link", "session trailer", "in the title",
+        "a bullet is not a quote", "a line after a quote"])
 def test_text_that_credits_an_assistant_is_refused_and_says_where(title, body, where):
     done = _run(title, body)
 
@@ -176,3 +195,38 @@ def test_a_title_that_is_shell_code_is_only_read(tmp_path):
 
     assert done.returncode == 0, done.stderr
     assert not any((tmp_path / name).exists() for name in ("pwned", "pwned2", "pwned3", "pwned4", "pwned5"))
+
+
+# --- a check that could not run says so instead of passing ---------------------------------------
+
+
+def test_without_a_pattern_from_the_hooks_the_check_fails_instead_of_passing(tmp_path):
+    """A common.sh that no longer defines ATTRIBUTION_PATTERN would match
+    nothing, and every pull request would pass unread."""
+    (tmp_path / "git-hooks").mkdir()
+    (tmp_path / "git-hooks" / "common.sh").write_text("# ATTRIBUTION_PATTERN moved elsewhere\n")
+    script = tmp_path / "check-pr-text.sh"
+    script.write_text(SCRIPT.read_text())
+
+    done = subprocess.run(["bash", str(script)], capture_output=True, text=True, cwd=tmp_path,
+                          env={"PATH": "/usr/bin:/bin", "PR_TITLE": "fix: x", "PR_BODY": "Generated with Claude Code"})
+
+    assert done.returncode == 2 and "ATTRIBUTION_PATTERN" in done.stderr and "nothing was checked" in done.stderr
+
+
+@pytest.mark.parametrize("which", ["title", "body"])
+def test_grep_failing_on_either_text_fails_the_check_instead_of_passing(tmp_path, which):
+    """grep exits 1 for no match and 2 when it could not search: the second
+    read as "nothing found" would pass a text nobody read. A grep that fails
+    only on one of the two files stands in for any such error."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "grep"
+    fake.write_text(f'#!/bin/sh\nfor last; do :; done\ncase "$last" in */{which}) exit 2;; esac\n'
+                    f'exec /usr/bin/grep "$@"\n')
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "PR_TITLE": "fix: x", "PR_BODY": "Plain text."}
+
+    done = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=tmp_path)
+
+    assert done.returncode == 2
