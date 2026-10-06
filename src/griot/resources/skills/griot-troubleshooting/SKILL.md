@@ -114,8 +114,9 @@ griot auth list                    # see what's currently configured (masked)
 exported in the shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins
 over what `griot auth set` stores, in every terminal that sets it. The
 refusal names where the key came from; `griot auth list` and `griot
-doctor` (check `credentials`) say the same, with the shell file and line.
-Remove that export, and `unset` the variable in terminals already open.
+doctor` (check `credentials`) say the same, with the shell file and line
+(or the `.envrc`, or the `.env` it loads, when direnv set it). Remove that
+export, and `unset` the variable in terminals already open.
 
 If you're upgrading from an older setup where credentials only ever lived
 in the plaintext `.env` file (before the OS-keychain integration existed),
