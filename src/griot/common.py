@@ -4339,8 +4339,8 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
     return qe.Filter(must=must) if must else None
 
 
-# How a search ranks: "vector" by meaning (the dense vector; the default, and
-# what every search did before the others existed), "keyword" by the words
+# How a search ranks: "vector" by meaning (the dense vector; what every
+# search did before the others existed), "keyword" by the words
 # themselves (BM25 over the keyword vector: an identifier, an error code, a
 # hash), "hybrid" both, fused by rank.
 SEARCH_MODES = ("vector", "keyword", "hybrid")
@@ -4376,6 +4376,44 @@ def _keyword_query(query: str) -> "qe.SparseVector":
             f"The query has no word keyword search can match (common English words such as 'the' and 'of', and "
             f"punctuation, are left out). Name the identifier, error or hash itself, or use mode 'vector'.")
     return vector
+
+
+# What `griot search`, `griot ask` and griot_search run when no mode is
+# asked for. Hybrid, measured on 2026-10-06 on a throwaway index of this
+# repository and of a copy of click (default profile, MRR@10, vector /
+# keyword / hybrid): 40 descriptive questions 0.67 / 0.64 / 0.76, 15 commit
+# hashes 0.01 / 1.00 / 0.80, 40 identifiers (the defining file counted
+# relevant) 0.72 / 0.61 / 0.68, with hybrid's recall@10 the higher there.
+# search() itself keeps "vector" as its own default: the quality check, the
+# golden set and the retrieval evaluation measure retrieval itself, and pass
+# it explicitly anyway.
+SEARCH_DEFAULT_MODE = "hybrid"
+
+# Said once with a default search that ran by meaning only because the
+# collection has no keyword vectors, so that the person or agent learns the
+# default is not what ran, and the one command that changes it.
+KEYWORD_SEARCH_NOT_BUILT_NOTE = (
+    "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
+    "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
+
+
+def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
+    """The mode a search of `query` runs, and a note to show with its results
+    or None. An explicit `mode` is returned as it is, even where it cannot
+    run: search() then refuses it with what to run, which is what was asked.
+    None is the default, which never fails where vector search would answer:
+    hybrid when the collection has keyword vectors and the query a word
+    keyword search can match, vector otherwise. Only a collection that lacks
+    the keyword vector gets the note: with no collection, or one whose config
+    cannot be read, there is nothing to tell anyone to build."""
+    if mode is not None:
+        return mode, None
+    built = _keyword_search_status(COLLECTION_NAME)
+    if built is False:
+        return "vector", KEYWORD_SEARCH_NOT_BUILT_NOTE
+    if built is None or not _keyword_model().embed_query(query).indices:
+        return "vector", None
+    return SEARCH_DEFAULT_MODE, None
 
 
 def search(query: str, limit: int = 5, group_by_document: bool = False, *,

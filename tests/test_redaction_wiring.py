@@ -225,7 +225,7 @@ def test_quality_check_does_not_send_a_stored_value_back_to_the_embedding_model(
 
     monkeypatch.setattr(quality_check, "_open_shard_for_sampling", lambda collection: _Shard())
     monkeypatch.setattr(quality_check, "sample_points", lambda client, n: [point])
-    monkeypatch.setattr(common, "search", lambda q, limit=5: queries.append(q) or [point])
+    monkeypatch.setattr(common, "search", lambda q, limit=5, mode=None: queries.append(q) or [point])
     quality_check.run_self_check(common.COLLECTION_NAME, sample_size=1)
     assert queries and all(TOKEN not in q for q in queries)
 

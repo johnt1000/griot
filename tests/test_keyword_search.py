@@ -159,7 +159,9 @@ def test_hybrid_search_embeds_the_query_once(index, monkeypatch):
     assert calls == [["acquire_lock"]]
 
 
-def test_the_default_mode_is_vector_and_unchanged(index):
+def test_search_itself_still_defaults_to_vector(index):
+    """common.search()'s own default: the surfaces resolve theirs first
+    (common.search_mode_for), and what measures retrieval passes vector."""
     default = [(str(h.id), h.score) for h in common.search("acquire_lock", limit=5)]
     vector = [(str(h.id), h.score) for h in common.search("acquire_lock", limit=5, mode="vector")]
     assert default == vector
@@ -973,24 +975,32 @@ async def test_the_tool_searches_in_each_mode(index, mode):
         assert labels == ["alpha/src/lock.py"]
 
 
+def _modes_offered(tool) -> set:
+    """The values the tool's `mode` takes, as the schema an agent gets says:
+    an enum beside null, since leaving `mode` out is the default."""
+    schema = tool.input_schema["properties"]["mode"]
+    return {value for option in schema.get("anyOf", [schema]) for value in option.get("enum", [])}
+
+
 @pytest.mark.anyio
-async def test_the_tool_defaults_to_vector(index):
+async def test_the_tool_offers_every_mode_and_defaults_to_none_asked(index):
+    """No mode asked is the default (hybrid where it can run, see
+    tests/test_hybrid_default.py), told apart from an explicit hybrid."""
     async with Client(mcp_server.mcp) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-        schema = tools["griot_search"].input_schema["properties"]["mode"]
         result = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 5})
-    assert schema.get("default") == "vector"
-    assert set(schema.get("enum") or []) == set(common.SEARCH_MODES)
+    assert tools["griot_search"].input_schema["properties"]["mode"].get("default") is None
+    assert _modes_offered(tools["griot_search"]) == set(common.SEARCH_MODES)
     assert len(result.structured_content["results"]) == 5
 
 
 @pytest.mark.anyio
 async def test_the_tool_logs_the_mode(index):
     async with Client(mcp_server.mcp) as client:
-        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "hybrid"})
-        await client.call_tool("griot_search", {"query": "acquire_lock"})
+        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "keyword"})
+        await client.call_tool("griot_search", {"query": "acquire_lock", "mode": "vector"})
     modes = [q.get("mode") for q in logdb.read_recent(common.LOG_DIR, "queries", limit=2)]
-    assert modes == ["vector", "hybrid"], "newest first"
+    assert modes == ["vector", "keyword"], "newest first"
 
 
 @pytest.mark.anyio
@@ -1020,7 +1030,7 @@ async def test_every_mode_the_server_instructions_name_is_one_the_tool_takes():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         named = set(re.findall(r"`mode=([a-z]+)`", client.instructions))
     assert named == {"keyword"}
-    assert named <= set(tools["griot_search"].input_schema["properties"]["mode"]["enum"])
+    assert named <= _modes_offered(tools["griot_search"])
 
 
 @pytest.mark.anyio
@@ -1032,7 +1042,7 @@ async def test_the_history_prompt_names_a_mode_the_tool_takes():
     text = prompt.messages[0].content.text
     named = set(re.findall(r'mode="([a-z]+)"', text))
     assert named == {"keyword"}
-    assert named <= set(tools["griot_search"].input_schema["properties"]["mode"]["enum"])
+    assert named <= _modes_offered(tools["griot_search"])
 
 
 @pytest.mark.anyio

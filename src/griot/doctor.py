@@ -263,9 +263,12 @@ def check_index(common) -> dict:
     detail = f"{count} points in {status.get('collection')}" + (
         f", {wrote} {last.get('timestamp')}" if last.get("timestamp") else "")
     if status.get("keyword_search") is False:
-        # Not a warning: vector search, the default, works as it always did.
-        # Said because nothing else tells a person the other modes exist.
-        return _check("index", OK, detail + "; keyword search is not built for it yet",
+        # Not a warning: every search still answers, the default by meaning
+        # alone instead of hybrid (common.search_mode_for), as before keyword
+        # search existed. Said so that a person learns what the default is
+        # missing here, and the one command that gives it back.
+        return _check("index", OK, detail + "; keyword search is not built for it yet, so searches run by "
+                      "meaning only instead of the default hybrid",
                       "griot index keywords   # local, embeds nothing")
     return _check("index", OK, detail)
 

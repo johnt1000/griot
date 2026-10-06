@@ -128,7 +128,7 @@ def test_cmd_add_appends_case_from_chosen_results(monkeypatch):
         FakeHit(0.80, {"repo": "repo-x", "source_type": "commit", "commit_hash": "abc12345", "content": "..."}),
         FakeHit(0.60, {"repo": "repo-y", "source_type": "code", "file_path": "b.py", "content": "..."}),
     ]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "1,2")
 
     rc = golden_set.cmd_add("how does login work")
@@ -145,7 +145,7 @@ def test_cmd_add_appends_case_from_chosen_results(monkeypatch):
 
 def test_cmd_add_empty_input_cancels_without_writing(monkeypatch):
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "")
 
     rc = golden_set.cmd_add("some question")
@@ -155,7 +155,7 @@ def test_cmd_add_empty_input_cancels_without_writing(monkeypatch):
 
 
 def test_cmd_add_no_search_results_is_an_error(monkeypatch, capsys):
-    monkeypatch.setattr(common, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: [])
 
     rc = golden_set.cmd_add("question with no result")
 
@@ -165,7 +165,7 @@ def test_cmd_add_no_search_results_is_an_error(monkeypatch, capsys):
 
 def test_cmd_add_invalid_number_format_is_an_error(monkeypatch, capsys):
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "abc")
 
     rc = golden_set.cmd_add("question")
@@ -176,7 +176,7 @@ def test_cmd_add_invalid_number_format_is_an_error(monkeypatch, capsys):
 
 def test_cmd_add_out_of_range_index_is_an_error(monkeypatch, capsys):
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "5")
 
     rc = golden_set.cmd_add("question")
@@ -188,7 +188,7 @@ def test_cmd_add_out_of_range_index_is_an_error(monkeypatch, capsys):
 def test_cmd_add_appends_to_existing_cases(monkeypatch):
     _write_golden_set([{"query": "already there", "must_include": []}])
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "1")
 
     golden_set.cmd_add("new question")
@@ -355,7 +355,7 @@ def test_main_dispatches_suggest_add_list_remove(git_repo, monkeypatch):
     assert golden_set.main(["list"]) == 0
 
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
-    monkeypatch.setattr(common, "search", lambda query, limit=5: hits)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None: hits)
     monkeypatch.setattr("builtins.input", lambda prompt: "1")
     assert golden_set.main(["add", "question"]) == 0
 

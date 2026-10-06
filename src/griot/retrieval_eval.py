@@ -142,7 +142,8 @@ def evaluate_qrels(qrels: list[dict], k_values: list[int] | None = None) -> dict
     queries_without_match = []
 
     for item in qrels:
-        results = common.search(item["query"], limit=max_k)
+        # Vector, explicitly: this evaluates retrieval by meaning.
+        results = common.search(item["query"], limit=max_k, mode="vector")
         relevant_paths = set(item["relevant_file_paths"])
 
         first_hit_rank = None

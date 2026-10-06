@@ -282,6 +282,9 @@ class SearchResult(TypedDict):
 class SearchOutput(TypedDict):
     note: str
     results: list[SearchResult]
+    # The mode that ran: the default (hybrid) runs vector on a collection
+    # without keyword vectors or for a query with no word to match.
+    mode: str
     # Among the repositories in `results`, those whose index is behind their
     # HEAD: {repository: commits behind, or null when uncountable}. Empty
     # when every repository in the results is up to date.
@@ -1079,10 +1082,11 @@ class _IndexStatusMayLack(_WhyNoPointCount, total=False):
     # a degraded answer, not a rejected one. (`| None`: the SDK gives an
     # absent key the value null, so the type has to admit it.)
     repositories: list[RepositoryFreshness] | None
-    # Whether griot_search takes mode keyword/hybrid on this collection:
-    # false for one indexed before keyword search (`griot index keywords`
-    # builds it), null when there is no collection or its config could not
-    # be read.
+    # Whether griot_search takes mode keyword/hybrid on this collection, and
+    # so whether its default runs hybrid: false for one indexed before
+    # keyword search (`griot index keywords` builds it; the default then runs
+    # vector), null when there is no collection or its config could not be
+    # read.
     keyword_search: bool | None
 
 
@@ -1249,7 +1253,7 @@ def _search_result(hit) -> SearchResult:
 @_records_call
 def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_document: bool = False,
                  repos: list[str] | None = None, source_types: list[str] | None = None,
-                 mode: Literal["vector", "keyword", "hybrid"] = "vector") -> SearchOutput:
+                 mode: Literal["vector", "keyword", "hybrid"] | None = None) -> SearchOutput:
     """Searches everything indexed from the user's registered repositories,
     all of them at once: code, docs, commits, tags, branches, pull requests,
     releases and issues. Returns the matching chunks as they are;
@@ -1259,9 +1263,9 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     not use it for an exact string or value, or a path you already know: read
     or grep those. One idea per query, as a short phrase.
 
-    `mode`: `vector` (default) ranks by meaning; `keyword` by exact words,
-    for an identifier, error code, file name or commit hash, returning only
-    chunks that hold one; `hybrid` fuses both. Scores compare within a mode.
+    `mode`: `hybrid` (default) ranks by meaning and exact words; `vector`
+    by meaning; `keyword` only by exact words (identifier, commit hash).
+    The output's `mode` says which ran; scores compare within one.
 
     `group_by_document=true` returns the best chunk of each document, so
     `limit` counts documents: use it to find WHERE something lives. Left
@@ -1295,6 +1299,9 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     # cap bounds what the agent gets rather than the internal fetch.
     limit = max(1, min(limit, SEARCH_LIMIT_MAX))
     started_at = time.time()
+    # None is the default (hybrid where it can run, vector where it cannot,
+    # never an error); an explicit mode runs as asked or is refused.
+    mode, mode_note = common.search_mode_for(query, mode)
     results = common.search(query, limit, group_by_document=group_by_document,
                             repos=repos, source_types=source_types, diverse=True, mode=mode)
     _log_search(query, limit, results, time.time() - started_at, repos=repos, source_types=source_types,
@@ -1308,6 +1315,8 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                           else f"{_printable(repo)} (the indexed commit is not in this history)" for repo, count in behind.items())
         note += (f" The index of these repositories is behind their HEAD: {named}; what changed since is not in "
                  f"these results (see `behind`, and griot_index_status).")
+    if mode_note:
+        note += " " + mode_note
     return {
         "note": note,
         "results": [
@@ -1315,6 +1324,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
             for r in results
         ],
         "behind": behind,
+        "mode": mode,
     }
 
 
@@ -2190,8 +2200,8 @@ def griot_history_report(question: str) -> str:
         "for [\"issue\"], one for [\"tag\", \"release\", \"branch\"]), so that a kind with "
         "many matches does not crowd the others out. "
         "When the question names something exactly (a function, an error code, a commit "
-        "hash), search that name with mode=\"keyword\" too: it matches the words "
-        "themselves, which a search by meaning can miss. "
+        "hash), search that name with mode=\"keyword\" too: it ranks by the words "
+        "alone, so a match the default's ranking by meaning pushes down comes first. "
         "Each kind knows something the others do not:\n"
         "- code — what the implementation does NOW;\n"
         "- commit — when it changed and what the author said about it;\n"
