@@ -19,9 +19,11 @@ permissions:
 # other runs (every push to main, CI on any tag) and restored by key, so one
 # poisoned entry restored into the build would ship to PyPI under this
 # project's name; a release builds from the lock and the index, every time.
-# GitHub enforces this with the token it hands each job, and it propagates to
-# the CI called below (whose own `enable-cache` then finds nothing to restore);
-# the build's setup-uv is also told, since it caches on its own otherwise.
+# GitHub's changelog (2026-09-10) says its cache service enforces this for every
+# job and that a called workflow cannot get more access than its caller, which
+# would cover the CI called below; no release has run with it yet. The build's
+# setup-uv is told as well, so the build stays off the cache even without it:
+# setup-uv caches on its own when `enable-cache` is left out.
 cache-mode: none
 
 # One run per tag at a time, and none cancelled for the next: a re-run, or a
@@ -40,7 +42,8 @@ jobs:
     # protected, but its owner can push past that, and a tag can point at a
     # commit that never went through a pull request.
     # `$/` is this repository at the commit that is running, resolved by
-    # GitHub; `./` would be read from the workspace.
+    # GitHub (changelog 2026-07-30; runner 2.336.0 or newer, github.com
+    # only); `./` would be read from the workspace.
     uses: $/.github/workflows/ci.yml
 
   build:

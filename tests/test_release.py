@@ -110,9 +110,10 @@ def test_no_job_of_the_release_reads_or_writes_a_cache():
     """A cache is written by other runs (any push to main, any CI run on
     another tag) and restored here into the job that builds what PyPI
     serves: one poisoned entry would be published under the maintainer's
-    name. GitHub enforces `cache-mode: none` with the token it hands each
-    job, and it propagates to the CI this workflow calls; the inputs are
-    off too, because setup-uv turns its cache on by itself on a hosted
+    name. `cache-mode: none` is GitHub's switch for every job, documented
+    to reach the CI this workflow calls too (not yet seen in a release
+    run); the inputs are off as well, so the build stays off the cache
+    without it, because setup-uv turns its cache on by itself on a hosted
     runner when `enable-cache` is left out."""
     assert RELEASE.get("cache-mode") == "none"
     for name, job in RELEASE["jobs"].items():
@@ -138,6 +139,19 @@ def test_one_release_of_a_tag_runs_at_a_time_and_none_is_cut_short():
     # wait for each other forever.
     ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
     assert concurrency["group"] != ci["concurrency"]["group"]
+
+
+def test_nothing_else_shares_the_group_of_the_ci_a_release_calls():
+    """The called CI keeps its own group, `ci-<ref>`, which cancels the run
+    in flight. On a tag that ref is the release's alone only while ci.yml
+    does not run on a tag push by itself: if it did, that run and the
+    release's own CI would cancel each other, and the release would stop
+    before it built anything."""
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    # PyYAML reads the bare key `on` as True.
+    push = (ci.get("on") or ci.get(True) or {}).get("push") or {}
+    assert "tags" not in push and "tags-ignore" not in push, push
+    assert push.get("branches") == ["main"], push
 
 
 def test_the_publishing_token_says_why_it_is_granted():
