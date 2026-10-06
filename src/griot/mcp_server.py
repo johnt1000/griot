@@ -1198,8 +1198,8 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                  mode: Literal["vector", "keyword", "hybrid"] = "vector") -> SearchOutput:
     """Searches everything indexed from the user's registered repositories,
     all of them at once: code, docs, commits, tags, branches, pull requests,
-    releases and issues. Returns the matching chunks as they are; making
-    sense of them is the caller's job.
+    releases and issues. Returns the matching chunks as they are;
+    interpreting them is the caller's job.
 
     Use it for how or why something was done, in this project or another. Do
     not use it for an exact string or value, or a path you already know: read
@@ -1214,12 +1214,12 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     off, one document fills at most three results.
 
     `repos` keeps the search to those repositories, by name (the `repo` of a
-    result, the `name` in griot_repos_list). `source_types` keeps it to those
+    result, a `name` in griot_repos_list). `source_types` keeps it to those
     kinds: `code` (docs included), `commit`, `tag`, `branch`, `merge_request`
     (pull requests too), `release`, `issue`. A repository with nothing
     indexed or an unknown kind is an error, not an empty result.
 
-    Each result carries `metadata`, what was stored with the source:
+    Each result's `metadata` is what was stored with its source:
     `file_path` and `chunk_index` for code; `commit_hash`, `author` and
     `date` for a commit; `tag_name`, `branch_name`, `mr_iid` or `issue_iid`
     for the rest, with their dates. A file or commit indexed in more than
