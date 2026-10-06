@@ -100,6 +100,13 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
                       "; ".join(f"griot config set {b['name']} <value>" for b in broken) + "   (or `griot config unset <name>`)")
     if error is not None:
         return _check("settings", FAIL, f"the configuration did not load: {error}", None)
+    if not env_path.exists() and env_path.is_symlink():
+        # Every command writes the template through a link whose target can
+        # be created, so one still dangling here leads nowhere griot can
+        # write: "written on first use" would be false.
+        return _check("settings", WARN, f"{env_path} is a symbolic link to {os.path.realpath(env_path)}, which does "
+                                        f"not exist and cannot be created: defaults in force, and writing a setting fails",
+                      f"point the link at a file, or remove it: rm {env_path}")
     if not env_path.exists():
         return _check("settings", OK, f"{env_path} does not exist yet: defaults in force (it is written on first use)")
     mode = stat.S_IMODE(env_path.stat().st_mode)
