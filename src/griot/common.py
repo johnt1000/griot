@@ -2876,6 +2876,133 @@ def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Check
     return record
 
 
+# --- Progress of an indexing run, for the host that started it ---------------
+#
+# griot_index_repo runs `griot index all` in a subprocess (the server's stdout
+# is the JSON-RPC transport, so the run cannot print there) and returns at
+# once. The run records where it is in a small JSON file named by this
+# variable, and the host reads it back (jobs.index_job_report()). Internal,
+# like GRIOT_DRY_RUN_REPORT: set by jobs.start_index_job for its child, never
+# a setting, hence not in the .env template. Read at each call, not at import:
+# the variable belongs to the run, not to the module.
+INDEX_PROGRESS_ENV = "GRIOT_INDEX_PROGRESS"
+
+# Within a source, at most one write per interval. A rerun over an unchanged
+# repository skips batch after batch in milliseconds, and a write per batch
+# would then be most of the work; a person or an agent polling needs nothing
+# finer. The source's first batch (its total becomes known) and its last are
+# always written.
+_PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
+_progress_clock = time.monotonic  # a function of its own so that a test can stop time
+
+# Every state a source can be in, in the order a source goes through them
+# ("failed" instead of "done" when it stops the run).
+INDEX_PROGRESS_STATES = ("pending", "reading", "embedding", "done", "failed")
+_PROGRESS_COUNT_FIELDS = ("chunks_total", "chunks_done", "indexed", "skipped", "failed")
+# This process's record and when it was last written. Only ever touched by
+# the run itself, which is single-threaded.
+_progress: dict | None = None
+_progress_written_at = 0.0
+
+
+def _write_progress() -> None:
+    """Writes the record where the host asked, atomically (a reader never
+    sees half a file) and private (it names repositories). Never fails the
+    run: progress is a courtesy to whoever watches, and losing it costs a
+    stale number, while failing here would lose the run."""
+    global _progress_written_at
+    path = os.getenv(INDEX_PROGRESS_ENV)
+    if not path or _progress is None:
+        return
+    _progress["updated_at"] = time.time()
+    try:
+        secure_write_text_atomic(Path(path), json.dumps(_progress))
+    except OSError as e:
+        log_and_print(f"Warning: could not record indexing progress to {path}: {e}", level="warning", echo=False)
+    _progress_written_at = _progress_clock()
+
+
+def progress_begin(sources: list[str]) -> None:
+    """Starts this run's record: every source it will run, all pending."""
+    global _progress
+    if not os.getenv(INDEX_PROGRESS_ENV):
+        return
+    _progress = {"current_source": None,
+                 "sources": [{"source": source, "state": "pending", **dict.fromkeys(_PROGRESS_COUNT_FIELDS)}
+                             for source in sources]}
+    _write_progress()
+
+
+def _current_progress_entry() -> dict | None:
+    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+        return None
+    for entry in _progress["sources"]:
+        if entry["source"] == _progress["current_source"]:
+            return entry
+    return None
+
+
+def progress_source(source: str, state: str) -> None:
+    """A source changed state: "reading" when it starts (the repository is
+    being listed and read, so how many chunks it has is not known yet),
+    "done" or "failed" when it ends. The source becomes the current one."""
+    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+        return
+    _progress["current_source"] = source
+    entry = _current_progress_entry()
+    if entry is None:
+        return  # a source the run did not announce: nothing to update
+    entry["state"] = state
+    _write_progress()
+
+
+def _progress_chunks(*, total: int, done: int, indexed: int, skipped: int, failed: int, final: bool = False) -> None:
+    """From index_documents(), the one place every source passes through: the
+    chunks of the current source, as the batches go. `final` (and the first
+    batch, whose total is new) is written whatever the interval."""
+    entry = _current_progress_entry()
+    if entry is None:
+        return
+    first = entry["chunks_total"] != total or entry["state"] != "embedding"
+    entry.update(state="embedding", chunks_total=total, chunks_done=done,
+                 indexed=indexed, skipped=skipped, failed=failed)
+    if final or first or _progress_clock() - _progress_written_at >= _PROGRESS_WRITE_INTERVAL_SECONDS:
+        _write_progress()
+
+
+def _count_or_none(value) -> int | None:
+    # bool is an int to Python, and never a count.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def read_index_progress(path) -> dict | None:
+    """The record a run wrote at `path`, or None when there is none to read:
+    no file, an empty one (the run has not written yet), or anything that is
+    not a whole record of ours. Read while the run may be anywhere, so it
+    never raises; a count that is not a count reads as unknown (None)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
+        return None
+    current = data.get("current_source")
+    if current is not None and not isinstance(current, str):
+        return None
+    sources = []
+    for entry in data["sources"]:
+        # A state outside the known ones is refused, not passed on: the
+        # readers (griot_index_wait's arithmetic, an agent) decide on it.
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), str) \
+                or entry.get("state") not in INDEX_PROGRESS_STATES:
+            return None
+        sources.append({"source": entry["source"], "state": entry["state"],
+                        **{field: _count_or_none(entry.get(field)) for field in _PROGRESS_COUNT_FIELDS}})
+    updated_at = data.get("updated_at")
+    return {"current_source": current, "sources": sources,
+            "updated_at": updated_at if isinstance(updated_at, (int, float)) and not isinstance(updated_at, bool) else None}
+
+
 # What the last check of each collection found, in this process only: a
 # directory -> (its fingerprint, its subdirectories). Not persisted on
 # purpose: a file another process could edit would be one more thing to
@@ -3052,65 +3179,74 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
 
         for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
             batch = documents[i:i + INDEX_BATCH_SIZE]
-            to_embed = _split_pending(batch, client)
-            skipped += len(batch) - len(to_embed)
             try:
-                refreshed += _write_stale_details(batch, client)
-            except Exception as e:  # noqa: BLE001 - the text is intact; the details are tried again next run
-                log_and_print(f"Warning: could not update the stored details of unchanged points: {e}", level="warning")
-            if not to_embed:
-                continue
+                to_embed = _split_pending(batch, client)
+                skipped += len(batch) - len(to_embed)
+                try:
+                    refreshed += _write_stale_details(batch, client)
+                except Exception as e:  # noqa: BLE001 - the text is intact; the details are tried again next run
+                    log_and_print(f"Warning: could not update the stored details of unchanged points: {e}", level="warning")
+                if not to_embed:
+                    continue
 
-            texts = [doc["content"] for doc in to_embed]
-            vectors = embed_texts(texts)
+                texts = [doc["content"] for doc in to_embed]
+                vectors = embed_texts(texts)
 
-            points = [
-                qe.Point(
-                    id=doc["_point_id"],
-                    vector={"dense": vector},
-                    payload={**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
-                )
-                for doc, vector in zip(to_embed, vectors)
-                if vector is not None
-            ]
-            failed += len(to_embed) - len(points)
-            _record_failures(
-                [doc for doc, vector in zip(to_embed, vectors) if vector is None],
-                "embedding returned no vector",
-            )
-
-            if not points:
-                consecutive_failed_batches += 1
-                if consecutive_failed_batches >= MAX_CONSECUTIVE_FAILED_BATCHES:
-                    raise RuntimeError(
-                        f"{consecutive_failed_batches} consecutive batches failed completely — this isn't "
-                        f"bad luck, something is systemically broken (Gemini API down, "
-                        f"invalid credential, etc). Stopping instead of continuing to produce only failures. "
-                        f"See logs/griot.log for the reason behind each failure."
+                points = [
+                    qe.Point(
+                        id=doc["_point_id"],
+                        vector={"dense": vector},
+                        payload={**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
                     )
-                continue
-            consecutive_failed_batches = 0
+                    for doc, vector in zip(to_embed, vectors)
+                    if vector is not None
+                ]
+                failed += len(to_embed) - len(points)
+                _record_failures(
+                    [doc for doc, vector in zip(to_embed, vectors) if vector is None],
+                    "embedding returned no vector",
+                )
 
-            try:
-                client.update(qe.UpdateOperation.upsert_points(points))
-                # flush() on every batch (not just at the end, unlike the
-                # migration prototype) — index_documents() runs over large
-                # corpora (the initial load takes ~5h); losing an
-                # entire batch to a mid-run crash is worse here than the
-                # small cost of an fsync per batch. flush() is about
-                # durability on disk (WAL -> segments), not about read
-                # visibility (retrieve()/query() already see points just
-                # upserted in the same process without a flush).
-                client.flush()
-                indexed += len(points)
-            except Exception as e:
-                log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
-                failed += len(points)
-                # A whole batch lost to one write error: the reason is the
-                # same for all of them, which is exactly why the itemized
-                # list is capped while `failed` stays exact.
-                _record_failures([doc for doc, vector in zip(to_embed, vectors) if vector is not None],
-                                 f"write to the vector store failed: {e}")
+                if not points:
+                    consecutive_failed_batches += 1
+                    if consecutive_failed_batches >= MAX_CONSECUTIVE_FAILED_BATCHES:
+                        raise RuntimeError(
+                            f"{consecutive_failed_batches} consecutive batches failed completely — this isn't "
+                            f"bad luck, something is systemically broken (Gemini API down, "
+                            f"invalid credential, etc). Stopping instead of continuing to produce only failures. "
+                            f"See logs/griot.log for the reason behind each failure."
+                        )
+                    continue
+                consecutive_failed_batches = 0
+
+                try:
+                    client.update(qe.UpdateOperation.upsert_points(points))
+                    # flush() on every batch (not just at the end, unlike the
+                    # migration prototype) — index_documents() runs over large
+                    # corpora (the initial load takes ~5h); losing an
+                    # entire batch to a mid-run crash is worse here than the
+                    # small cost of an fsync per batch. flush() is about
+                    # durability on disk (WAL -> segments), not about read
+                    # visibility (retrieve()/query() already see points just
+                    # upserted in the same process without a flush).
+                    client.flush()
+                    indexed += len(points)
+                except Exception as e:
+                    log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
+                    failed += len(points)
+                    # A whole batch lost to one write error: the reason is the
+                    # same for all of them, which is exactly why the itemized
+                    # list is capped while `failed` stays exact.
+                    _record_failures([doc for doc, vector in zip(to_embed, vectors) if vector is not None],
+                                     f"write to the vector store failed: {e}")
+            finally:
+                # Here, once for every source, rather than in each indexer:
+                # this is the loop they all share. In a finally so that a
+                # batch with nothing to embed (`continue`), and the batch that
+                # trips the breaker, are counted too.
+                _progress_chunks(total=len(documents), done=min(i + INDEX_BATCH_SIZE, len(documents)),
+                                 indexed=indexed, skipped=skipped, failed=failed,
+                                 final=i + INDEX_BATCH_SIZE >= len(documents))
 
         # [review] shard.optimize() was never called — without this, the
         # HNSW index is never (re)built over the new segments and searches

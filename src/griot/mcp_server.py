@@ -1023,6 +1023,72 @@ class _IndexStatusMayLack(_WhyNoPointCount, total=False):
     repositories: list[RepositoryFreshness] | None
 
 
+class IndexSourceProgress(TypedDict):
+    source: str
+    # "pending", "reading" (listing and reading the repository: how many
+    # chunks it has is not known yet), "embedding", "done" or "failed".
+    state: str
+    # Null until the source reaches embedding (or when unknown).
+    chunks_total: int | None
+    chunks_done: int | None
+    indexed: int | None
+    skipped: int | None
+    failed: int | None
+
+
+class IndexProgress(TypedDict):
+    current_source: str | None
+    sources: list[IndexSourceProgress]
+    # How long ago the run last wrote it: a number that keeps growing while
+    # nothing else moves is a run that is stuck, not slow.
+    seconds_since_update: float | None
+
+
+class IndexJob(TypedDict):
+    pid: int
+    path: str | None
+    sources: list[str]
+    elapsed_seconds: float
+    # Null until the run first writes it (it starts within a second or so).
+    progress: IndexProgress | None
+
+
+class FinishedIndexJob(TypedDict):
+    pid: int
+    path: str | None
+    sources: list[str]
+    # 0 is success; negative is the signal that ended it.
+    exit_code: int | None
+    # Since this server noticed the end, which is when it was next asked.
+    finished_seconds_ago: float
+    progress: IndexProgress | None
+
+
+def _progress_out(progress: dict | None, now: float) -> IndexProgress | None:
+    if progress is None:
+        return None
+    updated_at = progress["updated_at"]
+    return {"current_source": progress["current_source"], "sources": progress["sources"],
+            "seconds_since_update": round(max(0.0, now - updated_at), 1) if updated_at is not None else None}
+
+
+def _job_out(running: dict | None, now: float) -> IndexJob | None:
+    if running is None:
+        return None
+    return {"pid": running["pid"], "path": running["path"], "sources": running["sources"],
+            "elapsed_seconds": round(now - running["started_at"], 1),
+            "progress": _progress_out(running["progress"], now)}
+
+
+def _finished_out(finished: dict | None, now: float) -> FinishedIndexJob | None:
+    if finished is None:
+        return None
+    return {"pid": finished["pid"], "path": finished["path"], "sources": finished["sources"],
+            "exit_code": finished["exit_code"],
+            "finished_seconds_ago": round(max(0.0, now - finished["finished_at"]), 1),
+            "progress": _progress_out(finished["progress"], now)}
+
+
 class IndexStatusOutput(_IndexStatusMayLack):
     # [review finding] Nullable, because common.get_index_status() genuinely
     # returns None when another process holds the collection open — routine
@@ -1039,6 +1105,10 @@ class IndexStatusOutput(_IndexStatusMayLack):
     path: str | None
     last_indexed: LastIndexedInfo | None
     spend_ceiling_exceeded: bool
+    # The run griot_index_repo started from THIS server, while it runs, with
+    # how far it got. Null when there is none (a run from a terminal shows
+    # only in running/pid/path).
+    job: IndexJob | None
 
 
 class QualityCheckFailure(TypedDict):
@@ -1873,7 +1943,11 @@ def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
     common.py).
 
     `collection` is the collection of one embedding profile, as
-    griot_profiles_list names them; leave it out for the active one."""
+    griot_profiles_list names them; leave it out for the active one.
+
+    `job` is the run griot_index_repo started from this server, with the
+    progress its run records (per source: its state, chunks done of the
+    total once known, and the counts); null when none is running."""
     return _index_status(collection)
 
 
@@ -1885,7 +1959,17 @@ def _index_status(collection: str | None) -> IndexStatusOutput:
     known = [common.collection_name_for(profile) for profile in common.EMBED_PROFILES]
     if collection is not None and collection not in known:
         raise ValueError(f"Unknown collection {_shown(collection)}. The collections are: {', '.join(known)}.")
-    return common.get_index_status(collection)
+    status = common.get_index_status(collection)
+    running = jobs.index_job_report()["running"]
+    status["job"] = _job_out(running, time.time())
+    if running is not None and not status["running"]:
+        # The lock is taken per source, around the embedding only: while the
+        # run lists files or reads the git log nothing holds it, and this
+        # said "not running" about a run that was very much alive (see
+        # jobs.running_index_job). A lock holder, when there is one, still
+        # wins: it is who is writing.
+        status.update(running=True, pid=running["pid"], path=running["path"])
+    return status
 
 
 # Resources: the same read-only data as three tools, addressed by URI, for
@@ -2463,6 +2547,47 @@ def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
     return _resolve_ask(ctx, _index_repo_question(path), confirm=confirm, human_required=False)
 
 
+# griot_index_wait's bounds. The default stays under the tool timeout of the
+# stricter clients; the ceiling keeps one call from holding an agent for long
+# whatever it asks (the value is ephemeral, so it is clamped, not refused).
+_INDEX_WAIT_DEFAULT_SECONDS = 30
+_INDEX_WAIT_MAX_SECONDS = 300
+# How often the wait reads the progress file: the run writes it about once a
+# second at most (common._PROGRESS_WRITE_INTERVAL_SECONDS).
+_INDEX_WAIT_POLL_SECONDS = 1.0
+
+
+class IndexWaitOutput(TypedDict):
+    running: bool
+    # The run, when the time ran out before it ended.
+    job: IndexJob | None
+    # How the most recent run ended, when none is running any more.
+    finished: FinishedIndexJob | None
+    waited_seconds: float
+    # What was waited for at most, after the bounds.
+    timeout_seconds: float
+
+
+def _progress_numbers(sources: list[str], progress: dict | None) -> tuple[float, int, str]:
+    """A run's progress as one number out of its number of sources: those
+    done, plus the share of chunks embedded in the current one. A source's
+    chunk total is unknown while it reads the repository, so that share is
+    0 until then. Out of sources rather than out of chunks because the total
+    number of chunks is known only one source at a time."""
+    total = len(sources)
+    if progress is None:
+        return 0.0, total, "starting"
+    done = sum(1 for entry in progress["sources"] if entry["state"] == "done")
+    current = next((entry for entry in progress["sources"] if entry["source"] == progress["current_source"]), None)
+    if current is None or current["state"] in ("done", "failed"):
+        return float(done), total, f"{done} of {total} sources done"
+    share, message = 0.0, f"{current['source']}: {current['state']}"
+    if current["chunks_total"] and current["chunks_done"] is not None:
+        share = min(current["chunks_done"] / current["chunks_total"], 1.0)
+        message += f" {current['chunks_done']}/{current['chunks_total']} chunks"
+    return done + share, total, message
+
+
 if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     @_records_call
@@ -2479,8 +2604,9 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         for it explicitly via 'sources' if you want it). The path must be
         registered in repos.json (`griot repos add`) or under a prefix of
         GRIOT_MCP_INDEX_ROOTS. Does NOT wait for completion —
-        returns as soon as the process is launched. Use griot_index_status
-        to track progress afterward. Off by default (GRIOT_MCP_ENABLE_INDEX)
+        returns as soon as the process is launched. Follow it with
+        griot_index_wait (blocks up to a timeout, with progress
+        notifications) or griot_index_status (its `job`). Off by default (GRIOT_MCP_ENABLE_INDEX)
         because it can spend money (paid embedding profile) without human
         confirmation along the way.
 
@@ -2538,6 +2664,59 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
                     "reason": "The run was confirmed and not started: " + _BUSY_WITH_ANOTHER_CALL}
         # No waiting inside the event loop: the wait was the line above.
         return jobs.start_index_job(path, sources, release=functools.partial(_release_for_a_subprocess, patience=0))
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @_records_call
+    async def griot_index_wait(timeout_seconds: int = _INDEX_WAIT_DEFAULT_SECONDS,
+                               ctx: Context = None) -> IndexWaitOutput:
+        """Waits for the indexing run griot_index_repo started, up to
+        `timeout_seconds` (at most 300; 0 answers at once), and returns how it
+        ended or, when the time is up, where it is. While it waits it sends
+        progress notifications (sources done, plus the share of chunks of the
+        current one, out of the number of sources), to a client that asked
+        for them; a client that did not still gets the answer. Call it again
+        while `running` is true. Reads only: it changes nothing and spends
+        nothing.
+
+        `finished` is the most recent run that ended: its exit code (0 is
+        success) and the progress it last recorded, where a failed source
+        shows as "failed". The run's full output is in griot_index.log in
+        griot's log directory.
+
+        [design] Registered with griot_index_repo, under the same setting:
+        without it no run is ever started from here, and the tool would only
+        ever answer "nothing running". Read-only, so no confirmation (see
+        docs/mcp-capability-coverage.md, the management surface). Polls the
+        file the run writes rather than receiving anything from it: the run
+        is a subprocess (this server's stdout is the protocol), and a file is
+        what it can leave behind without a channel back. Bounded, because a
+        client gives up on a tool call after its own timeout and an agent
+        should get its turn back in any case."""
+        timeout = min(max(timeout_seconds, 0), _INDEX_WAIT_MAX_SECONDS)
+        started = time.monotonic()
+        deadline = started + timeout
+        sent = -1.0  # the protocol wants each notification's progress above the last
+        while True:
+            report = jobs.index_job_report()
+            running = report["running"]
+            if running is not None:
+                progress, total, message = _progress_numbers(running["sources"], running["progress"])
+            elif report["finished"] is not None and report["finished"]["exit_code"] == 0:
+                total = len(report["finished"]["sources"])
+                progress, message = float(total), "done"
+            else:
+                progress = None
+            if progress is not None and progress > sent and ctx is not None:
+                await ctx.report_progress(progress, total, message)
+                sent = progress
+            remaining = deadline - time.monotonic()
+            if running is None or remaining <= 0:
+                break
+            await anyio.sleep(min(_INDEX_WAIT_POLL_SECONDS, remaining))
+        now = time.time()
+        return {"running": running is not None, "job": _job_out(running, now),
+                "finished": _finished_out(report["finished"], now) if running is None else None,
+                "waited_seconds": round(time.monotonic() - started, 1), "timeout_seconds": timeout}
 
 
 def _keep_stdout_for_the_protocol() -> None:

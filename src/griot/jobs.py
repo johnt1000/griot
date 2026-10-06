@@ -142,7 +142,10 @@ def child_env(boot_env: dict, boot_file: dict) -> dict:
 
 
 _registry_lock = threading.Lock()
-# pid -> {"path": str | None, "sources": list[str], "started_at": float, "proc": Popen}
+# pid -> {"path": str | None, "sources": list[str], "started_at": float, "proc": Popen,
+#         "progress_path": str, "finished": None | {"finished_at", "exit_code", "progress"}}
+# A job stays here after it ends, as the most recent finished one, until the
+# next one ends: an agent that waited on it asks how it ended after the fact.
 _registry: dict[int, dict] = {}
 
 def running_index_job() -> dict | None:
@@ -162,16 +165,51 @@ def running_index_job() -> dict | None:
     at most one, since start_index_job() refuses to spawn a second job
     while one is registered) or None."""
     with _registry_lock:
-        dead_pids = []
         alive = None
         for pid, info in _registry.items():
+            if info["finished"] is not None:
+                continue
             if info["proc"].poll() is None:
                 alive = {"pid": pid, "path": info["path"], "sources": info["sources"], "started_at": info["started_at"]}
             else:
-                dead_pids.append(pid)
-        for pid in dead_pids:
+                _finish(info)
+        # Only the most recent finished job is worth keeping: the one an
+        # agent may still ask about.
+        finished = [pid for pid, info in _registry.items() if info["finished"] is not None]
+        for pid in sorted(finished, key=lambda pid: _registry[pid]["finished"]["finished_at"])[:-1]:
             del _registry[pid]
         return alive
+
+
+def _finish(info: dict) -> None:
+    """Records how a job that has just been found dead ended: its exit code
+    and the last progress its run wrote, read now because its file is removed
+    now (nothing else would ever reclaim it). `finished_at` is when the end
+    was noticed, which is when this host asked, not when the process exited.
+    Called with _registry_lock held."""
+    info["finished"] = {"finished_at": time.time(), "exit_code": info["proc"].returncode,
+                        "progress": common.read_index_progress(info["progress_path"])}
+    try:
+        os.unlink(info["progress_path"])
+    except OSError:
+        pass
+
+
+def index_job_report() -> dict:
+    """The job this host started, for an agent following it: `running` (its
+    pid, path, sources, start time and the progress its run last recorded,
+    or None) and `finished` (the most recent job that ended: the same, plus
+    its exit code and when its end was noticed, or None)."""
+    running = running_index_job()  # also notices a job that just ended
+    with _registry_lock:
+        if running is not None:
+            running = {**running, "progress": common.read_index_progress(_registry[running["pid"]]["progress_path"])}
+        finished = None
+        for pid, info in _registry.items():
+            if info["finished"] is not None:
+                finished = {"pid": pid, "path": info["path"], "sources": info["sources"],
+                            "started_at": info["started_at"], **info["finished"]}
+    return {"running": running, "finished": finished}
 
 
 def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str | None:
@@ -263,8 +301,8 @@ def start_index_job(
     """Triggers indexing as a detached subprocess — code, commits, tags
     and branches by default. Does NOT wait for completion; returns as
     soon as the process is launched (or as soon as it's clear the launch
-    failed). Use running_index_job()/common.index_lock_status() to track
-    progress afterward.
+    failed). Use index_job_report() (how far the run got, as it records
+    it) and common.index_lock_status() to track it afterward.
 
     path: a specific repo (validated against index_path_allowed()) — or
     None, meaning "index every repo in repos.json" (`griot index all`
@@ -275,7 +313,8 @@ def start_index_job(
     env: the child's environment (see child_env()) — None means inherit
     the host's os.environ as-is (fine for the MCP server, whose own
     os.environ. is never stale relative to itself the way a long-lived
-    UI's boot snapshot can be)."""
+    UI's boot snapshot can be). Either way the child also gets
+    GRIOT_INDEX_PROGRESS, the file its progress goes to."""
     sources = sources or list(DEFAULT_INDEX_SOURCES)
 
     refusal = index_job_refusal(path, allow_env_roots=allow_env_roots)
@@ -319,14 +358,28 @@ def start_index_job(
             argv += ["--path", str(repo_path)]
     argv += ["--sources", ",".join(sources)]
 
+    # Where the run records its progress (common.progress_begin() and what
+    # follows): a file of its own per job, so that two servers' jobs never
+    # share one, created 0600 by mkstemp because it names the repository. In
+    # the temporary directory, like the preview's report: a host that dies
+    # mid-run leaves it where the system reclaims it, not in griot's data.
+    progress_fd, progress_path = tempfile.mkstemp(prefix="griot-index-progress-", suffix=".json")
+    os.close(progress_fd)
+    env = {**(env if env is not None else os.environ), common.INDEX_PROGRESS_ENV: progress_path}
+
     # start_new_session=True: survives even if the caller (an MCP tool
     # call, an HTTP request) is cancelled/disconnects. explicit stdout=/
     # stderr=: without them the subprocess would inherit the host's FDs —
     # for the MCP server, stdout IS the JSON-RPC transport.
-    with os.fdopen(fd, "a") as log_fh:
-        proc = subprocess.Popen(argv, stdout=log_fh, stderr=log_fh, start_new_session=True, env=env)
+    try:
+        with os.fdopen(fd, "a") as log_fh:
+            proc = subprocess.Popen(argv, stdout=log_fh, stderr=log_fh, start_new_session=True, env=env)
+    except BaseException:
+        os.unlink(progress_path)
+        raise
     time.sleep(_LIVENESS_CHECK_SECONDS)
     if proc.poll() is not None:
+        os.unlink(progress_path)
         return {"started": False, "reason": f"process died immediately (exit code {proc.returncode}) — see {log_path}.", "path": None, "pid": None, "sources": None}
 
     with _registry_lock:
@@ -335,6 +388,8 @@ def start_index_job(
             "sources": sources,
             "started_at": time.time(),
             "proc": proc,
+            "progress_path": progress_path,
+            "finished": None,
         }
 
     return {"started": True, "path": str(repo_path) if repo_path is not None else None, "pid": proc.pid, "sources": sources, "reason": None}

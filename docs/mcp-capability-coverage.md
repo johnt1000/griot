@@ -6,8 +6,8 @@ adopting each unused capability would concretely mean here.
 Kept as a reference to return to — not a plan. Nothing below is scheduled;
 see the reasoning at the end for why.
 
-**Last verified**: 2026-08-22 (updated the same day, after the management surface landed), against the `mcp` SDK installed in this
-repo's venv; the resources rows on 2026-10-06.
+**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06), against the `mcp` SDK installed in this
+repo's venv.
 
 ## How to re-verify
 
@@ -37,18 +37,18 @@ async def m():
 anyio.run(m)"
 ```
 
-(`griot_index_repo` is absent from that count unless `GRIOT_MCP_ENABLE_INDEX`
-is set — it is registered conditionally.)
+(`griot_index_repo` and `griot_index_wait` are absent from that count unless
+`GRIOT_MCP_ENABLE_INDEX` is set — they are registered conditionally.)
 
 ## Coverage
 
 | Capability | In SDK | griot uses | Verdict |
 |---|---|---|---|
-| Tools | yes | **15** (16 with `GRIOT_MCP_ENABLE_INDEX`) | Covered |
+| Tools | yes | **19** (21 with `GRIOT_MCP_ENABLE_INDEX`) | Covered |
 | Prompts | yes | **4** | Covered |
 | Resources | yes | **yes** (see `list_resources()`) | Covered: duplicates of read-only tools |
 | Resource templates | yes | no | Follows from resources |
-| Progress (`ctx.report_progress`) | yes | no | Gap worth revisiting |
+| Progress (`ctx.report_progress`) | yes | **yes** (`griot_index_wait`) | Covered |
 | Client-side logging (`ctx.log`) | yes | no | Minor |
 | Elicitation — form (via `Resolve`/`Elicit`) | yes | **yes** (`_confirmed`) | Covered |
 | Elicitation — URL (`ctx.elicit_url`) | yes | no | Registered; not the right fit today |
@@ -174,6 +174,60 @@ Tests for this live in `tests/test_confirmation.py` and drive a real MCP
 client on both protocol revisions, since the resolver path is invisible to
 unit tests that call the tool function directly.
 
+### Progress — how an indexing run is followed
+
+`griot_index_repo` starts an indexing run that takes minutes and returns at
+once with `{started: true}`. The run is a **subprocess**, because the MCP
+server's stdout *is* the JSON-RPC transport and any stray `print()` from the
+indexer would corrupt the protocol (see `mcp_server.py`'s module
+docstring), so nothing it prints can reach the agent, and the tool call
+that started it has already returned.
+
+What carries progress instead is a file. `jobs.start_index_job` creates
+one per job (private, in the temporary directory) and names it to the child
+in `GRIOT_INDEX_PROGRESS`; the child records its sources (`pending`,
+`reading`, `embedding`, `done`, `failed`), and for the current one the
+chunks done of the total once known and the indexed/skipped/failed counts.
+The record is written in two places only: the `griot index all` loop in
+`cli.py` (a source starts and ends) and `common.index_documents()` (the
+batch loop every indexer shares, at most once a second, plus the first and
+last batch), always atomically. A run started from a terminal has no
+variable and writes nothing.
+
+Two readers:
+
+- `griot_index_status` gains `job`: the run this server started, with that
+  progress, while it runs. It also reports `running: true` for it while no
+  lock is held: the lock covers the embedding of each source, not the
+  listing and reading before it, and the status used to say "not running"
+  about a run in that phase.
+- `griot_index_wait(timeout_seconds)` blocks for at most 300 seconds
+  (30 by default; 0 answers at once), reading the file about once a second
+  and sending `notifications/progress` to a client that passed a progress
+  token: sources done plus the share of chunks of the current one, out of
+  the number of sources (the total number of chunks is known only one
+  source at a time). It returns how the run ended (exit code, last
+  progress) or, when the time is up, where it is. A client that asked for
+  no progress gets the same answer without the notifications. Verified
+  through the SDK's in-memory client on both protocol revisions; the file
+  itself was checked against a real `griot index all` child process (with
+  the embedding stubbed), read while it ran: `reading`, then `embedding`
+  128/400, 400/400, then `done` and the next source.
+
+The wait is a separate tool rather than a `wait` argument of
+`griot_index_repo`: that tool asks a person to confirm, and folding a
+minutes-long block into the confirmed call would hold the question and the
+run in one call that a client may time out. Read-only, so it needs no
+confirmation (see the management surface below); it is registered with
+`griot_index_repo`, under the same setting, because without it no run is
+ever started from the server and it could only answer "nothing running".
+
+What it does not do: follow a run started from a terminal (its progress
+has nowhere to go; the lock in `griot_index_status` is all there is), or
+survive a restart of the server (the job registry is the server's memory).
+
+## Gaps worth revisiting
+
 ### Resources
 
 A tool means "do something"; a resource means "read this", addressed by URI
@@ -210,20 +264,6 @@ handled:
   in flight, so the idle reaper does not close the collection under it.
 
 ## Gaps worth revisiting
-
-### Progress
-
-`griot_index_repo` starts an indexing run that takes minutes and returns
-immediately with `{started: true}`. The agent is then blind: its only
-option is to poll `griot_index_status`. `ctx.report_progress()` exists for
-exactly this.
-
-The obstacle is real and architectural, not cosmetic: indexing runs in a
-**subprocess**, because the MCP server's stdout *is* the JSON-RPC transport
-and any stray `print()` from the indexer would corrupt the protocol (see
-`mcp_server.py`'s module docstring). Progress would have to travel back
-from the subprocess to a tool call that has already returned. That is a
-design change, not a decorator.
 
 ### Elicitation (URL) — the sanctioned channel for secrets
 
@@ -293,7 +333,8 @@ out on purpose, because every one written here went stale.
 | Operation | CLI | MCP | Confirmation |
 |---|---|---|---|
 | Vector search | `search` | `griot_search` (`group_by_document`, `repos`, `source_types`; `--group-by-document`, `--repo`, `--source-type` on the CLI) | — |
-| Index status | *(part of `stats`)* | `griot_index_status` | — |
+| Index status | *(part of `stats`)* | `griot_index_status` (with the progress of a run this server started) | — |
+| Follow an index run | *(the run prints its own progress)* | `griot_index_wait` (with `griot_index_repo`; progress notifications) | — |
 | Today's spend | *(part of `stats`)* | `griot_spend_status` | — |
 | Usage report | `stats` | `griot_stats`, prompt `stats` | — |
 | Guided investigation | `ask` *(paid synthesis)* | prompt `history` *(synthesis in the caller's own LLM)* | — |
@@ -355,7 +396,8 @@ matter enough to state:
 `griot_index_status` and `griot_spend_status` are slices of `griot stats`,
 split out because an agent usually wants one of them. `griot_auth_guidance`
 has no CLI counterpart at all — it exists to say "not through here" and
-name the command that does work.
+name the command that does work. Neither has `griot_index_wait`: a run
+started at a terminal shows its progress in that terminal.
 
 The gap, then, is not coverage. It is a set of deliberate choices, each
 listed above, and two read-only views that are planned.
@@ -407,7 +449,7 @@ host's permission system's job.
 
 ## Why none of this is scheduled
 
-The remaining gaps — progress, `elicit_url` — are improvements
+The remaining gap — `elicit_url` — is an improvement
 to the *shape* of functionality that has not yet met a real agent. Most
 of the tools were added on 2026-08-21 and 2026-08-22 and have
 never been called outside tests.

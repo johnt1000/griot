@@ -159,23 +159,36 @@ def _cmd_index(args) -> int:
         print(f"Error: unknown source(s) in --sources: {', '.join(unknown)}. Options: {', '.join(INDEX_SOURCES)}", file=sys.stderr)
         return 2
 
+    from griot import common  # lazy, same as every other subcommand here
+
+    # Where the run is, for the host that started it (griot_index_repo): a
+    # no-op unless that host named a file for it. The sources are announced
+    # up front so that what is still to come shows as pending.
+    common.progress_begin(sources)
+
     # Stops at the FIRST error, saying which source failed — continuing to
     # index with a broken source would mask the problem, and the next run
     # would just re-pay the cost of discovering the error.
     for source in sources:
         print(f"=== griot index {source} ===")
+        common.progress_source(source, "reading")
         try:
             rc = _run_index_source(source, rest)
         except SystemExit as e:
             rc = e.code if isinstance(e.code, int) else 1
-        except Exception as e:
-            if _is_collection_busy(e):
-                raise  # main() explains it once, with who holds the collection
+        except BaseException as e:
+            # BaseException: Ctrl-C or a kill ends the run here too, and the
+            # record must not go on saying "reading".
+            common.progress_source(source, "failed")
+            if not isinstance(e, Exception) or _is_collection_busy(e):
+                raise  # main() explains a busy collection once, with who holds it
             print(f"Error: 'griot index {source}' failed: {e}", file=sys.stderr)
             return 1
         if rc != 0:
+            common.progress_source(source, "failed")
             print(f"Error: 'griot index {source}' failed (exit {rc}) — pipeline stopped.", file=sys.stderr)
             return rc
+        common.progress_source(source, "done")
     print("=== griot index all: all sources completed ===")
     return 0
 
