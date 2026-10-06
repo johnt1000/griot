@@ -38,6 +38,8 @@ OK, WARN, FAIL, SKIP = "ok", "warn", "FAIL", "skip"
 GIT = "git"
 # What the files and directories griot owns must be closed to.
 OTHERS = 0o077
+# How many of the entries open to others a report names (it counts them all).
+OPEN_ENTRIES_NAMED = 3
 
 
 def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict:
@@ -112,12 +114,42 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
+def _open_entries(data_dir: Path) -> list[str]:
+    """What under the data directory other users can read or enter. The
+    repair that closes the index's files is best-effort (a chmod that fails
+    twice is logged, not raised, so it never fails a search or an index
+    run): this is where what it left open shows up. Read only: lstat, so a
+    link is not followed out of the directory. The model cache is skipped:
+    the embedding library writes the downloaded weights with its own modes,
+    and they are public, not anything indexed."""
+    found = []
+    for root, dirs, files in os.walk(data_dir):
+        if Path(root) == data_dir:
+            dirs[:] = [d for d in dirs if d != "models"]
+        for name in dirs + files:
+            entry = os.path.join(root, name)
+            try:
+                st = os.lstat(entry)
+            except OSError:
+                continue  # gone while walking
+            if not stat.S_ISLNK(st.st_mode) and stat.S_IMODE(st.st_mode) & OTHERS:
+                found.append(entry)
+    return found
+
+
 def check_directories(common) -> dict:
     there = [d for d in (common.CONFIG_DIR, common.DATA_DIR) if d.is_dir()]
     open_ones = [str(d) for d in there if stat.S_IMODE(d.stat().st_mode) & OTHERS]
     if open_ones:
         return _check("directories", WARN, "readable by other users of this machine: " + ", ".join(open_ones),
                       "chmod 700 " + " ".join(open_ones))
+    inside = _open_entries(common.DATA_DIR) if common.DATA_DIR.is_dir() else []
+    if inside:
+        named = ", ".join(inside) + (", ..." if len(inside) > OPEN_ENTRIES_NAMED else "")
+        return _check("directories", WARN,
+                      f"{len(inside)} entr{'y' if len(inside) == 1 else 'ies'} in {common.DATA_DIR} readable by other "
+                      f"users (a permission repair that failed, or a copy that reset modes): {named}",
+                      f"chmod -R go-rwx {common.DATA_DIR}")
     missing = [str(d) for d in (common.CONFIG_DIR, common.DATA_DIR) if d not in there]
     said = []
     if there:

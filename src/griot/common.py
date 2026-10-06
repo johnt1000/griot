@@ -2678,7 +2678,31 @@ def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Check
     return record
 
 
-def _secure_collection_dir(collection: str) -> None:
+# What the last check of each collection found, in this process only: a
+# directory -> (its fingerprint, its subdirectories). Not persisted on
+# purpose: a file another process could edit would be one more thing to
+# trust, and every process pays one full check on its first open anyway
+# (a CLI run opens once; the long-lived MCP server, which reopens after
+# every idle release in `multi` mode, is the one that gains).
+_verified_trees: dict[str, dict] = {}
+# A file chmodded in place changes nothing its directory records, so no
+# fingerprint sees it. A full check bounds that: after every write (a
+# finished index or prune run) and at least this often on an open. The
+# threat the reopen check answers is a tool resetting modes while the
+# collection was released (a restore, a sync, rsync/tar without -p): those
+# recreate or rename files, which a directory records, or chmod the
+# directories too, whose mode is in the fingerprint. A tool that loosens
+# only files in place still has to get past the outer directories, which
+# every open closes again.
+_FULL_CHECK_INTERVAL = 600.0
+# A directory's times have a granularity (coarse clock ticks on Linux): one
+# changed again within the same tick after it was fingerprinted can keep
+# the same mtime. A directory that recent is checked again next time
+# rather than remembered (the "racy" rule git applies to its index).
+_RACY_WINDOW_NS = 2_000_000_000
+
+
+def _secure_collection_dir(collection: str, *, full: bool = False) -> None:
     """[security review] Qdrant Edge's own Rust engine writes its files
     (WAL, segments, payload_storage/*.dat, vector_storage/*) with the
     process umask, not through griot's secure_* helpers — a real gap a
@@ -2689,46 +2713,102 @@ def _secure_collection_dir(collection: str) -> None:
     without permission preservation (rsync/tar without -p), a naive cloud
     sync, or restoring from an archive could reset the outer directories
     and leave the actual RAG content world-readable with nothing else
-    standing in the way. Called once at the end of every index_documents()
-    run (the natural "a write just happened" point) — recursively repairs
-    whatever Edge wrote during this run. Best-effort per-file: one file's
-    chmod failing (e.g. a transient race with Edge's own I/O) must never
-    fail the whole indexing run over a permission repair. Also called on
-    every cold open in get_client() (including every multi-mode
-    idle-release reopen), so the walk always visits every entry (a new
-    file from another process must still be checked) but skips the chmod
-    syscall itself when the mode is already correct — a real cost on large
-    collections opened repeatedly."""
+    standing in the way. Called with full=True at the end of every write
+    (index_documents(), prune_orphans()), and on every cold open in
+    get_client() (including every multi-mode idle-release reopen).
+
+    On an open, a directory whose fingerprint (inode, mode, mtime, ctime)
+    is the one recorded when it was last checked is not listed again: a
+    file created, removed or renamed in it changes its mtime and ctime, a
+    chmod of it changes its mode and ctime. Only its known subdirectories
+    are visited. Everything else (a new or changed directory, a check
+    older than _FULL_CHECK_INTERVAL, full=True) has every entry checked.
+    The engine itself rewrites a couple of small directories on every
+    load; those are checked each time.
+
+    Best-effort per entry: a chmod that fails is retried once, then logged
+    (see _repair_mode) and its directory left unremembered, so the next
+    open tries again; it never fails the indexing run or search that
+    called it. `griot doctor` reports whatever is still open."""
     path = _collection_path(collection)
     if not path.exists():
         return
-    for root, _dirs, files in os.walk(path):
-        _repair_mode(root, 0o700)
-        for f in files:
-            _repair_mode(os.path.join(root, f), 0o600)
+    key = str(path)
+    now = time.monotonic()
+    known = _verified_trees.get(key)
+    if full or known is None or now - known["full_at"] >= _FULL_CHECK_INTERVAL:
+        known = {"full_at": now, "dirs": {}}
+    remembered: dict[str, tuple] = {}
+    pending = [key]
+    while pending:
+        directory = pending.pop()
+        checked_at = time.time_ns()
+        try:
+            st = os.stat(directory)
+        except OSError:
+            continue  # gone since its parent was listed: nothing left to close
+        fingerprint = (st.st_dev, st.st_ino, stat.S_IMODE(st.st_mode), st.st_mtime_ns, st.st_ctime_ns)
+        previous = known["dirs"].get(directory)
+        if previous is not None and previous[0] == fingerprint:
+            remembered[directory] = previous
+            pending.extend(previous[1])
+            continue
+        closed = _repair_mode(directory, 0o700)
+        subdirectories = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        is_directory = entry.is_dir()
+                    except OSError:
+                        is_directory = False
+                    if is_directory:
+                        # As os.walk did: a link to a directory is neither
+                        # followed nor chmodded (chmod would follow it).
+                        if not entry.is_symlink():
+                            subdirectories.append(entry.path)
+                    elif not _repair_mode(entry.path, 0o600):
+                        closed = False
+        except OSError:
+            closed = False
+        pending.extend(subdirectories)
+        recent = max(st.st_mtime_ns, st.st_ctime_ns) > checked_at - _RACY_WINDOW_NS
+        if closed and not recent:
+            # Fingerprinted BEFORE the listing: an entry made after the
+            # listing changed the directory after this fingerprint.
+            remembered[directory] = (fingerprint, tuple(subdirectories))
+    _verified_trees[key] = {"full_at": known["full_at"], "dirs": remembered}
 
 
-def _repair_mode(target: str, mode: int) -> None:
+def _repair_mode(target: str, mode: int) -> bool:
     """Chmods target to mode unless it already is — a failed stat falls
     through to attempting the chmod anyway (never let a failed optimization
-    check block the real repair). A chmod failure is logged, not raised:
-    this must never fail the indexing run or search that called it over a
-    permission race, but silent swallowing left no trace anywhere.
-    echo=False is required, not optional — this runs from get_client(),
-    reached from the MCP server path where stdout is the JSON-RPC
-    transport."""
+    check block the real repair). Returns whether target ends up closed
+    (or is gone: a file the engine removed mid-walk is open to no one).
+    A chmod failure is retried once (a transient race with the engine's
+    own I/O), then logged, not raised: this must never fail the indexing
+    run or search that called it over a permission race, but silent
+    swallowing left no trace anywhere. echo=False is required, not
+    optional — this runs from get_client(), reached from the MCP server
+    path where stdout is the JSON-RPC transport."""
     try:
         if stat.S_IMODE(os.stat(target).st_mode) == mode:
-            return
+            return True
     except OSError:
         pass
-    try:
-        os.chmod(target, mode)
-    except OSError as exc:
-        log_and_print(
-            f"permission repair failed for {target} (kept previous mode) — {exc}",
-            level="warning", echo=False,
-        )
+    for attempt in (1, 2):
+        try:
+            os.chmod(target, mode)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            if attempt == 2:
+                log_and_print(
+                    f"permission repair failed for {target} (kept previous mode) — {exc}",
+                    level="warning", echo=False,
+                )
+    return False
 
 
 def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
@@ -2850,7 +2930,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
             print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
-        _secure_collection_dir(COLLECTION_NAME)
+        _secure_collection_dir(COLLECTION_NAME, full=True)
         release_lock()
 
 
@@ -3050,7 +3130,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             total += len(stale)
     finally:
         if not dry_run:
-            _secure_collection_dir(COLLECTION_NAME)
+            _secure_collection_dir(COLLECTION_NAME, full=True)
             release_lock()
     return total
 
