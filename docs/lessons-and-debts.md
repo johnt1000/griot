@@ -14,125 +14,41 @@ from the code.
 Things deliberately not done. Each was a decision, not an oversight; each is
 still true today unless noted.
 
-### 1. Credentials in `.env` move to the keychain only when asked
+### 1. ~~Credentials in `.env` move to the keychain only when asked~~ — resolved
 
-Setting a credential before the keychain support existed leaves it in
-`<config>/.env` in plaintext until you re-run `griot auth set <provider>`
-for that provider.
+Still opt-in by design, now visible: when a keychain is reachable, `griot doctor` and `griot auth list` name each credential still in plaintext and the command that moves it (#34).
 
-Silently moving a secret is a bigger risk than leaving it where it already
-was, so the migration is opt-in by design. The practical consequence is that
-the security improvement is **not automatic for an existing install**.
+### 2. ~~Keychain protection is opportunistic, not universal~~ — resolved
 
-To take the improvement on an existing install:
-`pip install "griot[keychain]"`, then run `griot auth migrate` (2026-09-02
-— moves every credential currently in the plaintext file into the
-keychain in one explicit, user-invoked command; a no-op for any provider
-the keychain backend can't reach). Still not automatic by design — the
-principle above is unchanged, `migrate` is just the bulk version of the
-same opt-in action `griot auth set` already performed one provider at a
-time.
+Still a fallback, no longer silent: `griot auth list`, `griot auth set` and `griot doctor` say where each credential is kept and whether a keychain backend exists (#34).
 
-### 2. Keychain protection is opportunistic, not universal
+### 3. ~~`_keychain_delete()` cannot tell "nothing stored" from "backend error"~~ — resolved
 
-An environment with no reachable keychain backend — headless Linux without a
-Secret Service provider, most containers — falls back silently to the
-plaintext `.env` behaviour. Intentional: griot must keep working everywhere
-it works today. But it means the guarantee is best-effort, and
-`SECURITY.md` should never be worded as if it were absolute.
+Resolved through keyring's own `PasswordDeleteError`, without coupling to a backend: `griot auth remove` says when the keychain could not be reached (#31).
 
-### 3. `_keychain_delete()` cannot tell "nothing stored" from "backend error"
+### 4. ~~Permission repair reruns on every cold collection open in `multi` mode~~ — resolved
 
-Both return `False`. `remove_provider_key()` ORs this with the file-based
-check, so what the user is told stays correct; the ambiguity lives only
-inside that one return value. Distinguishing the two would mean coupling to
-backend-specific exception types across macOS Keychain, Linux Secret Service
-and Windows Credential Manager — more coupling to an optional dependency's
-internals than the distinction is worth.
+Resolved: a reopen walks only the directories that changed, with a full check after every write and at least every ten minutes (#35).
 
-### 4. Permission repair reruns on every cold collection open in `multi` mode
+### 5. ~~Permission repair is best-effort per file~~ — resolved
 
-`_secure_collection_dir()` walks the collection directory recursively. It was
-originally called only after writes; a security review extended it to
-`get_client()`, which means that in `GRIOT_MCP_CONCURRENCY_MODE=multi` it
-also runs on every reopen after an idle release, not just on writes. A real,
-bounded, per-open cost on large collections — accepted, not a correctness
-bug.
+Resolved: a failed chmod is retried once, and what is still open to others shows in `griot doctor` (#35).
 
-**2026-09-02 update**: the `os.chmod` write syscall itself is now skipped
-per file/directory when its mode is already correct (`_repair_mode()`) —
-most files, most reopens, once a collection has been repaired at least
-once. The walk and the `os.stat()` verification of every file still run
-every time on purpose: skipping those would mean trusting that nothing
-changed since this process last held the collection, which is exactly
-what `multi` mode's whole premise (another process reopening the same
-collection while this one was released) makes unsafe to assume. The debt
-is smaller, not gone.
+### 6. ~~`griot stats` renders trends as text, not charts~~ — resolved
 
-**2026-09-29 update**: `multi` is now the default, so this applies to every
-install rather than to those who opted in. Measured on a copy of a real
-collection (244 MB, about 15,000 points, 70 files): a full reopen, walk
-included, takes about 87 ms (worst of seven, 133 ms). At that size the walk is
-not the dominant cost; it would only matter for a collection with many
-thousands of files.
+Resolved: terminal charts without a new dependency, plain text where a chart cannot be drawn (#42).
 
-### 5. Permission repair is best-effort per file
+### 7. ~~The MCP confirmation policy is explained in three places, not one~~ — resolved
 
-A single `chmod` failure (a transient race with the engine's own I/O
-mid-write) is swallowed rather than raised, so a permission repair can never
-fail a real indexing run. A rare individual file could be missed in one run;
-the next `index_documents()` corrects it.
+The three statements stay, each for its reader; tests/test_confirmation_policy_docs.py now checks all three against the server (#21, #29).
 
-**2026-09-02 update**: swallowed no longer means untraceable — a failure now
-logs a warning (`common.log_and_print(..., level="warning", echo=False)`,
-naming the path) to `griot.log` instead of vanishing with a bare `pass`.
-Still never raises, and still doesn't echo to stdout (which is the MCP
-server's JSON-RPC transport) — only what's observable changed.
+### 8. ~~`griot stats` mixes two clocks and two scopes~~ — resolved
 
-### 6. `griot stats` renders trends as text, not charts
+Resolved: local days everywhere, and the active collection by default with `--all-profiles` for every one (#41).
 
-Spend over time, source breakdown and quality trend are numbers and unicode
-sparklines in a terminal. That is a real limit for anyone who reads a shape
-faster than a column of figures. Accepted knowingly: `griot stats --json`
-exposes the same data for anyone who wants to plot it.
+### 9. ~~A search for readers returns up to `limit`, not exactly `limit`~~ — resolved
 
-### 7. The MCP confirmation policy is explained in three places, not one
-
-README.md, SECURITY.md and `docs/mcp-capability-coverage.md`'s "The
-management surface" table each restate, in their own prose, which MCP tools
-require a human answer versus a `confirm=true` bypass. A 2026-09-02
-documentation audit flagged the real risk this creates: the policy could
-change and only some of the three restatements get updated, and nothing
-would catch that but another manual read-through.
-
-Not consolidated into a single canonical paragraph on purpose — each
-restatement serves a different reader in place (a newcomer skimming
-README, someone doing a security review, someone about to add a new
-state-changing tool), and a bare "see the table" would degrade all three
-into a worse read. The mitigation applied instead: README and SECURITY.md
-now link directly to `docs/mcp-capability-coverage.md#the-management-surface`
-as the canonical table, so a future edit at least has one obvious place a
-reviewer would think to check against. The duplication itself remains.
-
-### 8. `griot stats` mixes two clocks and two scopes
-
-The window (`--days`) is cut in UTC, while spend is grouped by the local day,
-because that is the day the circuit breaker counts. The first local day of a
-window can therefore come in partial. And the state lines (last indexed, last
-quality check, golden set) are about the active profile's collection, while
-the counts of runs, embedded and skipped chunks add up every profile. Both
-are accepted for now: each number is right for what it says, and the report
-says which collection the state is about.
-
-### 9. A search for readers returns up to `limit`, not exactly `limit`
-
-Search for a reader (the MCP tool, `griot search`, the context of
-`griot ask`) asks the store for six times `limit`, holds one document to
-three results and folds copies of the same thing. When the whole window is
-chunks of two long documents, six results come back for a `limit` of eight,
-and `also_in` names the copies found in that window, not every copy in the
-index. Asking the store again until the list is full was not worth the
-second round trip for a case that needs a very thin slice of the index.
+Resolved: a short list asks the store for a wider window, a bounded number of times, in every search mode (#36, #40).
 
 ### 10. ~~The self-check counts a sample with no text as passed~~ — resolved
 
@@ -146,60 +62,111 @@ Fixed in #17; what changed is in the changelog.
 
 Fixed in #18; what changed is in the changelog.
 
-### 13. The confirmations in the CLI are a guard, not a boundary
+### 13. ~~The confirmations in the CLI are a guard, not a boundary~~ — resolved
 
-`griot repos add`, `griot profiles delete`, raising a ceiling with
-`griot config set` and the installer's questions need an interactive
-terminal and have no flag that answers. That stops the plain command an
-agent would run from a shell with no terminal. It does not stop a process
-that can run arbitrary commands: it can fake a terminal, set the variable in
-its own environment, or edit the file. SECURITY.md says so wherever it
-describes one of them; it is listed here because it is the most likely thing
-to be mistaken for a security boundary.
+Resolved as a recorded decision: a process that can run arbitrary commands as the user can answer any terminal question, so the confirmations are a guard against the plain command. SECURITY.md, each command's help and its refusal say so, and a test holds the wording (#27).
 
-### 14. `uv.lock` is written by more than one version of uv
+### 14. ~~`uv.lock` is written by more than one version of uv~~ — resolved
 
-CI and the release install with uv pinned in the workflows; Dependabot
-updates `uv.lock` with whatever version of uv it runs. The two write the
-same resolution differently (where a dependency's Python marker goes), so
-both lockfiles pass `--locked`, but the next `uv lock` on the pinned version
-rewrites a few dozen unrelated lines. Releasing 0.2.1 met it: the bump of
-one version line came with 32 lines of marker changes, edited back by hand.
-`[tool.uv] required-version` would not reach Dependabot. Left until the
-noise lands in a change that matters; the fix is then to regenerate the
-lock on the pinned uv in a commit of its own.
+Regenerated with the pinned uv (#22); CONTRIBUTING.md says to lock with it, and a test keeps that note in step with the workflows (#28). It recurs after each Dependabot lock update until the lock is written again: see debt 27.
 
-### 15. Where a credential comes from is read from shell files only
+### 15. ~~Where a credential comes from is read from shell files only~~ — resolved
 
-`credential_origin()` knows the value in the environment came from outside
-griot's own files, and names WHERE only when it finds an export in the
-shell's startup files (`.zshrc`, `.bashrc`, `config.fish` and the rest of
-the list). A value set by direnv, a file sourced from one of those, the
-login environment of the desktop session or an IDE's run configuration is
-reported as exported in "this shell (no shell file griot knows sets it)".
-Reading every mechanism that can set a variable is open-ended; the message
-says what it does not know rather than guessing.
+Resolved for direnv: the `.envrc` (or the `.env` it loads) and the line are named (#33). A desktop session or an IDE run configuration still reads as "this shell".
 
-### 16. The attribution rule stops where the hooks stop
+### 16. ~~The attribution rule stops where the hooks stop~~ — resolved
 
-The hooks refuse a message that credits an AI assistant (CONTRIBUTING.md),
-but a pull request's description and the message GitHub writes for a squash
-merge are made on the server, where no hook runs: there the rule is kept by
-review. The pattern also has edges, accepted because they are rare: a
-"generated with" followed by a word that is an agent's name
-(`generated with cursor-based paging`) is refused, and a "Generated with"
-with more than a few bytes of decoration before the assistant's name gets
-through in the C locale. A CI check on pull request text would close the
-first gap; it would also need the pattern in a second place.
+Resolved: a required check reads every pull request's title and description with the hooks' pattern (#23, #30). What is left is debt 26.
 
-### 17. One repository refused entirely does not stop a platform run
+### 17. ~~One repository refused entirely does not stop a platform run~~ — resolved
 
-`griot index platform` fails the run (exit 1, recorded with an error) when
-every fetch was refused. With several repositories, one whose platform
-refused everything while the others answered only adds failures to a run
-that exits 0, so `griot index all` goes on. The refusals are in the run's
-failures and in `griot stats`; deciding that one repository's refusal is the
-whole run's failure was left for when it bites.
+Resolved: the run exits 1 naming it (#24), and `griot doctor` and `griot stats` name it too (#32). What is left is debt 19.
+
+### 18. The mutation evidence of 2026-10-06 needs checking again
+
+The team runs of 2026-10-06 wrote their mutation specs from a brief that
+showed the `-k` field as `"-k expr"`. `mutate.py` expects the bare
+expression; with `-k` in it pytest errors on every mutant, and an error read
+as a killed mutant, so a run could report no survivors having tested
+nothing. One team noticed and fixed its own spec; the others reported "all
+killed". `mutate.py` now refuses such a field. The guards added that day
+(#21 to #42) should have their mutations run again.
+
+### 19. A platform run where everything was refused records no `refused_repos`
+
+When one repository is refused among others, the run records it and
+`griot doctor` names it (#32). When the platform refused every fetch of the
+whole run, the run records an `error` but not `refused_repos`, so it shows
+only while it is the newest run of all; a later code or commits run hides it.
+
+### 20. A shorter log retention deletes history without asking
+
+`griot config set log-retention-days <fewer days>` deletes the searches and
+tool calls older than the new window at the next search, permanently, and a
+terminal asks nothing (a server environment is refused a shorter window).
+Treated as the person's own choice, like other settings that narrow.
+
+### 21. `GRIOT_UPDATE_CHECK` can be turned on by a server's environment
+
+The setting is not in the list of variables a server's environment may only
+narrow (decision 112), so a server environment could turn the PyPI check on.
+Without effect today: only `griot doctor` reads it, and the server never
+runs it.
+
+### 22. The progress of an index run does not survive a server restart
+
+The job registry of `griot_index_wait` and the `job` of
+`griot_index_status` live in the server's memory. A restart loses the view
+of a run still going (the run itself goes on, and its lock still shows).
+
+### 23. `griot index keywords` starts over after an interruption
+
+It copies the collection with keyword vectors and swaps it in. Interrupted,
+it starts the copy over rather than continuing: it embeds nothing, so that
+costs local time only.
+
+### 24. The MCP resources read a private attribute of the SDK
+
+The resources reuse each tool's output model through
+`mcp._tool_manager.get_tool(name).fn_metadata.output_model`, which is not a
+public API. An SDK upgrade that renames it breaks the reads loudly, and the
+tests that compare a resource with its tool catch it.
+
+### 25. `griot stats` counts resource reads under "MCP tools"
+
+Resource reads are recorded with the tool calls (under their URI) and the
+report heads them all "MCP tools". Each is distinguishable by its name; the
+heading does not say resources are included.
+
+### 26. A Dependabot description quoting a release note can fail the text check
+
+Two parts of the attribution pattern are not anchored to the start of a
+line (the "generated with" phrase naming an assistant, and the session
+link). A Dependabot description that quotes an upstream release note holding
+one would fail the required check; the description then needs editing.
+
+### 27. The lock goes back to Dependabot's form after each of its updates
+
+Each Dependabot lock update writes `uv.lock` with its own uv, so the marker
+churn of debt 14 returns until someone writes the lock again with the pinned
+uv. A CI step could refuse a lock not in the pinned form; it would fail every
+Dependabot lock update until then, which was judged worse.
+
+### 28. Where a credential came from is worded three ways
+
+`griot auth set`, the 401/403 hint, `griot auth list`/`remove` and
+`griot doctor` say "this shell", or "no shell file or direnv file griot
+knows", for the same unknown origin, and the advice to remove an export is
+also given for a direnv file (direnv reloads by itself).
+
+### 29. The management-surface table checks examples, not every read-only tool
+
+tests/test_confirmation_policy_docs.py checks that the read-only row of
+docs/mcp-capability-coverage.md names no tool wrongly, not that it names all
+of them (it lists examples). `griot_index_repo` is classified by its schema
+and the absence of the human-only marker, since the behavioural test of the
+marker does not register it.
+
 
 ---
 

@@ -1433,8 +1433,8 @@ _CONFIG_LIST_NOTE = (
     "used: the value comes from where the server was started (for a registered server, the `env` of its "
     "registration, or a `--profile` on its command line). A server takes a value from its environment only "
     "where that narrows what the file says: one that would turn on indexing, add a directory to index, raise "
-    "a spend ceiling, reach another host, switch to a profile that calls an API or let an index run fail for "
-    "longer is ignored, and "
+    "a spend ceiling, reach another host, switch to a profile that calls an API, let an index run fail for "
+    "longer or turn back on the logging of questions or the check for a newer release is ignored, and "
     "`environment_ignored` says so for that setting."
 )
 

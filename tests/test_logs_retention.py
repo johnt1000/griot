@@ -184,6 +184,70 @@ def test_a_prune_that_fails_is_logged_and_the_search_is_still_recorded(monkeypat
     assert "disk on fire" in (common.LOG_DIR / "griot.log").read_text()
 
 
+def test_a_prune_that_fails_is_not_tried_again_on_the_next_write(monkeypatch):
+    """A broken file is hit once a day, not on every search: the interval
+    starts when the prune is tried, not when it succeeds."""
+    calls = []
+
+    def broken(log_dir, days):
+        calls.append(days)
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(logdb, "prune_older_than", broken)
+
+    common.log_query(question="a")
+    common.log_query(question="b")
+
+    assert len(calls) == 1
+
+
+def test_a_prune_that_fails_with_any_error_never_fails_the_write(monkeypatch):
+    """Not only an OSError: a corrupt file raises sqlite3.DatabaseError, a
+    bug anything else, and the search that logged must still stand."""
+    def broken(log_dir, days):
+        raise RuntimeError("not an OSError")
+
+    monkeypatch.setattr(logdb, "prune_older_than", broken)
+
+    common.log_query(question="kept")  # must not raise
+
+    assert [q["question"] for q in logdb.read_since(common.LOG_DIR, "queries", 1)] == ["kept"]
+    assert "not an OSError" in (common.LOG_DIR / "griot.log").read_text()
+
+
+def test_a_write_while_another_thread_prunes_does_not_wait_for_it(monkeypatch):
+    """The prune lock is only tried: a search logged while another thread of
+    the MCP server prunes returns at once instead of queueing behind it."""
+    calls = []
+    monkeypatch.setattr(logdb, "prune_older_than", lambda log_dir, days: calls.append(days) or {})
+    assert common._log_prune_lock.acquire(timeout=5)  # another thread is pruning right now
+    try:
+        worker = threading.Thread(target=common.prune_logs_if_due, daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        still_waiting = worker.is_alive()
+    finally:
+        common._log_prune_lock.release()
+    worker.join(timeout=5)
+
+    assert not still_waiting, "prune_logs_if_due() waited for the lock another thread held"
+    assert calls == []
+
+
+def test_a_tool_call_whose_record_failed_does_not_prune(monkeypatch):
+    """The database just refused a write: the prune would only hit it again."""
+    def refused(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(logdb, "write_tool_call", refused)
+    pruned = []
+    monkeypatch.setattr(common, "prune_logs_if_due", lambda: pruned.append(True))
+
+    mcp_server._record_call("griot_search", ok=True, elapsed=0.1)
+
+    assert pruned == []
+
+
 def test_what_a_prune_removed_is_written_to_the_log(monkeypatch):
     monkeypatch.setattr(common, "LOG_RETENTION_DAYS", 30)
     logdb.write_query(common.LOG_DIR, {"timestamp": "2020-01-01T00:00:00+00:00", "question": "old"})
@@ -281,3 +345,15 @@ async def test_griot_stats_says_how_long_searches_are_kept(monkeypatch):
         result = await client.call_tool("griot_stats", {"days": 7})
 
     assert result.structured_content["log_retention_days"] == 45
+
+
+def test_griot_stats_json_says_how_long_searches_are_kept(monkeypatch, capsys):
+    """The CLI's --json is the other front end of the same report: a script
+    reading it needs the window the counts can reach as much as an agent."""
+    import json
+
+    monkeypatch.setattr(common, "LOG_RETENTION_DAYS", 45)
+
+    assert stats.main(["--json", "--days", "7"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["log_retention_days"] == 45
