@@ -182,6 +182,32 @@ def test_the_installer_of_the_build_is_itself_a_fixed_version():
         assert re.fullmatch(r"\d+\.\d+\.\d+", version), f"{where}: setup-uv installs uv {version}"
 
 
+def test_contributing_names_the_uv_the_workflows_pin_for_writing_the_lock():
+    """Two versions of uv write the same resolution differently (where a
+    Python marker goes), and both forms pass `--locked`, so nothing in CI
+    notices which one wrote uv.lock; the next `uv lock` on the other version
+    rewrites dozens of unrelated lines. Dependabot writes the lock with its
+    own uv, so the drift comes back on its own, and the guard is a person
+    running the pinned uv, which CONTRIBUTING has to name. The version is
+    read from the workflows so that raising it there fails here until the
+    instruction says the same."""
+    versions = {str((step.get("with") or {}).get("version")) for _, step in _steps()
+                if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")}
+    assert len(versions) == 1, f"the workflows pin more than one uv: {sorted(versions)}"
+    pinned = versions.pop()
+    text = " ".join((ROOT / "CONTRIBUTING.md").read_text().split())
+    # Any version named anywhere in the file must be the pinned one: a stale
+    # number left in one sentence would send someone back to the other form.
+    named = set(re.findall(r"\buv@([0-9][^\s`]*)", text))
+    assert named <= {pinned}, f"CONTRIBUTING.md names uv {sorted(named - {pinned})}, the workflows pin {pinned}"
+    # The plain command, closed by its backtick, so that the restore recipe
+    # below (which starts with the same words) cannot stand in for it.
+    assert f"`uvx uv@{pinned} lock`" in text, f"CONTRIBUTING.md does not tell how to run uv {pinned} to write the lock"
+    # How to bring a lock another uv wrote back to the pinned form without
+    # moving any pin: re-resolving only the project itself.
+    assert f"uvx uv@{pinned} lock --upgrade-package {PROJECT['project']['name']}" in text
+
+
 def test_the_build_backend_is_in_the_lock_too():
     """[build-system] is resolved when the package is built, outside the
     lock. The `build` group repeats it so that the lock pins it, and the

@@ -1052,7 +1052,7 @@ def test_griot_search_marks_the_call_as_coming_from_mcp(monkeypatch):
 
 def test_cli_ask_is_marked_as_cli(monkeypatch):
     from griot import ask
-    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5: ("answer", []))
+    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5, mode="vector": ("answer", []))
     monkeypatch.setattr(common, "get_spend_today", lambda: 0.0)
 
     ask.main(["some question"])
@@ -1129,9 +1129,9 @@ def test_griot_stats_honors_the_days_window(monkeypatch):
     monkeypatch.setattr(common, "get_index_status", lambda: {"points_count": 0, "embed_profile": "jina-code"})
     real_load = mcp_server.stats.load_window
 
-    def _spy(days):
+    def _spy(days, *args, **kwargs):
         seen["days"] = days
-        return real_load(days)
+        return real_load(days, *args, **kwargs)
 
     monkeypatch.setattr(mcp_server.stats, "load_window", _spy)
 
@@ -1144,7 +1144,8 @@ def test_griot_stats_honors_the_days_window(monkeypatch):
 def test_griot_stats_includes_the_quality_trend(monkeypatch):
     monkeypatch.setattr(common, "get_index_status", lambda: {"points_count": 0, "embed_profile": "jina-code"})
     logdb.write_quality_check(common.LOG_DIR, {
-        "timestamp": datetime.now(timezone.utc).isoformat(), "collection": "c",
+        # The active collection's: by default the trend is about the index the state lines describe.
+        "timestamp": datetime.now(timezone.utc).isoformat(), "collection": common.COLLECTION_NAME,
         "self_check": {"sampled": 10, "passed": 8, "failed": 2, "failures": [], "avg_score": 0.7},
     })
 

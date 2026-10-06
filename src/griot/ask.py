@@ -1,4 +1,5 @@
 import argparse
+import sys
 import time
 
 from griot import common
@@ -19,8 +20,8 @@ def build_context(results: list) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def ask(question: str, model: str | None, limit: int) -> tuple[str, list]:
-    results = common.search(question, limit, diverse=True)
+def ask(question: str, model: str | None, limit: int, mode: str = "vector") -> tuple[str, list]:
+    results = common.search(question, limit, diverse=True, mode=mode)
     context = build_context(results)
 
     prompt = (
@@ -42,10 +43,18 @@ def main(argv=None):
     parser.add_argument("--model", default=None, help=f"Model to use within the active chat profile (profile default: {common.ACTIVE_CHAT_PROFILE['model']})")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="How many chunks to search for (default: %(default)s)")
     parser.add_argument("--show-sources", action="store_true", help="List the sources used as context")
+    parser.add_argument("--mode", choices=common.SEARCH_MODES, default="vector",
+                        help="How the context is searched: vector (by meaning, the default), keyword (by the exact "
+                             "words: an identifier, an error code, a hash) or hybrid (both)")
     args = parser.parse_args(argv)
 
     start_time = time.time()
-    answer, results = ask(args.question, model=args.model, limit=args.limit)
+    try:
+        answer, results = ask(args.question, model=args.model, limit=args.limit, mode=args.mode)
+    except common.SearchFilterError as e:
+        # Raised before the chat model is called: nothing was paid for.
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
     elapsed = time.time() - start_time
     print(answer)
 
@@ -66,6 +75,9 @@ def main(argv=None):
         via="cli",
         model=args.model or common.ACTIVE_CHAT_PROFILE["model"],
         chat_profile=common.ACTIVE_CHAT_PROFILE_NAME, limit=args.limit,
+        # Scores and results of the modes are not comparable: griot stats
+        # tells them apart by this.
+        mode=args.mode,
         num_sources=len(results), duration_seconds=round(elapsed, 2),
         sources=[source_label(r.payload or {}) for r in results],
         # [real finding] without this, griot stats never saw chat spend —

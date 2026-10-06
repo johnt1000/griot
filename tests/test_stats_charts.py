@@ -30,6 +30,13 @@ def _query(sources, timestamp="2026-08-20T10:00:00+00:00"):
     return {"timestamp": timestamp, "duration_seconds": 1.0, "sources": sources, "num_sources": len(sources)}
 
 
+def _recent_query(sources):
+    """A query `griot stats` itself would count: inside its window (local
+    days up to now) and in the active collection (its default scope)."""
+    from datetime import datetime, timezone
+    return {**_query(sources, datetime.now(timezone.utc).isoformat()), "collection": stats.common.COLLECTION_NAME}
+
+
 class _Stream(io.StringIO):
     def __init__(self, tty):
         super().__init__()
@@ -333,7 +340,7 @@ def test_quality_columns_do_not_stretch_a_low_best_to_the_top():
 
 def test_main_draws_charts_only_when_the_terminal_allows(monkeypatch, capsys):
     monkeypatch.setattr(stats.common, "get_index_status", lambda: _INDEX_STATUS)
-    monkeypatch.setattr(stats, "load_window", lambda days: ([], [_query(["r/a.py", "commit x"])]))
+    monkeypatch.setattr(stats, "load_window", lambda days, *_: ([], [_recent_query(["r/a.py", "commit x"])]))
 
     monkeypatch.setattr(stats, "_chart_width", lambda *a, **k: 80)
     stats.main([])
@@ -350,7 +357,7 @@ def test_main_draws_charts_only_when_the_terminal_allows(monkeypatch, capsys):
 def test_main_reads_the_real_stdout_and_environment(monkeypatch, capsys):
     """capsys' stdout is not a terminal, so the real decision gives text."""
     monkeypatch.setattr(stats.common, "get_index_status", lambda: _INDEX_STATUS)
-    monkeypatch.setattr(stats, "load_window", lambda days: ([], [_query(["r/a.py", "commit x"])]))
+    monkeypatch.setattr(stats, "load_window", lambda days, *_: ([], [_recent_query(["r/a.py", "commit x"])]))
     _columns(monkeypatch, 120)
 
     stats.main([])
@@ -360,7 +367,7 @@ def test_main_reads_the_real_stdout_and_environment(monkeypatch, capsys):
 
 def test_json_output_ignores_the_terminal(monkeypatch, capsys):
     monkeypatch.setattr(stats.common, "get_index_status", lambda: _INDEX_STATUS)
-    monkeypatch.setattr(stats, "load_window", lambda days: ([], [_query(["r/a.py"])]))
+    monkeypatch.setattr(stats, "load_window", lambda days, *_: ([], [_recent_query(["r/a.py"])]))
     monkeypatch.setattr(stats, "_chart_width", lambda *a, **k: 80)
 
     stats.main(["--json"])

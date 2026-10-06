@@ -127,9 +127,12 @@ before reading `griot-troubleshooting`.
 griot search "where is the retry logic for the payment API?"
 ```
 
-This is vector search only — free, local, no LLM call, even on a paid
+This is search only — free, local, no LLM call, even on a paid
 embedding profile (aside from embedding the query itself). It prints each
-hit's source label, score, and a one-line content preview.
+hit's source label, score, and a one-line content preview. By default it
+searches by meaning; for an exact name (a function, an error code, a commit
+hash) add `--mode keyword`, which matches the words themselves and embeds
+nothing.
 
 ## `griot ask` — plainly, this one is paid
 

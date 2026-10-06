@@ -370,8 +370,12 @@ def read_since(log_dir: Path, table: str, days: int, now: datetime | None = None
     return [json.loads(row["data"]) for row in rows]
 
 
-# table -> whether its rows say which collection they are about
-_RECENT_TABLES = {"runs": True, "queries": False, "quality_checks": True}
+# table -> the SQL that reads which collection a row is about. `queries` has
+# no column for it (see _TABLES_WITH_COLLECTION): its records carry the field
+# in their JSON since log_query() began writing it, and a record from before
+# then gives NULL, so it matches no collection rather than a guessed one.
+_RECENT_TABLES = {"runs": "collection", "queries": "json_extract(data, '$.collection')",
+                  "quality_checks": "collection"}
 
 
 def read_recent(log_dir: Path, table: str, *, collection: str | None = None, limit: int = 1) -> list[dict]:
@@ -381,9 +385,7 @@ def read_recent(log_dir: Path, table: str, *, collection: str | None = None, lim
     cannot. By insertion order, like most_recent_run_for_collection()."""
     if table not in _RECENT_TABLES:
         raise ValueError(f"unknown table {table!r}")
-    if collection is not None and not _RECENT_TABLES[table]:
-        raise ValueError(f"{table} records are not tied to a collection")
-    where, args = ("WHERE collection = ? ", (collection,)) if collection is not None else ("", ())
+    where, args = (f"WHERE {_RECENT_TABLES[table]} = ? ", (collection,)) if collection is not None else ("", ())
     if _nothing_logged_yet(log_dir):
         return []
     conn = _connect(log_dir)
@@ -553,6 +555,50 @@ def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: flo
             )
     finally:
         conn.close()
+
+
+# The tables pruned by age: the two that grow with use, one row per search or
+# question and one per MCP tool call. Not `runs`: the freshness report and
+# doctor read the last run of every source and repository, and a repository
+# indexed once a year would lose its only run. Not `quality_checks`: it is
+# the pass-rate trend, a few rows a week at most. Not `spend_events`: it
+# prunes itself on every write (write_spend).
+_PRUNED_BY_AGE = ("queries", "tool_calls")
+
+
+def prune_older_than(log_dir: Path, days: int, now: datetime | None = None) -> dict[str, int]:
+    """Deletes the rows of _PRUNED_BY_AGE written more than `days` days
+    before `now`, and returns how many each table lost.
+
+    The newest row of each table stays, however old: it is what "last
+    search N days ago" is read from (stats.load_state()), and deleting it
+    would turn that into "never searched", a different fact.
+
+    One short transaction over the indexed `timestamp` column. Other griot
+    processes write to the same file meanwhile; they wait on SQLite's lock
+    (the busy timeout in _connect()) and nothing they write is older than
+    the cutoff."""
+    if days < 1:
+        raise ValueError(f"a retention under one day would delete what was just written (got {days})")
+    if _nothing_logged_yet(log_dir):
+        return {table: 0 for table in _PRUNED_BY_AGE}
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
+    conn = _connect(log_dir)
+    try:
+        # Zeroes what is deleted: a question deleted from the table would
+        # otherwise stay readable in the file's free pages, which defeats
+        # deleting it. Per connection, and this one only deletes.
+        conn.execute("PRAGMA secure_delete = ON")
+        removed = {}
+        with conn:
+            for table in _PRUNED_BY_AGE:  # a fixed allowlist, never user-controlled
+                removed[table] = conn.execute(
+                    f"DELETE FROM {table} WHERE timestamp < ? AND id < (SELECT MAX(id) FROM {table})",
+                    (cutoff,),
+                ).rowcount
+    finally:
+        conn.close()
+    return removed
 
 
 def _tool_call_rows(conn: sqlite3.Connection, cutoff: datetime) -> list[sqlite3.Row]:
