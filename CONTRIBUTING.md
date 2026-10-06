@@ -83,8 +83,11 @@ A release is a tag. The distribution on PyPI is `griot-rag` (the name
 2. Run the suite and commit.
 3. `git tag vX.Y.Z` and push the tag.
 
-`.github/workflows/release.yml` then refuses a tag that is not the declared
-version (`scripts/release-check.py`), builds from `uv.lock` exactly as CI
+`.github/workflows/release.yml` then runs the whole CI on the tagged commit
+(every job, macOS and the newest Python included: a failure in any of them
+holds the release back),
+refuses a tag that is not the declared version or not a commit of `main`
+(`scripts/release-check.py`), builds from `uv.lock` exactly as CI
 does, checks the metadata, and publishes through PyPI's trusted publishing:
 the `publish` job, in the `pypi` environment, is granted an OpenID token for
 that one step, and no API token lives in the repository. The project on

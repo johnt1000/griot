@@ -8,6 +8,18 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Security
+
+- **What reaches `main`, and what reaches PyPI, goes through the same
+  checks.** A release used to need only a tag: it now runs the whole CI on
+  the tagged commit before building, and refuses a tag on a commit that is
+  not on `main`. The secret scan runs gitleaks itself, installed by version
+  and checksum, and reads the changes of merge commits too (the action did
+  not, and ran on a Node version GitHub is retiring). The tests run on
+  Python 3.14 and on macOS as well, the runners are named by version
+  (`ubuntu-24.04`, `macos-15`) instead of `-latest`, and the tests that need
+  the real scanner run instead of being skipped.
+
 ### Fixed
 
 - **A credential exported in the shell no longer hides silently behind the

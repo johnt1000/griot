@@ -48,6 +48,10 @@ COMMANDS_LOOKED_AT = {
     "uv export --locked --no-dev --no-emit-project --output-file /tmp/locked.txt",
     "uv venv /tmp/fresh",
     "uv pip install --python /tmp/fresh/bin/python --constraint /tmp/locked.txt dist/*.whl",
+    # gitleaks itself is installed by scripts/install-gitleaks.sh, pinned by
+    # version and checksum (tests/test_pipeline.py); this only runs it.
+    '"$RUNNER_TEMP/gitleaks/gitleaks" git --no-banner --redact --config .gitleaks.toml '
+    '--log-opts="--all --diff-merges=first-parent" .',
 }
 # A program that brings code or packages from somewhere else.
 FETCHES = re.compile(r"(?<![\w.-])(pip3?|uvx?|pipx|conda|npm|npx|yarn|pnpm|curl|wget|apt|apt-get|brew|cargo|gem|docker|git)"
@@ -104,6 +108,10 @@ def test_an_action_is_named_by_the_commit_it_is(where, used):
     """A tag or a branch can be moved to other code by whoever owns the
     action; a commit cannot. (An image or a local action has no commit to
     name: neither is used, and one that appears is looked at then.)"""
+    if str(used).startswith("./.github/workflows/"):
+        # A workflow of this repository, at the same commit: nothing to pin.
+        assert (ROOT / str(used)).is_file(), f"{where}: {used} does not exist"
+        return
     action, _, ref = str(used).rpartition("@")
     assert re.fullmatch(r"[\w.-]+/[\w./-]+", action), f"{where}: {used} is not an action of a repository"
     assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{where}: {used} is not named by a commit"
@@ -112,6 +120,8 @@ def test_an_action_is_named_by_the_commit_it_is(where, used):
 @pytest.mark.parametrize("where,used", _uses())
 def test_the_version_that_commit_is_stands_beside_it(where, used):
     """For a person to read, and for the bot that proposes the next one."""
+    if str(used).startswith("./.github/workflows/"):
+        return  # a workflow of this repository has no version of its own
     text = (WORKFLOW_DIR / where).read_text()
     assert re.search(re.escape(str(used)) + r"[ \t]+#[ \t]*v\d+\.\d+\.\d+[ \t]*$", text, re.M), f"{where}: {used}"
 
