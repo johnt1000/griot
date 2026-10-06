@@ -100,6 +100,100 @@ def test_what_is_published_is_what_was_built_from_the_lock():
     assert uploads and downloads and uploads[0]["with"]["name"] == downloads[0]["with"]["name"]
 
 
+def _cache_inputs(step):
+    """The inputs by which a setup action turns its built-in cache on:
+    setup-uv's `enable-cache`, setup-python's and setup-node's `cache`."""
+    return {key: value for key, value in (step.get("with") or {}).items() if key in ("enable-cache", "cache")}
+
+
+def test_no_job_of_the_release_reads_or_writes_a_cache():
+    """A cache is written by other runs (any push to main, any CI run on
+    another tag) and restored here into the job that builds what PyPI
+    serves: one poisoned entry would be published under the maintainer's
+    name. Every step of the release's own jobs stays off the cache, and
+    setup-uv turns its cache on by itself on a hosted runner when
+    `enable-cache` is left out, so it is told. The CI this workflow calls
+    keeps its cache: nothing it produces is published."""
+    for name, job in RELEASE["jobs"].items():
+        for step in job.get("steps", []):
+            used = str(step.get("uses", ""))
+            assert not used.startswith("actions/cache"), f"job {name}: {used}"
+            inputs = _cache_inputs(step)
+            assert all(value in (False, "false", "") for value in inputs.values()), f"job {name}: {used} {inputs}"
+            if used.startswith("astral-sh/setup-uv@"):
+                assert inputs.get("enable-cache") is False, f"job {name}: setup-uv caches unless told not to"
+
+
+def test_one_release_of_a_tag_runs_at_a_time_and_none_is_cut_short():
+    """Two runs of the same tag (a re-run, a tag deleted and pushed again)
+    must not publish side by side; and a run is never cancelled for the
+    next one, because cancelling the publishing job between the sdist and
+    the wheel leaves on PyPI a version that can never be uploaded whole."""
+    concurrency = RELEASE.get("concurrency") or {}
+    assert "github.ref" in str(concurrency.get("group", "")), concurrency
+    assert concurrency.get("cancel-in-progress") is False
+    # Not the group the called CI uses: a caller and a callee in one group
+    # wait for each other forever.
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    assert concurrency["group"] != ci["concurrency"]["group"]
+
+
+def test_nothing_else_shares_the_group_of_the_ci_a_release_calls():
+    """The called CI keeps its own group, `ci-<ref>`, which cancels the run
+    in flight. On a tag that ref is the release's alone only while ci.yml
+    does not run on a tag push by itself: if it did, that run and the
+    release's own CI would cancel each other, and the release would stop
+    before it built anything."""
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    assert not _runs_on_a_tag_push(ci), ci.get("on", ci.get(True))
+
+
+def _runs_on_a_tag_push(workflow):
+    """Whether a push of a tag starts this workflow. GitHub runs a `push`
+    trigger on every ref when it has no ref filter at all (`on: push`,
+    `on: [push]`, a bare `push:`, or one filtered by paths only), and on
+    branches alone when it filters branches but not tags; any tag filter
+    may match a tag."""
+    # PyYAML reads the bare key `on` as True.
+    on = workflow.get("on", workflow.get(True))
+    if isinstance(on, str):
+        on = [on]
+    if isinstance(on, list):
+        return "push" in on
+    if not isinstance(on, dict) or "push" not in on:
+        return False
+    push = on["push"] or {}
+    if "tags" in push or "tags-ignore" in push:
+        return True
+    return "branches" not in push and "branches-ignore" not in push
+
+
+@pytest.mark.parametrize("on,runs", [
+    ({"push": {"branches": ["main"]}}, False),
+    ({"push": {"branches-ignore": ["wip/**"]}, "pull_request": None}, False),
+    ({"pull_request": None}, False),
+    ({"push": None}, True),
+    ({"push": {"paths": ["src/**"]}}, True),
+    ({"push": {"branches": ["main"], "tags": ["v*"]}}, True),
+    ({"push": {"tags-ignore": ["x"]}}, True),
+    ({"push": {"branches": ["main"], "tags-ignore": ["x"]}}, True),
+    ("push", True),
+    (["pull_request", "push"], True),
+])
+def test_a_tag_push_is_told_apart_from_a_branch_push(on, runs):
+    # The key as PyYAML reads it from a file, and as it is written.
+    assert _runs_on_a_tag_push({True: on}) is runs
+    assert _runs_on_a_tag_push({"on": on}) is runs
+
+
+def test_the_publishing_token_says_why_it_is_granted():
+    """A permission beyond reading is the first line someone auditing the
+    workflow asks about; the answer sits on that line."""
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    lines = [line for line in text.splitlines() if re.match(r"\s*id-token:\s*write\b", line)]
+    assert lines and all(re.search(r"#\s*\S", line) for line in lines), lines
+
+
 def test_the_build_refuses_a_tag_that_is_not_the_declared_version():
     build = _commands("build")
     # The check is a script of its own, so that it can be run here; it reads
