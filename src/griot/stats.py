@@ -456,7 +456,9 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # [orphan sweep] Which MCP tools an agent actually calls, and which
         # of those failed. Counted separately rather than as a success rate:
         # "called 40 times, 40 failed" and "called 40 times, 2 failed" are
-        # different problems, and a single percentage blurs them.
+        # different problems, and a single percentage blurs them. A read of
+        # an MCP resource counts here too, under its URI (griot://repos), so
+        # it stands next to the tool it duplicates without being mistaken for it.
         # [user-requested] WHY documents failed, grouped by reason. A
         # systemic failure (bad credential, oversized input) repeats one
         # reason across every document, so the grouping is the diagnosis —

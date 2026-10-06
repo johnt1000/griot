@@ -83,7 +83,8 @@ from mcp.server.elicitation import (
 )
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import MCPError
+from mcp.types import INTERNAL_ERROR, ToolAnnotations
 
 import griot
 
@@ -598,9 +599,10 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
     )
 
 
-def _records_call(fn):
+def _records_call(fn, name: str | None = None):
     """Records one row per invocation of the decorated tool: which tool,
-    whether it worked, how long, and the error if not.
+    whether it worked, how long, and the error if not. `name` overrides the
+    function's own name: a resource is recorded under its URI.
 
     [user-requested, before the first real-agent validation] griot exposes
     several tools that have never met a real agent. Which ones actually get
@@ -621,6 +623,7 @@ def _records_call(fn):
     fails validation, and the recorded duration measures nothing. The unit
     tests missed this because awaiting the returned coroutine themselves
     made it work — passing for the wrong reason."""
+    label = name or fn.__name__
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapper(*args, **kwargs):
@@ -629,12 +632,12 @@ def _records_call(fn):
             try:
                 result = await fn(*args, **kwargs)
             except Exception as e:
-                _record_call(fn.__name__, ok=False, elapsed=time.time() - started_at,
+                _record_call(label, ok=False, elapsed=time.time() - started_at,
                              error=f"{type(e).__name__}: {e}")
                 raise
             finally:
                 _tool_finished()
-            _record_call(fn.__name__, ok=True, elapsed=time.time() - started_at)
+            _record_call(label, ok=True, elapsed=time.time() - started_at)
             return result
         return async_wrapper
 
@@ -645,12 +648,12 @@ def _records_call(fn):
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
-            _record_call(fn.__name__, ok=False, elapsed=time.time() - started_at,
+            _record_call(label, ok=False, elapsed=time.time() - started_at,
                          error=f"{type(e).__name__}: {e}")
             raise
         finally:
             _tool_finished()
-        _record_call(fn.__name__, ok=True, elapsed=time.time() - started_at)
+        _record_call(label, ok=True, elapsed=time.time() - started_at)
         return result
     return wrapper
 
@@ -1205,6 +1208,12 @@ def griot_repos_list() -> ReposListOutput:
     Read-only and cheap: reads a small JSON file plus two stat() calls per
     entry. It never opens the vector store or loads the embedding model, so
     it cannot collide with an indexing run in progress."""
+    return _repos_list()
+
+
+def _repos_list() -> ReposListOutput:
+    """griot_repos_list and the griot://repos resource both run this, so the
+    two cannot come to disagree, corrupt file included."""
     try:
         entries = repos.repo_status()
     except (OSError, ValueError) as e:
@@ -1830,6 +1839,12 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
     window spanning a fix holds two eras whose average describes neither.
     `recent_reuse_rate` is the trailing-runs figure — prefer it when the
     two disagree."""
+    return _stats(days)
+
+
+def _stats(days: int) -> StatsOutput:
+    """griot_stats and the griot://stats resource (its default window) both
+    run this."""
     if days < 1:
         raise ValueError(f"days must be at least 1 (got {days})")
     runs, queries = stats.load_window(days)
@@ -1859,12 +1874,83 @@ def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
 
     `collection` is the collection of one embedding profile, as
     griot_profiles_list names them; leave it out for the active one."""
+    return _index_status(collection)
+
+
+def _index_status(collection: str | None) -> IndexStatusOutput:
+    """griot_index_status and the griot://index-status resource (the active
+    collection) both run this."""
     # A collection name becomes a directory name. Only the names griot itself
     # gives are accepted: the rule is "one of these", not "looks harmless".
     known = [common.collection_name_for(profile) for profile in common.EMBED_PROFILES]
     if collection is not None and collection not in known:
         raise ValueError(f"Unknown collection {_shown(collection)}. The collections are: {', '.join(known)}.")
     return common.get_index_status(collection)
+
+
+# Resources: the same read-only data as three tools, addressed by URI, for
+# clients that fetch context without spending a tool call or that let a
+# person attach it. They DUPLICATE the tools rather than replace them: the
+# tools are what agents are known to call, and which of the two gets used is
+# exactly what tool_calls will show (a read is recorded under its URI).
+#
+# Two surfaces for one piece of data can drift apart, so neither surface has
+# its own code: each resource runs the function its tool runs, and is
+# serialized by the output model the SDK built for that tool, which is what
+# turns the tool's dict into the structured content a client receives (it
+# drops undeclared keys, and renders values as JSON the same way). A
+# resource has no arguments, so it is the tool at its defaults.
+#
+# Not listed here, as the tools are not: list_resources() is the inventory.
+
+
+def _resource(uri: str, tool: str, description: str):
+    """Registers `fn` as the resource `uri`, a JSON copy of what `tool`
+    returns, recorded and counted in flight like a tool call: two of these
+    open the collection, which the idle reaper must not close under them."""
+    def register(fn):
+        def read() -> str:
+            try:
+                value = fn()
+            except Exception as e:
+                # The SDK replaces any other error a resource raises with a
+                # bare "Error reading resource", which would hide the one
+                # thing the message is for: which file to fix. The tool's
+                # error reaches the agent as isError; this is the same text.
+                raise MCPError(code=INTERNAL_ERROR, message=str(e)) from e
+            model = mcp._tool_manager.get_tool(tool).fn_metadata.output_model
+            return json.dumps(model.model_validate(value).model_dump(mode="json", by_alias=True))
+        read.__name__ = fn.__name__
+        recorded = _records_call(read, name=uri)
+        mcp.resource(uri, name=fn.__name__, description=description, mime_type="application/json")(recorded)
+        return fn
+    return register
+
+
+@_resource("griot://repos", "griot_repos_list",
+           # Carries the tool's own caveat: "registered" is not "everything
+           # an index run may accept" (GRIOT_MCP_INDEX_ROOTS adds paths).
+           "The repositories registered for indexing: name, path, whether the path still exists and "
+           "is a git repository. Not every path an index run may accept. "
+           "The same data as the griot_repos_list tool.")
+def griot_repos_resource() -> ReposListOutput:
+    return _repos_list()
+
+
+@_resource("griot://stats", "griot_stats",
+           f"The usage report for the last {stats.DEFAULT_DAYS} days: indexing runs and reuse, spend, "
+           "queries, tool calls, quality trend, and `attention` (what someone has to act on). The same "
+           "data as the griot_stats tool at its default window; call the tool for another window.")
+def griot_stats_resource() -> StatsOutput:
+    return _stats(stats.DEFAULT_DAYS)
+
+
+@_resource("griot://index-status", "griot_index_status",
+           "Whether the active profile's collection has data, when it was last indexed and whether an "
+           "indexing run is happening now. The same data as the griot_index_status tool for the active "
+           "collection; call the tool for another profile's collection.")
+def griot_index_status_resource() -> IndexStatusOutput:
+    return _index_status(None)
 
 
 @mcp.prompt(name="stats", title="griot usage report")
