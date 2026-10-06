@@ -125,13 +125,29 @@ You can trigger Dependabot actions by commenting on this PR:
 """
 
 
+# Release notes that hold a credit, quoted the two ways a quote reaches a
+# description: in Dependabot's HTML, and as a Markdown quote. The upstream
+# project's credit is not this pull request's.
+DEPENDABOT_QUOTING_A_CREDIT = DEPENDABOT_BODY.replace("""</ul>
+</blockquote>""", """<li>Generated with Copilot by upstream</li>
+<li><a href="https://claude.ai/code/session_01AbCdEf">https://claude.ai/code/session_01AbCdEf</a></li>
+</ul>
+<p>\U0001F916 Generated with <a href="https://claude.com/claude-code">Claude Code</a></p>
+</blockquote>""") + """
+> Generated with Copilot by upstream
+> https://claude.ai/code/session_01AbCdEf
+"""
+
+
 @pytest.mark.parametrize("title,body", [
     ("fix: the search returns the newest commit first", "Two lines.\r\n\r\nWith Windows line endings.\r\n"),
     ("docs: what Claude reviewed in the release", "Co-authored-by: Claude Martin <claude.martin@example.com>"),
     ("feat: griot installs its skills for Claude Code", "griot now supports Claude Code and opencode.\n"),
     ("build(deps): bump astral-sh/setup-uv from 10.2.0 to 10.3.0", DEPENDABOT_BODY),
     ("chore: a pull request with no description", ""),
-], ids=["plain", "a person named Claude", "mentions Claude Code", "dependabot", "empty body"])
+    ("build(deps): bump astral-sh/setup-uv from 10.2.0 to 10.3.0", DEPENDABOT_QUOTING_A_CREDIT),
+], ids=["plain", "a person named Claude", "mentions Claude Code", "dependabot", "empty body",
+        "dependabot quoting a credit"])
 def test_text_that_credits_no_assistant_passes(title, body):
     done = _run(title, body)
 
@@ -144,7 +160,10 @@ def test_text_that_credits_no_assistant_passes(title, body):
     ("fix: something", "See https://claude.ai/code/session_01AbCdEf", "description, line 1"),
     ("fix: something", "Claude-Session: https://example.com/x", "description, line 1"),
     ("fix: something (Generated with Claude Code)", "", "title"),
-], ids=["generated with", "co-author", "session link", "session trailer", "in the title"])
+    ("fix: something", "Body.\n\n- Generated with Copilot\n", "description, line 3"),
+    ("fix: something", "> Quoted.\n\nhttps://claude.ai/code/session_01AbCdEf\n", "description, line 3"),
+], ids=["generated with", "co-author", "session link", "session trailer", "in the title",
+        "a bullet is not a quote", "a line after a quote"])
 def test_text_that_credits_an_assistant_is_refused_and_says_where(title, body, where):
     done = _run(title, body)
 
