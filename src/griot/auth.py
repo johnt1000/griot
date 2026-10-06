@@ -87,7 +87,15 @@ def provider_status() -> list[dict]:
 
 
 def set_provider_key(provider: str, key: str) -> bool:
-    """Write half of provider_status() — validates the provider
+    """Whether it replaced a configured value; see _store_provider_key()."""
+    return _store_provider_key(provider, key)[0]
+
+
+def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
+    """(replaced, where): "keychain" or "file", so `griot auth set` says the
+    place the key went from the write itself rather than inferring it.
+
+    Write half of provider_status() — validates the provider
     and the key. Returns True if it REPLACED an already-configured value
     (the caller may want to warn about a running MCP server not picking
     this up until restart, same as cmd_set() prints). Raises ValueError on
@@ -126,13 +134,21 @@ def set_provider_key(provider: str, key: str) -> bool:
     if common._keychain_set(env_var, key):
         if existing_in_file:
             common.env_file_unset(env_var)
-        return bool(existing_in_file)
+        return bool(existing_in_file), "keychain"
     common.env_file_set(env_var, key)
-    return bool(existing_in_file)
+    return bool(existing_in_file), "file"
 
 
 def remove_provider_key(provider: str) -> bool:
-    """Write half of provider_status() for deletion. Returns True
+    """Whether a key existed anywhere; see _remove_provider_key()."""
+    return bool(_remove_provider_key(provider))
+
+
+def _remove_provider_key(provider: str) -> list[str]:
+    """The places a key was removed from ("keychain", "file"; empty when there
+    was none), so `griot auth remove` names them.
+
+    Write half of provider_status() for deletion. Returns True
     if a key actually existed (in the keychain and/or the file) and was
     removed from wherever it was found, False if there was nothing to
     remove anywhere. Raises ValueError on an unknown provider.
@@ -151,7 +167,8 @@ def remove_provider_key(provider: str) -> bool:
     removed_from_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
     if removed_from_file:
         common.env_file_unset(env_var)
-    return removed_from_keychain or removed_from_file
+    return [place for place, removed in (("keychain", removed_from_keychain), ("file", removed_from_file))
+            if removed]
 
 
 def cmd_set(provider: str) -> int:
@@ -167,9 +184,9 @@ def cmd_set(provider: str) -> int:
         return 1
 
     _ensure_env_file()
-    replaced = set_provider_key(provider, key)
+    replaced, where = _store_provider_key(provider, key)
 
-    _say_where_it_went(env_var)
+    _say_where_it_went(env_var, where)
     _say_if_the_shell_overrides(env_var)
     if replaced:
         # [review] common.py resolves .env once, at import time
@@ -180,14 +197,11 @@ def cmd_set(provider: str) -> int:
     return 0
 
 
-def _say_where_it_went(env_var: str) -> None:
+def _say_where_it_went(env_var: str, where: str) -> None:
     """After a key was written: the keychain or the plaintext file, and, for
     the file, why. This is the moment the fallback happens, and it used to
-    say "written to <config>/.env" whichever place the key went. Reads the
-    file, not the keychain: set_provider_key() writes the file only when the
-    keychain refused the key."""
-    # A value, not the name: the .env template carries every name, empty.
-    if not (dotenv_values(common.ENV_PATH).get(env_var) if common.ENV_PATH.exists() else None):
+    say "written to <config>/.env" whichever place the key went."""
+    if where == "keychain":
         backend = common.keychain_status()["backend"]
         print(f"{env_var} stored in the OS keychain{f' ({backend})' if backend else ''}.")
         return
@@ -280,10 +294,13 @@ def cmd_remove(provider: str) -> int:
         print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}", file=sys.stderr)
         return 1
     env_var = providers[provider]
-    if not remove_provider_key(provider):
+    removed_from = _remove_provider_key(provider)
+    if not removed_from:
         print(f"{env_var} was not configured — nothing to remove.")
         return 0
-    print(f"{env_var} removed from {common.ENV_PATH}.")
+    # It said "removed from <config>/.env" wherever the key was.
+    places = {"keychain": "the OS keychain", "file": f"the plaintext file {common.ENV_PATH}"}
+    print(f"{env_var} removed from {' and '.join(places[p] for p in removed_from)}.")
     origin = common.credential_origin(env_var)
     if origin["source"] == "environment":
         where = ", ".join(origin["exported_in"]) or "this shell"

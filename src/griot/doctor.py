@@ -154,8 +154,9 @@ def check_credentials(common) -> dict:
     `griot auth set` then changes nothing in that shell, and an API that
     refuses the key looks like a bad new key. A credential still in the
     plaintext file while a keychain is reachable is one `griot auth migrate`
-    would protect; with no keychain reachable the file is griot's fallback,
-    which is said here instead of happening silently."""
+    would protect (a warning); with no keychain reachable the file is griot's
+    fallback, which is said here instead of happening silently (a note: the
+    check stays OK, since nothing may be able to clear it)."""
     from griot import auth
 
     keychain = common.keychain_status()
@@ -178,11 +179,11 @@ def check_credentials(common) -> dict:
         details.append(f"in plaintext in {common.ENV_PATH}: {', '.join(in_file)}")
         if keychain["available"]:
             fixes.append("`griot auth migrate` moves them into the OS keychain")
-        elif keychain["installed"]:
-            fixes.append("make an OS keychain backend reachable (on Linux, a Secret Service provider), "
-                         "then run `griot auth migrate`")
         else:
-            fixes.append('pip install "griot[keychain]", then run `griot auth migrate`')
+            # A note, not a warning: with no backend the file is where keys
+            # belong, and a container or headless server may never have one.
+            # A warning nobody can clear teaches people to skip the doctor.
+            details.append("once an OS keychain is reachable, `griot auth migrate` moves them there")
     if in_keychain:
         details.append(f"in the OS keychain: {', '.join(in_keychain)}")
     if exported:

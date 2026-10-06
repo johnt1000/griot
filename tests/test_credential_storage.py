@@ -236,6 +236,34 @@ def test_migrate_with_keyring_but_no_backend_does_not_say_install_it(monkeypatch
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == SECRET
 
 
+@pytest.mark.parametrize("stored, says, never", [
+    ("keychain", "OS keychain", "plaintext"),
+    ("file", "plaintext", "OS keychain"),
+    ("both", "OS keychain", None),
+])
+def test_remove_says_where_the_key_was_removed_from(keychain, capsys, stored, says, never):
+    """It said "removed from <config>/.env" wherever the key was: one removed
+    from the keychain was reported in the plaintext file."""
+    if stored in ("keychain", "both"):
+        keychain.store[("griot", "GRIOT_OPENAI_API_KEY")] = SECRET
+    if stored in ("file", "both"):
+        common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
+
+    assert auth.cmd_remove("openai") == 0
+
+    out = capsys.readouterr().out
+    assert says in out and "GRIOT_OPENAI_API_KEY" in out
+    if never:
+        assert never not in out
+    if stored == "keychain":
+        assert str(common.ENV_PATH) not in out
+    else:
+        assert str(common.ENV_PATH) in out
+    if stored == "both":
+        assert "plaintext" in out
+    _no_secret_in(out)
+
+
 # --- griot doctor ----------------------------------------------------------------------------------
 
 
@@ -265,27 +293,43 @@ def test_doctor_moves_nothing(keychain):
 
 
 def test_doctor_says_the_fallback_when_no_backend_is_reachable():
+    """Said, not warned: with no backend the file is where keys belong, and a
+    warning nobody can clear (a container has no keychain to reach) teaches
+    people to stop reading the doctor."""
     common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
 
     check = _credentials()
 
-    assert check["status"] == "warn"
+    assert check["status"] == "ok" and check["fix"] is None
     assert "no OS keychain backend" in check["detail"] and "plaintext" in check["detail"]
     assert "GRIOT_OPENAI_API_KEY" in check["detail"]
-    assert "griot[keychain]" in check["fix"]
-    _no_secret_in(check["detail"] + check["fix"])
+    assert "griot[keychain]" in check["detail"] and "griot auth migrate" in check["detail"]
+    _no_secret_in(check["detail"])
 
 
 def test_doctor_does_not_say_install_it_when_keyring_is_there_but_finds_no_backend(monkeypatch):
-    """Installing the extra again fixes nothing on headless Linux: the advice
+    """Installing the extra again fixes nothing on headless Linux: the note
     is a backend, then the move."""
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring(_Backend("fail Keyring", 0)))
     common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
 
     check = _credentials()
 
-    assert check["status"] == "warn" and "griot[keychain]" not in check["detail"] + check["fix"]
-    assert "Secret Service" in check["fix"] and "griot auth migrate" in check["fix"]
+    assert check["status"] == "ok" and check["fix"] is None
+    assert "griot[keychain]" not in check["detail"]
+    assert "Secret Service" in check["detail"] and "griot auth migrate" in check["detail"]
+
+
+def test_doctor_still_warns_about_an_override_when_no_backend_is_reachable(monkeypatch):
+    """Only the plaintext note became quiet: a shell export hiding the stored
+    key is still a warning, keychain or not."""
+    common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
+    monkeypatch.setenv("GRIOT_OPENAI_API_KEY", "sk-" + "o" * 40)
+    monkeypatch.setattr(common, "EXPORTED_BEFORE_ENV_FILE", {"GRIOT_OPENAI_API_KEY": "0" * 64})
+
+    check = _credentials()
+
+    assert check["status"] == "warn" and "unset" in check["fix"] and "griot auth migrate" not in check["fix"]
 
 
 def test_doctor_is_ok_when_everything_is_in_the_keychain(keychain):
