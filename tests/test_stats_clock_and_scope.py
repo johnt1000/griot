@@ -18,14 +18,13 @@ from griot import common, logdb, mcp_server, stats
 pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset to fix the local zone")
 
 
-@pytest.fixture
-def new_york():
+def _local_zone(name: str):
     """A fixed local zone with DST, restored afterwards: the local day is
     whatever the machine says, so a test that does not pin it proves nothing.
     Restored by hand, not by monkeypatch: tzset() has to run AFTER the
     variable is back, and monkeypatch restores only at its own teardown."""
     before = os.environ.get("TZ")
-    os.environ["TZ"] = "America/New_York"
+    os.environ["TZ"] = name
     time.tzset()
     try:
         yield
@@ -35,6 +34,18 @@ def new_york():
         else:
             os.environ["TZ"] = before
         time.tzset()
+
+
+@pytest.fixture
+def new_york():
+    yield from _local_zone("America/New_York")
+
+
+@pytest.fixture
+def havana():
+    """A zone whose clock changes AT midnight: one day has no 00:00 at all,
+    another has it twice."""
+    yield from _local_zone("America/Havana")
 
 
 def _utc(*args) -> datetime:
@@ -64,8 +75,23 @@ def test_the_window_opens_at_local_midnight_on_a_fall_back_day(new_york):
     assert stats.window_start(2, now) == _utc(2026, 11, 1, 4)
 
 
+def test_a_day_without_a_midnight_opens_when_the_day_does(havana):
+    # 2026-03-08: 00:00 CST becomes 01:00 CDT, so the day begins at 01:00 (05:00 UTC).
+    assert stats.window_start(1, _utc(2026, 3, 8, 18)) == _utc(2026, 3, 8, 5)
+
+
+def test_a_day_with_two_midnights_opens_at_the_first(havana):
+    # 2026-11-01: 01:00 CDT goes back to 00:00 CST; the day began at the first 00:00 (04:00 UTC).
+    assert stats.window_start(1, _utc(2026, 11, 1, 18)) == _utc(2026, 11, 1, 4)
+
+
 def test_one_day_is_today_since_local_midnight(new_york):
     now = _utc(2026, 10, 6, 16)  # 12:00 EDT
+    assert stats.window_start(1, now) == _utc(2026, 10, 6, 4)
+
+
+def test_the_window_of_an_evening_already_tomorrow_in_utc_opens_today(new_york):
+    now = _utc(2026, 10, 7, 2)  # 22:00 EDT on the 6th: the 7th in UTC
     assert stats.window_start(1, now) == _utc(2026, 10, 6, 4)
 
 
