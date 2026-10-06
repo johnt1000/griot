@@ -92,6 +92,14 @@ def _split(value: str | None, separator: str) -> list[str]:
     return [part.strip() for part in (value or "").split(separator) if part.strip()]
 
 
+# The kinds whose readers take an empty value as their default: a flag or an
+# enable reads "" as neither true nor false and keeps the default, and a list
+# reads it as no entries. `set` still refuses an empty value (`unset` is how
+# one is cleared), but a file that holds one is a file griot starts with, and
+# the template writes the two lists empty.
+EMPTY_IS_DEFAULT = frozenset({"flag", "enable", "roots", "hosts"})
+
+
 def normalized(setting: Setting, raw: str) -> str:
     """`raw` as it is written to the file, or _NotValid saying what a valid
     value looks like. The same rules the readers apply when griot starts:
