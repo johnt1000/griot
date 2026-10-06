@@ -179,12 +179,28 @@ def _cmd_index_keywords(rest: list) -> int:
     if not result["points"]:
         print(f"Nothing is indexed in collection '{common.COLLECTION_NAME}' yet: an index run adds keyword "
               f"vectors as it writes.")
-    elif not result["written"]:
-        print(f"All {result['points']} points of collection '{common.COLLECTION_NAME}' already have keyword vectors.")
+    elif not result["written"] and not result["rebuilt"]:
+        # A rebuilt collection is never a no-op, even with nothing written:
+        # a copy killed after its last page but before the swap is finished
+        # here, and the collection had no keyword vectors until then.
+        if result["points"] == 1:
+            print(f"The 1 point of collection '{common.COLLECTION_NAME}' already has keyword vectors.")
+        else:
+            print(f"All {result['points']} points of collection '{common.COLLECTION_NAME}' already have "
+                  f"keyword vectors.")
     else:
-        how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
-        print(f"{result['written']} points {how} in collection '{common.COLLECTION_NAME}' (embedded nothing). "
-              f"`griot search --mode keyword` and `--mode hybrid` now work.")
+        written, kept = result["written"], result["kept"]
+        written_text = f"{written} point{'s' if written != 1 else ''}"
+        if kept:
+            # The points written now are only what the interrupted copy
+            # lacked: alone they would read as a copy of that much of the
+            # collection.
+            done = (f"Resumed an interrupted copy of collection '{common.COLLECTION_NAME}': {kept} "
+                    f"point{' was' if kept == 1 else 's were'} already copied, {written_text} copied now")
+        else:
+            how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
+            done = f"{written_text} {how} in collection '{common.COLLECTION_NAME}'"
+        print(f"{done} (embedded nothing). `griot search --mode keyword` and `--mode hybrid` now work.")
     return 0
 
 

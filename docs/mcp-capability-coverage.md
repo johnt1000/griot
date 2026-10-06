@@ -61,7 +61,7 @@ griot is, and are recorded below so nobody re-derives the reasoning.
 
 ## Used today
 
-**Tools** (`@mcp.tool`), in two groups. The server's `list_tools()` is the
+**Tools** (`@_tool`, which wraps `@mcp.tool`), in two groups. The server's `list_tools()` is the
 inventory, and the table under "CLI and MCP, side by side" maps each tool to
 its command; a list kept here in prose went stale more than once.
 
@@ -89,7 +89,7 @@ them, and how the two are kept from disagreeing.
 `mcp_server.py` for the three-layer policy and why no single layer is
 sufficient.
 
-**Prompts** (`@mcp.prompt`) — four. A prompt computes nothing: it injects
+**Prompts** (`@_prompt`, which wraps `@mcp.prompt`) — four. A prompt computes nothing: it injects
 text, and the work is still a tool call. Each one exists because it carries
 a judgement or a strategy that is not in any tool's output.
 

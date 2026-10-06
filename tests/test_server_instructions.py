@@ -84,37 +84,119 @@ async def test_the_search_tool_description_leads_with_how_to_use_it():
     assert "group_by_document" in description
 
 
-def _as_python_before_3_13_sends_it(description):
-    """The description as a server on Python 3.10 to 3.12 sends it. The SDK
-    passes the function's __doc__ through untouched (no inspect.cleandoc),
-    and before 3.13 the compiler kept the docstring's indentation, so every
-    line after the first arrives with the four spaces of the function body
-    (blank lines stay empty; the closing quotes sit on the last line)."""
-    first, *rest = inspect.cleandoc(description).split("\n")
-    return "\n".join([first] + [f"    {line}" if line else line for line in rest])
-
-
 def _measured(text):
     """The length of the words an agent reads, the same on every Python:
-    inspect.cleandoc removes the indentation Python < 3.13 leaves in a
-    docstring, which is what 3.13 already does when it compiles one."""
+    inspect.cleandoc removes any indentation a text may carry, which the
+    server no longer sends (see the indentation tests below), so this is the
+    length a client receives."""
     return len(inspect.cleandoc(text))
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("sent_by", ["this python", "python < 3.13"])
-async def test_the_search_tool_description_is_short_enough_on_every_python(sent_by):
+async def test_the_search_tool_description_is_short_enough_on_every_python():
     _, tools = await _server()
     description = tools["griot_search"].description
-    if sent_by == "python < 3.13":
-        description = _as_python_before_3_13_sends_it(description)
     # Raised from 1300 when the filters and the metadata of a result had to
     # be described, then held at 1700 for the search modes, a number read on
     # Python 3.10 where the same text measured 1692 with its indentation and
-    # 1600 without it on 3.13. The ceiling is on the words, measured the same
-    # on every Python, so a run on 3.13 cannot pass a text 3.10 would refuse.
+    # 1600 without it on 3.13. The server now registers every docstring
+    # cleaned, so the text a client receives, and this measure of it, is the
+    # same on every Python (held by the indentation tests below).
     # Still a ceiling: every agent that loads the tool reads it.
     assert _measured(description) <= 1600
+
+
+async def _every_description_sent():
+    """(kind, name, description) for every tool, prompt and resource, as a
+    real client receives them."""
+    async with Client(mcp_server.mcp) as client:
+        sent = [("tool", t.name, t.description) for t in (await client.list_tools()).tools]
+        sent += [("prompt", p.name, p.description) for p in (await client.list_prompts()).prompts]
+        sent += [("resource", str(r.uri), r.description) for r in (await client.list_resources()).resources]
+    return sent
+
+
+@pytest.mark.anyio
+async def test_no_description_the_server_sends_keeps_docstring_indentation():
+    """Before 3.13 the compiler keeps a docstring's indentation and the SDK
+    sends __doc__ as it is, so on 3.10 to 3.12 every line after the first of
+    every description arrived with the function body's spaces in front: about
+    ninety of them per griot_search listing, read by every agent that loads
+    it. Run on each Python in CI, this is what holds the server to sending
+    the same text on all of them."""
+    sent = await _every_description_sent()
+    assert {kind for kind, _, _ in sent} == {"tool", "prompt", "resource"}
+    for kind, name, description in sent:
+        _assert_not_indented(kind, name, description)
+
+
+def _assert_not_indented(kind, name, description):
+    assert description, (kind, name)
+    indented = [line for line in description.split("\n") if re.match(r" {4,}\S", line)]
+    assert not indented, (kind, name, indented[:3])
+
+
+# The index tools are registered only when GRIOT_MCP_ENABLE_INDEX is set at
+# import, nested one level deeper (eight spaces before 3.13). Reloading the
+# module here would swap objects other test modules hold, so a child process
+# imports the server with it on and prints what a real client lists.
+_LIST_DESCRIPTIONS = """
+import json, anyio
+from mcp.client.client import Client
+from griot import mcp_server
+
+async def listed():
+    async with Client(mcp_server.mcp) as client:
+        return [(t.name, t.description) for t in (await client.list_tools()).tools]
+
+print(json.dumps(anyio.run(listed)))
+"""
+
+
+def test_the_index_tools_registered_on_demand_are_not_indented_either(tmp_path):
+    import json
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "GRIOT_MCP_ENABLE_INDEX": "true",
+           "GRIOT_CONFIG_DIR": str(tmp_path / "config"), "GRIOT_DATA_DIR": str(tmp_path / "data")}
+    done = subprocess.run([sys.executable, "-c", _LIST_DESCRIPTIONS], env=env, cwd=tmp_path,
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    assert done.returncode == 0, done.stderr
+    tools = dict(json.loads(done.stdout.strip().splitlines()[-1]))
+    assert {"griot_index_repo", "griot_index_wait"} <= set(tools)
+    for name, description in tools.items():
+        _assert_not_indented("tool", name, description)
+
+
+_INDENTED_DOC = "First line.\n\n    Second paragraph,\n    two lines.\n    "
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("register", ["tool", "prompt"])
+async def test_griot_registers_a_docstring_cleaned_whatever_the_python(monkeypatch, register):
+    """The same guard, on THIS Python: a docstring indented the way 3.10 to
+    3.12 leave one, registered through griot's own decorators on a server of
+    its own, reaches a client cleaned. The test above cannot fail on 3.13,
+    where the compiler already did the cleaning."""
+    from mcp.server.mcpserver import MCPServer
+    probe = MCPServer("probe")
+    monkeypatch.setattr(mcp_server, "mcp", probe)
+
+    def probe_fn() -> str:
+        return "x"
+    probe_fn.__doc__ = _INDENTED_DOC
+
+    if register == "tool":
+        mcp_server._tool()(probe_fn)
+    else:
+        mcp_server._prompt(name="probe_fn")(probe_fn)
+    async with Client(probe) as client:
+        if register == "tool":
+            (listed,) = (await client.list_tools()).tools
+        else:
+            (listed,) = (await client.list_prompts()).prompts
+    assert listed.description == "First line.\n\nSecond paragraph,\ntwo lines."
 
 
 def _stored_fields():

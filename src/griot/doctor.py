@@ -241,7 +241,11 @@ def check_index(common) -> dict:
     last = status.get("last_indexed") or {}
     if error and str(error).startswith("unreadable"):
         return _check("index", FAIL, f"the collection could not be read: {str(error)[len('unreadable: '):]}", None)
-    if last.get("error"):
+    from griot import stats
+
+    # A refusal the repositories check names (with the repositories, which
+    # this line cannot) is said there only: the same failure said twice.
+    if last.get("error") and not stats.refusal_names_last_run(last, status.get("repositories") or []):
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say).
         what = "did not finish" if last.get("indexed") is None else "failed"
@@ -253,8 +257,11 @@ def check_index(common) -> dict:
     count = status.get("points_count") or 0
     if not count:
         return _check("index", WARN, "nothing indexed yet in this profile's collection", "griot index all")
+    # A last run that failed (a refusal said by the repositories check)
+    # wrote nothing: it was an attempt, as `griot stats` says it.
+    wrote = "last indexing attempt" if last.get("error") else "last indexed"
     detail = f"{count} points in {status.get('collection')}" + (
-        f", last indexed {last.get('timestamp')}" if last.get("timestamp") else "")
+        f", {wrote} {last.get('timestamp')}" if last.get("timestamp") else "")
     if status.get("keyword_search") is False:
         # Not a warning: vector search, the default, works as it always did.
         # Said because nothing else tells a person the other modes exist.
