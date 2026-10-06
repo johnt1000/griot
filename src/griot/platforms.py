@@ -134,6 +134,13 @@ def _get_with_retry(url: str, headers: dict, params: dict | None = None, auth: t
     return resp
 
 
+# The variable each platform's token is read from: what an error about a
+# refused token names (common.credential_hint).
+# The provider names in common.credential_env_vars() are the platform names.
+TOKEN_ENV = {platform: common.credential_env_vars()[platform]
+             for platform in ("github", "gitlab", "bitbucket", "azure_devops", "gitea")}
+
+
 def _require_token(env_var: str) -> str:
     token = os.getenv(env_var)
     if not token:

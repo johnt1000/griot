@@ -118,6 +118,7 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
     platform, project_id, host = detected
 
     documents = []
+    hinted = False
     for label, builder in [
         ("merge/pull requests", build_mr_documents),
         ("releases", build_release_documents),
@@ -129,6 +130,13 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
             documents.extend(docs)
         except Exception as e:
             print(f"  WARNING: failed fetching {label} from {project_id} ({platform}): {e}")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            env_var = platforms.TOKEN_ENV.get(platform)
+            if status in (401, 403) and env_var and not hinted:
+                # Which token the platform refused: the one exported in the
+                # shell can hide the one griot stores, and nothing said so.
+                print(f"    {common.credential_hint(env_var)}")
+                hinted = True
     return documents
 
 

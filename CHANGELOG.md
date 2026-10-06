@@ -20,6 +20,22 @@ between minor versions. Breaking changes are called out explicitly.
   (`ubuntu-24.04`, `macos-15`) instead of `-latest`, and the tests that need
   the real scanner run instead of being skipped.
 
+### Fixed
+
+- **A credential exported in the shell no longer hides silently behind the
+  one griot stores.** A key exported in `~/.zshrc` (or any shell file) wins
+  over `<config>/.env` and the keychain, as it should, and nothing said so:
+  `griot auth set github` wrote the new token and reported success, every
+  new terminal kept using the old exported one, and the platform answered
+  401 with nothing saying which token it had been given. Now `griot auth
+  set` warns when an export with another value will keep winning, naming
+  the shell file and line (never the value); `griot auth list` says when
+  the key in use comes from the shell and differs from the stored one (it
+  compared with the `.env` only, not the keychain); `griot auth remove`
+  says when an export is still there; a platform, embedding or chat API
+  that refuses a key (401/403) says where the key came from and what to do;
+  and `griot doctor` has a `credentials` check for the same.
+
 ## [0.2.0] — 2026-10-05
 
 The first version published to PyPI, as `griot-rag` (the name `griot`

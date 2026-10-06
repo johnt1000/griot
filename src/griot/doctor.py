@@ -136,6 +136,29 @@ def check_profile(common) -> dict:
     return _check("profile", OK, f"{name} (API): credential {key_env} is configured")
 
 
+def check_credentials(common) -> dict:
+    """A credential exported in the shell overrides the one griot stores:
+    `griot auth set` then changes nothing in that shell, and an API that
+    refuses the key looks like a bad new key. Places, never values."""
+    overridden, exported = [], []
+    for provider, env_var in sorted(common.credential_env_vars().items()):
+        origin = common.credential_origin(env_var)
+        if origin["source"] != "environment":
+            continue
+        where = ", ".join(origin["exported_in"]) or "this shell"
+        (overridden if origin["shadows_stored"] else exported).append((env_var, where))
+    if overridden:
+        return _check("credentials", WARN,
+                      "exported in the shell with a value other than the one griot stores, which it hides: "
+                      + "; ".join(f"{var} ({where})" for var, where in overridden),
+                      "remove the export from " + "; ".join(where for _, where in overridden)
+                      + ", and `unset` it in terminals already open")
+    if exported:
+        return _check("credentials", OK, "from the shell, and griot stores no other value: "
+                      + "; ".join(f"{var} ({where})" for var, where in exported))
+    return _check("credentials", OK, "none is overridden by the shell")
+
+
 def check_index(common) -> dict:
     status = common.get_index_status(reuse_active_handle=False)
     error = status.get("points_error")
@@ -336,13 +359,14 @@ def run_checks(*, home: Path | None = None) -> list[dict]:
         checks.append(check_git())  # without the configuration: found or not
         skipped = "skipped: the configuration did not load"
         checks.extend(_check(name, SKIP, skipped) for name in
-                      ("directories", "profile", "index", "repositories", "spend", "mcp registration",
+                      ("directories", "profile", "credentials", "index", "repositories", "spend", "mcp registration",
                        "tool approval", "server environment", "log"))
         return checks
     checks = [
         ("settings", lambda: check_settings(common.ENV_PATH, None, mode_before)),
         ("directories", lambda: check_directories(common)),
         ("profile", lambda: check_profile(common)),
+        ("credentials", lambda: check_credentials(common)),
         ("index", lambda: check_index(common)),
         ("repositories", lambda: check_repositories(common)),
         ("spend", lambda: check_spend(common)),

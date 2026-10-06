@@ -77,6 +77,10 @@ def provider_status() -> list[dict]:
             "configured": bool(file_value or env_value),
             "file_masked": _mask(file_value) if file_value else None,
             "env_masked": _mask(env_value) if env_value else None,
+            # The file only, as before: this is read by MCP tools on every
+            # call, and reading the keychain there can ask the person on
+            # macOS. `griot auth list` and `griot doctor` compare with the
+            # keychain too (common.credential_origin).
             "shadowed_by_env": bool(env_value and file_value and env_value != file_value),
         })
     return statuses
@@ -164,6 +168,7 @@ def cmd_set(provider: str) -> int:
     replaced = set_provider_key(provider, key)
 
     print(f"{env_var} written to {common.ENV_PATH} (permission 0600).")
+    _say_if_the_shell_overrides(env_var)
     if replaced:
         # [review] common.py resolves .env once, at import time
         # — a long-lived MCP server already running won't see this change
@@ -171,6 +176,18 @@ def cmd_set(provider: str) -> int:
         # doesn't affect `griot auth set` itself, only concurrent MCP sessions.
         print("Warning: an already-running MCP server won't see this change until restarted (common.py resolves .env only at import time).")
     return 0
+
+
+def _say_if_the_shell_overrides(env_var: str) -> None:
+    """After a key was written: an export of a DIFFERENT value in the shell
+    wins over it, here and in every terminal that sets it, and nothing else
+    would say so (the next API refusal looked like a bad new key)."""
+    origin = common.credential_origin(env_var)
+    if not origin["shadows_stored"]:
+        return
+    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file griot knows)"
+    print(f"Warning: {env_var} is also exported, with a different value, in {where}. The environment wins, so "
+          f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
 
 
 def cmd_list() -> int:
@@ -182,6 +199,11 @@ def cmd_list() -> int:
     for status in provider_status():
         masked = status["env_masked"] or status["file_masked"]
         line = f"✓ configured ({masked})" if masked else f"✗ missing — griot auth set {status['provider']}"
+        origin = common.credential_origin(status["env_var"])
+        if origin["shadows_stored"]:
+            where = ", ".join(origin["exported_in"]) or "this shell"
+            line += (f" — from the environment ({where}), which overrides the key griot stores; the stored one "
+                     f"differs and is not used")
         print(f"  {status['provider']:<10} {line}")
     return 0
 
@@ -204,6 +226,10 @@ def cmd_remove(provider: str) -> int:
         print(f"{env_var} was not configured — nothing to remove.")
         return 0
     print(f"{env_var} removed from {common.ENV_PATH}.")
+    origin = common.credential_origin(env_var)
+    if origin["source"] == "environment":
+        where = ", ".join(origin["exported_in"]) or "this shell"
+        print(f"Note: {env_var} is still exported in {where}: griot keeps using that value until the export is removed.")
     return 0
 
 
