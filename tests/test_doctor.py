@@ -41,7 +41,7 @@ def _pypi_is_not_asked(monkeypatch):
     def offline():
         raise requests.ConnectionError("the suite does not ask PyPI")
 
-    monkeypatch.setattr(doctor, "_latest_release", offline)
+    monkeypatch.setattr(doctor, "latest_release", offline)
 
 
 def _cli(tmp_path, *args, file="", exported=None):
@@ -626,7 +626,7 @@ def test_the_file_griot_writes_on_first_use_passes_the_settings_check():
 # never run: how griot was installed is a guess.
 
 
-_REAL_LATEST_RELEASE = doctor._latest_release  # before the autouse fixture replaces it
+_REAL_LATEST_RELEASE = doctor.latest_release  # before the autouse fixture replaces it
 
 
 @pytest.fixture
@@ -643,7 +643,7 @@ def pypi(monkeypatch):
             raise state["answer"]
         return state["answer"]
 
-    monkeypatch.setattr(doctor, "_latest_release", latest)
+    monkeypatch.setattr(doctor, "latest_release", latest)
     monkeypatch.setattr(griot, "__version__", "0.2.1")
     monkeypatch.delenv("GRIOT_UPDATE_CHECK", raising=False)
     # The suite itself runs from an editable install; the tests about the
@@ -771,7 +771,7 @@ class _Session:
 
 def _session_answering(monkeypatch, response):
     """The session common.py keeps, answering `response` to the real
-    _latest_release."""
+    latest_release."""
     session = _Session(response)
     monkeypatch.setattr(common, "_http_session", lambda: session)
     return session
@@ -804,7 +804,7 @@ def test_an_answer_pypi_did_not_mean_is_an_error_the_check_turns_into_a_skip(mon
     with pytest.raises((requests.RequestException, ValueError)):
         _REAL_LATEST_RELEASE()
 
-    monkeypatch.setattr(doctor, "_latest_release", _REAL_LATEST_RELEASE)
+    monkeypatch.setattr(doctor, "latest_release", _REAL_LATEST_RELEASE)
     check = _release()
     assert check["status"] == "skip" and "could not ask PyPI" in check["detail"]
 
@@ -838,23 +838,23 @@ def test_the_check_is_on_by_default_and_with_an_empty_value(monkeypatch, pypi, v
     ("/Users/you/code/uv/.venv", ["/Users/you/code/uv/.venv/bin/python -m pip install --upgrade griot-rag"]),
 ])
 def test_the_upgrade_command_follows_where_griot_runs(prefix, expected):
-    assert doctor._upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == expected
+    assert doctor.upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == expected
 
 
 def test_in_a_virtual_environment_it_is_that_environment_s_pip():
-    commands = doctor._upgrade_commands("/Users/you/work/venv", "/usr", "/Users/you/work/venv/bin/python")
+    commands = doctor.upgrade_commands("/Users/you/work/venv", "/usr", "/Users/you/work/venv/bin/python")
 
     assert commands == ["/Users/you/work/venv/bin/python -m pip install --upgrade griot-rag"]
 
 
 def test_a_path_with_a_space_is_quoted_in_the_command():
-    commands = doctor._upgrade_commands("/Users/you/my work/venv", "/usr", "/Users/you/my work/venv/bin/python")
+    commands = doctor.upgrade_commands("/Users/you/my work/venv", "/usr", "/Users/you/my work/venv/bin/python")
 
     assert commands == ["'/Users/you/my work/venv/bin/python' -m pip install --upgrade griot-rag"]
 
 
 def test_when_it_cannot_tell_it_lists_the_likely_commands():
-    commands = doctor._upgrade_commands("/usr", "/usr", "/usr/bin/python3")
+    commands = doctor.upgrade_commands("/usr", "/usr", "/usr/bin/python3")
 
     assert commands == ["pipx upgrade griot-rag", "uv tool upgrade griot-rag", "python3 -m pip install --upgrade griot-rag"]
 
@@ -957,11 +957,11 @@ def test_only_doctor_knows_the_address_and_only_the_release_check_and_update_ask
     package = pathlib.Path(griot.__file__).parent
     holders = sorted(p.name for p in package.rglob("*.py") if "pypi.org" in p.read_text())
     assert holders == ["doctor.py"]
-    callers = sorted(p.name for p in package.rglob("*.py") if re.search(r"_latest_release\(", p.read_text()))
+    callers = sorted(p.name for p in package.rglob("*.py") if re.search(r"latest_release\(", p.read_text()))
     assert callers == ["doctor.py", "update.py"]
-    assert len(re.findall(r"(?<!def )_latest_release\(\)", (package / "update.py").read_text())) == 1
+    assert len(re.findall(r"(?<!def )latest_release\(\)", (package / "update.py").read_text())) == 1
     source = (package / "doctor.py").read_text()
-    assert len(re.findall(r"(?<!def )_latest_release\(\)", source)) == 1, "one call, in check_release"
+    assert len(re.findall(r"(?<!def )latest_release\(\)", source)) == 1, "one call, in check_release"
     assert len(re.findall(r"(?<!def )check_release\(", source)) == 1, "called once, from run_checks"
 
 
