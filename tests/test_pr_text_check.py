@@ -195,3 +195,38 @@ def test_a_title_that_is_shell_code_is_only_read(tmp_path):
 
     assert done.returncode == 0, done.stderr
     assert not any((tmp_path / name).exists() for name in ("pwned", "pwned2", "pwned3", "pwned4", "pwned5"))
+
+
+# --- a check that could not run says so instead of passing ---------------------------------------
+
+
+def test_without_a_pattern_from_the_hooks_the_check_fails_instead_of_passing(tmp_path):
+    """A common.sh that no longer defines ATTRIBUTION_PATTERN would match
+    nothing, and every pull request would pass unread."""
+    (tmp_path / "git-hooks").mkdir()
+    (tmp_path / "git-hooks" / "common.sh").write_text("# ATTRIBUTION_PATTERN moved elsewhere\n")
+    script = tmp_path / "check-pr-text.sh"
+    script.write_text(SCRIPT.read_text())
+
+    done = subprocess.run(["bash", str(script)], capture_output=True, text=True, cwd=tmp_path,
+                          env={"PATH": "/usr/bin:/bin", "PR_TITLE": "fix: x", "PR_BODY": "Generated with Claude Code"})
+
+    assert done.returncode == 2 and "ATTRIBUTION_PATTERN" in done.stderr and "nothing was checked" in done.stderr
+
+
+@pytest.mark.parametrize("which", ["title", "body"])
+def test_grep_failing_on_either_text_fails_the_check_instead_of_passing(tmp_path, which):
+    """grep exits 1 for no match and 2 when it could not search: the second
+    read as "nothing found" would pass a text nobody read. A grep that fails
+    only on one of the two files stands in for any such error."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "grep"
+    fake.write_text(f'#!/bin/sh\nfor last; do :; done\ncase "$last" in */{which}) exit 2;; esac\n'
+                    f'exec /usr/bin/grep "$@"\n')
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "PR_TITLE": "fix: x", "PR_BODY": "Plain text."}
+
+    done = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=tmp_path)
+
+    assert done.returncode == 2

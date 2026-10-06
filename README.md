@@ -208,7 +208,7 @@ Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also hono
 
 ## Environment variables
 
-`griot config list` shows every setting, the value in force and where it comes from (the environment, `<config>/.env`, or the default). `griot config set <name> <value>` checks a value and writes it to the file, `griot config unset <name>` goes back to the default, and `griot config get <name>` prints one value. A change that widens something is asked about at an interactive terminal, with no flag that answers: raising a spend ceiling, turning on indexing through MCP, adding a directory an agent may index, pointing a platform token at another host. A variable exported in the environment wins over the file, and a running MCP server keeps the values it started with: the `griot_config_list` tool answers for the server being asked, with the value each setting has there, where it came from, and whether the file has changed since. The embedding profile has its own command (`griot profiles use`), and credentials have `griot auth`.
+`griot config list` shows every setting, the value in force and where it comes from (the environment, `<config>/.env`, or the default). `griot config set <name> <value>` checks a value and writes it to the file, `griot config unset <name>` goes back to the default, and `griot config get <name>` prints one value. A change that widens something, or deletes history, is asked about at an interactive terminal, with no flag that answers: raising a spend ceiling, turning on indexing through MCP, adding a directory an agent may index, pointing a platform token at another host, shortening `log-retention-days` (the question says how many searches and MCP tool calls the next prune deletes; the set itself deletes nothing). A variable exported in the environment wins over the file, and a running MCP server keeps the values it started with: the `griot_config_list` tool answers for the server being asked, with the value each setting has there, where it came from, and whether the file has changed since. The embedding profile has its own command (`griot profiles use`), and credentials have `griot auth`.
 
 The most used ones; `griot config list` shows them all.
 
@@ -220,7 +220,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
 | `GRIOT_UPDATE_CHECK` | `false` keeps `griot doctor` from asking PyPI whether a newer griot was released |
-| `GRIOT_LOG_RETENTION_DAYS` | days of searches and MCP tool calls kept in `logs/logs.db` (default 365); older ones are deleted, at most once a day, by the next search or tool call. Indexing runs and quality checks are kept |
+| `GRIOT_LOG_RETENTION_DAYS` | days of searches and MCP tool calls kept in `logs/logs.db` (default 365); older ones are deleted, at most once a day, by the next search or tool call. Indexing runs and quality checks are kept. Shortening it with `griot config set` asks first |
 | `GRIOT_PROJECT` | name recorded with each `griot ask`, `griot_search` and MCP tool call so `griot stats` can show usage by project (default: the folder `CLAUDE_PROJECT_DIR` names, else the folder `griot` runs in; set it in the `env` of that project's MCP server entry, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |
