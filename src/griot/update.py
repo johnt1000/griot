@@ -56,14 +56,14 @@ def main(argv=None) -> int:
 
     installed = griot.__version__
     try:
-        newest = doctor._latest_release()
+        newest = doctor.latest_release()
     # Every exception, as in the doctor's check: whatever stopped the answer,
     # there is none, and nothing may run on a missing one.
     except Exception as e:
         print(f"Error: could not ask PyPI for the newest release ({type(e).__name__}); this is {installed}. "
               f"Nothing was run.", file=sys.stderr)
         return 1
-    mine, theirs = doctor._release_numbers(installed), doctor._release_numbers(newest)
+    mine, theirs = doctor.release_numbers(installed), doctor.release_numbers(newest)
     if mine is None or theirs is None:
         print(f"Error: could not compare {installed} (installed) with {newest!r} (newest on PyPI). "
               f"Nothing was run.", file=sys.stderr)
@@ -82,7 +82,7 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 1
     argvs = doctor.upgrade_argvs(sys.prefix, sys.base_prefix, sys.executable)
-    commands = doctor._upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)
+    commands = doctor.upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)
     if len(argvs) != 1:
         print(f"Error: griot {newest} is out, but how this griot was installed cannot be told from where it "
               f"runs ({sys.prefix}), and running a guess could upgrade some other copy. Run the one that "
