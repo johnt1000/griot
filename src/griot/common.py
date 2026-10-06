@@ -835,6 +835,30 @@ _EDGE_CONFIG_MARKER = "edge_config.json"
 # which is correct by definition.
 _HNSW_CONFIG = qe.HnswIndexConfig(m=16, ef_construct=100, full_scan_threshold=10000)
 
+# Keyword search: every point carries, beside its dense vector, a BM25 sparse
+# vector of its text, under this name. The IDF part of BM25 is applied by the
+# store at query time (Modifier.Idf), over the whole collection, so a document
+# vector never has to be rewritten when the corpus grows. Computed locally by
+# the engine's own BM25 model (qe.Bm25): no embedding call, nothing paid.
+#
+# The name and the model's settings are part of what is stored: documents
+# and queries must be tokenized the same way to match. Changing either (or an
+# engine upgrade that tokenizes differently) means building the keyword
+# vectors again, which build_keyword_index() does.
+KEYWORD_VECTOR = "bm25"
+
+
+def _collection_config() -> "qe.EdgeConfig":
+    """What a collection is made with: the dense vector of the active
+    profile and the keyword vector. A collection made before keyword search
+    has no keyword vector, and the engine cannot add one to existing
+    segments (it refuses a load whose config names a vector the segments
+    lack): build_keyword_index() copies it into a new one made with this."""
+    return qe.EdgeConfig(
+        vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
+        sparse_vectors={KEYWORD_VECTOR: qe.EdgeSparseVectorParams(modifier=qe.Modifier.Idf)},
+    )
+
 # Available embedding profiles. Switching profile = switching collection
 # (name derived from the profile) — vectors from different models aren't
 # comparable with each other, so each profile is isolated by design, with
@@ -2037,14 +2061,15 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     try:
         if _client is None:
             path = _collection_path(COLLECTION_NAME)
+            # Before deciding between load and create: a keyword build that
+            # died between its two renames left the collection beside its
+            # place, and creating an empty one there would hide it.
+            _restore_interrupted_keyword_swap(path)
             if (path / _EDGE_CONFIG_MARKER).exists():
                 opened = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
             else:
                 secure_mkdir(path)  # and whatever is made on the way to it
-                cfg = qe.EdgeConfig(
-                    vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
-                )
-                opened = qe.EdgeShard.create(str(path), cfg)
+                opened = qe.EdgeShard.create(str(path), _collection_config())
             _client = opened
             # [M2] qdrant_data is a recoverable plaintext copy (compressed
             # payload, not encrypted) of ALL indexed content — 0700 on the root
@@ -2790,11 +2815,18 @@ def _write_stale_details(batch: list[dict], client: "qe.EdgeShard") -> int:
     Returns how many. After _split_pending(), which marks them."""
     stale = [doc for doc in batch if doc.get("_details_changed")]
     written = 0
+    # The keyword vector holds some details (a hash, a path: keyword_text),
+    # so it follows them; the dense vector holds the text alone and stays.
+    keywords = bool(stale) and has_keyword_vectors(COLLECTION_NAME)
     try:
         for doc in stale:
             try:
                 # Merges: the text, its hash and the vector stay as they are.
                 client.update(qe.UpdateOperation.set_payload([doc["_point_id"]], doc["metadata"]))
+                if keywords:
+                    sparse = keyword_vector({**doc["metadata"], "content": doc["content"]})
+                    client.update(qe.UpdateOperation.update_vectors(
+                        [qe.PointVectors(doc["_point_id"], {KEYWORD_VECTOR: sparse})]))
                 written += 1
             except Exception as e:  # noqa: BLE001 - one point (gone since it was read) must not stop the others
                 log_and_print(f"Warning: could not update the stored details of {shown(doc['id'])}: {e}",
@@ -3138,6 +3170,215 @@ def _repair_mode(target: str, mode: int) -> bool:
     return False
 
 
+# --- keyword vectors ---------------------------------------------------------
+
+# Details stored beside the text that a person searches for by their exact
+# spelling and that the text itself does not hold: a code chunk does not
+# contain its path, a commit message does not contain its hash. Numbers (a
+# pull request's) are left out: a bare number matches every text that
+# happens to hold it.
+_KEYWORD_DETAILS = ("file_path", "commit_hash", "last_commit_hash", "tag_name", "branch_name",
+                    "source_branch", "target_branch")
+# A hash is written abbreviated more often than whole, and BM25 matches whole
+# words only: the lengths git abbreviates to (7 by default, longer as a
+# repository grows) go in as words of their own.
+_HASH_DETAILS = ("commit_hash", "last_commit_hash")
+_HASH_ABBREVIATIONS = range(7, 13)
+
+_bm25_model: "qe.Bm25 | None" = None
+
+
+def _keyword_model() -> "qe.Bm25":
+    """The engine's BM25 model with its defaults (English stemming and
+    stopwords, k=1.2, b=0.75): the same for documents and queries, which is
+    what makes them match. Cheap to make; kept because every point needs it."""
+    global _bm25_model
+    if _bm25_model is None:
+        _bm25_model = qe.Bm25()
+    return _bm25_model
+
+
+def keyword_text(payload: dict) -> str:
+    """What the keyword vector of a stored point is made from: its text as
+    it may leave griot (stored_text) plus the identifying details the text
+    lacks (_KEYWORD_DETAILS), the details through the same replacement as
+    the text, so a credential-shaped branch name is not made findable by its
+    value."""
+    words = []
+    for field in _KEYWORD_DETAILS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        words.append(value)
+        if field in _HASH_DETAILS and is_git_hash(value):
+            words.extend(value[:length] for length in _HASH_ABBREVIATIONS)
+    text = stored_text(payload)
+    if words:
+        text += "\n" + redaction.redact(" ".join(words))[0]
+    return text
+
+
+def keyword_vector(payload: dict) -> "qe.SparseVector":
+    return _keyword_model().embed_document(keyword_text(payload))
+
+
+def _point(point_id: str, dense: list[float], payload: dict, *, keywords: bool) -> "qe.Point":
+    vectors = {"dense": dense}
+    if keywords:
+        vectors[KEYWORD_VECTOR] = keyword_vector(payload)
+    return qe.Point(id=point_id, vector=vectors, payload=payload)
+
+
+# Points per round when keyword vectors are built: a scroll page and one write.
+_KEYWORD_BATCH = 256
+
+
+def _keyword_rebuild_paths(path: Path) -> tuple[Path, Path]:
+    """(where the copy with keyword vectors is built, where the collection
+    waits while the copy takes its place). Siblings of the collection, so a
+    rename moves them and never copies across file systems."""
+    return path.with_name(path.name + ".keywords-new"), path.with_name(path.name + ".keywords-old")
+
+
+def _restore_interrupted_keyword_swap(path: Path) -> None:
+    """Puts a collection back where it belongs when a keyword build died
+    after moving it aside and before its copy took the place. Nothing else
+    is touched: the copy is deleted by the next build, which starts over."""
+    _staging, previous = _keyword_rebuild_paths(path)
+    if (path / _EDGE_CONFIG_MARKER).exists() or not (previous / _EDGE_CONFIG_MARKER).exists():
+        return
+    if path.exists():
+        path.rmdir()  # only ever empty here; anything in it is not ours to delete, and rmdir refuses
+    os.rename(previous, path)
+    log_and_print(f"Put collection '{path.name}' back in place: a keyword build was interrupted while "
+                  f"swapping it. Its keyword vectors are not built; `griot index keywords` builds them.",
+                  level="warning", echo=False)
+
+
+def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
+    """Copies every point of `client` into a new collection at `staging`,
+    made with the keyword vector: the dense vector and the payload as they
+    are, the keyword vector computed from the payload. Returns how many.
+    Embeds nothing: the dense vectors are read back from the store."""
+    total = client.info().points_count
+    secure_mkdir(staging)
+    new = qe.EdgeShard.create(str(staging), _collection_config())
+    try:
+        copied, offset = 0, None
+        with tqdm(total=total, desc="Adding keyword vectors") as progress:
+            while True:
+                page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
+                                                              with_payload=True, with_vector=["dense"]))
+                if page:
+                    new.update(qe.UpdateOperation.upsert_points(
+                        [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in page]))
+                    copied += len(page)
+                    progress.update(len(page))
+                if offset is None:
+                    break
+        new.flush()
+        # Checked before the copy replaces anything: a copy that came out
+        # short must never take the collection's place.
+        if new.info().points_count != total:
+            raise RuntimeError(f"The copy holds {new.info().points_count} points and the collection {total}; "
+                               f"the collection was left as it was.")
+        new.optimize()
+    finally:
+        new.close()
+    return copied
+
+
+def _swap_in(path: Path, staging: Path, previous: Path) -> None:
+    """Puts the copy at `staging` in the collection's place. Called with the
+    collection's handle still open, so no other process can open it in
+    between (the engine allows one process per collection); the window
+    between the two renames is covered by _restore_interrupted_keyword_swap()."""
+    os.rename(path, previous)
+    try:
+        os.rename(staging, path)
+    except OSError as e:
+        if previous.exists() and not path.exists():
+            os.rename(previous, path)
+        raise RuntimeError(f"Could not put the collection with keyword vectors in place ({e}); the collection "
+                           f"was left as it was. Run `griot index keywords` again.") from e
+    release_client()
+    shutil.rmtree(previous)
+
+
+def _fill_missing_keyword_vectors(client: "qe.EdgeShard") -> int:
+    """Gives a keyword vector to every point of a collection made with one
+    that lacks it (written by a griot from before keyword search, say).
+    Returns how many. In place: the dense vector is left as it is."""
+    missing = qe.Filter(must_not=[qe.HasVectorCondition(KEYWORD_VECTOR)])
+    filled, offset = 0, None
+    while True:
+        page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH, filter=missing,
+                                                      with_payload=True, with_vector=False))
+        if page:
+            client.update(qe.UpdateOperation.update_vectors(
+                [qe.PointVectors(r.id, {KEYWORD_VECTOR: keyword_vector(r.payload or {})}) for r in page]))
+            filled += len(page)
+        if offset is None:
+            break
+    if filled:
+        client.flush()
+    return filled
+
+
+def build_keyword_index() -> dict:
+    """Gives every point of the active collection a keyword vector, without
+    embedding anything and without any paid call. Returns {"rebuilt": the
+    collection was copied into one made with the keyword vector, "written":
+    keyword vectors written, "points": points in the collection}.
+
+    A collection made before keyword search cannot take the vector in place
+    (the engine refuses to add a vector to existing segments), so it is
+    copied into a new one beside it, which then takes its place: for the
+    duration it needs about as much free disk as the collection takes. A
+    collection made with the vector only gets it for the points that lack it.
+
+    Idempotent: once every point has its vector this writes nothing. Run
+    again after an interruption, it finishes: a copy that never took the
+    collection's place is started over (it embedded nothing, so starting
+    over costs only the local copy), a collection left aside mid-swap is put
+    back first.
+
+    Holds the index lock for the whole build (an index run writing into the
+    collection while it is copied would lose what it wrote with the old
+    copy) and the collection's handle (no other process can open it while
+    it is copied, in either concurrency mode)."""
+    acquire_lock(label="keyword vectors")
+    try:
+        path = _collection_path(COLLECTION_NAME)
+        staging, previous = _keyword_rebuild_paths(path)
+        with _client_lock:
+            _restore_interrupted_keyword_swap(path)
+            for leftover in (staging, previous):
+                # A copy that never took the place, or a collection that
+                # was replaced and not yet deleted: neither is the collection.
+                if leftover.exists():
+                    shutil.rmtree(leftover)
+            if not collection_exists(COLLECTION_NAME):
+                return {"rebuilt": False, "written": 0, "points": 0}
+            rebuilt, written = False, 0
+            if not has_keyword_vectors(COLLECTION_NAME):
+                written = _copy_into_keyword_collection(get_client(), staging)
+                _swap_in(path, staging, previous)
+                rebuilt = True
+            client = get_client()
+            filled = _fill_missing_keyword_vectors(client)
+            if filled:
+                client.optimize()
+            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count}
+    finally:
+        # Closed before the permissions are repaired: the engine writes
+        # files of its own when a shard closes (a segment.json, with the
+        # process umask), and a repair before that would miss them.
+        release_client()
+        _secure_collection_dir(COLLECTION_NAME)
+        release_lock()
+
+
 def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
     """Receives documents with 'id' (natural key, string), 'content' and
     'metadata' already prepared, embeds them in batches (active profile)
@@ -3166,6 +3407,11 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     try:
         print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
+        # A collection made before keyword search has no room for the
+        # keyword vector (the engine refuses a point naming a vector the
+        # collection lacks): its points are written as before, and
+        # build_keyword_index() adds the keyword vectors to all of them.
+        keywords = has_keyword_vectors(COLLECTION_NAME)
         indexed = 0
         skipped = 0
         failed = 0
@@ -3193,10 +3439,9 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
                 vectors = embed_texts(texts)
 
                 points = [
-                    qe.Point(
-                        id=doc["_point_id"],
-                        vector={"dense": vector},
-                        payload={**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
+                    _point(doc["_point_id"], vector,
+                           {**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
+                           keywords=keywords
                     )
                     for doc, vector in zip(to_embed, vectors)
                     if vector is not None
@@ -3524,6 +3769,31 @@ def delete_collection(collection: str) -> None:
     shutil.rmtree(_collection_path(collection))
 
 
+def has_keyword_vectors(collection: str) -> bool | None:
+    """Whether `collection` was made with the keyword vector: True or False,
+    or None when it does not exist. Read from the config file the engine
+    writes beside the segments (the same file collection_exists() looks
+    for), which needs no handle on the shard: the engine has no call that
+    returns a loaded shard's config, and opening one another process holds
+    would wait for it."""
+    try:
+        config = json.loads((_collection_path(collection) / _EDGE_CONFIG_MARKER).read_text())
+    except FileNotFoundError:
+        return None
+    return KEYWORD_VECTOR in (config.get("sparse_vectors") or {})
+
+
+def _keyword_search_status(collection: str) -> bool | None:
+    """has_keyword_vectors() for a status read, which must answer whatever
+    the file holds: unreadable is "cannot say", logged."""
+    try:
+        return has_keyword_vectors(collection)
+    except (OSError, ValueError, AttributeError) as e:
+        log_and_print(f"Warning: could not read the config of collection '{collection}': {e}",
+                      level="warning", echo=False)
+        return None
+
+
 def _points_error(collection: str, error: Exception) -> str:
     """Says which of the two very different things went wrong, in the log and
     to the caller: a collection that is busy is normal and passes; one that
@@ -3646,6 +3916,12 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # the collection, routine with `griot mcp` running) or "unreadable:
         # <reason>" (it could not be opened at all). None when there is a count.
         "points_error": points_error,
+        # Whether search can take mode keyword/hybrid here: True, False for a
+        # collection made before keyword search (`griot index keywords`
+        # builds it), None when there is no collection. Read from the
+        # collection's own config file, so it is known even while another
+        # process holds the collection.
+        "keyword_search": _keyword_search_status(collection),
         "collection": collection,
         "embed_profile": ACTIVE_PROFILE_NAME,
         "running": running,
@@ -3880,9 +4156,48 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
     return qe.Filter(must=must) if must else None
 
 
+# How a search ranks: "vector" by meaning (the dense vector; the default, and
+# what every search did before the others existed), "keyword" by the words
+# themselves (BM25 over the keyword vector: an identifier, an error code, a
+# hash), "hybrid" both, fused by rank.
+SEARCH_MODES = ("vector", "keyword", "hybrid")
+
+# The k of reciprocal rank fusion: a point's fused score is the sum over the
+# two rankings of 1 / (k + its rank). 60 is the value of the paper that
+# introduced it and the one most systems use: large enough that being first
+# in one ranking does not outweigh being near the top of both.
+_HYBRID_RRF_K = 60
+
+
+class SearchModeUnavailable(SearchFilterError):
+    """A keyword or hybrid search on a collection made before keyword
+    search: an error rather than an empty result, which would read as
+    "nothing holds those words". A SearchFilterError, so every caller that
+    refuses an impossible filter refuses this the same way."""
+
+
+def _checked_mode(mode) -> str:
+    if mode not in SEARCH_MODES:
+        raise SearchFilterError(f"Unknown search mode {printable(repr(mode))[:80]}. "
+                                f"The modes are: {', '.join(SEARCH_MODES)}.")
+    return mode
+
+
+def _keyword_query(query: str) -> "qe.SparseVector":
+    """The query's keyword vector. One with no word in it (only stopwords,
+    punctuation) matches nothing, whatever the index holds: an error, not an
+    empty result."""
+    vector = _keyword_model().embed_query(query)
+    if not vector.indices:
+        raise SearchFilterError(
+            f"The query has no word keyword search can match (common English words such as 'the' and 'of', and "
+            f"punctuation, are left out). Name the identifier, error or hash itself, or use mode 'vector'.")
+    return vector
+
+
 def search(query: str, limit: int = 5, group_by_document: bool = False, *,
            repos: list[str] | None = None, source_types: list[str] | None = None,
-           diverse: bool = False) -> list:
+           diverse: bool = False, mode: str = "vector") -> list:
     """Local search over Qdrant Edge — embeds the query with the active
     profile and queries the embedded index. Returns a list of ScoredPoint
     (.payload, .score) — shard.query() already returns the list directly
@@ -3909,27 +4224,54 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     unless the store runs out, or the best matches are so few documents that
     even the widest window (SEARCH_MAX_EXTRA_WINDOWS) cannot fill the list.
     Off by default because the quality check and the golden set measure
-    retrieval itself and need every point, in the store's order."""
+    retrieval itself and need every point, in the store's order.
+
+    mode is one of SEARCH_MODES. "keyword" embeds nothing (no paid call on
+    any profile) and returns only points that hold a word of the query;
+    "hybrid" embeds the query once. Scores are on each mode's own scale: a
+    cosine similarity, a BM25 score, a fused rank score."""
+    mode = _checked_mode(mode)
     repos, source_types = _checked_filters(repos, source_types)
+    keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
+    if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
+        raise SearchModeUnavailable(
+            f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
+            f"stored keyword vectors. Run `griot index keywords` once to add them (local: it embeds nothing and "
+            f"costs nothing; while it runs it needs about as much free disk as the collection). Until then, "
+            f"use mode 'vector'.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = _search_filter(client, repos, source_types)
-    query_vector = embed_texts([query])[0]
-    if query_vector is None:
-        # embed_texts() answers None for what it could not embed, which is
-        # right for a batch being indexed (the rest of the batch goes on). A
-        # search has one text and nothing to go on with: say what happened,
-        # or the None becomes a type error from the vector store.
-        raise RuntimeError(
-            f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
-            f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+    query_vector = None
+    if mode != "keyword":
+        query_vector = embed_texts([query])[0]
+        if query_vector is None:
+            # embed_texts() answers None for what it could not embed, which is
+            # right for a batch being indexed (the rest of the batch goes on). A
+            # search has one text and nothing to go on with: say what happened,
+            # or the None becomes a type error from the vector store.
+            raise RuntimeError(
+                f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
+                f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
 
     def nearest(points: int) -> list:
-        return client.query(
-            qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=points, with_payload=True,
-                            filter=only)
-        )
+        """The best `points` hits in the mode asked: a wider window when the
+        list a reader gets comes back short (SEARCH_MAX_EXTRA_WINDOWS)."""
+        if mode == "vector":
+            request = qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=points,
+                                      with_payload=True, filter=only)
+        elif mode == "keyword":
+            request = qe.QueryRequest(query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR), limit=points,
+                                      with_payload=True, filter=only)
+        else:
+            # The engine's own fusion over two prefetches; the filter of the
+            # request applies to both of them.
+            request = qe.QueryRequest(
+                prefetches=[qe.Prefetch(limit=points, query=qe.Query.Nearest(query_vector, using="dense")),
+                            qe.Prefetch(limit=points, query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR))],
+                query=qe.Fusion.Rrf(k=_HYBRID_RRF_K), limit=points, with_payload=True, filter=only)
+        return client.query(request)
 
     fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
     hits = nearest(fetch)

@@ -253,8 +253,14 @@ def check_index(common) -> dict:
     count = status.get("points_count") or 0
     if not count:
         return _check("index", WARN, "nothing indexed yet in this profile's collection", "griot index all")
-    return _check("index", OK, f"{count} points in {status.get('collection')}"
-                               + (f", last indexed {last.get('timestamp')}" if last.get("timestamp") else ""))
+    detail = f"{count} points in {status.get('collection')}" + (
+        f", last indexed {last.get('timestamp')}" if last.get("timestamp") else "")
+    if status.get("keyword_search") is False:
+        # Not a warning: vector search, the default, works as it always did.
+        # Said because nothing else tells a person the other modes exist.
+        return _check("index", OK, detail + "; keyword search is not built for it yet",
+                      "griot index keywords   # local, embeds nothing")
+    return _check("index", OK, detail)
 
 
 def check_repositories(common) -> dict:

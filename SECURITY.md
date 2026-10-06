@@ -14,7 +14,7 @@ Data leaves your machine when **you** configure it to, plus that one download an
 |---|---|---|
 | first run of a local embedding profile | nothing of yours — the model is downloaded | huggingface.co |
 | indexing with a paid embedding profile | chunked content of code, commit messages, tags, branches, PRs/issues and releases, with credential-looking values replaced first | OpenAI or Google, per your profile |
-| `griot search` / `griot_search` with a paid profile | the query text | same provider |
+| `griot search` / `griot_search` with a paid profile (modes `vector` and `hybrid`; `keyword` sends nothing) | the query text | same provider |
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
 | `griot doctor`, and no other command | an HTTP GET for the newest version of `griot-rag`, with nothing of yours in it; the request itself reveals your address and that griot is in use. Turn it off with `griot config set update-check false` (`GRIOT_UPDATE_CHECK=false`) | pypi.org |

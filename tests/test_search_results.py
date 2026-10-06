@@ -428,3 +428,20 @@ async def test_the_search_is_recorded_with_what_was_returned(fake_embedding):
     await _search({"query": "retry policy", "limit": 9})
     row = logdb.read_since(common.LOG_DIR, "queries", days=1)[0]
     assert row["num_sources"] == 7 == len(row["sources"])
+
+
+@pytest.mark.parametrize("mode", ["keyword", "hybrid"])
+def test_a_keyword_or_hybrid_search_fills_its_list_from_a_wider_window_too(ranked_embedding, store_queries, mode):
+    """The wider window (debt 9) and the search modes landed separately: the
+    window has to be asked in the mode of the search, or a keyword search
+    would come back short where a vector one is full."""
+    long_docs = [_code("alpha", f"long{d}.py", i, f"[near] widget widget widget document {d} part {i}")
+                 for d in range(2) for i in range(30)]
+    mids = [_code("alpha", f"mid{i}.py", 0, f"[mid] widget file number {i}") for i in range(10)]
+    _index(long_docs + mids)
+
+    hits = common.search("widget", limit=8, diverse=True, mode=mode)
+
+    assert len(hits) == 8
+    assert sum(1 for h in hits if h.payload["file_path"].startswith("long")) == 6, "the cap still holds"
+    assert len(store_queries) == 2 and store_queries[1] > store_queries[0]

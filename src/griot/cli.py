@@ -144,8 +144,52 @@ def _run_index_source(source: str, rest: list) -> int:
         raise
 
 
+def _cmd_index_keywords(rest: list) -> int:
+    """`griot index keywords`: gives every point of the active collection
+    its keyword vector (common.build_keyword_index), which a collection
+    indexed before keyword search lacks.
+
+    A command of its own rather than a step of every index run: on such a
+    collection it rewrites every point and needs as much free disk as the
+    collection while it runs, and an index run is expected to touch only
+    what changed. Not recorded as an indexing run either: it embeds nothing,
+    and `griot stats` counts what runs embedded."""
+    parser = argparse.ArgumentParser(
+        prog="griot index keywords",
+        description="Adds keyword (BM25) vectors to the active profile's collection, so that `griot search "
+                    "--mode keyword|hybrid` works on what was indexed before keyword search existed. Local: "
+                    "embeds nothing and costs nothing. A collection made before keyword search is copied into a "
+                    "new one, which needs about as much free disk as the collection while it runs. Safe to run "
+                    "again, and to run again after an interruption.")
+    parser.parse_args(rest)
+    from griot import common
+
+    try:
+        result = common.build_keyword_index()
+    except common.CollectionBusyError:
+        raise  # main() names the process that holds it
+    except RuntimeError as e:
+        # The reasons build_keyword_index() stops on purpose (an index run
+        # holds the lock, a copy that came out short) are RuntimeErrors that
+        # say what to do; a traceback around them would read as a crash.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if not result["points"]:
+        print(f"Nothing is indexed in collection '{common.COLLECTION_NAME}' yet: an index run adds keyword "
+              f"vectors as it writes.")
+    elif not result["written"]:
+        print(f"All {result['points']} points of collection '{common.COLLECTION_NAME}' already have keyword vectors.")
+    else:
+        how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
+        print(f"{result['written']} points {how} in collection '{common.COLLECTION_NAME}' (embedded nothing). "
+              f"`griot search --mode keyword` and `--mode hybrid` now work.")
+    return 0
+
+
 def _cmd_index(args) -> int:
     rest = list(args.rest)
+    if args.source == "keywords":
+        return _cmd_index_keywords(rest)
     if args.source != "all":
         return _run_index_source(args.source, rest)
 
@@ -198,6 +242,9 @@ def _cmd_index(args) -> int:
 # (see the module docstring); tests/test_cli_search_filters.py holds the two
 # together, and the search itself is what validates a value.
 SEARCH_SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "issue")
+# A copy of common.SEARCH_MODES, for the same reason; tests/test_keyword_search.py
+# holds the two together.
+SEARCH_MODES = ("vector", "keyword", "hybrid")
 
 
 def _at_least_one(text: str) -> int:
@@ -213,15 +260,16 @@ def _at_least_one(text: str) -> int:
 
 
 def _cmd_search(args) -> int:
-    """Raw search on the vector store: embeds the query and prints the hits
-    with source label + score. NEVER calls chat_completion — this is the
+    """Raw search on the vector store: finds the query (by meaning, by its
+    words or both: --mode) and prints the hits with source label + score.
+    NEVER calls chat_completion — this is the
     free/local path (aside from embedding the query under the direct
     profile); synthesis with an LLM is `griot ask`."""
     from griot import ask, common  # lazy: only imports qdrant/fastembed here
 
     try:
         results = common.search(args.query, limit=args.limit, group_by_document=args.group_by_document,
-                                repos=args.repo, source_types=args.source_type, diverse=True)
+                                repos=args.repo, source_types=args.source_type, diverse=True, mode=args.mode)
     except common.SearchFilterError as e:
         # A filter that cannot match is refused by the search itself, for
         # the same reason as in the MCP tool: "No results." would read as
@@ -527,18 +575,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_index = subparsers.add_parser(
         "index",
-        help="Indexes one source (code|commits|tags|branches|platform) or all (all)",
+        help="Indexes one source (code|commits|tags|branches|platform) or all (all); keywords adds keyword "
+             "vectors to what is already indexed",
         description="Indexes repositories into the vector store. Extra flags (--repo, --dry-run, ...) "
-                    "are forwarded to the source's indexer — use `griot index <source> --help`.",
+                    "are forwarded to the source's indexer — use `griot index <source> --help`. "
+                    "`griot index keywords` is not a source: it adds keyword (BM25) vectors to a collection "
+                    "indexed before keyword search existed, embedding nothing.",
     )
-    p_index.add_argument("source", choices=INDEX_SOURCES + ["all"], metavar="source",
-                         help=f"One of: {', '.join(INDEX_SOURCES + ['all'])}")
+    p_index.add_argument("source", choices=INDEX_SOURCES + ["all", "keywords"], metavar="source",
+                         help=f"One of: {', '.join(INDEX_SOURCES + ['all', 'keywords'])}")
     p_index.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p_index.set_defaults(func=_cmd_index)
 
     p_search = subparsers.add_parser(
         "search",
-        help="Raw vector search (no chat/LLM synthesis)",
+        help="Raw search, by meaning or by exact words (no chat/LLM synthesis)",
         description="Searches the vector store and prints sources + score. Never calls any chat model.",
     )
     p_search.add_argument("query", help="Natural-language query")
@@ -551,6 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--group-by-document", action="store_true",
                           help="The best chunk of each document, so --limit counts documents "
                                "(default: up to three chunks of one document)")
+    p_search.add_argument("--mode", choices=SEARCH_MODES, default="vector",
+                          help="vector: by meaning (default). keyword: by the exact words, for an identifier, an "
+                               "error code or a commit hash; embeds nothing. hybrid: both, fused by rank. "
+                               "Scores are on each mode's own scale.")
     p_search.set_defaults(func=_cmd_search)
 
     for name, help_text in [
