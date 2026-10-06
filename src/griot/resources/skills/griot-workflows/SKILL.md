@@ -58,11 +58,15 @@ three-per-document ceiling applies.
 ## By meaning or by the exact words: `mode`
 
 The default, `mode` `hybrid`, ranks by meaning and by the exact words and
-fuses the two rankings: as good as a search by meaning (`vector`) at "how
-is X done", and far better at an exact name: an identifier, an error code,
-a file name, a commit hash. `keyword` matches the words alone (BM25),
-including the file path and the commit hash stored with each chunk, whole
-or abbreviated, and returns only chunks that hold one of them; it embeds
+fuses the two rankings. Measured on two repositories, it ranked "how is X
+done" questions at least as well as a search by meaning (`vector`) and
+commit hashes far better; on a function or class name it ranked about like
+`vector` (the right file slightly less often first, slightly more often in
+the top ten). `keyword` alone put the file that defines a name first less
+often than either, but it returns only chunks that mention the name, which
+is what you want when you look for where it is used. `keyword` matches
+the words alone (BM25), including the file path and the commit hash
+stored with each chunk, whole or abbreviated, and returns only chunks that hold one of them; it embeds
 nothing, so it is free on every profile. `vector` ranks by meaning alone.
 Every result says which mode ran (`mode` in `griot_search`'s output, a
 `Mode:` line from `griot search`). Scores are on each mode's own scale:
