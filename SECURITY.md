@@ -102,7 +102,11 @@ package. The build stops when the lock no longer matches `pyproject.toml`
 or a hash does not match. Dependabot proposes the updates of the actions
 and of the lock, so a new version arrives as a change to review; the
 version of `uv` that does the installing is set in the workflow and raised
-by hand. For someone installing griot from the package index nothing is
+by hand. One job can write to the repository: on Dependabot's own pull
+requests that change `uv.lock`, it commits the lock rewritten by that
+pinned `uv` (only how it is written, never a version, source or hash; the
+rewrite runs in another job with a read-only token and builds nothing),
+and the checks on that commit run only after a person approves them. For someone installing griot from the package index nothing is
 locked, as for any library: the two dependencies griot is written directly
 against (`qdrant-edge-py`, `mcp`) are held below the version that may
 change their interface, and the rest resolve to whatever is current. If you

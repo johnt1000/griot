@@ -52,6 +52,17 @@ COMMANDS_LOOKED_AT = {
     # version and checksum (tests/test_pipeline.py); this only runs it.
     '"$RUNNER_TEMP/gitleaks/gitleaks" git --no-banner --redact --config .gitleaks.toml '
     '--log-opts="--all --diff-merges=first-parent" .',
+    # dependabot-lock.yml. The rewrite: the pinned uv on pyproject.toml and
+    # uv.lock, building nothing; it resolves metadata from the index and
+    # installs nothing, and scripts/lock-versions-unchanged.py refuses any
+    # change of version, source or hash it would make.
+    "uv lock --upgrade-package griot-rag --no-build",
+    "if git diff --quiet -- uv.lock; then changed=false; else changed=true; fi",
+    # The commit and the push of that file: git only, fetching nothing.
+    'git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" '
+    'commit --quiet -m "chore(deps): write uv.lock with the uv the workflows pin [dependabot skip]" -- uv.lock',
+    'git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf \'x-access-token:%s\' "$TOKEN" '
+    '| base64 -w0)" push origin "HEAD:refs/heads/$BRANCH"',
 }
 # A program that brings code or packages from somewhere else.
 FETCHES = re.compile(r"(?<![\w.-])(pip3?|uvx?|pipx|conda|npm|npx|yarn|pnpm|curl|wget|apt|apt-get|brew|cargo|gem|docker|git)"
@@ -127,8 +138,11 @@ def test_the_version_that_commit_is_stands_beside_it(where, used):
 
 
 def test_a_workflow_has_no_more_rights_than_it_needs():
-    """One exception, named: the job that publishes to PyPI holds an OpenID
-    token (`id-token: write`), in a protected environment, and nothing else."""
+    """Two exceptions, named: the job that publishes to PyPI holds an OpenID
+    token (`id-token: write`), in a protected environment, and nothing else;
+    the job that commits Dependabot's rewritten lock holds `contents: write`
+    and runs no action but checkout and download-artifact
+    (tests/test_dependabot_lock.py holds the rest of it)."""
     for workflow, document in _documents():
         assert document.get("permissions") == {"contents": "read"}, workflow.name
         for name, job in document["jobs"].items():
@@ -136,6 +150,11 @@ def test_a_workflow_has_no_more_rights_than_it_needs():
             publishes = any("pypa/gh-action-pypi-publish@" in str(step.get("uses", "")) for step in job.get("steps", []))
             if publishes:
                 assert wider == {"id-token": "write"} and job.get("environment"), f"{workflow.name}: job {name}"
+                continue
+            if workflow.name == "dependabot-lock.yml" and wider:
+                actions = {str(step["uses"]).split("@")[0] for step in job.get("steps", []) if "uses" in step}
+                assert wider == {"contents": "write"} and actions <= {"actions/checkout", "actions/download-artifact"}, (
+                    f"{workflow.name}: job {name} asks for {wider} and uses {actions}")
                 continue
             assert not wider, f"{workflow.name}: job {name} asks for {wider}"
         triggers = document.get("on", document.get(True))  # YAML 1.1 reads a bare `on` as true
@@ -187,8 +206,9 @@ def test_contributing_names_the_uv_the_workflows_pin_for_writing_the_lock():
     Python marker goes), and both forms pass `--locked`, so nothing in CI
     notices which one wrote uv.lock; the next `uv lock` on the other version
     rewrites dozens of unrelated lines. Dependabot writes the lock with its
-    own uv, so the drift comes back on its own, and the guard is a person
-    running the pinned uv, which CONTRIBUTING has to name. The version is
+    own uv, so the drift comes back on its own: dependabot-lock.yml rewrites
+    it there (tests/test_dependabot_lock.py), and everywhere else the guard
+    is a person running the pinned uv, which CONTRIBUTING has to name. The version is
     read from the workflows so that raising it there fails here until the
     instruction says the same."""
     versions = {str((step.get("with") or {}).get("version")) for _, step in _steps()

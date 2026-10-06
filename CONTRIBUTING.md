@@ -129,14 +129,29 @@ with the uv the workflows pin (`version:` of `setup-uv`), running `uvx
 uv@0.11.6 lock` if yours is another version: two versions of uv write the
 same resolution with Python markers in different places, both pass
 `--locked`, and the next `uv lock` on the other one that changes anything
-rewrites dozens of unrelated lines. Dependabot writes the lock with its
-own uv, so its form can come back; to return the lock to the pinned form
-without moving any pin, run `uvx uv@0.11.6 lock --upgrade-package
-griot-rag` (it re-resolves only the project itself) in a commit of its
-own; a plain `uv lock` keeps a lock that already satisfies
-`pyproject.toml` as it is. CI does not check the form on purpose: such a
-check would fail every Dependabot lock update until someone regenerated
-it, for a difference that changes nothing that is installed. A new command
+rewrites dozens of unrelated lines. To return a lock in the other form to
+the pinned one without moving any pin, run `uvx uv@0.11.6 lock
+--upgrade-package griot-rag` (it re-resolves only the project itself) in
+a commit of its own; a plain `uv lock` keeps a lock that already
+satisfies `pyproject.toml` as it is.
+
+Dependabot writes the lock with its own uv, so on its pull requests that
+change `uv.lock` a workflow (`.github/workflows/dependabot-lock.yml`)
+does that rewrite with the pinned uv and commits it to the pull request,
+as `github-actions[bot]`. It builds nothing, runs with a read-only token,
+and stops instead of committing if the rewrite would change any version,
+source or hash (`scripts/lock-versions-unchanged.py`); only a second job,
+which runs git alone, can push. **Such a commit needs one click before
+the pull request can merge:** GitHub starts no workflow from a push made
+with the workflow's own token without a person, so the checks main
+requires show as waiting for approval on the new commit, and someone with
+write access chooses "Approve workflows to run" on the pull request (read
+the bot's commit first: it should touch only `uv.lock`, and only where
+markers sit). The commit carries `[dependabot skip]`, so Dependabot keeps
+rebasing its pull request, and each of its pushes is rewritten again. CI
+does not check the form on purpose: such a check would fail every lock
+another uv wrote, for a difference that changes nothing that is
+installed. A new command
 in a workflow that fetches or installs anything has to be added to the
 list in that test, which is the moment to check that it installs from the
 lock. Dependabot opens the routine updates.
