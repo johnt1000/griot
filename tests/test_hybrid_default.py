@@ -5,7 +5,9 @@ the exact words fused, unless a mode is asked for. A collection indexed before
 keyword search cannot run hybrid: there the DEFAULT falls back to vector and
 says so, with the command that builds keyword search; an EXPLICIT keyword or
 hybrid mode is still refused there (tests/test_keyword_search.py). The quality
-check and the golden set measure retrieval itself and keep asking for vector.
+check measures retrieval itself and keeps asking for vector; a golden-set case
+without a mode is a vector case (its own mode otherwise:
+tests/test_golden_set_modes.py).
 """
 
 import json
