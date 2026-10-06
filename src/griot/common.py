@@ -1208,7 +1208,7 @@ def _lines_matching(path: Path, pattern: re.Pattern, groups: bool = False) -> li
     a credential came from, it must never be what fails."""
     try:
         lines = path.read_text(errors="replace").splitlines()
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a NUL byte in a path an .envrc names
         return []
     matches = ((number, pattern.match(line)) for number, line in enumerate(lines, 1))
     if groups:
@@ -1277,8 +1277,13 @@ def _direnv_exports(env_var: str) -> list[str]:
     found = _lines_matching(loaded, re.compile(rf"^\s*{_export_statement(env_var)}"))
     for call in _lines_matching(loaded, _DIRENV_DOTENV_CALL, groups=True):
         path = call["path"] or ".env"
-        # bash expands a leading ~ only when the word is not quoted
-        target = loaded.parent / (Path(path).expanduser() if not call["q"] else Path(path))
+        # bash expands a leading ~ only when the word is not quoted. An
+        # unknown `~user` (RuntimeError) or a NUL byte in it (ValueError)
+        # names nothing: this lookup must never be what fails.
+        try:
+            target = loaded.parent / (Path(path).expanduser() if not call["q"] else Path(path))
+        except (RuntimeError, ValueError):
+            continue
         # A directory is read as nothing (_lines_matching), which is right:
         # stdlib's dotenv checks `<dir>/.env` exists but then runs `direnv
         # dotenv bash <dir>`, whose os.ReadFile of a directory fails, so

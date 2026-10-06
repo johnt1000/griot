@@ -298,3 +298,26 @@ def test_a_dotenv_path_that_cannot_be_looked_at_raises_nothing(project):
         assert common.credential_origin(VAR)["exported_in"] == []
     finally:
         (project / "locked").chmod(0o700)
+
+
+def test_a_dotenv_path_with_an_unknown_user_raises_nothing(project):
+    """bash leaves `~nosuchuser/...` as it is when no such user exists;
+    Path.expanduser() raises RuntimeError there instead. The lookup only
+    explains where a credential came from, so it names nothing."""
+    _envrc(project, "dotenv ~griotnosuchuserxyz/keys.env\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == []
+
+
+def test_a_dotenv_path_with_a_nul_byte_raises_nothing(project):
+    """Reading a path with a NUL byte raises ValueError, not OSError; a
+    crafted .envrc can put one there."""
+    _envrc(project, "dotenv keys\x00.env\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == []
+
+
+def test_an_unquoted_tilde_and_nul_in_a_dotenv_path_raises_nothing(project):
+    _envrc(project, "dotenv ~griot\x00x/keys.env\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == []
