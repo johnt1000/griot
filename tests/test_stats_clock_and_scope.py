@@ -9,7 +9,7 @@ MCP tool calls global on purpose."""
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -46,6 +46,36 @@ def havana():
     """A zone whose clock changes AT midnight: one day has no 00:00 at all,
     another has it twice."""
     yield from _local_zone("America/Havana")
+
+
+@pytest.fixture
+def crossing_midnight(new_york, monkeypatch):
+    """A clock for stats that starts half a second before the next local
+    midnight and moves one second forward on every read, so a test that
+    takes the time twice sees two local days, as it would if run at
+    23:59:59.5. Returns the first instant, for the records' timestamps.
+
+    The midnight is the next real one, not a fixed date: logdb still reads
+    the real clock to prune old searches, and records dated years away
+    could be pruned or land outside the window."""
+    start = datetime.combine(datetime.now().date() + timedelta(days=1), datetime.min.time()).astimezone() \
+        - timedelta(seconds=0.5)
+    ticks = iter(range(10_000))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = start + timedelta(seconds=next(ticks))
+            return instant.astimezone(tz) if tz is not None else instant.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(stats, "datetime", Clock)
+    return start.astimezone(timezone.utc)
+
+
+def _window_of(report: dict) -> str:
+    """The default window as of the moment the report was made, not as of
+    when the test looks: a second clock read can fall on the next local day."""
+    return stats.window_start(stats.DEFAULT_DAYS, datetime.fromisoformat(report["generated_at"])).isoformat()
 
 
 def _utc(*args) -> datetime:
@@ -269,9 +299,9 @@ def test_the_report_says_which_scope_it_shows_and_that_spend_is_global():
     assert "names no collection" not in text
 
 
-def test_the_cli_shows_the_active_collection_unless_asked_for_every_profile(monkeypatch, capsys):
+def test_the_cli_shows_the_active_collection_unless_asked_for_every_profile(monkeypatch, capsys, crossing_midnight):
     monkeypatch.setattr(common, "get_index_status", lambda: {"points_count": 0, "embed_profile": "jina-code"})
-    now = datetime.now(timezone.utc)
+    now = crossing_midnight
     logdb.write_run(common.LOG_DIR, _run(now, common.COLLECTION_NAME, indexed=3))
     logdb.write_run(common.LOG_DIR, _run(now, "griot_some_other_profile", indexed=40))
 
@@ -282,7 +312,11 @@ def test_the_cli_shows_the_active_collection_unless_asked_for_every_profile(monk
 
     assert (mine["total_indexed"], mine["scope_collection"]) == (3, common.COLLECTION_NAME)
     assert (every["total_indexed"], every["scope"]) == (43, "all_profiles")
-    assert mine["window_start"] and every["window_start"] == mine["window_start"]
+    # Each report against the 30 local days before its own moment: the two
+    # calls are taken a second apart across midnight, so they rightly open
+    # their windows a day apart.
+    for report in (mine, every):
+        assert report["window_start"] == _window_of(report)
 
 
 def test_the_last_search_is_the_last_search_of_the_active_collection():
@@ -300,11 +334,11 @@ def test_recent_queries_can_be_read_for_one_collection():
 
 
 @pytest.mark.anyio
-async def test_griot_stats_has_the_same_scope_as_the_cli_through_the_protocol(monkeypatch):
+async def test_griot_stats_has_the_same_scope_as_the_cli_through_the_protocol(monkeypatch, crossing_midnight):
     from mcp.client.client import Client
 
     monkeypatch.setattr(common, "get_index_status", lambda: {"points_count": 0, "embed_profile": "jina-code"})
-    now = datetime.now(timezone.utc)
+    now = crossing_midnight
     logdb.write_run(common.LOG_DIR, _run(now, common.COLLECTION_NAME, indexed=3))
     logdb.write_run(common.LOG_DIR, _run(now, "griot_some_other_profile", indexed=40))
     logdb.write_run(common.LOG_DIR, _run(now, None, indexed=500))
@@ -318,4 +352,5 @@ async def test_griot_stats_has_the_same_scope_as_the_cli_through_the_protocol(mo
     assert (mine["total_indexed"], mine["scope"], mine["scope_collection"]) == (3, "active_profile", common.COLLECTION_NAME)
     assert mine["records_without_collection"] == 1
     assert (every["total_indexed"], every["scope"], every["scope_collection"]) == (543, "all_profiles", None)
-    assert mine["window_start"] == stats.window_start(30).isoformat()
+    assert mine["window_start"] == _window_of(mine)
+    assert every["window_start"] == _window_of(every)
