@@ -41,14 +41,14 @@ _clock = [datetime.now(timezone.utc) - timedelta(hours=5)]
 
 
 def _log(question, *, top_score=0.8, mode="vector", project="p1", results=(CODE, COMMIT),
-         collection="c1", limit=8, with_results=True):
+         collection="c1", limit=8, with_results=True, **extra):
     """One row of the query log, as log_query() writes it today (or, with
     with_results=False, as it wrote it before results were recorded)."""
     _clock[0] += timedelta(seconds=1)
     record = {
         "timestamp": _clock[0].isoformat(), "profile": "p", "collection": collection, "project": project,
         "question": question, "via": "mcp", "limit": limit, "mode": mode, "num_sources": len(results),
-        "sources": [common.source_label(r) for r in results], "top_score": top_score,
+        "sources": [common.source_label(r) for r in results], "top_score": top_score, **extra,
     }
     if with_results:
         record["results"] = [dict(r) for r in results]
@@ -391,6 +391,66 @@ def test_a_result_recorded_as_null_cannot_be_picked(terminal, capsys):
 
     assert "cannot become a case" in capsys.readouterr().out.lower()
     assert _cases()[0]["must_include"] == [COMMIT]
+
+
+# --- only a search the check repeats can become a case ---------------------
+#
+# quality_check.run_golden_set() checks every case with a plain vector
+# search over every repository, ungrouped. A case made from a search that
+# ranked differently, was narrowed or was grouped could fail on every check
+# without retrieval getting any worse: a permanently red case in the ruler
+# the golden set exists to be.
+
+
+@pytest.mark.parametrize("unlike, why", [
+    ({"mode": "hybrid"}, "hybrid search"),
+    ({"mode": "keyword"}, "keyword search"),
+    ({"repos": ["r"]}, "narrowed"),
+    ({"source_types": ["commit"]}, "narrowed"),
+    ({"group_by_document": True}, "grouped by document"),
+])
+def test_a_search_the_check_would_not_repeat_is_shown_but_not_made_a_case(terminal, capsys, unlike, why):
+    _log("how is the lock released", **unlike)
+    _log("how is the lock released", **unlike)
+    terminal.extend(["1", "s"])
+
+    assert golden_set.cmd_review() == 0
+
+    out = capsys.readouterr().out
+    assert "r/src/lock.py" in out  # still shown: the question is worth seeing
+    assert why in out and "cannot become a case" in out.lower()
+    assert "plain vector search" in out  # and what would make it one
+    assert "which result is the right one" not in out.lower()  # not asked for a pick it would refuse
+    assert _cases() == []
+
+
+def test_a_plain_asking_of_the_same_question_is_the_one_offered(terminal, capsys):
+    """Asked once as a plain vector search and later narrowed: the plain
+    asking is the one a case can be made from, so it is the one shown."""
+    _log("how is the lock released", results=(COMMIT,))
+    _log("how is the lock released", repos=["r"], results=(CODE,))
+    terminal.append("1")
+
+    golden_set.cmd_review()
+
+    assert _cases()[0]["must_include"] == [COMMIT]
+
+
+def test_a_grouped_search_is_recorded_as_grouped(monkeypatch):
+    """Grouped, `limit` counts documents and the results are one chunk per
+    document; the review has to know, so the log says so."""
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **f: [_Hit(0.9, dict(CODE))])
+
+    async def call():
+        from mcp.client.client import Client
+        async with Client(mcp_server.mcp) as client:
+            await client.call_tool("griot_search", {"query": "lock", "group_by_document": True})
+            await client.call_tool("griot_search", {"query": "lock"})
+
+    asyncio.run(call())
+
+    rows = logdb.read_since(common.LOG_DIR, "queries", days=1)
+    assert [bool(r.get("group_by_document")) for r in rows] == [True, False]
 
 
 def test_without_a_terminal_nothing_is_asked_or_changed(monkeypatch, capsys):

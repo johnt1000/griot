@@ -457,9 +457,39 @@ def _hard_thresholds(rows: list[dict]) -> dict:
             for collection, values in scores.items() if len(values) >= HARD_MIN_SEARCHES}
 
 
+def _unlike_the_check(row: dict) -> list[str]:
+    """How this logged search differs from the one that checks a case.
+
+    quality_check.run_golden_set() checks every case with a plain vector
+    search over every repository, ungrouped. A case made from a keyword or
+    hybrid ranking, a search narrowed to some repositories or source types,
+    or a grouped one (where the limit counts documents, not chunks) asserts
+    what THAT search returned, so it can fail on every check without
+    retrieval getting any worse: a permanently red case in the very ruler
+    the golden set is. Empty when the check would repeat this search."""
+    unlike = []
+    if _mode(row) != "vector":
+        unlike.append(f"a {_mode(row)} search")
+    narrowed = [f"{name} {', '.join(map(str, row[name]))}" for name in ("repos", "source_types")
+                if isinstance(row.get(name), list) and row[name]]
+    if narrowed:
+        unlike.append("narrowed to " + "; ".join(common.shown(n) for n in narrowed))
+    if row.get("group_by_document"):
+        unlike.append("grouped by document")
+    return unlike
+
+
+def _has_pickable_results(row: dict) -> bool:
+    return any(isinstance(e, dict) for e in row.get("results") or [])
+
+
 def _candidate(kind: str, key: str, group: list[dict], thresholds: dict) -> dict:
-    # The newest asking whose results can be picked from; failing that, the newest.
-    row = next((r for r in reversed(group) if any(isinstance(e, dict) for e in r.get("results") or [])), group[-1])
+    # The newest asking a case can be made from (results recorded, and a
+    # search the check repeats); failing that, the newest with results;
+    # failing that, the newest.
+    row = (next((r for r in reversed(group) if _has_pickable_results(r) and not _unlike_the_check(r)), None)
+           or next((r for r in reversed(group) if _has_pickable_results(r)), None)
+           or group[-1])
     sources = [s for s in row.get("sources") or [] if isinstance(s, str)]
     results = row.get("results")
     if not isinstance(results, list) or len(results) != len(sources):
@@ -472,7 +502,7 @@ def _candidate(kind: str, key: str, group: list[dict], thresholds: dict) -> dict
         "top_score": row.get("top_score") if _is_number(row.get("top_score")) else None,
         "threshold": thresholds.get(row.get("collection")),
         "limit": limit if isinstance(limit, int) and not isinstance(limit, bool) and limit >= 1 else CASE_LIMIT,
-        "timestamp": row.get("timestamp"), "repos": row.get("repos"), "source_types": row.get("source_types"),
+        "timestamp": row.get("timestamp"), "unlike": _unlike_the_check(row),
         "sources": sources, "results": results,
     }
 
@@ -541,6 +571,12 @@ _CANNOT = ("cannot become a case: it was logged before griot recorded what a cas
            "or its name looked like a credential")
 
 
+def _unlike_note(unlike: list[str]) -> str:
+    return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked by a "
+            f"plain vector search over every repository, ungrouped, which may never return them. Asked again "
+            f"as a plain vector search, the question can be.")
+
+
 def _show(candidate: dict, number: int, total: int) -> None:
     print(f"\n[{number}/{total}] {common.shown(candidate['query'].splitlines()[0] if candidate['query'] else '')}")
     if candidate["kind"] == "repeated":
@@ -549,27 +585,24 @@ def _show(candidate: dict, number: int, total: int) -> None:
     else:
         print(f"  Why: low score. Its best result scored {candidate['top_score']:.2f}, at or under "
               f"{candidate['threshold']:.2f}: the bottom quarter of the vector searches in this collection.")
-    narrowed = [f"{name} {', '.join(map(str, candidate[name]))}" for name in ("repos", "source_types")
-                if isinstance(candidate[name], list) and candidate[name]]
-    print(f"  Results logged for it ({candidate['mode']} search, {str(candidate['timestamp'] or '?')[:10]}"
-          f"{', narrowed to ' + '; '.join(common.shown(n) for n in narrowed) if narrowed else ''}):")
+    unlike = candidate["unlike"]
+    print(f"  Results logged for it ({candidate['mode']} search, {str(candidate['timestamp'] or '?')[:10]}):")
     results = candidate["results"]
     for j, label in enumerate(candidate["sources"], start=1):
-        flag = "" if results is not None and isinstance(results[j - 1], dict) else "  (cannot become a case)"
+        flag = "" if not unlike and results is not None and isinstance(results[j - 1], dict) \
+            else "  (cannot become a case)"
         print(f"    [{j}] {common.shown(label)}{flag}")
-    if results is None:
+    if unlike:
+        print(f"  {_unlike_note(unlike)}")
+    elif results is None:
         print(f"  These results {_CANNOT}. Asked again, the question can be.")
-    if candidate["mode"] != "vector" or narrowed:
-        # quality_check.run_golden_set() runs every case as a plain vector search.
-        print("  Note: a case is checked by a plain vector search, over every repository: that search may "
-              "not return what this one did.")
 
 
 def _ask(candidate: dict) -> str | list[dict]:
     """The person's answer for one candidate: "skip", "none", "reject",
     "quit", or the must_include entries of the results they picked."""
     sources, results = candidate["sources"], candidate["results"]
-    pickable = results is not None and any(isinstance(e, dict) for e in results)
+    pickable = not candidate["unlike"] and results is not None and any(isinstance(e, dict) for e in results)
     prompt = (("Which result is the right one? number(s), comma-separated; " if pickable else "")
               + "n = none of them, s = skip, r = reject (never offer again), q = quit: ")
     while True:
@@ -593,6 +626,9 @@ def _ask(candidate: dict) -> str | list[dict]:
         wrong = [j for j in picked if not 1 <= j <= len(sources)]
         if not picked or wrong:
             print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{len(sources)}).")
+            continue
+        if candidate["unlike"]:
+            print(f"  {_unlike_note(candidate['unlike'])}")
             continue
         unusable = [j for j in picked if results is None or not isinstance(results[j - 1], dict)]
         if unusable:
