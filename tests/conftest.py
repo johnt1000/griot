@@ -339,3 +339,21 @@ def _echo_goes_to_stdout_again(monkeypatch):
     from griot import common
 
     monkeypatch.setattr(common, "_echo_stream", None)
+
+
+@pytest.fixture(autouse=True)
+def _the_mcp_server_has_not_given_the_keyword_fallback_note_yet():
+    """griot_search says why a default search fell back to vector once per
+    collection and server process (mcp_server._KEYWORD_NOTE_GIVEN_FOR). The
+    suite is one process: without this, whether a test sees the note would
+    depend on which tests ran before it."""
+    import sys
+
+    def forget():
+        server = sys.modules.get("griot.mcp_server")
+        if server is not None and hasattr(server, "_KEYWORD_NOTE_GIVEN_FOR"):
+            server._KEYWORD_NOTE_GIVEN_FOR.clear()
+
+    forget()
+    yield
+    forget()

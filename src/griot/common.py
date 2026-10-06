@@ -4431,20 +4431,32 @@ def _keyword_query(query: str) -> "qe.SparseVector":
     return vector
 
 
+def keyword_query_matches(query: str) -> bool:
+    """Whether `query` has a word keyword search can match: what
+    _keyword_query() refuses without one. Local, embeds nothing, so a caller
+    can ask before a search (or a golden-set case) that could never run."""
+    return bool(_keyword_model().embed_query(query).indices)
+
+
 # What `griot search`, `griot ask` and griot_search run when no mode is
 # asked for. Hybrid, measured on 2026-10-06 on a throwaway index of this
 # repository and of a copy of click (default profile, MRR@10, vector /
 # keyword / hybrid): 40 descriptive questions 0.67 / 0.64 / 0.76, 15 commit
 # hashes 0.01 / 1.00 / 0.80, 40 identifiers (the defining file counted
 # relevant) 0.72 / 0.61 / 0.68, with hybrid's recall@10 the higher there.
-# search() itself keeps "vector" as its own default: the quality check, the
-# golden set and the retrieval evaluation measure retrieval itself, and pass
-# it explicitly anyway.
+# search() itself keeps "vector" as its own default: the quality check and
+# the retrieval evaluation measure retrieval itself, and pass it explicitly
+# anyway; a golden-set case passes the mode it was made in.
 SEARCH_DEFAULT_MODE = "hybrid"
 
-# Said once with a default search that ran by meaning only because the
-# collection has no keyword vectors, so that the person or agent learns the
-# default is not what ran, and the one command that changes it.
+# Said with a default search that ran by meaning only because the collection
+# has no keyword vectors, so that the person or agent learns the default is
+# not what ran, and the one command that changes it. Once per result where it
+# is said; how often it is said is up to each surface: the CLI (`griot
+# search`, `griot ask`) says it with every command, one process each, while
+# the MCP server says it on the first default search of the process for each
+# collection and afterwards only reports `mode: vector`
+# (mcp_server._KEYWORD_NOTE_GIVEN_FOR).
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
     "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
@@ -4464,7 +4476,7 @@ def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     built = _keyword_search_status(COLLECTION_NAME)
     if built is False:
         return "vector", KEYWORD_SEARCH_NOT_BUILT_NOTE
-    if built is None or not _keyword_model().embed_query(query).indices:
+    if built is None or not keyword_query_matches(query):
         return "vector", None
     return SEARCH_DEFAULT_MODE, None
 
