@@ -148,10 +148,45 @@ def test_nothing_else_shares_the_group_of_the_ci_a_release_calls():
     release's own CI would cancel each other, and the release would stop
     before it built anything."""
     ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    assert not _runs_on_a_tag_push(ci), ci.get("on", ci.get(True))
+
+
+def _runs_on_a_tag_push(workflow):
+    """Whether a push of a tag starts this workflow. GitHub runs a `push`
+    trigger on every ref when it has no ref filter at all (`on: push`,
+    `on: [push]`, a bare `push:`, or one filtered by paths only), and on
+    branches alone when it filters branches but not tags; any tag filter
+    may match a tag."""
     # PyYAML reads the bare key `on` as True.
-    push = (ci.get("on") or ci.get(True) or {}).get("push") or {}
-    assert "tags" not in push and "tags-ignore" not in push, push
-    assert push.get("branches") == ["main"], push
+    on = workflow.get("on", workflow.get(True))
+    if isinstance(on, str):
+        on = [on]
+    if isinstance(on, list):
+        return "push" in on
+    if not isinstance(on, dict) or "push" not in on:
+        return False
+    push = on["push"] or {}
+    if "tags" in push or "tags-ignore" in push:
+        return True
+    return "branches" not in push and "branches-ignore" not in push
+
+
+@pytest.mark.parametrize("on,runs", [
+    ({"push": {"branches": ["main"]}}, False),
+    ({"push": {"branches-ignore": ["wip/**"]}, "pull_request": None}, False),
+    ({"pull_request": None}, False),
+    ({"push": None}, True),
+    ({"push": {"paths": ["src/**"]}}, True),
+    ({"push": {"branches": ["main"], "tags": ["v*"]}}, True),
+    ({"push": {"tags-ignore": ["x"]}}, True),
+    ({"push": {"branches": ["main"], "tags-ignore": ["x"]}}, True),
+    ("push", True),
+    (["pull_request", "push"], True),
+])
+def test_a_tag_push_is_told_apart_from_a_branch_push(on, runs):
+    # The key as PyYAML reads it from a file, and as it is written.
+    assert _runs_on_a_tag_push({True: on}) is runs
+    assert _runs_on_a_tag_push({"on": on}) is runs
 
 
 def test_the_publishing_token_says_why_it_is_granted():
