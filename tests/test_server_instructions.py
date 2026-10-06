@@ -140,7 +140,8 @@ async def test_the_search_tool_description_names_only_arguments_it_has():
     listed = set(tools["griot_repos_list"].output_schema["$defs"]["RepoEntry"]["properties"])
     allowed = set(tool.input_schema["properties"]) | returned | listed | set(common.SOURCE_TYPES)
     # And the values `mode` takes, read from the schema the agent gets.
-    allowed |= set(tool.input_schema["properties"]["mode"]["enum"])
+    mode = tool.input_schema["properties"]["mode"]
+    allowed |= {value for option in mode.get("anyOf", [mode]) for value in option.get("enum", [])}
     # The names of stored fields are allowed ONLY in the paragraph that
     # introduces `metadata`. Anywhere else `author` or `state` in backticks
     # would read as an argument, which is the mistake this test exists for.

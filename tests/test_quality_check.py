@@ -74,7 +74,7 @@ def test_run_self_check_reports_failure_for_low_score(monkeypatch):
 
     real_search = common.search
 
-    def flaky_search(query, limit=5):
+    def flaky_search(query, limit=5, mode=None):
         # qe.ScoredPoint doesn't allow assigning .score directly (read-only
         # pyo3 object) — replaces the first result (the self-match, since
         # the query vector is identical to the indexed point's) with an
@@ -117,7 +117,7 @@ def test_run_self_check_counts_a_blank_sample_as_failed(monkeypatch):
     common.release_lock()
     searched = []
     real_search = common.search
-    monkeypatch.setattr(common, "search", lambda q, limit=5: searched.append(q) or real_search(q, limit=limit))
+    monkeypatch.setattr(common, "search", lambda q, limit=5, mode=None: searched.append(q) or real_search(q, limit=limit, mode=mode))
 
     result = quality_check.run_self_check(common.COLLECTION_NAME, sample_size=3, min_score=0.90)
 
@@ -396,7 +396,7 @@ def test_golden_set_counts_a_case_with_no_real_constraint_as_failed(monkeypatch)
     exit 0 having measured nothing, and it is used as a gate. Skipping would
     leave that gate open; failing closes it and names the case to fix."""
     monkeypatch.setattr(quality_check.common, "search",
-                        lambda query, limit=5: [_Hit(0.9, {"repo": "alpha", "source_type": "code"})])
+                        lambda query, limit=5, mode=None: [_Hit(0.9, {"repo": "alpha", "source_type": "code"})])
     # The search is faked, so the index is too: `alpha` is there.
     monkeypatch.setattr(quality_check.common, "get_client", lambda: None)
     monkeypatch.setattr(quality_check.common, "repository_is_indexed", lambda client, repo: True)

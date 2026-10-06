@@ -57,14 +57,16 @@ three-per-document ceiling applies.
 
 ## By meaning or by the exact words: `mode`
 
-A search by meaning (`mode` `vector`, the default) is good at "how is X
-done" and weak at an exact name: an identifier, an error code, a file name,
-a commit hash. For those, `mode` `keyword` matches the words themselves
-(BM25), including the file path and the commit hash stored with each
-chunk, whole or abbreviated, and returns only chunks that hold one of
-them; it embeds nothing, so it is free on every profile. `hybrid` runs
-both and fuses the rankings, for a query that mixes a name and an idea.
-Scores are on each mode's own scale: compare them within one mode only.
+The default, `mode` `hybrid`, ranks by meaning and by the exact words and
+fuses the two rankings: as good as a search by meaning (`vector`) at "how
+is X done", and far better at an exact name: an identifier, an error code,
+a file name, a commit hash. `keyword` matches the words alone (BM25),
+including the file path and the commit hash stored with each chunk, whole
+or abbreviated, and returns only chunks that hold one of them; it embeds
+nothing, so it is free on every profile. `vector` ranks by meaning alone.
+Every result says which mode ran (`mode` in `griot_search`'s output, a
+`Mode:` line from `griot search`). Scores are on each mode's own scale:
+compare them within one mode only.
 
 ```bash
 griot search "acquire_lock" --mode keyword
@@ -73,9 +75,10 @@ griot search "f96634a" --mode keyword --source-type commit
 
 For a name in a repository you have open, grep is still the better tool;
 `keyword` is for the ones you cannot grep (another project, history).
-An index built before keyword search refuses `keyword` and `hybrid` with
-a message naming `griot index keywords`, which adds the keyword vectors
-once (local, embeds nothing).
+On an index built before keyword search the default runs `vector` and
+says so, naming `griot index keywords`, which adds the keyword vectors
+once (local, embeds nothing); an explicit `keyword` or `hybrid` is refused
+there with the same command.
 
 ## Narrowing a search: `repos` and `source_types`
 

@@ -183,7 +183,7 @@ def _cmd_index_keywords(rest: list) -> int:
     else:
         how = "copied into a collection with keyword vectors" if result["rebuilt"] else "given keyword vectors"
         print(f"{result['written']} points {how} in collection '{common.COLLECTION_NAME}' (embedded nothing). "
-              f"`griot search --mode keyword` and `--mode hybrid` now work.")
+              f"`griot search` now runs hybrid by default, and `--mode keyword` and `--mode hybrid` work.")
     return 0
 
 
@@ -268,9 +268,10 @@ def _cmd_search(args) -> int:
     profile); synthesis with an LLM is `griot ask`."""
     from griot import ask, common  # lazy: only imports qdrant/fastembed here
 
+    mode, note = common.search_mode_for(args.query, args.mode)
     try:
         results = common.search(args.query, limit=args.limit, group_by_document=args.group_by_document,
-                                repos=args.repo, source_types=args.source_type, diverse=True, mode=args.mode)
+                                repos=args.repo, source_types=args.source_type, diverse=True, mode=mode)
     except common.SearchFilterError as e:
         # A filter that cannot match is refused by the search itself, for
         # the same reason as in the MCP tool: "No results." would read as
@@ -279,7 +280,6 @@ def _cmd_search(args) -> int:
         return 2
     if not results:
         print("No results.")
-        return 0
     for r in results:
         payload = r.payload or {}
         print(f"[{r.score:.3f}] {common.shown(ask.source_label(payload))}")
@@ -291,6 +291,11 @@ def _cmd_search(args) -> int:
         also_in = getattr(r, "also_in", None)
         if also_in:
             print(f"        same text in: {', '.join(common.shown(label) for label in also_in)}")
+    # Which mode ran, always: the default is not always what runs (see
+    # common.search_mode_for), and scores are on that mode's own scale.
+    print(f"Mode: {mode}")
+    if note:
+        print(note)
     return 0
 
 
@@ -603,9 +608,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--group-by-document", action="store_true",
                           help="The best chunk of each document, so --limit counts documents "
                                "(default: up to three chunks of one document)")
-    p_search.add_argument("--mode", choices=SEARCH_MODES, default="vector",
-                          help="vector: by meaning (default). keyword: by the exact words, for an identifier, an "
-                               "error code or a commit hash; embeds nothing. hybrid: both, fused by rank. "
+    # default None, not "hybrid": an explicit hybrid is refused where it cannot
+    # run, the default falls back to vector there (common.search_mode_for).
+    p_search.add_argument("--mode", choices=SEARCH_MODES, default=None,
+                          help="hybrid (default): by meaning and by the exact words, fused by rank; vector on an "
+                               "index built before keyword search. vector: by meaning. keyword: by the exact "
+                               "words, for an identifier, an error code or a commit hash; embeds nothing. "
                                "Scores are on each mode's own scale.")
     p_search.set_defaults(func=_cmd_search)
 
