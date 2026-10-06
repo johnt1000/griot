@@ -352,13 +352,23 @@ def env_file_unset(var: str) -> None:
     unset_key(ENV_PATH, var)
 
 
+_log_handler_lock = threading.Lock()
+
+
 def _ensure_log_handler() -> None:
     """FileHandler created on demand (not at import time): LOG_DIR lives in
     DATA_DIR, and the directory is only created by whoever actually writes
     to it. Reads LOG_DIR as a module attribute at call time — tests swap
     LOG_DIR (and the logger's handlers) via monkeypatch without touching the
     real one."""
-    if not _logger.handlers:
+    if _logger.handlers:
+        return
+    # The first log lines of an MCP server can come from two worker threads
+    # at once: both found no handler, both attached one, and every later line
+    # of the process went into griot.log twice.
+    with _log_handler_lock:
+        if _logger.handlers:
+            return
         secure_mkdir(LOG_DIR)
         log_path = LOG_DIR / "griot.log"
         _handler = logging.FileHandler(log_path)
@@ -1366,6 +1376,7 @@ warn_legacy_layout()
 migrate_legacy_spend_state()
 
 _embed_model = None  # a fastembed.TextEmbedding once a local profile is first used
+_embed_model_lock = threading.Lock()
 _client: "qe.EdgeShard | None" = None
 _client_last_used_at: float | None = None
 
@@ -1668,7 +1679,16 @@ def _text_embedding_class():
 
 def get_embed_model():
     global _embed_model
-    if _embed_model is None:
+    if _embed_model is not None:
+        return _embed_model
+    # Sync MCP tools run in worker threads: two that embedded for the first
+    # time at the same moment each built a model, of hundreds of MB, and the
+    # one that lost was only memory spent. Checked again under the lock, for
+    # the thread that waited while the other built. A build that raises
+    # leaves nothing behind, so the next call tries again.
+    with _embed_model_lock:
+        if _embed_model is not None:
+            return _embed_model
         # limited threads: the machine runs several other heavy things in
         # parallel (Docker Desktop, corporate agents) — using all 12 cores
         # for inference already caused an OOM kill in a previous session.
