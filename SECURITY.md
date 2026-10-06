@@ -8,7 +8,7 @@ griot indexes the contents of your repositories — which may be private — and
 
 One exception is not configurable: the **first run of any local profile downloads its ONNX model from Hugging Face** and caches it. That request carries no data of yours — it is a model download, and every run afterwards is offline — but it is a network call to a third party, so it belongs in this table rather than in a footnote.
 
-Data leaves your machine when **you** configure it to, plus that one download and the release check of `griot doctor` (on by default, off with one setting):
+Data leaves your machine when **you** configure it to, plus that one download, the release check of `griot doctor` (on by default, off with one setting) and `griot update` when you run it:
 
 | Action | What is sent | To |
 |---|---|---|
@@ -17,7 +17,8 @@ Data leaves your machine when **you** configure it to, plus that one download an
 | `griot search` / `griot_search` with a paid profile (modes `vector` and `hybrid`; `keyword` sends nothing) | the query text | same provider |
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
-| `griot doctor`, and no other command | an HTTP GET for the newest version of `griot-rag`, with nothing of yours in it; the request itself reveals your address and that griot is in use. Turn it off with `griot config set update-check false` (`GRIOT_UPDATE_CHECK=false`) | pypi.org |
+| `griot doctor` | an HTTP GET for the newest version of `griot-rag`, with nothing of yours in it; the request itself reveals your address and that griot is in use. Turn it off with `griot config set update-check false` (`GRIOT_UPDATE_CHECK=false`) | pypi.org |
+| `griot update`, only when you run it | the same HTTP GET (`update-check` does not govern it: asking is what you ran it for); then, after you confirm, the installer that installed griot (`pipx`, `uv tool` or `pip`) downloads the new release and its dependencies the way it always does, under that installer's own configuration (index URL, proxy) | pypi.org, or the index your installer is configured with |
 
 The spend circuit breaker (daily + 5-minute velocity ceilings) bounds how much paid traffic can happen before griot refuses further calls. It counts each call by the tokens the provider reports; when a provider reports none, the call is counted from the size of the text instead (an estimate, and griot says so), so that a call is never free to the ceiling.
 

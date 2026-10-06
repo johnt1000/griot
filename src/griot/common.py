@@ -259,7 +259,7 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
-    ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (no other command asks)", False),
+    ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (`griot update`, run to upgrade, always asks)", False),
     ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs and quality checks are kept)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
@@ -607,8 +607,9 @@ def log_questions_enabled() -> bool:
 
 
 def update_check_enabled() -> bool:
-    """Whether `griot doctor` may ask PyPI for the newest release (the only
-    request griot makes to learn about itself; SECURITY.md has the row).
+    """Whether `griot doctor` may ask PyPI for the newest release on its own
+    (SECURITY.md has the row). `griot update` does not read it: a person runs
+    that command to upgrade, and asking PyPI is what it is for.
     On unless turned off; an empty value is the default, as for every flag.
     Read at call time, like log_questions_enabled."""
     return os.getenv("GRIOT_UPDATE_CHECK", "true").strip().lower() not in FALSE_WORDS

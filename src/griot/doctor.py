@@ -15,8 +15,9 @@ configuration file left open to other users, as every griot command does
 (reported under settings); and asking a harness which server it has
 registered may start that server for a moment, as `griot assist install`
 does when it asks the same. One goes to the network: the release check asks
-PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off), and no
-other griot command makes that request.
+PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off); the only
+other griot command that makes that request is `griot update`, which a person
+runs to upgrade and which that setting does not govern.
 
 Loaded BEFORE the configuration (cli.py runs it without importing common
 first): the check that matters most is the one for a file griot cannot
@@ -32,6 +33,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from importlib import metadata
 from pathlib import Path
 
 from griot import ConfigurationError, UnknownEmbedProfile
@@ -477,20 +479,59 @@ def _release_numbers(version: str) -> tuple[int, ...] | None:
     return tuple(numbers)
 
 
-def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
-    """The command that upgrades griot where it runs, guessed from the
-    environment's location (pipx and `uv tool` each keep one per tool under a
-    directory of their own); every likely one when that says nothing. A guess,
-    which is why it is printed and never run."""
+def upgrade_argvs(prefix: str, base_prefix: str, executable: str) -> list[list[str]]:
+    """The command that upgrades griot where it runs, as argument lists,
+    guessed from the environment's location (pipx and `uv tool` each keep one
+    per tool under a directory of their own); every likely one when that says
+    nothing. One answer is as sure as this gets: `griot update` runs it only
+    then, and the doctor prints it either way (see _upgrade_commands)."""
     parts = Path(prefix).parts
     if "pipx" in parts and "venvs" in parts:
-        return [f"pipx upgrade {DISTRIBUTION}"]
+        return [["pipx", "upgrade", DISTRIBUTION]]
     if "uv" in parts and "tools" in parts:
-        return [f"uv tool upgrade {DISTRIBUTION}"]
+        return [["uv", "tool", "upgrade", DISTRIBUTION]]
     if prefix != base_prefix:
-        return [f"{shlex.quote(executable)} -m pip install --upgrade {DISTRIBUTION}"]
-    return [f"pipx upgrade {DISTRIBUTION}", f"uv tool upgrade {DISTRIBUTION}",
-            f"python3 -m pip install --upgrade {DISTRIBUTION}"]
+        return [[executable, "-m", "pip", "install", "--upgrade", DISTRIBUTION]]
+    return [["pipx", "upgrade", DISTRIBUTION], ["uv", "tool", "upgrade", DISTRIBUTION],
+            ["python3", "-m", "pip", "install", "--upgrade", DISTRIBUTION]]
+
+
+def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
+    """upgrade_argvs() as a person types them, quoted for a shell: what the
+    doctor prints and `griot update` shows (the same lists it runs)."""
+    return [shlex.join(argv) for argv in upgrade_argvs(prefix, base_prefix, executable)]
+
+
+def development_install() -> str | None:
+    """Why this griot is a development install (a phrase naming where it
+    comes from), or None for an install an installer can upgrade.
+
+    PEP 610's direct_url.json is what pip, uv and pipx write for an install
+    from a directory; `dir_info.editable` marks an editable one. A file that
+    cannot be read is refused rather than taken as a regular install: a
+    wrong guess here replaces someone's checkout with a release. A legacy
+    `setup.py develop` install writes no direct_url.json and so reads as an
+    install from an index: a known gap, left because that way of installing
+    predates PEP 610 and griot never documented it.
+
+    Here and not in update.py: the doctor prints an upgrade command too, and
+    must not print one that would replace a checkout."""
+    try:
+        distribution = metadata.distribution(DISTRIBUTION)
+    except metadata.PackageNotFoundError:
+        return f"griot runs from a source tree ({DISTRIBUTION} is not installed as a package)"
+    raw = distribution.read_text("direct_url.json")
+    if raw is None:
+        return None  # installed from an index: the ordinary case
+    try:
+        direct = json.loads(raw)
+        editable = direct.get("dir_info", {}).get("editable") is True
+        url = direct.get("url")
+    except (ValueError, AttributeError):
+        return f"griot's install record (direct_url.json) could not be read: {raw[:80]!r}"
+    if editable:
+        return f"an editable install of {url}"
+    return None
 
 
 def _upgrade_fix(commands: list[str]) -> str:
@@ -524,7 +565,14 @@ def check_release(common) -> dict:
     if mine is None or theirs is None:
         return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
     if mine < theirs:
-        return _check(RELEASE, WARN, f"{installed} is installed; {newest} is the newest release on PyPI",
+        detail = f"{installed} is installed; {newest} is the newest release on PyPI"
+        development = development_install()
+        if development is not None:
+            # An installer would replace the checkout with the release: the
+            # same refusal `griot update` makes, so no command is printed.
+            return _check(RELEASE, WARN, detail, f"update the checkout (git pull): this is a development install, "
+                                                 f"{development}")
+        return _check(RELEASE, WARN, detail,
                       _upgrade_fix(_upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
     if mine > theirs:
         return _check(RELEASE, OK, f"{installed} is newer than the newest release on PyPI ({newest}): "
