@@ -3381,12 +3381,12 @@ def _drop_points_not_in(new: "qe.EdgeShard", client: "qe.EdgeShard") -> None:
             break
 
 
-def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
+def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> tuple[int, int]:
     """Copies every point of `client` into a collection at `staging` made
     with the keyword vector: the dense vector and the payload as they are,
-    the keyword vector computed from the payload. Returns how many points
-    were written. Embeds nothing: the dense vectors are read back from the
-    store.
+    the keyword vector computed from the payload. Returns (points written,
+    points an interrupted earlier copy already held as they are now and
+    kept). Embeds nothing: the dense vectors are read back from the store.
 
     Resumes a copy an interrupted build left at `staging` instead of
     starting over: the copy itself is the record of what was done, written
@@ -3404,7 +3404,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
                       f"{new.info().points_count} points it holds are checked, not copied again.",
                       level="info", echo=False)
     try:
-        copied, offset = 0, None
+        copied, kept_count, offset = 0, 0, None
         with tqdm(total=total, desc="Adding keyword vectors") as progress:
             while True:
                 page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
@@ -3416,6 +3416,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
                         new.update(qe.UpdateOperation.upsert_points(
                             [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in stale]))
                     copied += len(stale)
+                    kept_count += len(page) - len(stale)
                     progress.update(len(page))
                 if offset is None:
                     break
@@ -3432,7 +3433,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
         new.optimize()
     finally:
         new.close()
-    return copied
+    return copied, kept_count
 
 
 def _swap_in(path: Path, staging: Path, previous: Path) -> None:
@@ -3476,7 +3477,10 @@ def build_keyword_index() -> dict:
     """Gives every point of the active collection a keyword vector, without
     embedding anything and without any paid call. Returns {"rebuilt": the
     collection was copied into one made with the keyword vector, "written":
-    keyword vectors written, "points": points in the collection}.
+    keyword vectors written by this run, "points": points in the collection,
+    "kept": points an interrupted earlier copy already held and this run
+    kept instead of writing again (0 when nothing was resumed)}. "written"
+    alone after a resume would read as a copy that covered only that much.
 
     A collection made before keyword search cannot take the vector in place
     (the engine refuses to add a vector to existing segments), so it is
@@ -3511,17 +3515,18 @@ def build_keyword_index() -> dict:
             if staging.exists() and not needs_copy:
                 shutil.rmtree(staging)
             if not collection_exists(COLLECTION_NAME):
-                return {"rebuilt": False, "written": 0, "points": 0}
-            rebuilt, written = False, 0
+                return {"rebuilt": False, "written": 0, "points": 0, "kept": 0}
+            rebuilt, written, kept = False, 0, 0
             if needs_copy:
-                written = _copy_into_keyword_collection(get_client(), staging)
+                written, kept = _copy_into_keyword_collection(get_client(), staging)
                 _swap_in(path, staging, previous)
                 rebuilt = True
             client = get_client()
             filled = _fill_missing_keyword_vectors(client)
             if filled:
                 client.optimize()
-            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count}
+            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count,
+                    "kept": kept}
     finally:
         # Closed before the permissions are repaired: the engine writes
         # files of its own when a shard closes (a segment.json, with the
