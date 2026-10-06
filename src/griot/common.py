@@ -1500,6 +1500,14 @@ def _provider_of(env_var: str) -> str | None:
     return next((p for p, v in credential_env_vars().items() if v == env_var), None)
 
 
+def sentence(text: str) -> str:
+    """`text` closed with exactly one mark. A message that carries another
+    one (a provider's error, which may end with credential_hint()) cannot
+    know whether it already ends its sentence: appending "." read ".."."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
 def credential_hint(env_var: str) -> str:
     """One sentence on where the credential in force came from and what to
     do, for an API that refused it. Names places, never values. Called
@@ -4405,7 +4413,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # or the None becomes a type error from the vector store.
             raise RuntimeError(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
-                f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+                + sentence(last_embedding_failure() or "the embedding call returned nothing"))
 
     def nearest(points: int) -> list:
         """The best `points` hits in the mode asked: a wider window when the
