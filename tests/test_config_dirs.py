@@ -183,6 +183,9 @@ def _resolve_dirs_in_subprocess(tmp_path: Path, extra_env: dict) -> tuple[str, s
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),
         "PYTHONPATH": str(SRC_DIR),
+        # Importing griot.common reads the keychain: keep the child off the
+        # real one, as conftest.py does for every inherited environment.
+        "PYTHON_KEYRING_BACKEND": os.environ["PYTHON_KEYRING_BACKEND"],
         **extra_env,
     }
     out = subprocess.run(
