@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from griot import common, doctor, harnesses
+from griot import common, config, doctor, harnesses
 
 
 def _by_name(checks):
@@ -530,3 +530,38 @@ def test_the_report_puts_the_status_first_and_the_fix_under_it():
     assert text.splitlines()[0].startswith("FAIL  profile") and "griot auth set openai" in text
     assert any(line.startswith("ok    git") for line in text.splitlines())
     assert "1 failure" in text
+
+
+# --- an empty value the reader takes as its default ----------------------------------------
+#
+# [real bug, 2026-10-05] The .env griot writes on first use has
+# GRIOT_MCP_INDEX_ROOTS= and GRIOT_GITEA_HOSTS= empty, which their readers
+# take as "none". The settings check asked the validator of `griot config
+# set`, which refuses an empty value, so every new installation read FAIL.
+# The question the check asks is whether griot can start with the value.
+
+
+@pytest.mark.parametrize("name", ["log-questions", "mcp-index", "mcp-index-roots", "gitea-hosts"])
+def test_an_empty_value_the_reader_takes_as_its_default_is_not_a_failure(tmp_path, name):
+    setting = config.find(name)
+    env_path = tmp_path / ".env"
+    env_path.write_text(f"{setting.variable}=\n")
+
+    assert doctor._settings_in_file(env_path) == []
+
+
+@pytest.mark.parametrize("name", ["spend-ceiling", "max-failed-batches", "mcp-concurrency", "groq-chat-model",
+                                  "gitlab-api-base"])
+def test_an_empty_value_the_reader_cannot_use_is_still_a_failure(tmp_path, name):
+    setting = config.find(name)
+    env_path = tmp_path / ".env"
+    env_path.write_text(f"{setting.variable}=\n")
+
+    assert [b["variable"] for b in doctor._settings_in_file(env_path)] == [setting.variable]
+
+
+def test_the_file_griot_writes_on_first_use_passes_the_settings_check():
+    common.ENV_PATH.unlink(missing_ok=True)
+    common.ensure_env_template()
+
+    assert doctor._settings_in_file(common.ENV_PATH) == []

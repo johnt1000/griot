@@ -10,6 +10,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- **`griot doctor` no longer fails a new installation.** The `.env` griot
+  writes on first use leaves `GRIOT_MCP_INDEX_ROOTS` and `GRIOT_GITEA_HOSTS`
+  empty, which their readers take as "none"; the settings check judged them
+  with the rules of `griot config set`, which refuse an empty value, and
+  reported FAIL on every installation after its first command. An empty
+  value now passes the check for the settings whose readers take it as
+  their default (the two lists, `log-questions` and `mcp-index`), and still
+  fails it where griot cannot use it (a number, a choice, a model, a URL).
+
 - **A platform that refuses a fetch is a failure of the run, not only a
   warning.** `griot index platform` printed a warning for a fetch of pull
   requests, releases or issues the platform refused, and counted nothing:

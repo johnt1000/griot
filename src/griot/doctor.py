@@ -65,6 +65,8 @@ def _settings_in_file(env_path: Path) -> list[dict]:
         raw = values.get(setting.variable)
         if raw is None or setting.elsewhere:
             continue
+        if not raw.strip() and setting.kind in config.EMPTY_IS_DEFAULT:
+            continue
         try:
             config.normalized(setting, raw)
         except config._NotValid as e:
