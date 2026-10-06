@@ -1,0 +1,40 @@
+name: Pull request text
+
+# The git hooks refuse a commit message that credits an AI assistant, but a
+# pull request's title and description are written on GitHub, and the squash
+# commit GitHub builds from them reaches main with no hook having run. This
+# applies the hooks' own pattern (scripts/git-hooks/common.sh) to both.
+#
+# Its own workflow, not a job of ci.yml: it has to run again when only the
+# text is edited (`edited`), which must not rerun the whole test matrix, and
+# ci.yml also runs on push and for a release, where there is no pull request.
+#
+# `pull_request`, never `pull_request_target`: the title and the body are
+# whatever the person who opened the pull request typed, so they reach the
+# script through `env:` and never as an expression inside `run:`, where
+# GitHub would paste them into the shell code.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: pr-text-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    name: pull request credits no assistant
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the title and the description
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/check-pr-text.sh

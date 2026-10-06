@@ -195,13 +195,20 @@ def main(argv=None):
 
     all_documents = []
     fetches: list[dict] = []
+    # The repositories whose platform refused every fetch asked of it: the
+    # run could not index them, even when the others answered.
+    refused_repos: list[str] = []
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
             print(f"WARNING: '{repo_path}' is not a valid directory.")
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
-        all_documents.extend(build_documents(repo_path, repo_key=repo_key, fetches=fetches))
+        repo_fetches: list[dict] = []
+        all_documents.extend(build_documents(repo_path, repo_key=repo_key, fetches=repo_fetches))
+        fetches.extend(repo_fetches)
+        if repo_fetches and not any(f["ok"] for f in repo_fetches):
+            refused_repos.append(path_str)
 
     refused = [{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
     if refused and not any(f["ok"] for f in fetches):
@@ -221,15 +228,30 @@ def main(argv=None):
                      error=f"the platform refused every fetch ({reasons})")
         return 1
 
+    # Some repository was refused entirely while others answered: theirs are
+    # indexed below, and the run still fails, so `griot index all` stops
+    # instead of reporting the refused one as indexed. Not with `error`: the
+    # freshness report skips such a run for EVERY repository, and those that
+    # answered were indexed. The run's repositories are those that answered
+    # (its recorded heads), so the freshness report does not count it for
+    # the refused ones; its failures name them (`<repo>:platform:<label>`).
+    covered = [p for p in repo_paths_str if p not in refused_repos]
+    rc = None
+    if refused_repos:
+        print(f"Error: the platform refused every fetch for {', '.join(Path(p).name for p in refused_repos)}; "
+              f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed. "
+              f"Check the token (`griot auth list`) and the warnings above.", file=sys.stderr)
+        rc = 1
+
     if not all_documents:
         print("\nNo platform items to index.")
         if refused and not args.dry_run:
-            _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused)
-        return
+            _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused)
+        return rc
 
     if args.dry_run:
         common.dry_run(all_documents, source="platform", unit="chunks", desc="Checking platform")
-        return
+        return rc
 
     indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing platform")
     redacted = common.report_redactions()
@@ -238,11 +260,12 @@ def main(argv=None):
     print(f"\nIndexing completed in {elapsed:.2f}s.")
     print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed + len(refused)} failed"
           + (f" ({len(refused)} fetch(es) refused by the platform)." if refused else "."))
-    _log_run(args, repo_paths_str, start_time, indexed=indexed, skipped=skipped, failed=failed + len(refused),
+    _log_run(args, covered, start_time, indexed=indexed, skipped=skipped, failed=failed + len(refused),
              redacted=redacted,
              # [user-requested] WHICH documents failed, not just how many —
              # the count alone forced a grep through griot.log to diagnose.
              failures=(refused + common.last_run_failures())[:common.MAX_RECORDED_FAILURES])
+    return rc
 
 
 def _log_run(args, repo_paths_str, start_time, *, indexed, skipped, failed, failures, redacted=0, **extra) -> None:
