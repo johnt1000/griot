@@ -654,6 +654,18 @@ def current_project() -> str | None:
     return _clean_project(path.name)
 
 
+# What a logged search keeps instead of the question when
+# GRIOT_LOG_QUESTIONS is off. One spelling for both writers (ask.py and the
+# MCP server), so a reader such as `griot golden-set review` can tell a
+# question that was withheld from one that was asked.
+OMITTED_QUESTION = "<omitted: GRIOT_LOG_QUESTIONS=false>"
+
+
+def logged_question(question: str) -> str:
+    """The question as the query log may keep it (see OMITTED_QUESTION)."""
+    return question if log_questions_enabled() else OMITTED_QUESTION
+
+
 def log_query(**fields) -> None:
     """Same idea as log_run_summary(), but for ask.py queries (not
     indexing) — a separate table (logs/logs.db's `queries` table) so as
@@ -4104,6 +4116,44 @@ def document_key(payload: dict) -> tuple:
     source_type = payload.get("source_type", "code")
     identifiers = tuple(payload.get(f) for f in IDENTIFYING_FIELDS.get(source_type, []))
     return (payload.get("repo"), source_type, *identifiers)
+
+
+def case_entry(payload: dict) -> dict:
+    """The golden-set `must_include` entry that matches the document a point
+    belongs to: repo, source_type and the IDENTIFYING_FIELDS of that type (a
+    file, not one chunk of it).
+
+    `repo` is written only when the payload HAS one: {"repo": None} would
+    match only results without a repo, i.e. never, so the case could never
+    pass. Lives here, beside IDENTIFYING_FIELDS, because two writers need
+    it: `golden-set add` building a case, and the query log recording what
+    a later `golden-set review` turns into one."""
+    source_type = payload.get("source_type", "code")
+    entry = {"source_type": source_type}
+    if payload.get("repo") is not None:
+        entry["repo"] = payload["repo"]
+    for field in IDENTIFYING_FIELDS.get(source_type, []):
+        if field in payload:
+            entry[field] = payload[field]
+    return entry
+
+
+def logged_results(results) -> list[dict | None]:
+    """What the query log keeps of each result so `golden-set review` can
+    make a case from it: its case_entry(), in result order, beside the
+    display labels of `sources` (a label is cut and redacted, so a case
+    cannot be rebuilt from it).
+
+    None for a result any of whose values the redaction would change: the
+    label already hides that name, and the raw value must not reach the log
+    by this other door. Such a result can be shown, by its label, but not
+    picked."""
+    logged = []
+    for r in results:
+        entry = case_entry(r.payload or {})
+        clean = all(redaction.redact(value)[0] == value for value in entry.values() if isinstance(value, str))
+        logged.append(entry if clean else None)
+    return logged
 
 
 def source_label(meta: dict) -> str:

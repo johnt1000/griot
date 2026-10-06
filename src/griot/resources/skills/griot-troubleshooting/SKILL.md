@@ -156,7 +156,9 @@ confirms each one finds *itself* near the top with a high score — if this
 fails, the problem is the index, not the query. If the self-check passes
 but real questions still come back weak, that's a genuine retrieval-quality
 question rather than a broken pipeline: curate a `griot golden-set add`
-case around the query you expect to work, and use `griot quality-check`
+case around the query you expect to work (or let `griot golden-set review`,
+at a terminal, offer the questions that were asked repeatedly or scored low),
+and use `griot quality-check`
 (without `--skip-golden-set`) going forward to track whether retrieval
 quality holds or regresses across changes (e.g. switching embedding
 profiles).

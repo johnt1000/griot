@@ -833,7 +833,7 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             # Same GRIOT_LOG_QUESTIONS contract the CLI honors — questions
             # about work repos are frequently sensitive, and the setting is
             # the user's answer to that, not the caller's to reinterpret.
-            question=query if common.log_questions_enabled() else "<omitted: GRIOT_LOG_QUESTIONS=false>",
+            question=common.logged_question(query),
             # "which surface was this?" — the question the MCP validation
             # exists to answer. Without it, agent traffic and terminal
             # traffic are indistinguishable in the same table.
@@ -850,6 +850,10 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
             sources=[ask.source_label(r.payload or {}) for r in results],
+            # What `griot golden-set review` needs to turn this query into a
+            # case: a label is cut and redacted, so it cannot say which
+            # document must come back.
+            results=common.logged_results(results),
             # The most direct "did retrieval find anything relevant?"
             # signal: a run of searches whose BEST score is low says the
             # index isn't answering, which no query count would reveal.
