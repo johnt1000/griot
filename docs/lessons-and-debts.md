@@ -134,28 +134,17 @@ and `also_in` names the copies found in that window, not every copy in the
 index. Asking the store again until the list is full was not worth the
 second round trip for a case that needs a very thin slice of the index.
 
-### 10. The self-check counts a sample with no text as passed
+### 10. ~~The self-check counts a sample with no text as passed~~ — resolved
 
-`run_self_check()` skips a sampled point whose content is blank, and counts
-it in `sampled` and in `passed`. A collection whose samples were all blank
-would read as healthy. Not reachable with what the indexers write today (a
-chunk is never empty), which is why it was left.
+Fixed in #16; what changed is in the changelog.
 
-### 11. Two threads can build the local model twice
+### 11. ~~Two threads can build the local model twice~~ — resolved
 
-`get_embed_model()` is an unlocked check-then-set. Two MCP worker threads
-that embed for the first time at the same moment each build a model; the
-second replaces the first and the memory of one is wasted until collected.
-It predates the lazy import and was not made worse by it.
+Fixed in #17; what changed is in the changelog.
 
-### 12. Writing a setting replaces a symlinked `.env` with a regular file
+### 12. ~~Writing a setting replaces a symlinked `.env` with a regular file~~ — resolved
 
-`griot auth set`, `griot profiles use`, `griot config set` and
-`griot config unset` write through python-dotenv's `set_key`/`unset_key`,
-which rewrite the file by renaming a new one over it. A `<config>/.env` that is a link into a dotfiles checkout stops
-being a link. The installer treats the harness's files more carefully (it
-writes through a link in the user's own directory); griot's own file was
-left as dotenv does it.
+Fixed in #18; what changed is in the changelog.
 
 ### 13. The confirmations in the CLI are a guard, not a boundary
 
