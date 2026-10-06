@@ -990,6 +990,11 @@ class RepositoryFreshness(TypedDict):
     # The sources that never ran for this repository: a repository with
     # "code" here has nothing a search can find in its files.
     missing_sources: list[str]
+    # True when the newest platform run that reached this repository could
+    # fetch nothing of it (the platform refused every request, an expired
+    # token say) while it answered for others: its pull requests and issues
+    # are missing or stale until the token is fixed and the platform indexed.
+    platform_refused: bool
     sources: dict[str, SourceFreshness]
 
 
