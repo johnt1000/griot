@@ -28,6 +28,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 CI = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
 RELEASE = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
+PR_TEXT = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-text.yml").read_text())
 INSTALL_GITLEAKS = ROOT / "scripts" / "install-gitleaks.sh"
 # The checks main's branch protection requires (set on GitHub, not in this
 # repository): keep this list and that setting the same.
@@ -65,7 +66,7 @@ def test_every_check_main_requires_is_still_a_job_of_ci():
 # --- runners ----------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("workflow", [CI, RELEASE], ids=["ci", "release"])
+@pytest.mark.parametrize("workflow", [CI, RELEASE, PR_TEXT], ids=["ci", "release", "pr-text"])
 def test_every_runner_is_named_by_version(workflow):
     for name, job in workflow["jobs"].items():
         if "uses" in job:
