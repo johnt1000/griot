@@ -4434,6 +4434,8 @@ def _keyword_query(query: str) -> "qe.SparseVector":
 # keyword / hybrid): 40 descriptive questions 0.67 / 0.64 / 0.76, 15 commit
 # hashes 0.01 / 1.00 / 0.80, 40 identifiers (the defining file counted
 # relevant) 0.72 / 0.61 / 0.68, with hybrid's recall@10 the higher there.
+# scripts/measure-search-modes.py runs that measurement again: rerun it
+# before keeping this default when the default profile or the fusion changes.
 # search() itself keeps "vector" as its own default: the quality check, the
 # golden set and the retrieval evaluation measure retrieval itself, and pass
 # it explicitly anyway.
