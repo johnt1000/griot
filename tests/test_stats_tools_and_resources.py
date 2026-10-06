@@ -48,8 +48,8 @@ def test_tool_calls_and_resource_reads_are_counted_apart():
     tools = _section(text, "MCP tools:")
     assert tools[0].startswith("MCP tools:   2 calls across 1 tool,")
     assert [line.split() for line in tools[1:]] == [["griot_search", "2"]]
-    reads = _section(text, "MCP resources:")
-    assert reads[0].startswith("MCP resources: 3 reads across 2 resources,")
+    reads = _section(text, "MCP reads:")
+    assert reads[0].startswith("MCP reads:   3 reads across 2 resources,")
     assert [line.split() for line in reads[1:]] == [
         ["griot://repos", "2", "·", "1", "failed"], ["griot://stats", "1"]]
 
@@ -61,7 +61,7 @@ def test_only_tool_calls_shows_no_resource_section():
     assert result["resource_reads"] == {}
     text = stats.format_stats(result, days=30)
     assert _section(text, "MCP tools:")[0].startswith("MCP tools:   1 call across 1 tool,")
-    assert "MCP resources:" not in text
+    assert "MCP reads:" not in text
 
 
 def test_only_resource_reads_shows_no_tool_section():
@@ -72,7 +72,7 @@ def test_only_resource_reads_shows_no_tool_section():
     assert result["resource_reads"] == {"griot://stats": 1}
     text = stats.format_stats(result, days=30)
     assert "MCP tools:" not in text
-    assert _section(text, "MCP resources:")[0].startswith("MCP resources: 1 read across 1 resource,")
+    assert _section(text, "MCP reads:")[0].startswith("MCP reads:   1 read across 1 resource,")
     assert "griot://stats 1" in text
 
 
@@ -87,7 +87,7 @@ def test_a_call_without_a_name_stays_a_tool_call_as_before():
 
 def test_neither_shows_no_section():
     text = stats.format_stats(stats.compute_stats([], [], _INDEX_STATUS, tool_calls=[]), days=30)
-    assert "MCP tools:" not in text and "MCP resources:" not in text
+    assert "MCP tools:" not in text and "MCP reads:" not in text
 
 
 def test_the_json_report_carries_the_two_counts():
