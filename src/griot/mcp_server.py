@@ -83,6 +83,7 @@ from mcp.server.elicitation import (
 )
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
+from mcp.server.mcpserver.tools import Tool
 from mcp.shared.exceptions import MCPError
 from mcp.types import INTERNAL_ERROR, ToolAnnotations
 
@@ -2018,18 +2019,26 @@ def _index_status(collection: str | None) -> IndexStatusOutput:
 #
 # Two surfaces for one piece of data can drift apart, so neither surface has
 # its own code: each resource runs the function its tool runs, and is
-# serialized by the output model the SDK built for that tool, which is what
-# turns the tool's dict into the structured content a client receives (it
-# drops undeclared keys, and renders values as JSON the same way). A
+# serialized by the SDK's own structured-output conversion, built from the
+# tool function itself, which is what turns the tool's dict into the
+# structured content a client receives (it drops undeclared keys, gives a
+# key the answer may lack the value null, and renders values as JSON the
+# same way). A plain TypeAdapter of the declared TypedDict would differ on
+# that null. Built through the SDK's public Tool.from_function, not looked up
+# in the server's private tool manager, whose shape a release may change. A
 # resource has no arguments, so it is the tool at its defaults.
 #
 # Not listed here, as the tools are not: list_resources() is the inventory.
 
 
-def _resource(uri: str, tool: str, description: str):
-    """Registers `fn` as the resource `uri`, a JSON copy of what `tool`
-    returns, recorded and counted in flight like a tool call: two of these
-    open the collection, which the idle reaper must not close under them."""
+def _resource(uri: str, tool, description: str):
+    """Registers `fn` as the resource `uri`, a JSON copy of what the tool
+    function `tool` returns, recorded and counted in flight like a tool call:
+    two of these open the collection, which the idle reaper must not close
+    under them."""
+    # Built once, from the very function registered as the tool, so the
+    # declared return type (and with it the output model) cannot be another.
+    converter = Tool.from_function(tool, structured_output=True).fn_metadata
     def register(fn):
         def read() -> str:
             try:
@@ -2040,8 +2049,7 @@ def _resource(uri: str, tool: str, description: str):
                 # thing the message is for: which file to fix. The tool's
                 # error reaches the agent as isError; this is the same text.
                 raise MCPError(code=INTERNAL_ERROR, message=str(e)) from e
-            model = mcp._tool_manager.get_tool(tool).fn_metadata.output_model
-            return json.dumps(model.model_validate(value).model_dump(mode="json", by_alias=True))
+            return json.dumps(converter.convert_result(value).structured_content)
         read.__name__ = fn.__name__
         recorded = _records_call(read, name=uri)
         mcp.resource(uri, name=fn.__name__, description=description, mime_type="application/json")(recorded)
@@ -2049,7 +2057,7 @@ def _resource(uri: str, tool: str, description: str):
     return register
 
 
-@_resource("griot://repos", "griot_repos_list",
+@_resource("griot://repos", griot_repos_list,
            # Carries the tool's own caveat: "registered" is not "everything
            # an index run may accept" (GRIOT_MCP_INDEX_ROOTS adds paths).
            "The repositories registered for indexing: name, path, whether the path still exists and "
@@ -2059,7 +2067,7 @@ def griot_repos_resource() -> ReposListOutput:
     return _repos_list()
 
 
-@_resource("griot://stats", "griot_stats",
+@_resource("griot://stats", griot_stats,
            f"The usage report for the last {stats.DEFAULT_DAYS} days: indexing runs and reuse, spend, "
            "queries, tool calls, quality trend, and `attention` (what someone has to act on). The same "
            "data as the griot_stats tool at its default window; call the tool for another window.")
@@ -2067,7 +2075,7 @@ def griot_stats_resource() -> StatsOutput:
     return _stats(stats.DEFAULT_DAYS)
 
 
-@_resource("griot://index-status", "griot_index_status",
+@_resource("griot://index-status", griot_index_status,
            "Whether the active profile's collection has data, when it was last indexed and whether an "
            "indexing run is happening now. The same data as the griot_index_status tool for the active "
            "collection; call the tool for another profile's collection.")
