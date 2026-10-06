@@ -190,6 +190,20 @@ def test_index_all_marks_a_source_that_exited_as_failed(progress_file, monkeypat
     assert _sources(progress_file)["code"]["state"] == "failed"
 
 
+def test_index_all_marks_a_source_interrupted_by_ctrl_c_as_failed(progress_file, monkeypatch):
+    """Ctrl-C (or a kill turned into an exception) is not an Exception: the
+    record must not go on saying "reading" about a run that is gone, and the
+    interruption itself must still end the run."""
+    def interrupted(source, rest):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_run_index_source", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["index", "all", "--sources", "code,commits"])
+    states = {source: entry["state"] for source, entry in _sources(progress_file).items()}
+    assert states == {"code": "failed", "commits": "pending"}
+
+
 # --- the reader ---------------------------------------------------------------
 
 
@@ -217,6 +231,16 @@ def test_counts_that_are_not_counts_read_as_unknown(tmp_path):
     entry = common.read_index_progress(path)["sources"][0]
     assert (entry["chunks_total"], entry["chunks_done"], entry["indexed"], entry["skipped"], entry["failed"]) == \
         (None, None, 3, None, None)
+
+
+@pytest.mark.parametrize("updated_at", [True, "yesterday", None])
+def test_an_update_time_that_is_not_a_time_reads_as_unknown(tmp_path, updated_at):
+    """bool is an int to Python: `true` would read as one second after the
+    epoch, and seconds_since_update would say the run has been stuck for
+    decades."""
+    path = tmp_path / "progress.json"
+    path.write_text(json.dumps({"current_source": None, "updated_at": updated_at, "sources": []}))
+    assert common.read_index_progress(path)["updated_at"] is None
 
 
 # --- the job registry ---------------------------------------------------------
@@ -280,6 +304,41 @@ def test_a_child_that_died_at_once_leaves_no_progress_file(monkeypatch, tmp_path
     result, kwargs = _start(monkeypatch, tmp_path, proc)
     assert result["started"] is False
     assert not Path(kwargs["env"][common.INDEX_PROGRESS_ENV]).exists()
+
+
+def test_a_launch_that_fails_leaves_no_progress_file(monkeypatch, tmp_path):
+    """The file is made before the child is spawned; a spawn that raises
+    (no executable, out of processes) must not leave it behind, since no
+    job is registered to ever remove it."""
+    made = []
+    real_mkstemp = jobs.tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        made.append(path)
+        return fd, path
+
+    from conftest import GitRepo
+    repo = GitRepo(tmp_path / "repo")
+    repo.commit("c")
+    monkeypatch.setattr(common, "index_lock_status", lambda: {"running": False, "pid": None, "path": None})
+    monkeypatch.setenv("GRIOT_MCP_INDEX_ROOTS", str(tmp_path))
+    real_popen = subprocess.Popen
+
+    def popen(cmd, **kwargs):
+        if cmd[0] == "git":
+            return real_popen(cmd, **kwargs)
+        raise OSError("no such executable")
+
+    monkeypatch.setattr(jobs.tempfile, "mkstemp", recording_mkstemp)
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+
+    with pytest.raises(OSError, match="no such executable"):
+        jobs.start_index_job(str(repo.path), ["code"], release=lambda: None)
+    assert made, "the progress file was never made: the test would prove nothing"
+    assert not any(Path(path).exists() for path in made)
+    assert jobs.running_index_job() is None
 
 
 def test_the_report_carries_the_running_jobs_progress(monkeypatch, tmp_path):

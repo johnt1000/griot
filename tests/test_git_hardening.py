@@ -19,20 +19,31 @@ from griot import common, index_branches, index_commits, index_platform, index_t
 SRC = Path(common.__file__).parent
 
 
+def _write_stand_in_signer(program, marker):
+    """A program that signs as gpg does (`--status-fd=2 -bsau <key>`) and,
+    asked to verify, leaves a marker instead: standing in for anything.
+
+    Signing reads all of stdin first, as gpg does: git writes the object to
+    sign there, and a program that exits without reading it makes git's
+    write fail with EPIPE whenever the program finishes first, which turned
+    `git tag -s` into exit 128 on a loaded CI runner."""
+    program.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f'  *--verify*) echo ran > "{marker}"; exit 1 ;;\n'
+        '  *) cat > /dev/null; echo "[GNUPG:] SIG_CREATED " >&2; '
+        "printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n' ;;\n"
+        "esac\n")
+    program.chmod(0o755)
+
+
 @pytest.fixture
 def hostile_repo(tmp_path):
     """A repository whose own config tells git to run a program when it shows
     a signed commit. The program leaves a marker, standing in for anything."""
     marker = tmp_path / "marker"
     program = tmp_path / "program.sh"
-    program.write_text(
-        "#!/bin/sh\n"
-        'case "$*" in\n'
-        f'  *--verify*) echo ran > "{marker}"; exit 1 ;;\n'
-        '  *) echo "[GNUPG:] SIG_CREATED " >&2; '
-        "printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n' ;;\n"
-        "esac\n")
-    program.chmod(0o755)
+    _write_stand_in_signer(program, marker)
     repo = tmp_path / "repo"
 
     def git(*args):
@@ -53,6 +64,32 @@ def hostile_repo(tmp_path):
     git("config", "core.fsmonitor", str(program) + " --verify")
     marker.unlink(missing_ok=True)
     return repo, marker
+
+
+def test_the_stand_in_signer_takes_everything_git_hands_it(tmp_path):
+    """git writes the object to sign on the program's stdin. A program that
+    exits without reading it races git's write: when the program wins, git
+    gets EPIPE, says "gpg failed to sign the data" and `git tag -s` exits 128,
+    which failed the fixture above once on a loaded CI runner. A message
+    larger than a pipe buffer makes the program win every time, so this holds
+    the fixture's signer to reading its input, as gpg does."""
+    program = tmp_path / "program.sh"
+    _write_stand_in_signer(program, tmp_path / "marker")
+    repo = tmp_path / "repo"
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    git("config", "gpg.program", str(program))
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    message = tmp_path / "message"
+    message.write_text("m" * (1 << 20) + "\n")
+    signed = git("tag", "-s", "big", "-F", str(message))
+    assert signed.returncode == 0, signed.stderr
+    assert "-----BEGIN PGP SIGNATURE-----" in git("cat-file", "tag", "big").stdout
 
 
 READERS = {

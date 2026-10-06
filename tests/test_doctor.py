@@ -588,6 +588,18 @@ def test_an_empty_value_the_reader_takes_as_its_default_is_not_a_failure(tmp_pat
     assert doctor._settings_in_file(env_path) == []
 
 
+@pytest.mark.parametrize("name", ["log-questions", "mcp-index-roots"])
+def test_a_value_of_only_spaces_is_empty_too(tmp_path, name):
+    """A hand-edited `VAR=  ` (quoted, so the spaces survive the parser):
+    the readers strip it to nothing and keep their default, so the check
+    must not fail it either."""
+    setting = config.find(name)
+    env_path = tmp_path / ".env"
+    env_path.write_text(f'{setting.variable}="   "\n')
+
+    assert doctor._settings_in_file(env_path) == []
+
+
 @pytest.mark.parametrize("name", ["spend-ceiling", "max-failed-batches", "mcp-concurrency", "groq-chat-model",
                                   "gitlab-api-base"])
 def test_an_empty_value_the_reader_cannot_use_is_still_a_failure(tmp_path, name):
