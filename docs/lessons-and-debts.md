@@ -168,6 +168,29 @@ its own environment, or edit the file. SECURITY.md says so wherever it
 describes one of them; it is listed here because it is the most likely thing
 to be mistaken for a security boundary.
 
+### 14. `uv.lock` is written by more than one version of uv
+
+CI and the release install with uv pinned in the workflows; Dependabot
+updates `uv.lock` with whatever version of uv it runs. The two write the
+same resolution differently (where a dependency's Python marker goes), so
+both lockfiles pass `--locked`, but the next `uv lock` on the pinned version
+rewrites a few dozen unrelated lines. Releasing 0.2.1 met it: the bump of
+one version line came with 32 lines of marker changes, edited back by hand.
+`[tool.uv] required-version` would not reach Dependabot. Left until the
+noise lands in a change that matters; the fix is then to regenerate the
+lock on the pinned uv in a commit of its own.
+
+### 15. Where a credential comes from is read from shell files only
+
+`credential_origin()` knows the value in the environment came from outside
+griot's own files, and names WHERE only when it finds an export in the
+shell's startup files (`.zshrc`, `.bashrc`, `config.fish` and the rest of
+the list). A value set by direnv, a file sourced from one of those, the
+login environment of the desktop session or an IDE's run configuration is
+reported as exported in "this shell (no shell file griot knows sets it)".
+Reading every mechanism that can set a variable is open-ended; the message
+says what it does not know rather than guessing.
+
 ---
 
 ## Lessons

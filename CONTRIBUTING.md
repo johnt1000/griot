@@ -136,6 +136,14 @@ Keep them small and one-topic. Say what problem the change solves and how
 you verified it. If it changes behaviour a user can see, add a line to
 [CHANGELOG.md](CHANGELOG.md) under `Unreleased`.
 
+`main` is protected: a change is expected to reach it through a pull
+request, and it only takes a commit whose CI passed on every job (`tests` on each Python and on macOS, `secret scan`,
+`package builds and installs`), on a branch that is up to date with
+`main`. When `main` moves first, bring it into the branch with a merge
+rather than a rebase and force-push, so a reviewer's view of the branch
+stays valid. Dependabot's pull requests are brought up to date by
+commenting `@dependabot rebase`.
+
 ## Reporting a security issue
 
 Don't describe the vulnerability in a regular issue or PR — see
