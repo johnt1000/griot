@@ -10,6 +10,7 @@ import argparse
 import getpass
 import os
 import sys
+from dataclasses import dataclass
 
 from dotenv import dotenv_values
 
@@ -139,19 +140,23 @@ def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
     return bool(existing_in_file), "file"
 
 
-def remove_provider_key(provider: str) -> bool:
-    """Whether a key existed anywhere; see _remove_provider_key()."""
-    return bool(_remove_provider_key(provider))
+@dataclass(frozen=True)
+class KeyRemoval:
+    """What remove_provider_key() did. `removed`: a key existed (in the
+    keychain and/or the file) and was removed from wherever it was found.
+    `keychain`: the common.KEYCHAIN_* result, so a caller can tell an
+    unreachable keychain (a stored copy may remain) from an empty one.
+    `places`: where it was removed from ("keychain", "file"), so
+    `griot auth remove` names them."""
+    removed: bool
+    keychain: str
+    places: tuple = ()
 
 
-def _remove_provider_key(provider: str) -> list[str]:
-    """The places a key was removed from ("keychain", "file"; empty when there
-    was none), so `griot auth remove` names them.
-
-    Write half of provider_status() for deletion. Returns True
-    if a key actually existed (in the keychain and/or the file) and was
-    removed from wherever it was found, False if there was nothing to
-    remove anywhere. Raises ValueError on an unknown provider.
+def remove_provider_key(provider: str) -> KeyRemoval:
+    """Write half of provider_status() for deletion. Raises ValueError on
+    an unknown provider. The file is cleaned even when the keychain cannot
+    be reached: one unreachable store must not keep the other's copy.
 
     [security review] Removes from BOTH the keychain and the file,
     unconditionally — a credential set before this feature existed only
@@ -163,12 +168,13 @@ def _remove_provider_key(provider: str) -> list[str]:
         raise ValueError(f"Unknown provider {provider!r}. Options: {', '.join(sorted(providers))}")
 
     env_var = providers[provider]
-    removed_from_keychain = common._keychain_delete(env_var)
+    keychain = common._keychain_delete(env_var)
     removed_from_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
     if removed_from_file:
         common.env_file_unset(env_var)
-    return [place for place, removed in (("keychain", removed_from_keychain), ("file", removed_from_file))
-            if removed]
+    places = tuple(place for place, done in (("keychain", keychain == common.KEYCHAIN_DELETED),
+                                             ("file", removed_from_file)) if done)
+    return KeyRemoval(removed=bool(places), keychain=keychain, places=places)
 
 
 def cmd_set(provider: str) -> int:
@@ -221,7 +227,7 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
     origin = common.credential_origin(env_var)
     if not origin["shadows_stored"]:
         return
-    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file griot knows)"
+    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file or direnv file griot knows)"
     print(f"Warning: {env_var} is also exported, with a different value, in {where}. The environment wins, so "
           f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
 
@@ -294,17 +300,27 @@ def cmd_remove(provider: str) -> int:
         print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}", file=sys.stderr)
         return 1
     env_var = providers[provider]
-    removed_from = _remove_provider_key(provider)
-    if not removed_from:
+    result = remove_provider_key(provider)
+    unreachable = result.keychain == common.KEYCHAIN_UNREACHABLE
+    if not result.removed and not unreachable:
         print(f"{env_var} was not configured — nothing to remove.")
         return 0
-    # It said "removed from <config>/.env" wherever the key was.
-    places = {"keychain": "the OS keychain", "file": f"the plaintext file {common.ENV_PATH}"}
-    print(f"{env_var} removed from {' and '.join(places[p] for p in removed_from)}.")
-    origin = common.credential_origin(env_var)
-    if origin["source"] == "environment":
-        where = ", ".join(origin["exported_in"]) or "this shell"
-        print(f"Note: {env_var} is still exported in {where}: griot keeps using that value until the export is removed.")
+    if result.removed:
+        # It said "removed from <config>/.env" wherever the key was.
+        names = {"keychain": "the OS keychain", "file": f"the plaintext file {common.ENV_PATH}"}
+        print(f"{env_var} removed from {' and '.join(names[p] for p in result.places)}.")
+        origin = common.credential_origin(env_var)
+        if origin["source"] == "environment":
+            where = ", ".join(origin["exported_in"]) or "this shell"
+            print(f"Note: {env_var} is still exported in {where}: griot keeps using that value until the export is removed.")
+    if unreachable:
+        # Not "nothing to remove": a key stored there earlier may still be
+        # there, and saying it is gone would be the one wrong answer. Exit 1
+        # because the removal that was asked for could not be confirmed.
+        print(f"Warning: the OS keychain could not be reached, so a copy of {env_var} stored there, if any, was "
+              f"not removed. Run `griot auth remove {provider}` again where the keychain is available.",
+              file=sys.stderr)
+        return 1
     return 0
 
 

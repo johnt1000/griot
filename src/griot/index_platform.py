@@ -108,16 +108,19 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
     `{"id", "ok", "reason"}`: a fetch the platform refused is a failure of
     the run, not only a warning on the screen."""
     key = repo_key or repo_path.name
+    # As printed: a directory name, or a project path read from the remote,
+    # can hold an escape sequence that would drive the terminal.
+    shown_name = common.printable(repo_path.name)
     remote_url = _remote_url(repo_path)
     if not remote_url:
-        print(f"WARNING: could not determine the 'origin' remote of {repo_path.name}.")
+        print(f"WARNING: could not determine the 'origin' remote of {shown_name}.")
         return []
 
     detected = platforms.detect_platform(remote_url)
     if not detected:
         # Without the user part: a remote is often written with a token in it.
         shown = re.sub(r"://[^/@\s]+@", "://", remote_url)
-        print(f"WARNING: {repo_path.name}'s remote isn't from any recognized platform ({common.printable(shown)}).")
+        print(f"WARNING: {shown_name}'s remote isn't from any recognized platform ({common.printable(shown)}).")
         return []
     platform, project_id, host = detected
 
@@ -130,12 +133,12 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
     ]:
         try:
             docs = builder(repo_path.name, platform, project_id, host, id_prefix=key)
-            print(f"  {repo_path.name} [{platform}:{project_id}]: {len(docs)} chunks from {label}")
+            print(f"  {shown_name} [{platform}:{common.printable(project_id)}]: {len(docs)} chunks from {label}")
             documents.extend(docs)
             if fetches is not None:
                 fetches.append({"id": f"{key}:platform:{label}", "ok": True, "reason": None})
         except Exception as e:
-            print(f"  WARNING: failed fetching {label} from {project_id} ({platform}): {e}")
+            print(f"  WARNING: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}")
             status = getattr(getattr(e, "response", None), "status_code", None)
             if fetches is not None:
                 # The status or the kind of error, never its text: the text
@@ -178,7 +181,7 @@ def main(argv=None):
         if args.repo:
             repo_paths_str = [p for p in repo_paths_str if Path(p).name == args.repo]
             if not repo_paths_str:
-                print(f"Error: no repo named '{args.repo}' in repos.json.", file=sys.stderr)
+                print(f"Error: no repo named '{common.printable(args.repo)}' in repos.json.", file=sys.stderr)
                 return 1
 
     # One missing path among several is a warning (below). None of them
@@ -190,7 +193,7 @@ def main(argv=None):
         return 1
     if not any(Path(p).is_dir() for p in repo_paths_str):
         print(f"Error: none of the {len(repo_paths_str)} path(s) to index is a directory: "
-              f"{', '.join(repo_paths_str[:3])}{' ...' if len(repo_paths_str) > 3 else ''}", file=sys.stderr)
+              f"{', '.join(common.printable(p) for p in repo_paths_str[:3])}{' ...' if len(repo_paths_str) > 3 else ''}", file=sys.stderr)
         return 1
 
     all_documents = []
@@ -201,7 +204,7 @@ def main(argv=None):
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
-            print(f"WARNING: '{repo_path}' is not a valid directory.")
+            print(f"WARNING: '{common.printable(path_str)}' is not a valid directory.")
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
         repo_fetches: list[dict] = []
@@ -236,9 +239,16 @@ def main(argv=None):
     # (its recorded heads), so the freshness report does not count it for
     # the refused ones; its failures name them (`<repo>:platform:<label>`).
     covered = [p for p in repo_paths_str if p not in refused_repos]
+    # Named in the record too, so `griot doctor` and `griot stats` can say
+    # which repository was refused once this stderr is gone (freshness.py).
+    # Explicitly, not derived from the failure ids: those are capped at
+    # MAX_RECORDED_FAILURES, and under --path they carry the repository's
+    # key instead of its name, which is what the freshness report matches.
+    refused_names = [Path(p).name for p in refused_repos]
+    marked = {"refused_repos": refused_names} if refused_names else {}
     rc = None
     if refused_repos:
-        print(f"Error: the platform refused every fetch for {', '.join(Path(p).name for p in refused_repos)}; "
+        print(f"Error: the platform refused every fetch for {', '.join(common.printable(n) for n in refused_names)}; "
               f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed. "
               f"Check the token (`griot auth list`) and the warnings above.", file=sys.stderr)
         rc = 1
@@ -246,7 +256,7 @@ def main(argv=None):
     if not all_documents:
         print("\nNo platform items to index.")
         if refused and not args.dry_run:
-            _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused)
+            _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused, **marked)
         return rc
 
     if args.dry_run:
@@ -264,7 +274,7 @@ def main(argv=None):
              redacted=redacted,
              # [user-requested] WHICH documents failed, not just how many —
              # the count alone forced a grep through griot.log to diagnose.
-             failures=(refused + common.last_run_failures())[:common.MAX_RECORDED_FAILURES])
+             failures=(refused + common.last_run_failures())[:common.MAX_RECORDED_FAILURES], **marked)
     return rc
 
 
