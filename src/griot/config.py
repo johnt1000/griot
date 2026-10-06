@@ -314,6 +314,16 @@ def _amount(text: str | None) -> float | None:
 # --- a change that widens something ---------------------------------------------------------
 
 
+# Flags on by default that a person turns off to keep something from leaving
+# their hands (question text into the log, a request to PyPI): a server's
+# environment may turn one off, never back on over the file. Each maps to why
+# the environment's "on" was not taken.
+_OFF_STAYS_OFF = {
+    "GRIOT_LOG_QUESTIONS": "the file turns the logging of questions off",
+    "GRIOT_UPDATE_CHECK": "the file turns the check with PyPI for a newer release off",
+}
+
+
 def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, str]:
     """For a server: (why `raw`, the value its environment gives `setting`,
     is not taken, or None when it may be; the value in the form it was
@@ -346,7 +356,7 @@ def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, s
             return None, name  # the person's own choice, or nothing leaves the machine
         return "that profile sends what is indexed and searched to an API", raw
     if setting.kind not in ("ceiling", "enable", "roots", "url", "hosts", "count") \
-            and setting.variable != "GRIOT_LOG_QUESTIONS":
+            and setting.variable not in _OFF_STAYS_OFF:
         return None, raw
     try:
         return _measured(setting, raw, old)
@@ -368,9 +378,9 @@ def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, 
         old = normalized(setting, old) if old else old
     except _NotValid:
         pass  # measured against what the file says, as it says it
-    if setting.variable == "GRIOT_LOG_QUESTIONS":
+    if setting.variable in _OFF_STAYS_OFF:
         turned_off = (old or "").strip().lower() in _FALSE
-        return ("the file turns the logging of questions off" if turned_off and new == "true" else None), new
+        return (_OFF_STAYS_OFF[setting.variable] if turned_off and new == "true" else None), new
     if setting.kind == "count":
         before = old if old and old.isascii() and old.isdigit() else default_of(setting)
         if setting.variable == "GRIOT_LOG_RETENTION_DAYS":
