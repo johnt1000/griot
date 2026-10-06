@@ -4,11 +4,12 @@ Every setting is a variable in `<config>/.env` (see the template in
 common.py). This command gives each one a name, shows the value in force and
 where it comes from (the environment, the file, or the default), checks a
 value before writing it, and asks a person before a change that widens what
-griot may do, spend, or send a credential to.
+griot may do, spend, or send a credential to, or that deletes history.
 
 Classified by effect, like the rest of the CLI: raising a spend ceiling,
 turning on indexing through MCP, widening the directories an agent may
-index, and pointing a platform token at another host are answered at an
+index, pointing a platform token at another host, and shortening the log
+retention (the next search then deletes older history) are answered at an
 interactive terminal, with no flag that answers instead. Everything else is
 written as soon as it is valid.
 
@@ -22,6 +23,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import sys
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -411,9 +413,9 @@ def ignored_sentence(variable: str, ignored: dict) -> str:
 
 def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
     """What to ask a person before `setting` goes from `old` to `new`, or
-    None when the change widens nothing. Asked with no flag that answers:
-    each of these lets griot spend more, lets an agent do more, or sends a
-    credential somewhere else."""
+    None when the change widens or deletes nothing. Asked with no flag that
+    answers: each of these lets griot spend more, lets an agent do more,
+    sends a credential somewhere else, or deletes usage history."""
     if new is None or new == old:
         return None
     if setting.kind == "ceiling":
@@ -441,6 +443,8 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
                  if not any(os.path.commonpath([os.path.realpath(root), parent]) == parent for parent in had)]
         return (f"Let the MCP indexing tool index anything under {', '.join(added)}? An agent can then have what is "
                 f"in there embedded, which on a paid profile sends it to the embedding API.") if added else None
+    if setting.variable == "GRIOT_LOG_RETENTION_DAYS":
+        return _shorter_retention_question(setting, old, new)
     if setting.kind == "url":
         if new == default_of(setting):
             return None
@@ -451,6 +455,32 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
         return (f"Treat {', '.join(added)} as Gitea/Forgejo? The Gitea token griot holds is sent there when a "
                 f"repository's remote points to it.") if added else None
     return None
+
+
+def _shorter_retention_question(setting: Setting, old: str | None, new: str) -> str | None:
+    """A shorter log retention is the one change here that destroys rather
+    than widens: the next search or tool call of ANY project deletes every
+    older search and tool call from logs.db, for good. So it is asked about
+    like a raised ceiling, with how many rows that prune takes counted now,
+    read-only. Nothing is pruned here: the prune stays the next write's."""
+    from griot import common, logdb
+
+    # What persists, as _measured() reads it: a file value griot could not
+    # start with is measured against the default it repairs to.
+    before = old if old and old.isascii() and old.isdigit() else default_of(setting)
+    if int(new) >= int(before or 0):
+        return None
+    try:
+        counted = logdb.count_older_than(common.LOG_DIR, int(new))
+    except (OSError, sqlite3.Error) as e:
+        # Not knowing how many is no reason to skip the question.
+        what = f"every search and MCP tool call older than {new} days (griot could not count them: {e})"
+    else:
+        searches, calls = counted["queries"], counted["tool_calls"]
+        what = (f"{searches} {'search' if searches == 1 else 'searches'} and {calls} MCP tool "
+                f"{'call' if calls == 1 else 'calls'} older than {new} days")
+    return (f"Shorten {setting.name} from {before} to {new} days? The next search or MCP tool call, from any "
+            f"project, deletes {what} from logs.db, and they cannot be recovered.")
 
 
 # --- commands -------------------------------------------------------------------------------
@@ -580,8 +610,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot config",
         description="Shows and changes griot's settings (the variables in <config>/.env). A change that widens "
-                    "what griot may spend, what an agent may index, or where a platform token is sent is asked "
-                    "about at an interactive terminal; there is no flag that answers.",
+                    "what griot may spend, what an agent may index, or where a platform token is sent, or that "
+                    "shortens how long usage history is kept, is asked about at an interactive terminal; there is "
+                    "no flag that answers.",
         # Here, and not only in `list`: with a file griot cannot start with,
         # `list` cannot run, and the names are what the repair needs.
         epilog="settings: " + ", ".join(setting.name for setting in SETTINGS)
@@ -595,8 +626,10 @@ def main(argv=None) -> int:
     p_set = sub.add_parser(
         "set", help="Checks a value and writes it to the config .env",
         description="Checks a value and writes it to the config .env. A change that raises a spend ceiling, turns "
-                    "on indexing through MCP, adds a directory an agent may index, or points a platform token at "
-                    "another host is asked about at an interactive terminal, and there is no flag that answers: "
+                    "on indexing through MCP, adds a directory an agent may index, points a platform token at "
+                    "another host, or shortens log-retention-days (saying how many searches and tool calls the "
+                    "next prune deletes) is asked about at an interactive terminal, and there is no flag that "
+                    "answers: "
                     "run from a script or an agent's shell, with no terminal, it changes nothing.")
     p_set.add_argument("name")
     p_set.add_argument("value")
