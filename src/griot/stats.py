@@ -374,6 +374,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if repositories_without_code:
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
+    refused = platform_refused_names(repositories)
+    if refused:
+        attention.append(platform_refused_phrase(refused)
+                         + " — check the platform's token (`griot auth list`), then `griot index platform`")
     if last_indexed.get("error"):
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say).
@@ -419,7 +423,16 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     # mediocre retrievals. Searches that returned nothing are counted apart
     # instead of folded in — a zero-result search is the loudest signal the
     # index isn't answering, and averaging would bury it.
-    top_scores = [q["top_score"] for q in queries if q.get("top_score") is not None]
+    # Over vector searches only: a keyword search scores with BM25 (unbounded)
+    # and a hybrid one with a fused rank (around 0.03), and either folded in
+    # would move the median without retrieval getting better or worse. A
+    # record from before modes existed was a vector search.
+    queries_by_mode: dict[str, int] = {}
+    for q in queries:
+        mode = q.get("mode") or "vector"
+        queries_by_mode[mode] = queries_by_mode.get(mode, 0) + 1
+    top_scores = [q["top_score"] for q in queries
+                  if q.get("top_score") is not None and (q.get("mode") or "vector") == "vector"]
     median_top_score = round(statistics.median(top_scores), 4) if top_scores else None
     empty_searches = sum(1 for q in queries if q.get("top_score") is None and q.get("num_sources") == 0)
 
@@ -486,6 +499,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         "avg_query_latency_seconds": avg_query_latency_seconds,
         "queries_by_surface": queries_by_surface,
         "queries_by_project": queries_by_project,
+        "queries_by_mode": queries_by_mode,
         "dead_runs": len(dead),
         "last_error": last_error,
         "median_top_score": median_top_score,
@@ -502,7 +516,9 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # [orphan sweep] Which MCP tools an agent actually calls, and which
         # of those failed. Counted separately rather than as a success rate:
         # "called 40 times, 40 failed" and "called 40 times, 2 failed" are
-        # different problems, and a single percentage blurs them.
+        # different problems, and a single percentage blurs them. A read of
+        # an MCP resource counts here too, under its URI (griot://repos), so
+        # it stands next to the tool it duplicates without being mistaken for it.
         # [user-requested] WHY documents failed, grouped by reason. A
         # systemic failure (bad credential, oversized input) repeats one
         # reason across every document, so the grouping is the diagnosis —
@@ -572,6 +588,19 @@ def _behind_phrase(report: dict) -> str:
     if changed:
         parts.append(f"{' and '.join(changed)} changed")
     return f"{report['repo']} ({'; '.join(parts) or 'behind'})"
+
+
+def platform_refused_names(reports: list[dict]) -> list[str]:
+    """The repositories whose platform refused every fetch in the newest
+    platform run that concerned them (freshness.py), as they may be printed:
+    a directory name can hold an escape sequence."""
+    return [common.printable(r["repo"]) for r in reports if r.get("platform_refused")]
+
+
+def platform_refused_phrase(names: list[str]) -> str:
+    """Shared by `griot stats` and `griot doctor`, so both say it the same way."""
+    return ("the platform refused every fetch for " + ", ".join(names)
+            + " in the last platform run: nothing of " + ("it" if len(names) == 1 else "them") + " was indexed")
 
 
 def format_stats(s: dict, days: int) -> str:
@@ -734,8 +763,12 @@ def format_stats(s: dict, days: int) -> str:
         if any(name != "unknown" for name in by_project):  # all-unknown is noise, not information
             split = " · ".join(f"{k} {v}" for k, v in sorted(by_project.items(), key=lambda kv: -kv[1]))
             lines.append(f"             by project: {split}")
+        by_mode = s.get("queries_by_mode") or {}
+        if set(by_mode) - {"vector"}:  # only vector searches: the line would say nothing new
+            split = " · ".join(f"{k} {v}" for k, v in sorted(by_mode.items(), key=lambda kv: -kv[1]))
+            lines.append(f"             by mode: {split}")
         if s.get("median_top_score") is not None:
-            found = f"median top score {s['median_top_score']:.2f}"
+            found = f"median top score {s['median_top_score']:.2f}" + (" (vector searches)" if set(by_mode) - {"vector"} else "")
             if s.get("empty_searches"):
                 found += f" · {s['empty_searches']} found nothing"
             lines.append(f"             {found}")
@@ -750,6 +783,12 @@ def format_stats(s: dict, days: int) -> str:
             lines.append(f"             most used sources: {breakdown}")
     else:
         lines.append("Queries:     none in the period")
+    # A window longer than the retention counts searches and tool calls over
+    # the retention only (prune_logs_if_due): say so, or a 400-day report
+    # reads as a year in which nobody searched before last spring.
+    if days > common.LOG_RETENTION_DAYS:
+        lines.append(f"             searches and tool calls are kept for {common.LOG_RETENTION_DAYS} days "
+                     f"(log-retention-days): older ones are not counted")
 
     tools = s.get("tool_calls") or {}
     if tools:
@@ -917,6 +956,9 @@ def main(argv=None) -> int:
         parser.error(f"--days must be at least 1 (got {args.days})")
 
     result = report(args.days, all_profiles=args.all_profiles)
+    # Both front ends, so `--json` and griot_stats say over how long the
+    # search and tool-call counts can reach.
+    result["log_retention_days"] = common.LOG_RETENTION_DAYS
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     else:

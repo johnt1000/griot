@@ -1,3 +1,4 @@
+import atexit
 import hashlib
 import http.cookiejar
 import json
@@ -258,6 +259,8 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
+    ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (no other command asks)", False),
+    ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs and quality checks are kept)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
     ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
@@ -603,6 +606,14 @@ def log_questions_enabled() -> bool:
     return os.getenv("GRIOT_LOG_QUESTIONS", "true").strip().lower() not in FALSE_WORDS
 
 
+def update_check_enabled() -> bool:
+    """Whether `griot doctor` may ask PyPI for the newest release (the only
+    request griot makes to learn about itself; SECURITY.md has the row).
+    On unless turned off; an empty value is the default, as for every flag.
+    Read at call time, like log_questions_enabled."""
+    return os.getenv("GRIOT_UPDATE_CHECK", "true").strip().lower() not in FALSE_WORDS
+
+
 def _clean_project(name: str) -> str | None:
     """A project name fit for a log line: printable characters only (a directory
     name can hold a newline or an escape), at most 100 of them, None if nothing is left."""
@@ -657,6 +668,45 @@ def log_query(**fields) -> None:
     }
     secure_mkdir(LOG_DIR)
     logdb.write_query(LOG_DIR, record)
+    prune_logs_if_due()
+
+
+# At most one prune per process per day: the prune is cheap (an indexed
+# DELETE), but every search and tool call writes, and a long-lived MCP
+# server must still prune more than once in its life.
+_LOG_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+_last_log_prune: float | None = None
+_log_prune_lock = threading.Lock()
+
+
+def prune_logs_if_due() -> None:
+    """Applies LOG_RETENTION_DAYS to logs.db, when this process has not done
+    so in the last day. Called after a write of the tables it prunes, never
+    from a read: looking at a report must not change what it reads.
+
+    Never raises. A prune that fails is logged and the write that called it
+    stands; it is not retried before the interval either, so a broken file
+    is not hit again on every search."""
+    global _last_log_prune
+    if not _log_prune_lock.acquire(blocking=False):
+        return  # another thread of this process is pruning right now
+    try:
+        now = time.monotonic()
+        if _last_log_prune is not None and now - _last_log_prune < _LOG_PRUNE_INTERVAL_SECONDS:
+            return
+        _last_log_prune = now
+        removed = logdb.prune_older_than(LOG_DIR, LOG_RETENTION_DAYS)
+        searches, calls = removed.get("queries", 0), removed.get("tool_calls", 0)
+        if searches or calls:
+            log_and_print(f"Log retention: removed {searches} search(es) and {calls} tool call(s) older than "
+                          f"{LOG_RETENTION_DAYS} days from logs.db", echo=False)
+    except Exception as e:  # noqa: BLE001 — housekeeping must not fail the command that logged
+        try:
+            log_and_print(f"Warning: could not prune logs.db: {e}", level="warning", echo=False)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _log_prune_lock.release()
 
 
 def _check_env_file_permissions(env_path: Path) -> None:
@@ -784,6 +834,30 @@ _EDGE_CONFIG_MARKER = "edge_config.json"
 # small corpora (tests, a fresh install), which fall back to brute force,
 # which is correct by definition.
 _HNSW_CONFIG = qe.HnswIndexConfig(m=16, ef_construct=100, full_scan_threshold=10000)
+
+# Keyword search: every point carries, beside its dense vector, a BM25 sparse
+# vector of its text, under this name. The IDF part of BM25 is applied by the
+# store at query time (Modifier.Idf), over the whole collection, so a document
+# vector never has to be rewritten when the corpus grows. Computed locally by
+# the engine's own BM25 model (qe.Bm25): no embedding call, nothing paid.
+#
+# The name and the model's settings are part of what is stored: documents
+# and queries must be tokenized the same way to match. Changing either (or an
+# engine upgrade that tokenizes differently) means building the keyword
+# vectors again, which build_keyword_index() does.
+KEYWORD_VECTOR = "bm25"
+
+
+def _collection_config() -> "qe.EdgeConfig":
+    """What a collection is made with: the dense vector of the active
+    profile and the keyword vector. A collection made before keyword search
+    has no keyword vector, and the engine cannot add one to existing
+    segments (it refuses a load whose config names a vector the segments
+    lack): build_keyword_index() copies it into a new one made with this."""
+    return qe.EdgeConfig(
+        vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
+        sparse_vectors={KEYWORD_VECTOR: qe.EdgeSparseVectorParams(modifier=qe.Modifier.Idf)},
+    )
 
 # Available embedding profiles. Switching profile = switching collection
 # (name derived from the profile) — vectors from different models aren't
@@ -1014,14 +1088,17 @@ def _amount_env(name: str, default: str | None) -> float | None:
     return value
 
 
-def _count_env(name: str, default: str) -> int:
+def _count_env(name: str, default: str, minimum: int | None = None) -> int:
     """A whole number from the environment, reported like the amounts are:
     one line that names the variable."""
     raw = os.getenv(name, default)
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix()}") from None
+    if minimum is not None and value < minimum:
+        raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix()}")
+    return value
 
 
 CHAT_PRICE_PER_1M_TOKENS = _amount_env("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50")
@@ -1160,7 +1237,8 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
 # raises. Callers (auth.py) fall back to the existing file-based storage
-# whenever these return None/False.
+# whenever these return None/False (a delete returns one of the KEYCHAIN_*
+# results below instead, so "nothing was there" and "could not ask" differ).
 _KEYCHAIN_SERVICE = "griot"
 
 
@@ -1181,19 +1259,102 @@ def _keychain_set(env_var: str, value: str) -> bool:
         return False
 
 
-def _keychain_delete(env_var: str) -> bool:
+# What _keychain_delete() found. "not installed" is apart from "unreachable"
+# because without the `keyring` package griot never stored anything in a
+# keychain, so there is nothing to warn about; an installed package whose
+# backend fails may be hiding a stored credential that is still there.
+KEYCHAIN_DELETED = "deleted"
+KEYCHAIN_NOTHING_STORED = "nothing stored"
+KEYCHAIN_UNREACHABLE = "unreachable"
+KEYCHAIN_NOT_INSTALLED = "not installed"
+
+
+def _keychain_delete(env_var: str) -> str:
+    """One of the KEYCHAIN_* results above; never raises.
+
+    Existence is asked with get_password() first instead of read off the
+    exception delete_password() raises: keyring's own backends raise
+    PasswordDeleteError for "nothing to delete" (Secret Service, KWallet,
+    Windows, macOS item-not-found) but ALSO for real failures (macOS wraps
+    an access denial in it, KWallet a cancelled unlock), and libsecret
+    returns quietly when there was nothing. get_password() answers None for
+    a missing item on every backend and raises when the backend cannot be
+    asked, so after it any exception is a failure."""
     try:
         import keyring
-        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
-        return True
+    except ImportError:
+        return KEYCHAIN_NOT_INSTALLED
     except Exception:
-        return False
+        # Installed but broken while loading: a key stored through it
+        # earlier may still be there, so this is not "not installed".
+        return KEYCHAIN_UNREACHABLE
+    try:
+        if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
+            return KEYCHAIN_NOTHING_STORED
+        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
+        return KEYCHAIN_DELETED
+    except Exception:
+        return KEYCHAIN_UNREACHABLE
+
+
+def keychain_status() -> dict:
+    """Whether a credential set now would go to an OS keychain, so the
+    fallback to the plaintext file can be said instead of happening silently.
+
+    {"available": bool, "backend": its name or None, "installed": whether
+    `keyring` imports at all}: "not installed" is fixed by the extra, "no
+    backend" is not (headless Linux, a container), and the advice differs.
+    Asks keyring which backend it chose and reads no credential, so it never
+    makes macOS ask the person. keyring falls back to its `fail` backend
+    (priority 0) when nothing is reachable, and `null` (priority -1) turns it
+    off: neither stores anything."""
+    try:
+        import keyring
+    except Exception:
+        return {"available": False, "backend": None, "installed": False}
+    try:
+        backend = keyring.get_keyring()
+        if backend.priority > 0:
+            return {"available": True, "backend": str(getattr(backend, "name", type(backend).__name__)),
+                    "installed": True}
+    except Exception:
+        pass
+    return {"available": False, "backend": None, "installed": True}
 
 
 # The files a shell reads at start where a variable is usually exported. Read
 # only to say WHERE (file and line), never what.
 _SHELL_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bashrc", ".bash_profile", ".profile",
                 ".config/fish/config.fish")
+
+
+def _shown_path(path: Path) -> str:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+
+
+def _lines_matching(path: Path, pattern: re.Pattern, groups: bool = False) -> list:
+    """`<path>:<line>` for every line of `path` that `pattern` matches (the
+    matches themselves with `groups`); a file that cannot be read (missing,
+    a directory, no permission) matches nothing: this only explains where
+    a credential came from, it must never be what fails."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except (OSError, ValueError):  # ValueError: a NUL byte in a path an .envrc names
+        return []
+    matches = ((number, pattern.match(line)) for number, line in enumerate(lines, 1))
+    if groups:
+        return [match for _, match in matches if match]
+    shown = _shown_path(path)
+    return [f"{shown}:{number}" for number, match in matches if match]
+
+
+def _export_statement(env_var: str) -> str:
+    """A POSIX-shell statement that exports `env_var` (`export`, `typeset
+    -x`, `declare -x`, with or without a value, after other assignments),
+    as a regex fragment: shared by the shell files and the .envrc, which
+    bash evaluates the same way."""
+    return rf"(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{re.escape(env_var)}(?:=|\s*$)"
 
 
 def _shell_exports(env_var: str) -> list[str]:
@@ -1205,19 +1366,61 @@ def _shell_exports(env_var: str) -> list[str]:
     home = Path.home()
     name = re.escape(env_var)
     pattern = re.compile(
-        rf"^\s*(?:(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)"
+        rf"^\s*(?:{_export_statement(env_var)}"
         rf"|{name}=\S*\s*(?:#.*)?$"
         rf"|set\s+-\w*x\w*\s+{name}\s)")
     zdotdir = Path(os.environ["ZDOTDIR"]).expanduser() if os.environ.get("ZDOTDIR") else home
     candidates = [(zdotdir if file.startswith(".z") else home) / file for file in _SHELL_FILES]
-    found = []
-    for path in candidates:
+    return [place for path in candidates for place in _lines_matching(path, pattern)]
+
+
+# A `dotenv`/`dotenv_if_exists` call in an .envrc whose one argument, if
+# any, is a literal path. A path built from a variable is not guessed.
+_DIRENV_DOTENV_CALL = re.compile(r"""^\s*dotenv(?:_if_exists)?(?:\s+(?P<q>['"]?)(?P<path>[^\s'"$`]+)(?P=q))?\s*(?:#.*)?$""")
+
+
+def _direnv_exports(env_var: str) -> list[str]:
+    """Places where the file direnv loaded for this shell exports `env_var`.
+
+    direnv puts DIRENV_FILE (the file it evaluated) and DIRENV_DIR ("-" and
+    that file's directory; the only one older direnv sets) in the
+    environment it exports, so they name the file that was really loaded,
+    not one guessed from the current directory. The .envrc is evaluated by
+    bash, and only what it exports reaches the environment: a plain
+    `VAR=x` stays a shell variable and is not counted. A `.env` it loads
+    with `dotenv`/`dotenv_if_exists` (no argument: the `.env` beside it,
+    as source_env evaluates from that directory) exports every key,
+    `export` or not; so does the `.env` DIRENV_FILE
+    names when direnv's load_dotenv loads one directly. Other ways an
+    .envrc can set it (source_env, source_up, a variable path) are not
+    followed: they end up without a place, never a wrong one."""
+    if os.environ.get("DIRENV_FILE"):
+        loaded = Path(os.environ["DIRENV_FILE"])
+    elif os.environ.get("DIRENV_DIR", "").startswith("-") and len(os.environ["DIRENV_DIR"]) > 1:
+        loaded = Path(os.environ["DIRENV_DIR"][1:]) / ".envrc"
+    else:
+        return []
+    name = re.escape(env_var)
+    # direnv's own dotenv grammar (pkg/dotenv): optional export, key, then
+    # `=` (spaces allowed) or `:` and a space.
+    dotenv_key = re.compile(rf"^\s*(?:export\s+)?{name}(?:\s*=|:\s)")
+    if loaded.name == ".env":
+        return _lines_matching(loaded, dotenv_key)
+    found = _lines_matching(loaded, re.compile(rf"^\s*{_export_statement(env_var)}"))
+    for call in _lines_matching(loaded, _DIRENV_DOTENV_CALL, groups=True):
+        path = call["path"] or ".env"
+        # bash expands a leading ~ only when the word is not quoted. An
+        # unknown `~user` (RuntimeError) or a NUL byte in it (ValueError)
+        # names nothing: this lookup must never be what fails.
         try:
-            lines = path.read_text(errors="replace").splitlines()
-        except OSError:
+            target = loaded.parent / (Path(path).expanduser() if not call["q"] else Path(path))
+        except (RuntimeError, ValueError):
             continue
-        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-        found.extend(f"{shown}:{number}" for number, line in enumerate(lines, 1) if pattern.match(line))
+        # A directory is read as nothing (_lines_matching), which is right:
+        # stdlib's dotenv checks `<dir>/.env` exists but then runs `direnv
+        # dotenv bash <dir>`, whose os.ReadFile of a directory fails, so
+        # no key of it is exported.
+        found.extend(_lines_matching(target, dotenv_key))
     return found
 
 
@@ -1248,7 +1451,7 @@ def credential_origin(env_var: str) -> dict:
     shadows = bool(exported and stored_value
                    and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
     return {"source": source, "stored": stored, "shadows_stored": shadows,
-            "exported_in": _shell_exports(env_var) if exported else []}
+            "exported_in": _shell_exports(env_var) + _direnv_exports(env_var) if exported else []}
 
 
 def _provider_of(env_var: str) -> str | None:
@@ -1271,7 +1474,7 @@ def _credential_hint(env_var: str) -> str:
     provider = _provider_of(env_var)
     set_it = f"`griot auth set {provider}`" if provider else f"`griot auth set <provider>`"
     if origin["source"] == "environment":
-        where = ", ".join(origin["exported_in"]) or "this shell (no shell file griot knows sets it)"
+        where = ", ".join(origin["exported_in"]) or "this shell (no shell file or direnv file griot knows sets it)"
         text = f"{env_var} came from the environment, exported in {where}"
         if origin["shadows_stored"]:
             text += (f"; it overrides the different key griot stores, so remove that export (and `unset {env_var}` "
@@ -1348,6 +1551,16 @@ SPEND_VELOCITY_CEILING_USD = _amount_env("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.
 # (external API down, invalid credential, etc.) — better to stop early and
 # loudly than to spend hours producing only empty batches.
 MAX_CONSECUTIVE_FAILED_BATCHES = _count_env("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5")
+
+# How many days of searches and MCP tool calls logs.db keeps (see
+# prune_logs_if_due()). Generous on purpose: deleting history someone reads
+# is worse than a file that grows slowly. `griot stats --days` (30 by
+# default) and griot_stats take any window; the MCP usage logs are what
+# show how agents use griot over weeks; and the idea of curating golden-set
+# cases from real queries (ROADMAP) wants months of them. A year of daily
+# use is a few thousand rows. At least 1: under a day a prune would delete
+# what was just written.
+LOG_RETENTION_DAYS = _count_env("GRIOT_LOG_RETENTION_DAYS", "365", minimum=1)
 
 # Single-process lock — besides Qdrant's native lock (which only blocks
 # access to the same collection), this one fails fast with a clear message
@@ -1540,7 +1753,6 @@ def acquire_lock(label: str | None = None) -> None:
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps({"pid": pid, "start_time": start_time, "label": label}))
 
-    import atexit
     atexit.register(release_lock)
 
 
@@ -1849,14 +2061,15 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     try:
         if _client is None:
             path = _collection_path(COLLECTION_NAME)
+            # Before deciding between load and create: a keyword build that
+            # died between its two renames left the collection beside its
+            # place, and creating an empty one there would hide it.
+            _restore_interrupted_keyword_swap(path)
             if (path / _EDGE_CONFIG_MARKER).exists():
                 opened = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
             else:
                 secure_mkdir(path)  # and whatever is made on the way to it
-                cfg = qe.EdgeConfig(
-                    vectors={"dense": qe.EdgeVectorParams(size=EMBED_DIM, distance=qe.Distance.Cosine, hnsw_config=_HNSW_CONFIG)},
-                )
-                opened = qe.EdgeShard.create(str(path), cfg)
+                opened = qe.EdgeShard.create(str(path), _collection_config())
             _client = opened
             # [M2] qdrant_data is a recoverable plaintext copy (compressed
             # payload, not encrypted) of ALL indexed content — 0700 on the root
@@ -1902,7 +2115,17 @@ def release_client() -> None:
         if _client is not None:
             _client.close()
             _client = None
+            # Closing rewrites each segment's segment.json with the process
+            # umask, after every repair that ran while the shard was open.
+            # Only the directories that changed are listed again.
+            _secure_collection_dir(COLLECTION_NAME)
         _client_last_used_at = None
+
+
+# A process that exits holding the shard (every CLI run) has the engine write
+# the same files when the handle is dropped on the way out: closing it here
+# first lets the repair above run after that write, not before it.
+atexit.register(release_client)
 
 
 # Options of the top-level `griot` command that take a value, so the value is
@@ -2592,11 +2815,18 @@ def _write_stale_details(batch: list[dict], client: "qe.EdgeShard") -> int:
     Returns how many. After _split_pending(), which marks them."""
     stale = [doc for doc in batch if doc.get("_details_changed")]
     written = 0
+    # The keyword vector holds some details (a hash, a path: keyword_text),
+    # so it follows them; the dense vector holds the text alone and stays.
+    keywords = bool(stale) and has_keyword_vectors(COLLECTION_NAME)
     try:
         for doc in stale:
             try:
                 # Merges: the text, its hash and the vector stay as they are.
                 client.update(qe.UpdateOperation.set_payload([doc["_point_id"]], doc["metadata"]))
+                if keywords:
+                    sparse = keyword_vector({**doc["metadata"], "content": doc["content"]})
+                    client.update(qe.UpdateOperation.update_vectors(
+                        [qe.PointVectors(doc["_point_id"], {KEYWORD_VECTOR: sparse})]))
                 written += 1
             except Exception as e:  # noqa: BLE001 - one point (gone since it was read) must not stop the others
                 log_and_print(f"Warning: could not update the stored details of {shown(doc['id'])}: {e}",
@@ -2678,7 +2908,158 @@ def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Check
     return record
 
 
-def _secure_collection_dir(collection: str) -> None:
+# --- Progress of an indexing run, for the host that started it ---------------
+#
+# griot_index_repo runs `griot index all` in a subprocess (the server's stdout
+# is the JSON-RPC transport, so the run cannot print there) and returns at
+# once. The run records where it is in a small JSON file named by this
+# variable, and the host reads it back (jobs.index_job_report()). Internal,
+# like GRIOT_DRY_RUN_REPORT: set by jobs.start_index_job for its child, never
+# a setting, hence not in the .env template. Read at each call, not at import:
+# the variable belongs to the run, not to the module.
+INDEX_PROGRESS_ENV = "GRIOT_INDEX_PROGRESS"
+
+# Within a source, at most one write per interval. A rerun over an unchanged
+# repository skips batch after batch in milliseconds, and a write per batch
+# would then be most of the work; a person or an agent polling needs nothing
+# finer. The source's first batch (its total becomes known) and its last are
+# always written.
+_PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
+_progress_clock = time.monotonic  # a function of its own so that a test can stop time
+
+# Every state a source can be in, in the order a source goes through them
+# ("failed" instead of "done" when it stops the run).
+INDEX_PROGRESS_STATES = ("pending", "reading", "embedding", "done", "failed")
+_PROGRESS_COUNT_FIELDS = ("chunks_total", "chunks_done", "indexed", "skipped", "failed")
+# This process's record and when it was last written. Only ever touched by
+# the run itself, which is single-threaded.
+_progress: dict | None = None
+_progress_written_at = 0.0
+
+
+def _write_progress() -> None:
+    """Writes the record where the host asked, atomically (a reader never
+    sees half a file) and private (it names repositories). Never fails the
+    run: progress is a courtesy to whoever watches, and losing it costs a
+    stale number, while failing here would lose the run."""
+    global _progress_written_at
+    path = os.getenv(INDEX_PROGRESS_ENV)
+    if not path or _progress is None:
+        return
+    _progress["updated_at"] = time.time()
+    try:
+        secure_write_text_atomic(Path(path), json.dumps(_progress))
+    except OSError as e:
+        log_and_print(f"Warning: could not record indexing progress to {path}: {e}", level="warning", echo=False)
+    _progress_written_at = _progress_clock()
+
+
+def progress_begin(sources: list[str]) -> None:
+    """Starts this run's record: every source it will run, all pending."""
+    global _progress
+    if not os.getenv(INDEX_PROGRESS_ENV):
+        return
+    _progress = {"current_source": None,
+                 "sources": [{"source": source, "state": "pending", **dict.fromkeys(_PROGRESS_COUNT_FIELDS)}
+                             for source in sources]}
+    _write_progress()
+
+
+def _current_progress_entry() -> dict | None:
+    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+        return None
+    for entry in _progress["sources"]:
+        if entry["source"] == _progress["current_source"]:
+            return entry
+    return None
+
+
+def progress_source(source: str, state: str) -> None:
+    """A source changed state: "reading" when it starts (the repository is
+    being listed and read, so how many chunks it has is not known yet),
+    "done" or "failed" when it ends. The source becomes the current one."""
+    if _progress is None or not os.getenv(INDEX_PROGRESS_ENV):
+        return
+    _progress["current_source"] = source
+    entry = _current_progress_entry()
+    if entry is None:
+        return  # a source the run did not announce: nothing to update
+    entry["state"] = state
+    _write_progress()
+
+
+def _progress_chunks(*, total: int, done: int, indexed: int, skipped: int, failed: int, final: bool = False) -> None:
+    """From index_documents(), the one place every source passes through: the
+    chunks of the current source, as the batches go. `final` (and the first
+    batch, whose total is new) is written whatever the interval."""
+    entry = _current_progress_entry()
+    if entry is None:
+        return
+    first = entry["chunks_total"] != total or entry["state"] != "embedding"
+    entry.update(state="embedding", chunks_total=total, chunks_done=done,
+                 indexed=indexed, skipped=skipped, failed=failed)
+    if final or first or _progress_clock() - _progress_written_at >= _PROGRESS_WRITE_INTERVAL_SECONDS:
+        _write_progress()
+
+
+def _count_or_none(value) -> int | None:
+    # bool is an int to Python, and never a count.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def read_index_progress(path) -> dict | None:
+    """The record a run wrote at `path`, or None when there is none to read:
+    no file, an empty one (the run has not written yet), or anything that is
+    not a whole record of ours. Read while the run may be anywhere, so it
+    never raises; a count that is not a count reads as unknown (None)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
+        return None
+    current = data.get("current_source")
+    if current is not None and not isinstance(current, str):
+        return None
+    sources = []
+    for entry in data["sources"]:
+        # A state outside the known ones is refused, not passed on: the
+        # readers (griot_index_wait's arithmetic, an agent) decide on it.
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), str) \
+                or entry.get("state") not in INDEX_PROGRESS_STATES:
+            return None
+        sources.append({"source": entry["source"], "state": entry["state"],
+                        **{field: _count_or_none(entry.get(field)) for field in _PROGRESS_COUNT_FIELDS}})
+    updated_at = data.get("updated_at")
+    return {"current_source": current, "sources": sources,
+            "updated_at": updated_at if isinstance(updated_at, (int, float)) and not isinstance(updated_at, bool) else None}
+
+
+# What the last check of each collection found, in this process only: a
+# directory -> (its fingerprint, its subdirectories). Not persisted on
+# purpose: a file another process could edit would be one more thing to
+# trust, and every process pays one full check on its first open anyway
+# (a CLI run opens once; the long-lived MCP server, which reopens after
+# every idle release in `multi` mode, is the one that gains).
+_verified_trees: dict[str, dict] = {}
+# A file chmodded in place changes nothing its directory records, so no
+# fingerprint sees it. A full check bounds that: after every write (a
+# finished index or prune run) and at least this often on an open. The
+# threat the reopen check answers is a tool resetting modes while the
+# collection was released (a restore, a sync, rsync/tar without -p): those
+# recreate or rename files, which a directory records, or chmod the
+# directories too, whose mode is in the fingerprint. A tool that loosens
+# only files in place still has to get past the outer directories, which
+# every open closes again.
+_FULL_CHECK_INTERVAL = 600.0
+# A directory's times have a granularity (coarse clock ticks on Linux): one
+# changed again within the same tick after it was fingerprinted can keep
+# the same mtime. A directory that recent is checked again next time
+# rather than remembered (the "racy" rule git applies to its index).
+_RACY_WINDOW_NS = 2_000_000_000
+
+
+def _secure_collection_dir(collection: str, *, full: bool = False) -> None:
     """[security review] Qdrant Edge's own Rust engine writes its files
     (WAL, segments, payload_storage/*.dat, vector_storage/*) with the
     process umask, not through griot's secure_* helpers — a real gap a
@@ -2689,46 +3070,313 @@ def _secure_collection_dir(collection: str) -> None:
     without permission preservation (rsync/tar without -p), a naive cloud
     sync, or restoring from an archive could reset the outer directories
     and leave the actual RAG content world-readable with nothing else
-    standing in the way. Called once at the end of every index_documents()
-    run (the natural "a write just happened" point) — recursively repairs
-    whatever Edge wrote during this run. Best-effort per-file: one file's
-    chmod failing (e.g. a transient race with Edge's own I/O) must never
-    fail the whole indexing run over a permission repair. Also called on
-    every cold open in get_client() (including every multi-mode
-    idle-release reopen), so the walk always visits every entry (a new
-    file from another process must still be checked) but skips the chmod
-    syscall itself when the mode is already correct — a real cost on large
-    collections opened repeatedly."""
+    standing in the way. Called with full=True at the end of every write
+    (index_documents(), prune_orphans()), on every cold open in
+    get_client() (including every multi-mode idle-release reopen), and
+    after every close in release_client(), which the engine follows with a
+    write of its own.
+
+    On an open, a directory whose fingerprint (inode, mode, mtime, ctime)
+    is the one recorded when it was last checked is not listed again: a
+    file created, removed or renamed in it changes its mtime and ctime, a
+    chmod of it changes its mode and ctime. Only its known subdirectories
+    are visited. Everything else (a new or changed directory, a check
+    older than _FULL_CHECK_INTERVAL, full=True) has every entry checked.
+    The engine itself rewrites a couple of small directories on every
+    load; those are checked each time.
+
+    Best-effort per entry: a chmod that fails is retried once, then logged
+    (see _repair_mode) and its directory left unremembered, so the next
+    open tries again; it never fails the indexing run or search that
+    called it. `griot doctor` reports whatever is still open."""
     path = _collection_path(collection)
     if not path.exists():
         return
-    for root, _dirs, files in os.walk(path):
-        _repair_mode(root, 0o700)
-        for f in files:
-            _repair_mode(os.path.join(root, f), 0o600)
+    key = str(path)
+    now = time.monotonic()
+    known = _verified_trees.get(key)
+    if full or known is None or now - known["full_at"] >= _FULL_CHECK_INTERVAL:
+        known = {"full_at": now, "dirs": {}}
+    remembered: dict[str, tuple] = {}
+    pending = [key]
+    while pending:
+        directory = pending.pop()
+        checked_at = time.time_ns()
+        try:
+            st = os.stat(directory)
+        except OSError:
+            continue  # gone since its parent was listed: nothing left to close
+        fingerprint = (st.st_dev, st.st_ino, stat.S_IMODE(st.st_mode), st.st_mtime_ns, st.st_ctime_ns)
+        previous = known["dirs"].get(directory)
+        if previous is not None and previous[0] == fingerprint:
+            remembered[directory] = previous
+            pending.extend(previous[1])
+            continue
+        closed = _repair_mode(directory, 0o700)
+        subdirectories = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        is_directory = entry.is_dir()
+                    except OSError:
+                        is_directory = False
+                    if is_directory:
+                        # As os.walk did: a link to a directory is neither
+                        # followed nor chmodded (chmod would follow it).
+                        if not entry.is_symlink():
+                            subdirectories.append(entry.path)
+                    elif not _repair_mode(entry.path, 0o600):
+                        closed = False
+        except OSError:
+            closed = False
+        pending.extend(subdirectories)
+        recent = max(st.st_mtime_ns, st.st_ctime_ns) > checked_at - _RACY_WINDOW_NS
+        if closed and not recent:
+            # Fingerprinted BEFORE the listing: an entry made after the
+            # listing changed the directory after this fingerprint.
+            remembered[directory] = (fingerprint, tuple(subdirectories))
+    _verified_trees[key] = {"full_at": known["full_at"], "dirs": remembered}
 
 
-def _repair_mode(target: str, mode: int) -> None:
+def _repair_mode(target: str, mode: int) -> bool:
     """Chmods target to mode unless it already is — a failed stat falls
     through to attempting the chmod anyway (never let a failed optimization
-    check block the real repair). A chmod failure is logged, not raised:
-    this must never fail the indexing run or search that called it over a
-    permission race, but silent swallowing left no trace anywhere.
-    echo=False is required, not optional — this runs from get_client(),
-    reached from the MCP server path where stdout is the JSON-RPC
-    transport."""
+    check block the real repair). Returns whether target ends up closed
+    (or is gone: a file the engine removed mid-walk is open to no one).
+    A chmod failure is retried once (a transient race with the engine's
+    own I/O), then logged, not raised: this must never fail the indexing
+    run or search that called it over a permission race, but silent
+    swallowing left no trace anywhere. echo=False is required, not
+    optional — this runs from get_client(), reached from the MCP server
+    path where stdout is the JSON-RPC transport."""
     try:
         if stat.S_IMODE(os.stat(target).st_mode) == mode:
-            return
+            return True
     except OSError:
         pass
+    for attempt in (1, 2):
+        try:
+            os.chmod(target, mode)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            if attempt == 2:
+                log_and_print(
+                    f"permission repair failed for {target} (kept previous mode) — {exc}",
+                    level="warning", echo=False,
+                )
+    return False
+
+
+# --- keyword vectors ---------------------------------------------------------
+
+# Details stored beside the text that a person searches for by their exact
+# spelling and that the text itself does not hold: a code chunk does not
+# contain its path, a commit message does not contain its hash. Numbers (a
+# pull request's) are left out: a bare number matches every text that
+# happens to hold it.
+_KEYWORD_DETAILS = ("file_path", "commit_hash", "last_commit_hash", "tag_name", "branch_name",
+                    "source_branch", "target_branch")
+# A hash is written abbreviated more often than whole, and BM25 matches whole
+# words only: the lengths git abbreviates to (7 by default, longer as a
+# repository grows) go in as words of their own.
+_HASH_DETAILS = ("commit_hash", "last_commit_hash")
+_HASH_ABBREVIATIONS = range(7, 13)
+
+_bm25_model: "qe.Bm25 | None" = None
+
+
+def _keyword_model() -> "qe.Bm25":
+    """The engine's BM25 model with its defaults (English stemming and
+    stopwords, k=1.2, b=0.75): the same for documents and queries, which is
+    what makes them match. Cheap to make; kept because every point needs it."""
+    global _bm25_model
+    if _bm25_model is None:
+        _bm25_model = qe.Bm25()
+    return _bm25_model
+
+
+def keyword_text(payload: dict) -> str:
+    """What the keyword vector of a stored point is made from: its text as
+    it may leave griot (stored_text) plus the identifying details the text
+    lacks (_KEYWORD_DETAILS), the details through the same replacement as
+    the text, so a credential-shaped branch name is not made findable by its
+    value."""
+    words = []
+    for field in _KEYWORD_DETAILS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        words.append(value)
+        if field in _HASH_DETAILS and is_git_hash(value):
+            words.extend(value[:length] for length in _HASH_ABBREVIATIONS)
+    text = stored_text(payload)
+    if words:
+        text += "\n" + redaction.redact(" ".join(words))[0]
+    return text
+
+
+def keyword_vector(payload: dict) -> "qe.SparseVector":
+    return _keyword_model().embed_document(keyword_text(payload))
+
+
+def _point(point_id: str, dense: list[float], payload: dict, *, keywords: bool) -> "qe.Point":
+    vectors = {"dense": dense}
+    if keywords:
+        vectors[KEYWORD_VECTOR] = keyword_vector(payload)
+    return qe.Point(id=point_id, vector=vectors, payload=payload)
+
+
+# Points per round when keyword vectors are built: a scroll page and one write.
+_KEYWORD_BATCH = 256
+
+
+def _keyword_rebuild_paths(path: Path) -> tuple[Path, Path]:
+    """(where the copy with keyword vectors is built, where the collection
+    waits while the copy takes its place). Siblings of the collection, so a
+    rename moves them and never copies across file systems."""
+    return path.with_name(path.name + ".keywords-new"), path.with_name(path.name + ".keywords-old")
+
+
+def _restore_interrupted_keyword_swap(path: Path) -> None:
+    """Puts a collection back where it belongs when a keyword build died
+    after moving it aside and before its copy took the place. Nothing else
+    is touched: the copy is deleted by the next build, which starts over."""
+    _staging, previous = _keyword_rebuild_paths(path)
+    if (path / _EDGE_CONFIG_MARKER).exists() or not (previous / _EDGE_CONFIG_MARKER).exists():
+        return
+    if path.exists():
+        path.rmdir()  # only ever empty here; anything in it is not ours to delete, and rmdir refuses
+    os.rename(previous, path)
+    log_and_print(f"Put collection '{path.name}' back in place: a keyword build was interrupted while "
+                  f"swapping it. Its keyword vectors are not built; `griot index keywords` builds them.",
+                  level="warning", echo=False)
+
+
+def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
+    """Copies every point of `client` into a new collection at `staging`,
+    made with the keyword vector: the dense vector and the payload as they
+    are, the keyword vector computed from the payload. Returns how many.
+    Embeds nothing: the dense vectors are read back from the store."""
+    total = client.info().points_count
+    secure_mkdir(staging)
+    new = qe.EdgeShard.create(str(staging), _collection_config())
     try:
-        os.chmod(target, mode)
-    except OSError as exc:
-        log_and_print(
-            f"permission repair failed for {target} (kept previous mode) — {exc}",
-            level="warning", echo=False,
-        )
+        copied, offset = 0, None
+        with tqdm(total=total, desc="Adding keyword vectors") as progress:
+            while True:
+                page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
+                                                              with_payload=True, with_vector=["dense"]))
+                if page:
+                    new.update(qe.UpdateOperation.upsert_points(
+                        [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in page]))
+                    copied += len(page)
+                    progress.update(len(page))
+                if offset is None:
+                    break
+        new.flush()
+        # Checked before the copy replaces anything: a copy that came out
+        # short must never take the collection's place.
+        if new.info().points_count != total:
+            raise RuntimeError(f"The copy holds {new.info().points_count} points and the collection {total}; "
+                               f"the collection was left as it was.")
+        new.optimize()
+    finally:
+        new.close()
+    return copied
+
+
+def _swap_in(path: Path, staging: Path, previous: Path) -> None:
+    """Puts the copy at `staging` in the collection's place. Called with the
+    collection's handle still open, so no other process can open it in
+    between (the engine allows one process per collection); the window
+    between the two renames is covered by _restore_interrupted_keyword_swap()."""
+    os.rename(path, previous)
+    try:
+        os.rename(staging, path)
+    except OSError as e:
+        if previous.exists() and not path.exists():
+            os.rename(previous, path)
+        raise RuntimeError(f"Could not put the collection with keyword vectors in place ({e}); the collection "
+                           f"was left as it was. Run `griot index keywords` again.") from e
+    release_client()
+    shutil.rmtree(previous)
+
+
+def _fill_missing_keyword_vectors(client: "qe.EdgeShard") -> int:
+    """Gives a keyword vector to every point of a collection made with one
+    that lacks it (written by a griot from before keyword search, say).
+    Returns how many. In place: the dense vector is left as it is."""
+    missing = qe.Filter(must_not=[qe.HasVectorCondition(KEYWORD_VECTOR)])
+    filled, offset = 0, None
+    while True:
+        page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH, filter=missing,
+                                                      with_payload=True, with_vector=False))
+        if page:
+            client.update(qe.UpdateOperation.update_vectors(
+                [qe.PointVectors(r.id, {KEYWORD_VECTOR: keyword_vector(r.payload or {})}) for r in page]))
+            filled += len(page)
+        if offset is None:
+            break
+    if filled:
+        client.flush()
+    return filled
+
+
+def build_keyword_index() -> dict:
+    """Gives every point of the active collection a keyword vector, without
+    embedding anything and without any paid call. Returns {"rebuilt": the
+    collection was copied into one made with the keyword vector, "written":
+    keyword vectors written, "points": points in the collection}.
+
+    A collection made before keyword search cannot take the vector in place
+    (the engine refuses to add a vector to existing segments), so it is
+    copied into a new one beside it, which then takes its place: for the
+    duration it needs about as much free disk as the collection takes. A
+    collection made with the vector only gets it for the points that lack it.
+
+    Idempotent: once every point has its vector this writes nothing. Run
+    again after an interruption, it finishes: a copy that never took the
+    collection's place is started over (it embedded nothing, so starting
+    over costs only the local copy), a collection left aside mid-swap is put
+    back first.
+
+    Holds the index lock for the whole build (an index run writing into the
+    collection while it is copied would lose what it wrote with the old
+    copy) and the collection's handle (no other process can open it while
+    it is copied, in either concurrency mode)."""
+    acquire_lock(label="keyword vectors")
+    try:
+        path = _collection_path(COLLECTION_NAME)
+        staging, previous = _keyword_rebuild_paths(path)
+        with _client_lock:
+            _restore_interrupted_keyword_swap(path)
+            for leftover in (staging, previous):
+                # A copy that never took the place, or a collection that
+                # was replaced and not yet deleted: neither is the collection.
+                if leftover.exists():
+                    shutil.rmtree(leftover)
+            if not collection_exists(COLLECTION_NAME):
+                return {"rebuilt": False, "written": 0, "points": 0}
+            rebuilt, written = False, 0
+            if not has_keyword_vectors(COLLECTION_NAME):
+                written = _copy_into_keyword_collection(get_client(), staging)
+                _swap_in(path, staging, previous)
+                rebuilt = True
+            client = get_client()
+            filled = _fill_missing_keyword_vectors(client)
+            if filled:
+                client.optimize()
+            return {"rebuilt": rebuilt, "written": written + filled, "points": client.info().points_count}
+    finally:
+        # Closed before the permissions are repaired: the engine writes
+        # files of its own when a shard closes (a segment.json, with the
+        # process umask), and a repair before that would miss them.
+        release_client()
+        _secure_collection_dir(COLLECTION_NAME)
+        release_lock()
 
 
 def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
@@ -2759,6 +3407,11 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     try:
         print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
+        # A collection made before keyword search has no room for the
+        # keyword vector (the engine refuses a point naming a vector the
+        # collection lacks): its points are written as before, and
+        # build_keyword_index() adds the keyword vectors to all of them.
+        keywords = has_keyword_vectors(COLLECTION_NAME)
         indexed = 0
         skipped = 0
         failed = 0
@@ -2772,65 +3425,73 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
 
         for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
             batch = documents[i:i + INDEX_BATCH_SIZE]
-            to_embed = _split_pending(batch, client)
-            skipped += len(batch) - len(to_embed)
             try:
-                refreshed += _write_stale_details(batch, client)
-            except Exception as e:  # noqa: BLE001 - the text is intact; the details are tried again next run
-                log_and_print(f"Warning: could not update the stored details of unchanged points: {e}", level="warning")
-            if not to_embed:
-                continue
+                to_embed = _split_pending(batch, client)
+                skipped += len(batch) - len(to_embed)
+                try:
+                    refreshed += _write_stale_details(batch, client)
+                except Exception as e:  # noqa: BLE001 - the text is intact; the details are tried again next run
+                    log_and_print(f"Warning: could not update the stored details of unchanged points: {e}", level="warning")
+                if not to_embed:
+                    continue
 
-            texts = [doc["content"] for doc in to_embed]
-            vectors = embed_texts(texts)
+                texts = [doc["content"] for doc in to_embed]
+                vectors = embed_texts(texts)
 
-            points = [
-                qe.Point(
-                    id=doc["_point_id"],
-                    vector={"dense": vector},
-                    payload={**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
-                )
-                for doc, vector in zip(to_embed, vectors)
-                if vector is not None
-            ]
-            failed += len(to_embed) - len(points)
-            _record_failures(
-                [doc for doc, vector in zip(to_embed, vectors) if vector is None],
-                "embedding returned no vector",
-            )
-
-            if not points:
-                consecutive_failed_batches += 1
-                if consecutive_failed_batches >= MAX_CONSECUTIVE_FAILED_BATCHES:
-                    raise RuntimeError(
-                        f"{consecutive_failed_batches} consecutive batches failed completely — this isn't "
-                        f"bad luck, something is systemically broken (Gemini API down, "
-                        f"invalid credential, etc). Stopping instead of continuing to produce only failures. "
-                        f"See logs/griot.log for the reason behind each failure."
+                points = [
+                    _point(doc["_point_id"], vector,
+                           {**doc["metadata"], "content": doc["content"], "content_hash": doc["_content_hash"]},
+                           keywords=keywords
                     )
-                continue
-            consecutive_failed_batches = 0
+                    for doc, vector in zip(to_embed, vectors)
+                    if vector is not None
+                ]
+                failed += len(to_embed) - len(points)
+                _record_failures(
+                    [doc for doc, vector in zip(to_embed, vectors) if vector is None],
+                    "embedding returned no vector",
+                )
 
-            try:
-                client.update(qe.UpdateOperation.upsert_points(points))
-                # flush() on every batch (not just at the end, unlike the
-                # migration prototype) — index_documents() runs over large
-                # corpora (the initial load takes ~5h); losing an
-                # entire batch to a mid-run crash is worse here than the
-                # small cost of an fsync per batch. flush() is about
-                # durability on disk (WAL -> segments), not about read
-                # visibility (retrieve()/query() already see points just
-                # upserted in the same process without a flush).
-                client.flush()
-                indexed += len(points)
-            except Exception as e:
-                log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
-                failed += len(points)
-                # A whole batch lost to one write error: the reason is the
-                # same for all of them, which is exactly why the itemized
-                # list is capped while `failed` stays exact.
-                _record_failures([doc for doc, vector in zip(to_embed, vectors) if vector is not None],
-                                 f"write to the vector store failed: {e}")
+                if not points:
+                    consecutive_failed_batches += 1
+                    if consecutive_failed_batches >= MAX_CONSECUTIVE_FAILED_BATCHES:
+                        raise RuntimeError(
+                            f"{consecutive_failed_batches} consecutive batches failed completely — this isn't "
+                            f"bad luck, something is systemically broken (Gemini API down, "
+                            f"invalid credential, etc). Stopping instead of continuing to produce only failures. "
+                            f"See logs/griot.log for the reason behind each failure."
+                        )
+                    continue
+                consecutive_failed_batches = 0
+
+                try:
+                    client.update(qe.UpdateOperation.upsert_points(points))
+                    # flush() on every batch (not just at the end, unlike the
+                    # migration prototype) — index_documents() runs over large
+                    # corpora (the initial load takes ~5h); losing an
+                    # entire batch to a mid-run crash is worse here than the
+                    # small cost of an fsync per batch. flush() is about
+                    # durability on disk (WAL -> segments), not about read
+                    # visibility (retrieve()/query() already see points just
+                    # upserted in the same process without a flush).
+                    client.flush()
+                    indexed += len(points)
+                except Exception as e:
+                    log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
+                    failed += len(points)
+                    # A whole batch lost to one write error: the reason is the
+                    # same for all of them, which is exactly why the itemized
+                    # list is capped while `failed` stays exact.
+                    _record_failures([doc for doc, vector in zip(to_embed, vectors) if vector is not None],
+                                     f"write to the vector store failed: {e}")
+            finally:
+                # Here, once for every source, rather than in each indexer:
+                # this is the loop they all share. In a finally so that a
+                # batch with nothing to embed (`continue`), and the batch that
+                # trips the breaker, are counted too.
+                _progress_chunks(total=len(documents), done=min(i + INDEX_BATCH_SIZE, len(documents)),
+                                 indexed=indexed, skipped=skipped, failed=failed,
+                                 final=i + INDEX_BATCH_SIZE >= len(documents))
 
         # [review] shard.optimize() was never called — without this, the
         # HNSW index is never (re)built over the new segments and searches
@@ -2850,7 +3511,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
             print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
-        _secure_collection_dir(COLLECTION_NAME)
+        _secure_collection_dir(COLLECTION_NAME, full=True)
         release_lock()
 
 
@@ -3050,7 +3711,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             total += len(stale)
     finally:
         if not dry_run:
-            _secure_collection_dir(COLLECTION_NAME)
+            _secure_collection_dir(COLLECTION_NAME, full=True)
             release_lock()
     return total
 
@@ -3106,6 +3767,31 @@ def delete_collection(collection: str) -> None:
     if index_lock_status()["running"]:
         raise ValueError("an indexing run is currently in progress — wait for it to finish, then try again.")
     shutil.rmtree(_collection_path(collection))
+
+
+def has_keyword_vectors(collection: str) -> bool | None:
+    """Whether `collection` was made with the keyword vector: True or False,
+    or None when it does not exist. Read from the config file the engine
+    writes beside the segments (the same file collection_exists() looks
+    for), which needs no handle on the shard: the engine has no call that
+    returns a loaded shard's config, and opening one another process holds
+    would wait for it."""
+    try:
+        config = json.loads((_collection_path(collection) / _EDGE_CONFIG_MARKER).read_text())
+    except FileNotFoundError:
+        return None
+    return KEYWORD_VECTOR in (config.get("sparse_vectors") or {})
+
+
+def _keyword_search_status(collection: str) -> bool | None:
+    """has_keyword_vectors() for a status read, which must answer whatever
+    the file holds: unreadable is "cannot say", logged."""
+    try:
+        return has_keyword_vectors(collection)
+    except (OSError, ValueError, AttributeError) as e:
+        log_and_print(f"Warning: could not read the config of collection '{collection}': {e}",
+                      level="warning", echo=False)
+        return None
 
 
 def _points_error(collection: str, error: Exception) -> str:
@@ -3230,6 +3916,12 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # the collection, routine with `griot mcp` running) or "unreadable:
         # <reason>" (it could not be opened at all). None when there is a count.
         "points_error": points_error,
+        # Whether search can take mode keyword/hybrid here: True, False for a
+        # collection made before keyword search (`griot index keywords`
+        # builds it), None when there is no collection. Read from the
+        # collection's own config file, so it is known even while another
+        # process holds the collection.
+        "keyword_search": _keyword_search_status(collection),
         "collection": collection,
         "embed_profile": ACTIVE_PROFILE_NAME,
         "running": running,
@@ -3304,7 +3996,8 @@ SEARCH_MAX_CHUNKS_PER_DOCUMENT = 3
 class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
-    places where the same thing was found among the best matches."""
+    places where the same thing was found among the matches the search
+    looked at (every window it fetched)."""
 
     __slots__ = ("id", "score", "payload", "also_in")
 
@@ -3327,10 +4020,11 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
     not by `content_hash`: the hash covers what was embedded, which may
     include more than the text.
 
-    Up to `limit` results: the store was asked for a multiple of `limit`,
-    and when that whole window is chunks of a few long documents there are
-    fewer slots to give. For the same reason `also_in` names the copies
-    found among the best matches, not every copy in the index."""
+    Up to `limit` results: when `hits` is all chunks of a few long
+    documents there are fewer slots to give (search() then asks the store
+    for a wider window, see SEARCH_MAX_EXTRA_WINDOWS). For the same reason
+    `also_in` names the copies found in `hits`, not every copy in the
+    index."""
     kept, taken, by_text = [], {}, {}
     for hit in hits:
         payload = hit.payload or {}
@@ -3361,6 +4055,22 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
 # slower than 8 — so over-fetching costs nothing and a short factor would
 # silently return fewer documents than asked for.
 _GROUPING_OVERFETCH = 6
+
+# How many more times a search for a reader asks the store, each time for a
+# window twice as wide, when the shaped list came back short of `limit` and
+# the store had more to give (it filled the window it was asked for). The
+# first window is not enough when its best matches are all chunks of two or
+# three long documents. Wider windows rather than the next one: Qdrant Edge
+# does not skip `offset` points, it returns `offset + limit` from the top
+# (checked on an EdgeShard: offset=10, limit=10 gave 20 points), and with
+# HNSW the search effort grows with the limit, so a narrower window need not
+# be a prefix of a wider one; replacing the window keeps one ranking.
+# Two at most, so the widest window is four times the first: measured on a
+# throwaway 20,000-point index (1536 dimensions), 48 points take 1 ms,
+# 192 take 2.3 ms and 900 take 8 ms, against an embedding of the query
+# that takes far longer. Past that, two documents so long that they fill
+# 24 times `limit` are what the query is about.
+SEARCH_MAX_EXTRA_WINDOWS = 2
 
 
 # The kinds of source an indexer writes as `source_type`, which is what a
@@ -3446,9 +4156,48 @@ def _search_filter(client, repos: list[str], source_types: list[str]):
     return qe.Filter(must=must) if must else None
 
 
+# How a search ranks: "vector" by meaning (the dense vector; the default, and
+# what every search did before the others existed), "keyword" by the words
+# themselves (BM25 over the keyword vector: an identifier, an error code, a
+# hash), "hybrid" both, fused by rank.
+SEARCH_MODES = ("vector", "keyword", "hybrid")
+
+# The k of reciprocal rank fusion: a point's fused score is the sum over the
+# two rankings of 1 / (k + its rank). 60 is the value of the paper that
+# introduced it and the one most systems use: large enough that being first
+# in one ranking does not outweigh being near the top of both.
+_HYBRID_RRF_K = 60
+
+
+class SearchModeUnavailable(SearchFilterError):
+    """A keyword or hybrid search on a collection made before keyword
+    search: an error rather than an empty result, which would read as
+    "nothing holds those words". A SearchFilterError, so every caller that
+    refuses an impossible filter refuses this the same way."""
+
+
+def _checked_mode(mode) -> str:
+    if mode not in SEARCH_MODES:
+        raise SearchFilterError(f"Unknown search mode {printable(repr(mode))[:80]}. "
+                                f"The modes are: {', '.join(SEARCH_MODES)}.")
+    return mode
+
+
+def _keyword_query(query: str) -> "qe.SparseVector":
+    """The query's keyword vector. One with no word in it (only stopwords,
+    punctuation) matches nothing, whatever the index holds: an error, not an
+    empty result."""
+    vector = _keyword_model().embed_query(query)
+    if not vector.indices:
+        raise SearchFilterError(
+            f"The query has no word keyword search can match (common English words such as 'the' and 'of', and "
+            f"punctuation, are left out). Name the identifier, error or hash itself, or use mode 'vector'.")
+    return vector
+
+
 def search(query: str, limit: int = 5, group_by_document: bool = False, *,
            repos: list[str] | None = None, source_types: list[str] | None = None,
-           diverse: bool = False) -> list:
+           diverse: bool = False, mode: str = "vector") -> list:
     """Local search over Qdrant Edge — embeds the query with the active
     profile and queries the embedded index. Returns a list of ScoredPoint
     (.payload, .score) — shard.query() already returns the list directly
@@ -3471,31 +4220,73 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     empty result.
 
     diverse is for whoever READS the results (an agent, a person, the chat
-    model): see _diversified. It returns SearchHit objects, up to `limit` of
-    them. Off by default
-    because the quality check and the golden set measure retrieval itself
-    and need every point, in the store's order."""
+    model): see _diversified. It returns SearchHit objects: `limit` of them
+    unless the store runs out, or the best matches are so few documents that
+    even the widest window (SEARCH_MAX_EXTRA_WINDOWS) cannot fill the list.
+    Off by default because the quality check and the golden set measure
+    retrieval itself and need every point, in the store's order.
+
+    mode is one of SEARCH_MODES. "keyword" embeds nothing (no paid call on
+    any profile) and returns only points that hold a word of the query;
+    "hybrid" embeds the query once. Scores are on each mode's own scale: a
+    cosine similarity, a BM25 score, a fused rank score."""
+    mode = _checked_mode(mode)
     repos, source_types = _checked_filters(repos, source_types)
+    keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
+    if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
+        raise SearchModeUnavailable(
+            f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
+            f"stored keyword vectors. Run `griot index keywords` once to add them (local: it embeds nothing and "
+            f"costs nothing; while it runs it needs about as much free disk as the collection). Until then, "
+            f"use mode 'vector'.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = _search_filter(client, repos, source_types)
-    query_vector = embed_texts([query])[0]
-    if query_vector is None:
-        # embed_texts() answers None for what it could not embed, which is
-        # right for a batch being indexed (the rest of the batch goes on). A
-        # search has one text and nothing to go on with: say what happened,
-        # or the None becomes a type error from the vector store.
-        raise RuntimeError(
-            f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
-            f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+    query_vector = None
+    if mode != "keyword":
+        query_vector = embed_texts([query])[0]
+        if query_vector is None:
+            # embed_texts() answers None for what it could not embed, which is
+            # right for a batch being indexed (the rest of the batch goes on). A
+            # search has one text and nothing to go on with: say what happened,
+            # or the None becomes a type error from the vector store.
+            raise RuntimeError(
+                f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
+                f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+
+    def nearest(points: int) -> list:
+        """The best `points` hits in the mode asked: a wider window when the
+        list a reader gets comes back short (SEARCH_MAX_EXTRA_WINDOWS)."""
+        if mode == "vector":
+            request = qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=points,
+                                      with_payload=True, filter=only)
+        elif mode == "keyword":
+            request = qe.QueryRequest(query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR), limit=points,
+                                      with_payload=True, filter=only)
+        else:
+            # The engine's own fusion over two prefetches; the filter of the
+            # request applies to both of them.
+            request = qe.QueryRequest(
+                prefetches=[qe.Prefetch(limit=points, query=qe.Query.Nearest(query_vector, using="dense")),
+                            qe.Prefetch(limit=points, query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR))],
+                query=qe.Fusion.Rrf(k=_HYBRID_RRF_K), limit=points, with_payload=True, filter=only)
+        return client.query(request)
+
     fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
-    hits = client.query(
-        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True,
-                        filter=only)
-    )
+    hits = nearest(fetch)
     if diverse:
-        return _diversified(hits, limit, 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT)
+        per_document = 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT
+        kept = _diversified(hits, limit, per_document)
+        for _ in range(SEARCH_MAX_EXTRA_WINDOWS):
+            # A window that came back short of what was asked is everything
+            # the store has: a wider one would hold nothing new.
+            if len(kept) >= limit or len(hits) < fetch:
+                break
+            fetch *= 2
+            hits = nearest(fetch)
+            kept = _diversified(hits, limit, per_document)
+        return kept
     if not group_by_document:
         return hits
 

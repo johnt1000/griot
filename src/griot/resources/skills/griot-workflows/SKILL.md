@@ -1,13 +1,13 @@
 ---
 name: griot-workflows
-description: Day-to-day usage of an EXISTING griot index — griot search vs griot ask (vector-only vs paid synthesis), group_by_document tradeoffs, reading source_type on results, and (when working via Claude Code with griot's MCP server attached) the existing MCP prompts for common investigations. Use once an index already exists; for first-time setup see griot-onboarding, for indexing decisions see griot-indexing.
+description: Day-to-day usage of an EXISTING griot index — griot search vs griot ask (search only vs paid synthesis), search by meaning vs by exact words (mode), group_by_document tradeoffs, reading source_type on results, and (when working via Claude Code with griot's MCP server attached) the existing MCP prompts for common investigations. Use once an index already exists; for first-time setup see griot-onboarding, for indexing decisions see griot-indexing.
 ---
 
 # griot workflows
 
 ## `griot search` vs `griot ask`
 
-`griot search` is **vector search only** — free (aside from embedding the
+`griot search` is **search only** — free (aside from embedding the
 query itself, which costs nothing on the default local profile), no LLM
 call:
 
@@ -55,6 +55,28 @@ document's matching chunks down to its single best-scoring chunk.
 On the CLI it is `griot search --group-by-document`; without it the same
 three-per-document ceiling applies.
 
+## By meaning or by the exact words: `mode`
+
+A search by meaning (`mode` `vector`, the default) is good at "how is X
+done" and weak at an exact name: an identifier, an error code, a file name,
+a commit hash. For those, `mode` `keyword` matches the words themselves
+(BM25), including the file path and the commit hash stored with each
+chunk, whole or abbreviated, and returns only chunks that hold one of
+them; it embeds nothing, so it is free on every profile. `hybrid` runs
+both and fuses the rankings, for a query that mixes a name and an idea.
+Scores are on each mode's own scale: compare them within one mode only.
+
+```bash
+griot search "acquire_lock" --mode keyword
+griot search "f96634a" --mode keyword --source-type commit
+```
+
+For a name in a repository you have open, grep is still the better tool;
+`keyword` is for the ones you cannot grep (another project, history).
+An index built before keyword search refuses `keyword` and `hybrid` with
+a message naming `griot index keywords`, which adds the keyword vectors
+once (local, embeds nothing).
+
 ## Narrowing a search: `repos` and `source_types`
 
 `griot_search` searches every registered repository and every kind of
@@ -95,9 +117,10 @@ with a date (for a branch, the date of its last commit). That is what to
 act on: open that file, show that commit, say when. A file or a commit that
 is indexed in more than one place (a copied file, a fork) comes back once,
 with the other places found among the best matches in `also_in`; two
-different commits with the same message stay two results. `limit` is a
-ceiling: a search whose best matches are all chunks of two long files
-returns six results, not eight.
+different commits with the same message stay two results. One document
+fills at most three results, and the search looks further down the ranking
+to fill the rest, so `limit` results come back unless the index runs out
+or a few very long files are all the query matches.
 
 (`griot search` prints a labeled excerpt per hit, e.g. `commit a1b2c3d4 — my-service` or
 `MR !245 (merged) — my-api`, so the source kind is visible at a glance even

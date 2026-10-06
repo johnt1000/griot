@@ -102,6 +102,35 @@ reach more distinct files, commits and PRs: repeated hits on one file are
 The quality check and the golden set do not get this arrangement: they
 measure retrieval itself, point by point.
 
+## Two vectors per point
+
+Each point carries two vectors. `dense` is the embedding of the text by the
+active profile's model: it is what a search by meaning (`--mode vector`, the
+default) compares. `bm25` is a sparse BM25 vector of the same text, computed
+locally by the vector store's own BM25 model (English stemming and
+stopwords), plus the identifying fields the text does not hold: `file_path`,
+`commit_hash` and `last_commit_hash` (whole, and abbreviated to 7 to 12
+characters, as git abbreviates them), `tag_name`, `branch_name`,
+`source_branch` and `target_branch`. It is what a search by the exact words
+compares (`--mode keyword`): a function name, an error code, a file name, a
+commit hash. `--mode hybrid` runs both and fuses the two rankings (reciprocal
+rank fusion, k=60). A keyword search embeds nothing, so it costs nothing on
+any profile; scores are on each mode's own scale and are not comparable
+across modes.
+
+A collection indexed before keyword search has only the dense vector, and the
+store cannot add a vector to points it already holds. `griot index keywords`
+copies such a collection into a new one with both vectors, reading the dense
+vectors back rather than embedding anything, and puts it in the old one's
+place: while it runs it needs about as much free disk as the collection, and
+it holds the index lock and the collection, so nothing else can index or
+search that profile until it finishes. Run again, it writes nothing; run
+after an interruption, it starts the copy over (and a collection left aside
+halfway through the swap is put back the next time anything opens it). Until
+it has run, `--mode keyword` and `--mode hybrid` are refused with that
+command in the message, and vector search works as before. New points are
+written with both vectors once the collection has room for them.
+
 ## What is stored is not always what was read
 
 Credential-looking values are replaced before chunking and before the

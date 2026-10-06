@@ -56,14 +56,15 @@ def test_without_flags_nothing_is_narrowed(recorded):
     assert cli.main(["search", "retries"]) == 0
     query, kwargs = recorded[0]
     assert query == "retries"
-    assert kwargs == {"limit": 5, "group_by_document": False, "repos": None, "source_types": None, "diverse": True}
+    assert kwargs == {"limit": 5, "group_by_document": False, "repos": None, "source_types": None, "diverse": True,
+                      "mode": "vector"}
 
 
 def test_each_flag_reaches_the_search(recorded):
     assert cli.main(["search", "retries", "--repo", "alpha", "--source-type", "code", "--group-by-document",
                      "--limit", "3"]) == 0
     assert recorded[0][1] == {"limit": 3, "group_by_document": True, "repos": ["alpha"], "source_types": ["code"],
-                              "diverse": True}
+                              "diverse": True, "mode": "vector"}
 
 
 def test_a_flag_given_twice_is_both_values(recorded):

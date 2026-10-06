@@ -138,8 +138,13 @@ griot_index_repo(path="/abs/path/to/repo", sources=["commits"])  # a subset
 - It returns right away with `started`, `pid` or a `reason`. A `reason` is
   final: an unregistered path, an invalid repo, or a run already in progress.
   Relay it to the user; do not retry.
-- Follow the run with `griot_index_status`: `running` / `pid` while it
-  works; when `running` is false, read `last_indexed`. If
+- Follow the run with `griot_index_wait` (waits up to `timeout_seconds`,
+  at most 300, and returns how it ended, or where it is when the time is
+  up: call it again while `running` is true), or with `griot_index_status`:
+  `running` / `pid` while it works, and `job.progress` says per source how
+  far it got (`reading` the repository, then `embedding` with chunks done of
+  the total). A `finished.exit_code` other than 0, or a source `failed`,
+  means the run failed. When `running` is false, read `last_indexed`. If
   `last_indexed.error` is set, the run died. `indexed`/`skipped`/`failed`
   are then null on purpose, not zero. The run's full output goes to
   `griot_index.log` in griot's log directory
