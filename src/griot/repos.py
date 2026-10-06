@@ -164,7 +164,11 @@ def main(argv=None) -> int:
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
-    p_add = sub.add_parser("add", help="Adds a repo (absolute or relative path)")
+    p_add = sub.add_parser(
+        "add", help="Adds a repo (absolute or relative path)",
+        description="Adds a repo (absolute or relative path) to the list indexed in bulk. Anything under it can then "
+                    "be sent to the embedding API, so it asks first, at an interactive terminal, and there is no "
+                    "flag that answers: run from a script or an agent's shell, with no terminal, it changes nothing.")
     p_add.add_argument("path")
 
     sub.add_parser("list", help="Lists configured repos, flagging the ones that no longer exist on disk")

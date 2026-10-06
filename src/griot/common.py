@@ -1,3 +1,4 @@
+import atexit
 import hashlib
 import http.cookiejar
 import json
@@ -259,6 +260,7 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
     ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (no other command asks)", False),
+    ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs and quality checks are kept)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
     ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
@@ -666,6 +668,45 @@ def log_query(**fields) -> None:
     }
     secure_mkdir(LOG_DIR)
     logdb.write_query(LOG_DIR, record)
+    prune_logs_if_due()
+
+
+# At most one prune per process per day: the prune is cheap (an indexed
+# DELETE), but every search and tool call writes, and a long-lived MCP
+# server must still prune more than once in its life.
+_LOG_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+_last_log_prune: float | None = None
+_log_prune_lock = threading.Lock()
+
+
+def prune_logs_if_due() -> None:
+    """Applies LOG_RETENTION_DAYS to logs.db, when this process has not done
+    so in the last day. Called after a write of the tables it prunes, never
+    from a read: looking at a report must not change what it reads.
+
+    Never raises. A prune that fails is logged and the write that called it
+    stands; it is not retried before the interval either, so a broken file
+    is not hit again on every search."""
+    global _last_log_prune
+    if not _log_prune_lock.acquire(blocking=False):
+        return  # another thread of this process is pruning right now
+    try:
+        now = time.monotonic()
+        if _last_log_prune is not None and now - _last_log_prune < _LOG_PRUNE_INTERVAL_SECONDS:
+            return
+        _last_log_prune = now
+        removed = logdb.prune_older_than(LOG_DIR, LOG_RETENTION_DAYS)
+        searches, calls = removed.get("queries", 0), removed.get("tool_calls", 0)
+        if searches or calls:
+            log_and_print(f"Log retention: removed {searches} search(es) and {calls} tool call(s) older than "
+                          f"{LOG_RETENTION_DAYS} days from logs.db", echo=False)
+    except Exception as e:  # noqa: BLE001 — housekeeping must not fail the command that logged
+        try:
+            log_and_print(f"Warning: could not prune logs.db: {e}", level="warning", echo=False)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _log_prune_lock.release()
 
 
 def _check_env_file_permissions(env_path: Path) -> None:
@@ -1023,14 +1064,17 @@ def _amount_env(name: str, default: str | None) -> float | None:
     return value
 
 
-def _count_env(name: str, default: str) -> int:
+def _count_env(name: str, default: str, minimum: int | None = None) -> int:
     """A whole number from the environment, reported like the amounts are:
     one line that names the variable."""
     raw = os.getenv(name, default)
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix()}") from None
+    if minimum is not None and value < minimum:
+        raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix()}")
+    return value
 
 
 CHAT_PRICE_PER_1M_TOKENS = _amount_env("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50")
@@ -1169,7 +1213,8 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
 # raises. Callers (auth.py) fall back to the existing file-based storage
-# whenever these return None/False.
+# whenever these return None/False (a delete returns one of the KEYCHAIN_*
+# results below instead, so "nothing was there" and "could not ask" differ).
 _KEYCHAIN_SERVICE = "griot"
 
 
@@ -1190,19 +1235,102 @@ def _keychain_set(env_var: str, value: str) -> bool:
         return False
 
 
-def _keychain_delete(env_var: str) -> bool:
+# What _keychain_delete() found. "not installed" is apart from "unreachable"
+# because without the `keyring` package griot never stored anything in a
+# keychain, so there is nothing to warn about; an installed package whose
+# backend fails may be hiding a stored credential that is still there.
+KEYCHAIN_DELETED = "deleted"
+KEYCHAIN_NOTHING_STORED = "nothing stored"
+KEYCHAIN_UNREACHABLE = "unreachable"
+KEYCHAIN_NOT_INSTALLED = "not installed"
+
+
+def _keychain_delete(env_var: str) -> str:
+    """One of the KEYCHAIN_* results above; never raises.
+
+    Existence is asked with get_password() first instead of read off the
+    exception delete_password() raises: keyring's own backends raise
+    PasswordDeleteError for "nothing to delete" (Secret Service, KWallet,
+    Windows, macOS item-not-found) but ALSO for real failures (macOS wraps
+    an access denial in it, KWallet a cancelled unlock), and libsecret
+    returns quietly when there was nothing. get_password() answers None for
+    a missing item on every backend and raises when the backend cannot be
+    asked, so after it any exception is a failure."""
     try:
         import keyring
-        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
-        return True
+    except ImportError:
+        return KEYCHAIN_NOT_INSTALLED
     except Exception:
-        return False
+        # Installed but broken while loading: a key stored through it
+        # earlier may still be there, so this is not "not installed".
+        return KEYCHAIN_UNREACHABLE
+    try:
+        if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
+            return KEYCHAIN_NOTHING_STORED
+        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
+        return KEYCHAIN_DELETED
+    except Exception:
+        return KEYCHAIN_UNREACHABLE
+
+
+def keychain_status() -> dict:
+    """Whether a credential set now would go to an OS keychain, so the
+    fallback to the plaintext file can be said instead of happening silently.
+
+    {"available": bool, "backend": its name or None, "installed": whether
+    `keyring` imports at all}: "not installed" is fixed by the extra, "no
+    backend" is not (headless Linux, a container), and the advice differs.
+    Asks keyring which backend it chose and reads no credential, so it never
+    makes macOS ask the person. keyring falls back to its `fail` backend
+    (priority 0) when nothing is reachable, and `null` (priority -1) turns it
+    off: neither stores anything."""
+    try:
+        import keyring
+    except Exception:
+        return {"available": False, "backend": None, "installed": False}
+    try:
+        backend = keyring.get_keyring()
+        if backend.priority > 0:
+            return {"available": True, "backend": str(getattr(backend, "name", type(backend).__name__)),
+                    "installed": True}
+    except Exception:
+        pass
+    return {"available": False, "backend": None, "installed": True}
 
 
 # The files a shell reads at start where a variable is usually exported. Read
 # only to say WHERE (file and line), never what.
 _SHELL_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bashrc", ".bash_profile", ".profile",
                 ".config/fish/config.fish")
+
+
+def _shown_path(path: Path) -> str:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+
+
+def _lines_matching(path: Path, pattern: re.Pattern, groups: bool = False) -> list:
+    """`<path>:<line>` for every line of `path` that `pattern` matches (the
+    matches themselves with `groups`); a file that cannot be read (missing,
+    a directory, no permission) matches nothing: this only explains where
+    a credential came from, it must never be what fails."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except (OSError, ValueError):  # ValueError: a NUL byte in a path an .envrc names
+        return []
+    matches = ((number, pattern.match(line)) for number, line in enumerate(lines, 1))
+    if groups:
+        return [match for _, match in matches if match]
+    shown = _shown_path(path)
+    return [f"{shown}:{number}" for number, match in matches if match]
+
+
+def _export_statement(env_var: str) -> str:
+    """A POSIX-shell statement that exports `env_var` (`export`, `typeset
+    -x`, `declare -x`, with or without a value, after other assignments),
+    as a regex fragment: shared by the shell files and the .envrc, which
+    bash evaluates the same way."""
+    return rf"(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{re.escape(env_var)}(?:=|\s*$)"
 
 
 def _shell_exports(env_var: str) -> list[str]:
@@ -1214,19 +1342,61 @@ def _shell_exports(env_var: str) -> list[str]:
     home = Path.home()
     name = re.escape(env_var)
     pattern = re.compile(
-        rf"^\s*(?:(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)"
+        rf"^\s*(?:{_export_statement(env_var)}"
         rf"|{name}=\S*\s*(?:#.*)?$"
         rf"|set\s+-\w*x\w*\s+{name}\s)")
     zdotdir = Path(os.environ["ZDOTDIR"]).expanduser() if os.environ.get("ZDOTDIR") else home
     candidates = [(zdotdir if file.startswith(".z") else home) / file for file in _SHELL_FILES]
-    found = []
-    for path in candidates:
+    return [place for path in candidates for place in _lines_matching(path, pattern)]
+
+
+# A `dotenv`/`dotenv_if_exists` call in an .envrc whose one argument, if
+# any, is a literal path. A path built from a variable is not guessed.
+_DIRENV_DOTENV_CALL = re.compile(r"""^\s*dotenv(?:_if_exists)?(?:\s+(?P<q>['"]?)(?P<path>[^\s'"$`]+)(?P=q))?\s*(?:#.*)?$""")
+
+
+def _direnv_exports(env_var: str) -> list[str]:
+    """Places where the file direnv loaded for this shell exports `env_var`.
+
+    direnv puts DIRENV_FILE (the file it evaluated) and DIRENV_DIR ("-" and
+    that file's directory; the only one older direnv sets) in the
+    environment it exports, so they name the file that was really loaded,
+    not one guessed from the current directory. The .envrc is evaluated by
+    bash, and only what it exports reaches the environment: a plain
+    `VAR=x` stays a shell variable and is not counted. A `.env` it loads
+    with `dotenv`/`dotenv_if_exists` (no argument: the `.env` beside it,
+    as source_env evaluates from that directory) exports every key,
+    `export` or not; so does the `.env` DIRENV_FILE
+    names when direnv's load_dotenv loads one directly. Other ways an
+    .envrc can set it (source_env, source_up, a variable path) are not
+    followed: they end up without a place, never a wrong one."""
+    if os.environ.get("DIRENV_FILE"):
+        loaded = Path(os.environ["DIRENV_FILE"])
+    elif os.environ.get("DIRENV_DIR", "").startswith("-") and len(os.environ["DIRENV_DIR"]) > 1:
+        loaded = Path(os.environ["DIRENV_DIR"][1:]) / ".envrc"
+    else:
+        return []
+    name = re.escape(env_var)
+    # direnv's own dotenv grammar (pkg/dotenv): optional export, key, then
+    # `=` (spaces allowed) or `:` and a space.
+    dotenv_key = re.compile(rf"^\s*(?:export\s+)?{name}(?:\s*=|:\s)")
+    if loaded.name == ".env":
+        return _lines_matching(loaded, dotenv_key)
+    found = _lines_matching(loaded, re.compile(rf"^\s*{_export_statement(env_var)}"))
+    for call in _lines_matching(loaded, _DIRENV_DOTENV_CALL, groups=True):
+        path = call["path"] or ".env"
+        # bash expands a leading ~ only when the word is not quoted. An
+        # unknown `~user` (RuntimeError) or a NUL byte in it (ValueError)
+        # names nothing: this lookup must never be what fails.
         try:
-            lines = path.read_text(errors="replace").splitlines()
-        except OSError:
+            target = loaded.parent / (Path(path).expanduser() if not call["q"] else Path(path))
+        except (RuntimeError, ValueError):
             continue
-        shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-        found.extend(f"{shown}:{number}" for number, line in enumerate(lines, 1) if pattern.match(line))
+        # A directory is read as nothing (_lines_matching), which is right:
+        # stdlib's dotenv checks `<dir>/.env` exists but then runs `direnv
+        # dotenv bash <dir>`, whose os.ReadFile of a directory fails, so
+        # no key of it is exported.
+        found.extend(_lines_matching(target, dotenv_key))
     return found
 
 
@@ -1257,7 +1427,7 @@ def credential_origin(env_var: str) -> dict:
     shadows = bool(exported and stored_value
                    and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
     return {"source": source, "stored": stored, "shadows_stored": shadows,
-            "exported_in": _shell_exports(env_var) if exported else []}
+            "exported_in": _shell_exports(env_var) + _direnv_exports(env_var) if exported else []}
 
 
 def _provider_of(env_var: str) -> str | None:
@@ -1280,7 +1450,7 @@ def _credential_hint(env_var: str) -> str:
     provider = _provider_of(env_var)
     set_it = f"`griot auth set {provider}`" if provider else f"`griot auth set <provider>`"
     if origin["source"] == "environment":
-        where = ", ".join(origin["exported_in"]) or "this shell (no shell file griot knows sets it)"
+        where = ", ".join(origin["exported_in"]) or "this shell (no shell file or direnv file griot knows sets it)"
         text = f"{env_var} came from the environment, exported in {where}"
         if origin["shadows_stored"]:
             text += (f"; it overrides the different key griot stores, so remove that export (and `unset {env_var}` "
@@ -1357,6 +1527,16 @@ SPEND_VELOCITY_CEILING_USD = _amount_env("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.
 # (external API down, invalid credential, etc.) — better to stop early and
 # loudly than to spend hours producing only empty batches.
 MAX_CONSECUTIVE_FAILED_BATCHES = _count_env("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5")
+
+# How many days of searches and MCP tool calls logs.db keeps (see
+# prune_logs_if_due()). Generous on purpose: deleting history someone reads
+# is worse than a file that grows slowly. `griot stats --days` (30 by
+# default) and griot_stats take any window; the MCP usage logs are what
+# show how agents use griot over weeks; and the idea of curating golden-set
+# cases from real queries (ROADMAP) wants months of them. A year of daily
+# use is a few thousand rows. At least 1: under a day a prune would delete
+# what was just written.
+LOG_RETENTION_DAYS = _count_env("GRIOT_LOG_RETENTION_DAYS", "365", minimum=1)
 
 # Single-process lock — besides Qdrant's native lock (which only blocks
 # access to the same collection), this one fails fast with a clear message
@@ -1549,7 +1729,6 @@ def acquire_lock(label: str | None = None) -> None:
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps({"pid": pid, "start_time": start_time, "label": label}))
 
-    import atexit
     atexit.register(release_lock)
 
 
@@ -1911,7 +2090,17 @@ def release_client() -> None:
         if _client is not None:
             _client.close()
             _client = None
+            # Closing rewrites each segment's segment.json with the process
+            # umask, after every repair that ran while the shard was open.
+            # Only the directories that changed are listed again.
+            _secure_collection_dir(COLLECTION_NAME)
         _client_last_used_at = None
+
+
+# A process that exits holding the shard (every CLI run) has the engine write
+# the same files when the handle is dropped on the way out: closing it here
+# first lets the repair above run after that write, not before it.
+atexit.register(release_client)
 
 
 # Options of the top-level `griot` command that take a value, so the value is
@@ -2687,7 +2876,31 @@ def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Check
     return record
 
 
-def _secure_collection_dir(collection: str) -> None:
+# What the last check of each collection found, in this process only: a
+# directory -> (its fingerprint, its subdirectories). Not persisted on
+# purpose: a file another process could edit would be one more thing to
+# trust, and every process pays one full check on its first open anyway
+# (a CLI run opens once; the long-lived MCP server, which reopens after
+# every idle release in `multi` mode, is the one that gains).
+_verified_trees: dict[str, dict] = {}
+# A file chmodded in place changes nothing its directory records, so no
+# fingerprint sees it. A full check bounds that: after every write (a
+# finished index or prune run) and at least this often on an open. The
+# threat the reopen check answers is a tool resetting modes while the
+# collection was released (a restore, a sync, rsync/tar without -p): those
+# recreate or rename files, which a directory records, or chmod the
+# directories too, whose mode is in the fingerprint. A tool that loosens
+# only files in place still has to get past the outer directories, which
+# every open closes again.
+_FULL_CHECK_INTERVAL = 600.0
+# A directory's times have a granularity (coarse clock ticks on Linux): one
+# changed again within the same tick after it was fingerprinted can keep
+# the same mtime. A directory that recent is checked again next time
+# rather than remembered (the "racy" rule git applies to its index).
+_RACY_WINDOW_NS = 2_000_000_000
+
+
+def _secure_collection_dir(collection: str, *, full: bool = False) -> None:
     """[security review] Qdrant Edge's own Rust engine writes its files
     (WAL, segments, payload_storage/*.dat, vector_storage/*) with the
     process umask, not through griot's secure_* helpers — a real gap a
@@ -2698,46 +2911,104 @@ def _secure_collection_dir(collection: str) -> None:
     without permission preservation (rsync/tar without -p), a naive cloud
     sync, or restoring from an archive could reset the outer directories
     and leave the actual RAG content world-readable with nothing else
-    standing in the way. Called once at the end of every index_documents()
-    run (the natural "a write just happened" point) — recursively repairs
-    whatever Edge wrote during this run. Best-effort per-file: one file's
-    chmod failing (e.g. a transient race with Edge's own I/O) must never
-    fail the whole indexing run over a permission repair. Also called on
-    every cold open in get_client() (including every multi-mode
-    idle-release reopen), so the walk always visits every entry (a new
-    file from another process must still be checked) but skips the chmod
-    syscall itself when the mode is already correct — a real cost on large
-    collections opened repeatedly."""
+    standing in the way. Called with full=True at the end of every write
+    (index_documents(), prune_orphans()), on every cold open in
+    get_client() (including every multi-mode idle-release reopen), and
+    after every close in release_client(), which the engine follows with a
+    write of its own.
+
+    On an open, a directory whose fingerprint (inode, mode, mtime, ctime)
+    is the one recorded when it was last checked is not listed again: a
+    file created, removed or renamed in it changes its mtime and ctime, a
+    chmod of it changes its mode and ctime. Only its known subdirectories
+    are visited. Everything else (a new or changed directory, a check
+    older than _FULL_CHECK_INTERVAL, full=True) has every entry checked.
+    The engine itself rewrites a couple of small directories on every
+    load; those are checked each time.
+
+    Best-effort per entry: a chmod that fails is retried once, then logged
+    (see _repair_mode) and its directory left unremembered, so the next
+    open tries again; it never fails the indexing run or search that
+    called it. `griot doctor` reports whatever is still open."""
     path = _collection_path(collection)
     if not path.exists():
         return
-    for root, _dirs, files in os.walk(path):
-        _repair_mode(root, 0o700)
-        for f in files:
-            _repair_mode(os.path.join(root, f), 0o600)
+    key = str(path)
+    now = time.monotonic()
+    known = _verified_trees.get(key)
+    if full or known is None or now - known["full_at"] >= _FULL_CHECK_INTERVAL:
+        known = {"full_at": now, "dirs": {}}
+    remembered: dict[str, tuple] = {}
+    pending = [key]
+    while pending:
+        directory = pending.pop()
+        checked_at = time.time_ns()
+        try:
+            st = os.stat(directory)
+        except OSError:
+            continue  # gone since its parent was listed: nothing left to close
+        fingerprint = (st.st_dev, st.st_ino, stat.S_IMODE(st.st_mode), st.st_mtime_ns, st.st_ctime_ns)
+        previous = known["dirs"].get(directory)
+        if previous is not None and previous[0] == fingerprint:
+            remembered[directory] = previous
+            pending.extend(previous[1])
+            continue
+        closed = _repair_mode(directory, 0o700)
+        subdirectories = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        is_directory = entry.is_dir()
+                    except OSError:
+                        is_directory = False
+                    if is_directory:
+                        # As os.walk did: a link to a directory is neither
+                        # followed nor chmodded (chmod would follow it).
+                        if not entry.is_symlink():
+                            subdirectories.append(entry.path)
+                    elif not _repair_mode(entry.path, 0o600):
+                        closed = False
+        except OSError:
+            closed = False
+        pending.extend(subdirectories)
+        recent = max(st.st_mtime_ns, st.st_ctime_ns) > checked_at - _RACY_WINDOW_NS
+        if closed and not recent:
+            # Fingerprinted BEFORE the listing: an entry made after the
+            # listing changed the directory after this fingerprint.
+            remembered[directory] = (fingerprint, tuple(subdirectories))
+    _verified_trees[key] = {"full_at": known["full_at"], "dirs": remembered}
 
 
-def _repair_mode(target: str, mode: int) -> None:
+def _repair_mode(target: str, mode: int) -> bool:
     """Chmods target to mode unless it already is — a failed stat falls
     through to attempting the chmod anyway (never let a failed optimization
-    check block the real repair). A chmod failure is logged, not raised:
-    this must never fail the indexing run or search that called it over a
-    permission race, but silent swallowing left no trace anywhere.
-    echo=False is required, not optional — this runs from get_client(),
-    reached from the MCP server path where stdout is the JSON-RPC
-    transport."""
+    check block the real repair). Returns whether target ends up closed
+    (or is gone: a file the engine removed mid-walk is open to no one).
+    A chmod failure is retried once (a transient race with the engine's
+    own I/O), then logged, not raised: this must never fail the indexing
+    run or search that called it over a permission race, but silent
+    swallowing left no trace anywhere. echo=False is required, not
+    optional — this runs from get_client(), reached from the MCP server
+    path where stdout is the JSON-RPC transport."""
     try:
         if stat.S_IMODE(os.stat(target).st_mode) == mode:
-            return
+            return True
     except OSError:
         pass
-    try:
-        os.chmod(target, mode)
-    except OSError as exc:
-        log_and_print(
-            f"permission repair failed for {target} (kept previous mode) — {exc}",
-            level="warning", echo=False,
-        )
+    for attempt in (1, 2):
+        try:
+            os.chmod(target, mode)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            if attempt == 2:
+                log_and_print(
+                    f"permission repair failed for {target} (kept previous mode) — {exc}",
+                    level="warning", echo=False,
+                )
+    return False
 
 
 def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
@@ -2859,7 +3130,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
             print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
-        _secure_collection_dir(COLLECTION_NAME)
+        _secure_collection_dir(COLLECTION_NAME, full=True)
         release_lock()
 
 
@@ -3059,7 +3330,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             total += len(stale)
     finally:
         if not dry_run:
-            _secure_collection_dir(COLLECTION_NAME)
+            _secure_collection_dir(COLLECTION_NAME, full=True)
             release_lock()
     return total
 
@@ -3313,7 +3584,8 @@ SEARCH_MAX_CHUNKS_PER_DOCUMENT = 3
 class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
-    places where the same thing was found among the best matches."""
+    places where the same thing was found among the matches the search
+    looked at (every window it fetched)."""
 
     __slots__ = ("id", "score", "payload", "also_in")
 
@@ -3336,10 +3608,11 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
     not by `content_hash`: the hash covers what was embedded, which may
     include more than the text.
 
-    Up to `limit` results: the store was asked for a multiple of `limit`,
-    and when that whole window is chunks of a few long documents there are
-    fewer slots to give. For the same reason `also_in` names the copies
-    found among the best matches, not every copy in the index."""
+    Up to `limit` results: when `hits` is all chunks of a few long
+    documents there are fewer slots to give (search() then asks the store
+    for a wider window, see SEARCH_MAX_EXTRA_WINDOWS). For the same reason
+    `also_in` names the copies found in `hits`, not every copy in the
+    index."""
     kept, taken, by_text = [], {}, {}
     for hit in hits:
         payload = hit.payload or {}
@@ -3370,6 +3643,22 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
 # slower than 8 — so over-fetching costs nothing and a short factor would
 # silently return fewer documents than asked for.
 _GROUPING_OVERFETCH = 6
+
+# How many more times a search for a reader asks the store, each time for a
+# window twice as wide, when the shaped list came back short of `limit` and
+# the store had more to give (it filled the window it was asked for). The
+# first window is not enough when its best matches are all chunks of two or
+# three long documents. Wider windows rather than the next one: Qdrant Edge
+# does not skip `offset` points, it returns `offset + limit` from the top
+# (checked on an EdgeShard: offset=10, limit=10 gave 20 points), and with
+# HNSW the search effort grows with the limit, so a narrower window need not
+# be a prefix of a wider one; replacing the window keeps one ranking.
+# Two at most, so the widest window is four times the first: measured on a
+# throwaway 20,000-point index (1536 dimensions), 48 points take 1 ms,
+# 192 take 2.3 ms and 900 take 8 ms, against an embedding of the query
+# that takes far longer. Past that, two documents so long that they fill
+# 24 times `limit` are what the query is about.
+SEARCH_MAX_EXTRA_WINDOWS = 2
 
 
 # The kinds of source an indexer writes as `source_type`, which is what a
@@ -3480,10 +3769,11 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     empty result.
 
     diverse is for whoever READS the results (an agent, a person, the chat
-    model): see _diversified. It returns SearchHit objects, up to `limit` of
-    them. Off by default
-    because the quality check and the golden set measure retrieval itself
-    and need every point, in the store's order."""
+    model): see _diversified. It returns SearchHit objects: `limit` of them
+    unless the store runs out, or the best matches are so few documents that
+    even the widest window (SEARCH_MAX_EXTRA_WINDOWS) cannot fill the list.
+    Off by default because the quality check and the golden set measure
+    retrieval itself and need every point, in the store's order."""
     repos, source_types = _checked_filters(repos, source_types)
     client = get_client()
     # Before the query is embedded: on a paid profile that call costs money,
@@ -3498,13 +3788,27 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
         raise RuntimeError(
             f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
             f"{last_embedding_failure() or 'the embedding call returned nothing'}.")
+
+    def nearest(points: int) -> list:
+        return client.query(
+            qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=points, with_payload=True,
+                            filter=only)
+        )
+
     fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
-    hits = client.query(
-        qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"), limit=fetch, with_payload=True,
-                        filter=only)
-    )
+    hits = nearest(fetch)
     if diverse:
-        return _diversified(hits, limit, 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT)
+        per_document = 1 if group_by_document else SEARCH_MAX_CHUNKS_PER_DOCUMENT
+        kept = _diversified(hits, limit, per_document)
+        for _ in range(SEARCH_MAX_EXTRA_WINDOWS):
+            # A window that came back short of what was asked is everything
+            # the store has: a wider one would hold nothing new.
+            if len(kept) >= limit or len(hits) < fetch:
+                break
+            fetch *= 2
+            hits = nearest(fetch)
+            kept = _diversified(hits, limit, per_document)
+        return kept
     if not group_by_document:
         return hits
 
