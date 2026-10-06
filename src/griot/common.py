@@ -3285,7 +3285,7 @@ def _keyword_rebuild_paths(path: Path) -> tuple[Path, Path]:
 def _restore_interrupted_keyword_swap(path: Path) -> None:
     """Puts a collection back where it belongs when a keyword build died
     after moving it aside and before its copy took the place. Nothing else
-    is touched: the copy is deleted by the next build, which starts over."""
+    is touched: the copy is resumed by the next build."""
     _staging, previous = _keyword_rebuild_paths(path)
     if (path / _EDGE_CONFIG_MARKER).exists() or not (previous / _EDGE_CONFIG_MARKER).exists():
         return
@@ -3297,14 +3297,83 @@ def _restore_interrupted_keyword_swap(path: Path) -> None:
                   level="warning", echo=False)
 
 
+def _config_has_keyword_vector(path: Path) -> bool | None:
+    """Whether the shard at `path` was made with the keyword vector, from the
+    config file the engine writes beside its segments; None when there is no
+    such file."""
+    try:
+        config = json.loads((path / _EDGE_CONFIG_MARKER).read_text())
+    except FileNotFoundError:
+        return None
+    return KEYWORD_VECTOR in (config.get("sparse_vectors") or {})
+
+
+def _open_kept_copy(staging: Path) -> "qe.EdgeShard | None":
+    """The copy an interrupted build left at `staging`, opened to be resumed,
+    or None when there is nothing there worth resuming (no copy, one that
+    cannot be opened, one made without room for the keyword vector), which
+    is then deleted. Nothing in it is trusted: the copy re-checks every
+    point it keeps against the collection."""
+    if not staging.exists():
+        return None
+    try:
+        if _config_has_keyword_vector(staging):
+            return qe.EdgeShard.load(str(staging))
+    except Exception as e:  # noqa: BLE001 - a damaged leftover is started over, never fatal
+        log_and_print(f"Warning: could not resume the keyword copy at {staging} ({e}); starting it over.",
+                      level="warning", echo=False)
+    shutil.rmtree(staging)
+    return None
+
+
+def _same_point(kept: "qe.Record | None", record: "qe.Record") -> bool:
+    """Whether the copy's point is the collection's point as it is now: the
+    payload (which the keyword vector is computed from) and the dense vector
+    both. Exact, not approximate: a vector read back and written again
+    comes back the same, and a needless copy only costs time, while a missed
+    change would keep an old vector for good."""
+    return (kept is not None and (kept.payload or {}) == (record.payload or {})
+            and kept.vector["dense"] == record.vector["dense"])
+
+
+def _drop_points_not_in(new: "qe.EdgeShard", client: "qe.EdgeShard") -> None:
+    """Deletes from the copy every point the collection no longer has (an
+    index run deleted it after a build was interrupted)."""
+    offset = None
+    while True:
+        page, offset = new.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
+                                                   with_payload=False, with_vector=False))
+        if page:
+            present = {str(r.id) for r in client.retrieve([r.id for r in page], False, False)}
+            gone = [r.id for r in page if str(r.id) not in present]
+            if gone:
+                new.update(qe.UpdateOperation.delete_points(gone))
+        if offset is None:
+            break
+
+
 def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
-    """Copies every point of `client` into a new collection at `staging`,
-    made with the keyword vector: the dense vector and the payload as they
-    are, the keyword vector computed from the payload. Returns how many.
-    Embeds nothing: the dense vectors are read back from the store."""
+    """Copies every point of `client` into a collection at `staging` made
+    with the keyword vector: the dense vector and the payload as they are,
+    the keyword vector computed from the payload. Returns how many points
+    were written. Embeds nothing: the dense vectors are read back from the
+    store.
+
+    Resumes a copy an interrupted build left at `staging` instead of
+    starting over: the copy itself is the record of what was done, written
+    page by page. A point it holds is kept only when it is the collection's
+    point as it is now (an index run may have changed, added or deleted
+    points since), so the whole collection is walked either way, but only
+    what is missing or different is computed and written again."""
     total = client.info().points_count
-    secure_mkdir(staging)
-    new = qe.EdgeShard.create(str(staging), _collection_config())
+    new = _open_kept_copy(staging)
+    if new is None:
+        secure_mkdir(staging)
+        new = qe.EdgeShard.create(str(staging), _collection_config())
+    else:
+        log_and_print(f"Resuming the keyword copy of collection '{staging.name}': the "
+                      f"{new.info().points_count} points it holds are checked, not copied again.",
+                      level="info", echo=False)
     try:
         copied, offset = 0, None
         with tqdm(total=total, desc="Adding keyword vectors") as progress:
@@ -3312,12 +3381,19 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> int:
                 page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
                                                               with_payload=True, with_vector=["dense"]))
                 if page:
-                    new.update(qe.UpdateOperation.upsert_points(
-                        [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in page]))
-                    copied += len(page)
+                    kept = {str(r.id): r for r in new.retrieve([r.id for r in page], True, ["dense"])}
+                    stale = [r for r in page if not _same_point(kept.get(str(r.id)), r)]
+                    if stale:
+                        new.update(qe.UpdateOperation.upsert_points(
+                            [_point(r.id, r.vector["dense"], r.payload or {}, keywords=True) for r in stale]))
+                    copied += len(stale)
                     progress.update(len(page))
                 if offset is None:
                     break
+        # Every point of the collection is now in the copy as it is; any
+        # more than that are points deleted since an interrupted build.
+        if new.info().points_count > total:
+            _drop_points_not_in(new, client)
         new.flush()
         # Checked before the copy replaces anything: a copy that came out
         # short must never take the collection's place.
@@ -3381,9 +3457,10 @@ def build_keyword_index() -> dict:
 
     Idempotent: once every point has its vector this writes nothing. Run
     again after an interruption, it finishes: a copy that never took the
-    collection's place is started over (it embedded nothing, so starting
-    over costs only the local copy), a collection left aside mid-swap is put
-    back first.
+    collection's place is resumed (what it holds is checked against the
+    collection and only what is missing or changed is written), a
+    collection left aside mid-swap is put back first. The copy takes the
+    collection's place only once it holds every point, as it is now.
 
     Holds the index lock for the whole build (an index run writing into the
     collection while it is copied would lose what it wrote with the old
@@ -3395,15 +3472,19 @@ def build_keyword_index() -> dict:
         staging, previous = _keyword_rebuild_paths(path)
         with _client_lock:
             _restore_interrupted_keyword_swap(path)
-            for leftover in (staging, previous):
-                # A copy that never took the place, or a collection that
-                # was replaced and not yet deleted: neither is the collection.
-                if leftover.exists():
-                    shutil.rmtree(leftover)
+            # A collection that was replaced and not yet deleted is not the
+            # collection. A copy that never took the place is kept for
+            # _copy_into_keyword_collection() to resume, unless no copy is
+            # needed any more.
+            if previous.exists():
+                shutil.rmtree(previous)
+            needs_copy = has_keyword_vectors(COLLECTION_NAME) is False
+            if staging.exists() and not needs_copy:
+                shutil.rmtree(staging)
             if not collection_exists(COLLECTION_NAME):
                 return {"rebuilt": False, "written": 0, "points": 0}
             rebuilt, written = False, 0
-            if not has_keyword_vectors(COLLECTION_NAME):
+            if needs_copy:
                 written = _copy_into_keyword_collection(get_client(), staging)
                 _swap_in(path, staging, previous)
                 rebuilt = True
@@ -3818,11 +3899,7 @@ def has_keyword_vectors(collection: str) -> bool | None:
     for), which needs no handle on the shard: the engine has no call that
     returns a loaded shard's config, and opening one another process holds
     would wait for it."""
-    try:
-        config = json.loads((_collection_path(collection) / _EDGE_CONFIG_MARKER).read_text())
-    except FileNotFoundError:
-        return None
-    return KEYWORD_VECTOR in (config.get("sparse_vectors") or {})
+    return _config_has_keyword_vector(_collection_path(collection))
 
 
 def _keyword_search_status(collection: str) -> bool | None:
