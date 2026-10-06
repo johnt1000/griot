@@ -23,6 +23,13 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   code.
 - **English everywhere** — code, comments, docstrings, test names, and every
   string a user sees.
+- **An MCP tool's or prompt's docstring is sent to every agent that lists
+  it**, up to a line reading `Maintainer notes:`. Write the part above it
+  for the agent (what the tool does, when to use it, what its output
+  means); put why it is built that way, review tags and references to
+  internal functions or files below it, where they stay in the source.
+  `tests/test_descriptions_for_agents.py` checks everything a client
+  receives.
 - **Never commit a secret, or anything that belongs to your own machine.**
   That covers API keys and tokens, `.env` files, anything copied from
   `~/.config/griot` or `~/.local/share/griot`, and absolute paths under your
