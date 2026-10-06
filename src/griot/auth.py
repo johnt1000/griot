@@ -88,7 +88,15 @@ def provider_status() -> list[dict]:
 
 
 def set_provider_key(provider: str, key: str) -> bool:
-    """Write half of provider_status() — validates the provider
+    """Whether it replaced a configured value; see _store_provider_key()."""
+    return _store_provider_key(provider, key)[0]
+
+
+def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
+    """(replaced, where): "keychain" or "file", so `griot auth set` says the
+    place the key went from the write itself rather than inferring it.
+
+    Write half of provider_status() — validates the provider
     and the key. Returns True if it REPLACED an already-configured value
     (the caller may want to warn about a running MCP server not picking
     this up until restart, same as cmd_set() prints). Raises ValueError on
@@ -101,9 +109,11 @@ def set_provider_key(provider: str, key: str) -> bool:
     Falls back to the existing common.env_file_set() path (same one
     cmd_set() always used) whenever the keychain is unavailable — no
     `keyring` installed, no reachable backend (headless Linux without a
-    Secret Service provider, a container), or any other failure. This
-    fallback is silent by design: a missing OS keychain is an expected,
-    normal environment, not an error condition worth surfacing.
+    Secret Service provider, a container), or any other failure. The
+    fallback is not an error (a missing OS keychain is a normal
+    environment), so it does not fail here; `griot auth list` and
+    `griot doctor` say where each key is kept and whether a keychain is
+    reachable (common.keychain_status()), so it is not silent either.
 
     [real gap, review-caught] A credential that already exists in
     plaintext .env (set before this feature existed, or on a machine that
@@ -125,9 +135,9 @@ def set_provider_key(provider: str, key: str) -> bool:
     if common._keychain_set(env_var, key):
         if existing_in_file:
             common.env_file_unset(env_var)
-        return bool(existing_in_file)
+        return bool(existing_in_file), "keychain"
     common.env_file_set(env_var, key)
-    return bool(existing_in_file)
+    return bool(existing_in_file), "file"
 
 
 @dataclass(frozen=True)
@@ -135,9 +145,12 @@ class KeyRemoval:
     """What remove_provider_key() did. `removed`: a key existed (in the
     keychain and/or the file) and was removed from wherever it was found.
     `keychain`: the common.KEYCHAIN_* result, so a caller can tell an
-    unreachable keychain (a stored copy may remain) from an empty one."""
+    unreachable keychain (a stored copy may remain) from an empty one.
+    `places`: where it was removed from ("keychain", "file"), so
+    `griot auth remove` names them."""
     removed: bool
     keychain: str
+    places: tuple = ()
 
 
 def remove_provider_key(provider: str) -> KeyRemoval:
@@ -159,7 +172,9 @@ def remove_provider_key(provider: str) -> KeyRemoval:
     removed_from_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
     if removed_from_file:
         common.env_file_unset(env_var)
-    return KeyRemoval(removed=keychain == common.KEYCHAIN_DELETED or removed_from_file, keychain=keychain)
+    places = tuple(place for place, done in (("keychain", keychain == common.KEYCHAIN_DELETED),
+                                             ("file", removed_from_file)) if done)
+    return KeyRemoval(removed=bool(places), keychain=keychain, places=places)
 
 
 def cmd_set(provider: str) -> int:
@@ -175,9 +190,9 @@ def cmd_set(provider: str) -> int:
         return 1
 
     _ensure_env_file()
-    replaced = set_provider_key(provider, key)
+    replaced, where = _store_provider_key(provider, key)
 
-    print(f"{env_var} written to {common.ENV_PATH} (permission 0600).")
+    _say_where_it_went(env_var, where)
     _say_if_the_shell_overrides(env_var)
     if replaced:
         # [review] common.py resolves .env once, at import time
@@ -186,6 +201,23 @@ def cmd_set(provider: str) -> int:
         # doesn't affect `griot auth set` itself, only concurrent MCP sessions.
         print("Warning: an already-running MCP server won't see this change until restarted (common.py resolves .env only at import time).")
     return 0
+
+
+def _say_where_it_went(env_var: str, where: str) -> None:
+    """After a key was written: the keychain or the plaintext file, and, for
+    the file, why. This is the moment the fallback happens, and it used to
+    say "written to <config>/.env" whichever place the key went."""
+    if where == "keychain":
+        backend = common.keychain_status()["backend"]
+        print(f"{env_var} stored in the OS keychain{f' ({backend})' if backend else ''}.")
+        return
+    print(f"{env_var} written in plaintext to {common.ENV_PATH} (permission 0600).")
+    keychain = common.keychain_status()
+    if keychain["available"]:
+        print(f"Note: the OS keychain ({keychain['backend']}) refused it, so it went to the file; "
+              f"`griot auth migrate` retries.")
+    else:
+        print(f"Note: {keychain_phrase(keychain)}.")
 
 
 def _say_if_the_shell_overrides(env_var: str) -> None:
@@ -200,16 +232,52 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
           f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
 
 
+def keychain_phrase(keychain: dict) -> str:
+    """Where a key set now goes, from common.keychain_status(): said by
+    `auth list` and `doctor` so the fallback to the plaintext file is never
+    silent. Not installed and not reachable get different advice: the extra
+    fixes the first, not the second."""
+    if keychain["available"]:
+        return f"the OS keychain ({keychain['backend']}) is reachable: a key set now is stored there"
+    if keychain["installed"]:
+        why = "keyring is installed but finds none: on Linux it needs a Secret Service provider"
+    else:
+        why = 'the keyring package is not installed: pip install "griot[keychain]"'
+    return f"no OS keychain backend ({why}), so keys are kept in plaintext in {common.ENV_PATH} (mode 0600)"
+
+
+def where_stored(origin: dict) -> str:
+    """Where a configured credential is kept, from common.credential_origin():
+    a place, never a value."""
+    if origin["stored"] == "keychain":
+        where = "in the OS keychain"
+    elif origin["stored"] == "file":
+        where = f"in plaintext in {common.ENV_PATH}"
+    else:
+        return "from the environment only (griot stores none)"
+    if origin["source"] == "environment" and not origin["shadows_stored"]:
+        where += f", also exported in {', '.join(origin['exported_in']) or 'this shell'}"
+    return where
+
+
 def cmd_list() -> int:
     # env-first precedence preserved exactly as before (a shell-exported
     # value always wins over the file for THIS process) — provider_status()
     # exposes both explicitly (file_masked/env_masked) for a UI that needs
     # to show the file's value even when it's currently shadowed; the CLI
     # keeps showing only what's effectively active.
+    keychain = common.keychain_status()
+    print(f"Storage: {keychain_phrase(keychain)}.")
     for status in provider_status():
         masked = status["env_masked"] or status["file_masked"]
         line = f"✓ configured ({masked})" if masked else f"✗ missing — griot auth set {status['provider']}"
+        # The keychain is read here (CLI only, never on an MCP path): where a
+        # key is kept is what makes a plaintext copy visible at all.
         origin = common.credential_origin(status["env_var"])
+        if masked:
+            line += f", {where_stored(origin)}"
+            if origin["stored"] == "file" and keychain["available"]:
+                line += " — `griot auth migrate` moves it to the keychain"
         if origin["shadows_stored"]:
             where = ", ".join(origin["exported_in"]) or "this shell"
             line += (f" — from the environment ({where}), which overrides the key griot stores; the stored one "
@@ -238,7 +306,9 @@ def cmd_remove(provider: str) -> int:
         print(f"{env_var} was not configured — nothing to remove.")
         return 0
     if result.removed:
-        print(f"{env_var} removed from {common.ENV_PATH}.")
+        # It said "removed from <config>/.env" wherever the key was.
+        names = {"keychain": "the OS keychain", "file": f"the plaintext file {common.ENV_PATH}"}
+        print(f"{env_var} removed from {' and '.join(names[p] for p in result.places)}.")
         origin = common.credential_origin(env_var)
         if origin["source"] == "environment":
             where = ", ".join(origin["exported_in"]) or "this shell"
@@ -285,15 +355,19 @@ def cmd_migrate() -> int:
     if migrated:
         print(f"Migrated to the OS keychain: {', '.join(migrated)}.")
     if could_not_migrate:
-        print(f"Could not migrate (no keychain backend available): {', '.join(could_not_migrate)}.")
-        print('Install `pip install "griot[keychain]"` for OS keychain support.')
+        # Not "install the extra" whatever the cause: with keyring installed
+        # and no backend (headless Linux), installing it again fixes nothing.
+        keychain = common.keychain_status()
+        why = (f"the OS keychain ({keychain['backend']}) refused them" if keychain["available"]
+               else keychain_phrase(keychain))
+        print(f"Could not migrate, still in the file: {', '.join(could_not_migrate)}: {why}.")
     return 0
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot auth",
-        description="Manages paid embedding provider keys (securely edits <config_dir>/.env).",
+        description="Manages provider and platform keys: stored in the OS keychain when one is reachable, else in <config_dir>/.env (plaintext, 0600); `list` says which.",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
