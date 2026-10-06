@@ -920,6 +920,17 @@ class StatsOutput(_WhyNoPointCount):
     quality_is_older_than_index: bool
     golden_set: GoldenSetState | None
     generated_at: str
+    # Which records the counts are about: "active_profile" (the collection
+    # in scope_collection, the one the state lines are about) or
+    # "all_profiles" (scope_collection null). Spend and tool calls are every
+    # profile's either way. records_without_collection: records in the
+    # window, written before they named a collection, that the active scope
+    # left out (0 with all_profiles, which counts them).
+    scope: str
+    scope_collection: str | None
+    records_without_collection: int
+    # The local midnight the window opened at (ISO 8601 with its offset).
+    window_start: str | None
     total_pruned: int
     total_redacted: int
     query_latency_p50_seconds: float | None
@@ -1905,7 +1916,7 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
-def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
+def griot_stats(days: int = stats.DEFAULT_DAYS, all_profiles: bool = False) -> StatsOutput:
     """The full usage report `griot stats` prints, as structured data:
     indexing runs and reuse, API spend and its per-day series, query count
     and latency, which source types answers came from, and the
@@ -1926,23 +1937,25 @@ def griot_stats(days: int = stats.DEFAULT_DAYS) -> StatsOutput:
     Reuse deserves attention: `reuse_rate` averages the whole window, so a
     window spanning a fix holds two eras whose average describes neither.
     `recent_reuse_rate` is the trailing-runs figure — prefer it when the
-    two disagree."""
-    return _stats(days)
+    two disagree.
+
+    `days` counts local days: today since local midnight and the `days - 1`
+    before it (`window_start`), the same days spend is counted by. The
+    counts (runs, chunks, failures, queries, sources, quality trend) are
+    those of the active profile's collection, the one the state lines are
+    about; `all_profiles=true` counts every profile's (`scope` says which).
+    Spend and tool calls are always every profile's."""
+    return _stats(days, all_profiles)
 
 
-def _stats(days: int) -> StatsOutput:
-    """griot_stats and the griot://stats resource (its default window) both
-    run this."""
+def _stats(days: int, all_profiles: bool = False) -> StatsOutput:
+    """griot_stats and the griot://stats resource (its default window and
+    scope) both run this."""
     if days < 1:
         raise ValueError(f"days must be at least 1 (got {days})")
-    runs, queries = stats.load_window(days)
-    result = stats.compute_stats(runs, queries, common.get_index_status(),
-                                 quality_checks=stats.load_quality_window(days),
-                                 # [review finding] was omitted, so tool_calls
-                                 # came back empty even where the schema asked
-                                 # for it.
-                                 tool_calls=stats.load_tool_calls(days),
-                                 state=stats.load_state())
+    # The same function `griot stats` calls, so the two cannot drift apart:
+    # this tool once omitted tool_calls the CLI passed (review finding).
+    result = stats.report(days, all_profiles=all_profiles)
     # The window is part of the answer: every number above is meaningless
     # without knowing what period it covers, and an agent that asked for a
     # non-default window shouldn't have to remember which it asked for.
@@ -2086,6 +2099,8 @@ def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
         "- A falling quality_trend is an index-regression signal; a flat high one is "
         "healthy.\n"
         "- Put spend against the daily ceiling rather than as a bare number.\n"
+        "- Say whose numbers they are: the counts are scope_collection's (the active "
+        "profile) unless scope says every profile's; spend is the whole account's either way.\n"
         "- golden_set holds the curated cases' last result, from a past run: give its "
         "age, and say so if it was never run.\n"
         "- Say plainly if the window holds too little activity to conclude anything."

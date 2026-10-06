@@ -7,7 +7,7 @@ writes/exposes.
 import argparse
 import json
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from griot import common, logdb
 
@@ -40,12 +40,38 @@ def _classify_source_label(label: str) -> str:
     return "code"
 
 
+def window_start(days: int, now: datetime | None = None) -> datetime:
+    """The local midnight that opens a window of `days` local days: today and
+    the `days - 1` days before it.
+
+    Local, because spend is grouped by the day the circuit breaker counts,
+    which resets at local midnight (common._today()). The window used to be
+    `now - days` in UTC, so its first local day came in partial and the
+    spend of that day was a fraction of what the breaker had counted.
+
+    Built from the local DATE and then placed in time, not by subtracting
+    24-hour days: a day that changes the clock lasts 23 or 25 hours, and
+    astimezone() on a naive local midnight asks the system zone (mktime)
+    which offset was in force at that moment."""
+    now = now or datetime.now(timezone.utc)
+    first_day = now.astimezone().date() - timedelta(days=days - 1)
+    start = datetime.combine(first_day, time()).astimezone()
+    # A midnight the clock jumps over (a zone whose summer time starts at
+    # 00:00) does not exist, and which side of the gap mktime puts it on
+    # depends on the Python: 3.10 gives 23:00 of the day before. The day
+    # opens at its first instant, whatever the platform answered.
+    while start.astimezone().date() < first_day:
+        start += timedelta(minutes=15)
+    return start.astimezone()
+
+
 def _filter_by_days(records: list[dict], days: int, now_iso: str | None = None) -> list[dict]:
-    """Records without a parseable 'timestamp' are left OUT (there's no way
+    """Records from the window of `days` local days (see window_start()).
+    Records without a parseable 'timestamp' are left OUT (there's no way
     to know if they're in the window) — safer than including by default in a
     "last N days" report."""
     now = datetime.fromisoformat(now_iso) if now_iso else datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=days)
+    cutoff = window_start(days, now)
     kept = []
     for r in records:
         ts = r.get("timestamp")
@@ -156,7 +182,9 @@ def load_state() -> dict:
     profiles, a check of the other collection says nothing about this one.
     Reads only, and never opens the collection."""
     collection = common.COLLECTION_NAME
-    last_query = logdb.read_latest(common.LOG_DIR, "queries")
+    # The last search OF THIS COLLECTION: a search of another profile's
+    # index says nothing about whether this one is in use.
+    last_query = logdb.read_latest(common.LOG_DIR, "queries", collection=collection)
 
     last_quality = last_golden = None
     for record in logdb.read_recent(common.LOG_DIR, "quality_checks", collection=collection, limit=_STATE_LOOKBACK):
@@ -191,7 +219,8 @@ def load_state() -> dict:
 def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                   quality_checks: list[dict] | None = None,
                   tool_calls: list[dict] | None = None, *,
-                  state: dict | None = None, now: datetime | None = None) -> dict:
+                  state: dict | None = None, now: datetime | None = None,
+                  collection: str | None = None, since: datetime | None = None) -> dict:
     """Pure aggregation logic — no I/O, testable on its own. `runs`/`queries`
     should already come filtered by the desired day window (see main()).
 
@@ -209,7 +238,28 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     window. Without it the result simply lacks those keys (last_query_at,
     last_quality_check_at, last_quality_pass_rate,
     quality_is_older_than_index, golden_set): absent means "not looked at",
-    which is not the same as None, "looked and there is none"."""
+    which is not the same as None, "looked and there is none".
+
+    collection is the scope of the counts: given, only the runs, queries and
+    quality checks of that collection count, the same collection the state
+    lines are about; None counts every profile. Spend is never scoped (money
+    is spent per account, whichever collection a call was for), and MCP tool
+    calls cannot be (they record no collection). since is when the window
+    opened (window_start()), echoed so the report can name it."""
+    # Spend is read from everything in the window, before the scope narrows
+    # it: the breaker's daily total is one number for the whole account.
+    spend_records = runs + queries
+    without_collection = 0
+    if collection is not None:
+        # A record that names no collection was written before the field
+        # existed (a JSONL import, a legacy quality file). It cannot be placed
+        # in any one collection, and guessing from its profile would claim a
+        # mapping that may have changed since; it is left out of the scope and
+        # COUNTED, so the report can say that --all-profiles shows more.
+        without_collection = sum(1 for r in [*runs, *queries, *(quality_checks or [])] if not r.get("collection"))
+        runs = [r for r in runs if r.get("collection") == collection]
+        queries = [q for q in queries if q.get("collection") == collection]
+        quality_checks = [q for q in (quality_checks or []) if q.get("collection") == collection]
     # `or 0`, not just the get() default: that decisionrecords a run that died
     # before finishing with counts set to None ON PURPOSE (0 would read as "it
     # ran and did nothing", a different fact that would distort these totals).
@@ -271,7 +321,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     # spend whenever a question was the last spend event of the day (common:
     # few indexing runs, many questions).
     spend_by_date: dict[str, float] = {}
-    for r in runs + queries:
+    for r in spend_records:
         spend = r.get("spend_today_usd")
         ts = r.get("timestamp")
         if spend is None or not ts:
@@ -415,6 +465,13 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # The last run is the last ATTEMPT: one that died wrote nothing.
         "last_indexed_error": last_indexed.get("error") or None,
         **known,
+        # Which records the counts below are about: the active collection
+        # ("active_profile") or every profile's. Spend and tool calls are
+        # always every profile's, whatever this says.
+        "scope": "active_profile" if collection is not None else "all_profiles",
+        "scope_collection": collection,
+        "records_without_collection": without_collection,
+        "window_start": since.isoformat() if since is not None else None,
         # Rendering needs "now" to say how long ago; kept with the facts so
         # that the text and the numbers cannot be about two different moments.
         "generated_at": (now or datetime.now(timezone.utc)).isoformat(),
@@ -554,8 +611,10 @@ def platform_refused_phrase(names: list[str]) -> str:
 
 
 def format_stats(s: dict, days: int) -> str:
+    opened = _when(s.get("window_start"))
+    since = f", since {opened.date().isoformat()}, local time" if opened else ""
     lines = [
-        f"griot — report (last {days} days)",
+        f"griot — report (last {days} day{'s' if days != 1 else ''}{since})",
         "═" * 38,
     ]
     now = _when(s.get("generated_at"))
@@ -565,6 +624,20 @@ def format_stats(s: dict, days: int) -> str:
         lines.append(f"{'Attention:' if i == 0 else '':<13}{item}")
     if s.get("attention"):
         lines.append("")
+
+    # Which records the counts are about, before the counts: the state lines
+    # below are always the active collection's, so a total over every
+    # profile next to them has to say so.
+    if s.get("scope") == "active_profile":
+        lines.append(f"Scope:       collection {s['scope_collection']} (active profile) · "
+                     f"--all-profiles counts every profile")
+        n = s.get("records_without_collection") or 0
+        if n:
+            lines.append(f"             {n} record{'s' if n != 1 else ''} in the period "
+                         f"name{'s' if n == 1 else ''} no collection (written before the field existed): "
+                         f"counted only with --all-profiles")
+    elif s.get("scope") == "all_profiles":
+        lines.append("Scope:       every profile's collection")
 
     # [real output, 2026-08-22] None is neither zero nor an error here: it
     # means the count could not be read because another process holds the
@@ -662,7 +735,8 @@ def format_stats(s: dict, days: int) -> str:
 
     ceiling = common.SPEND_CEILING_USD
     lines.append("")
-    lines.append(f"API spend:   ${s['total_spend_usd']:.4f} in the period (ceiling: ${ceiling:.2f}/day)")
+    # Every profile, whatever the scope: the breaker counts the account's money.
+    lines.append(f"API spend:   ${s['total_spend_usd']:.4f} in the period, every profile (ceiling: ${ceiling:.2f}/day)")
     # The bar answers "how close am I to the ceiling?" at a glance — the
     # one thing the two numbers side by side don't. Compared against the
     # DAILY ceiling, matching how the breaker actually trips.
@@ -727,8 +801,9 @@ def format_stats(s: dict, days: int) -> str:
     if tools:
         failed = s.get("failed_tool_calls") or {}
         lines.append("")
+        # Every profile, whatever the scope: a tool call records no collection.
         lines.append(f"MCP tools:   {sum(tools.values())} calls across {len(tools)} tool"
-                     f"{'s' if len(tools) > 1 else ''}")
+                     f"{'s' if len(tools) > 1 else ''}, every profile")
         # Ordered by volume: during the MCP validation the top of this list
         # is the answer to "which tools earn their place".
         for tool, count in sorted(tools.items(), key=lambda kv: -kv[1]):
@@ -790,29 +865,38 @@ def format_stats(s: dict, days: int) -> str:
     return "\n".join(lines)
 
 
-def load_window(days: int) -> tuple[list[dict], list[dict]]:
-    """(runs, queries) already filtered to the last `days` days — the I/O
-    half of `griot stats`'s main(), extracted so a front end (the web
-    caller) doesn't have to reach into this module's private
-    _filter_by_days() to get the same data. logdb.read_since() does an
-    indexed SQL narrowing by timestamp first (the actual performance win
-    over the old runs.jsonl/queries.jsonl, which had to be read in full
-    every time); _filter_by_days() still runs afterward as the
-    authoritative, already-tested validation/filtering pass."""
-    runs = _filter_by_days(logdb.read_since(common.LOG_DIR, "runs", days), days)
-    queries = _filter_by_days(logdb.read_since(common.LOG_DIR, "queries", days), days)
+def load_window(days: int, now: datetime | None = None) -> tuple[list[dict], list[dict]]:
+    """(runs, queries) already filtered to the window of `days` local days
+    (window_start()) — the I/O half of report(), extracted so a front end
+    doesn't have to reach into this module's private _filter_by_days() to
+    get the same data. logdb.read_since() does an indexed SQL narrowing by
+    timestamp first (the actual performance win over the old
+    runs.jsonl/queries.jsonl, which had to be read in full every time);
+    _filter_by_days() still runs afterward as the authoritative pass.
+
+    The SQL narrowing asks for one day more than the window: the window
+    opens at local midnight, which can be up to 25 hours a day before `now`
+    (a day the clock falls back), and a stored timestamp written with
+    another offset compares there as text, not as a moment. The extra day
+    covers both; the Python pass cuts at the exact moment."""
+    now_iso = now.isoformat() if now else None
+    runs = _filter_by_days(logdb.read_since(common.LOG_DIR, "runs", days + 1, now), days, now_iso)
+    queries = _filter_by_days(logdb.read_since(common.LOG_DIR, "queries", days + 1, now), days, now_iso)
     return runs, queries
 
 
-def load_tool_calls(days: int) -> list[dict]:
-    """MCP tool invocations in the window. Thin passthrough — the counting
+def load_tool_calls(days: int, now: datetime | None = None) -> list[dict]:
+    """MCP tool invocations in the window, cut at the same local midnight as
+    load_window() (and narrowed in SQL with the same extra day). The counting
     happens in compute_stats() so it stays testable without I/O."""
-    return logdb.read_tool_calls(common.LOG_DIR, days)
+    return _filter_by_days(logdb.read_tool_calls(common.LOG_DIR, days + 1, now), days,
+                           now.isoformat() if now else None)
 
 
-def load_quality_window(days: int) -> list[dict]:
-    """Quality-check history in the window, oldest first, reduced to what a
-    trend needs: when, which collection, and the pass rate.
+def load_quality_window(days: int, now: datetime | None = None) -> list[dict]:
+    """Quality-check history in the window (the same local days as
+    load_window()), oldest first, reduced to what a trend needs: when, which
+    collection, and the pass rate.
 
     Same shape the removed front end's helper produced before its deletion
     removed it — that page was the only reader of this table, so without
@@ -829,7 +913,8 @@ def load_quality_window(days: int) -> list[dict]:
     logdb.migrate_legacy_json_file(common.LOG_DIR, common.DATA_DIR / "last_quality_check.json",
                                    "quality_checks")
     entries = []
-    for record in _filter_by_days(logdb.read_since(common.LOG_DIR, "quality_checks", days), days):
+    for record in _filter_by_days(logdb.read_since(common.LOG_DIR, "quality_checks", days + 1, now), days,
+                                  now.isoformat() if now else None):
         self_check = record.get("self_check") or {}
         sampled = self_check.get("sampled") or 0
         passed = self_check.get("passed") or 0
@@ -841,26 +926,46 @@ def load_quality_window(days: int) -> list[dict]:
     return entries
 
 
+def report(days: int, *, all_profiles: bool = False) -> dict:
+    """The whole report, for `griot stats` and the griot_stats MCP tool
+    alike, so the two cannot disagree on the window or the scope. One `now`
+    for every read: the window, the spend days and "how long ago" are about
+    the same moment.
+
+    By default the counts are the active collection's, the collection every
+    state line is about; all_profiles counts every profile's."""
+    now = datetime.now(timezone.utc)
+    runs, queries = load_window(days, now)
+    return compute_stats(runs, queries, common.get_index_status(),
+                         quality_checks=load_quality_window(days, now),
+                         tool_calls=load_tool_calls(days, now),
+                         state=load_state(), now=now,
+                         collection=None if all_profiles else common.COLLECTION_NAME,
+                         since=window_start(days, now))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot stats",
         description="Usage, spend, and savings report — aggregates already-recorded logs, no new collection.",
     )
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="Window in days (default: %(default)s)")
+    parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
+                        help="Window in local days: today since local midnight plus the N-1 days before it, "
+                             "the days spend is counted by (default: %(default)s)")
+    parser.add_argument("--all-profiles", action="store_true",
+                        help="Count the runs, searches and quality checks of every profile's collection, not only "
+                             "the active one's. The state lines are always the active collection's; spend and "
+                             "MCP tool calls are always every profile's")
     parser.add_argument("--json", action="store_true", help="Raw JSON output instead of formatted text")
     args = parser.parse_args(argv)
+    if args.days < 1:
+        # A window of no days is always empty, which reads as "no activity".
+        parser.error(f"--days must be at least 1 (got {args.days})")
 
-    runs, queries = load_window(args.days)
-    index_status = common.get_index_status()
-
-    result = compute_stats(runs, queries, index_status,
-                           quality_checks=load_quality_window(args.days),
-                           tool_calls=load_tool_calls(args.days),
-                           state=load_state())
+    result = report(args.days, all_profiles=args.all_profiles)
     # Both front ends, so `--json` and griot_stats say over how long the
     # search and tool-call counts can reach.
     result["log_retention_days"] = common.LOG_RETENTION_DAYS
-
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     else:

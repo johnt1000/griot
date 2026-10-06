@@ -370,8 +370,12 @@ def read_since(log_dir: Path, table: str, days: int, now: datetime | None = None
     return [json.loads(row["data"]) for row in rows]
 
 
-# table -> whether its rows say which collection they are about
-_RECENT_TABLES = {"runs": True, "queries": False, "quality_checks": True}
+# table -> the SQL that reads which collection a row is about. `queries` has
+# no column for it (see _TABLES_WITH_COLLECTION): its records carry the field
+# in their JSON since log_query() began writing it, and a record from before
+# then gives NULL, so it matches no collection rather than a guessed one.
+_RECENT_TABLES = {"runs": "collection", "queries": "json_extract(data, '$.collection')",
+                  "quality_checks": "collection"}
 
 
 def read_recent(log_dir: Path, table: str, *, collection: str | None = None, limit: int = 1) -> list[dict]:
@@ -381,9 +385,7 @@ def read_recent(log_dir: Path, table: str, *, collection: str | None = None, lim
     cannot. By insertion order, like most_recent_run_for_collection()."""
     if table not in _RECENT_TABLES:
         raise ValueError(f"unknown table {table!r}")
-    if collection is not None and not _RECENT_TABLES[table]:
-        raise ValueError(f"{table} records are not tied to a collection")
-    where, args = ("WHERE collection = ? ", (collection,)) if collection is not None else ("", ())
+    where, args = (f"WHERE {_RECENT_TABLES[table]} = ? ", (collection,)) if collection is not None else ("", ())
     if _nothing_logged_yet(log_dir):
         return []
     conn = _connect(log_dir)

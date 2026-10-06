@@ -148,8 +148,19 @@ runs anything in the background on its own.
 ```bash
 griot stats               # last 30 days by default
 griot stats --days 7
+griot stats --all-profiles  # count every profile's collection, not only the active one's
 griot stats --json        # raw JSON instead of the formatted report
 ```
+
+One clock: `--days N` is today since local midnight plus the N-1 local
+days before it, the same days the spend circuit breaker counts (a day the
+clock changes counts whole). One scope: the counts (runs, chunks,
+failures, queries, sources, quality trend) are those of the active
+profile's collection, the same collection the state lines are about, and
+the `Scope:` line names it; `--all-profiles` (`all_profiles` on
+`griot_stats`) counts every profile, including old records that name no
+collection. Spend and MCP tool calls are always every profile's: money is
+spent per account, and a tool call records no collection.
 
 It opens with what does not depend on the window: an `Attention:` block
 when something needs someone (the last indexing run died, today's spend
