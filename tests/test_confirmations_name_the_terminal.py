@@ -32,9 +32,9 @@ def no_terminal(monkeypatch):
 def deletable_profile(monkeypatch):
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     name = next(n for n in common.EMBED_PROFILES if n != "jina-code")
-    path = common._collection_path(common.collection_name_for(name))
+    path = common.collection_path(common.collection_name_for(name))
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     return name
 
 

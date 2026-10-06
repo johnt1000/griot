@@ -60,7 +60,7 @@ def index(fake_embeddings):
 
 
 def _active_path():
-    return common._collection_path(common.COLLECTION_NAME)
+    return common.collection_path(common.COLLECTION_NAME)
 
 
 def _legacy_collection():
@@ -530,7 +530,7 @@ def test_a_kept_copy_that_cannot_be_opened_is_started_over(legacy_index):
     common.release_client()
     staging = common._keyword_rebuild_paths(_active_path())[0]
     staging.mkdir()
-    (staging / common._EDGE_CONFIG_MARKER).write_text("not a config")
+    (staging / common.EDGE_CONFIG_MARKER).write_text("not a config")
     result = common.build_keyword_index()
     assert result == {"rebuilt": True, "written": len(DOCS), "points": len(DOCS), "kept": 0}
     common.release_client()
@@ -703,7 +703,7 @@ def test_a_swap_whose_second_rename_fails_puts_the_collection_back_at_once(legac
     with pytest.raises(RuntimeError, match="left as it was"):
         common.build_keyword_index()
     monkeypatch.setattr(common.os, "rename", real_rename)
-    assert (path / common._EDGE_CONFIG_MARKER).exists()
+    assert (path / common.EDGE_CONFIG_MARKER).exists()
     assert not common._keyword_rebuild_paths(path)[1].exists()
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is False
 
@@ -895,8 +895,8 @@ def test_index_status_of_a_collection_whose_config_cannot_be_read_cannot_say(ind
     """A status read answers whatever the config file holds: unreadable is
     "cannot say" (None), never an exception that takes the status down."""
     common.release_client()
-    (_active_path() / common._EDGE_CONFIG_MARKER).write_text(content)
-    assert common._keyword_search_status(common.COLLECTION_NAME) is None
+    (_active_path() / common.EDGE_CONFIG_MARKER).write_text(content)
+    assert common.keyword_search_status(common.COLLECTION_NAME) is None
 
 
 def test_index_status_of_a_collection_that_does_not_exist():

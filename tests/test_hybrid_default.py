@@ -55,7 +55,7 @@ def test_the_default_falls_back_to_vector_when_nothing_is_indexed():
 
 def test_the_default_falls_back_to_vector_when_the_collection_config_cannot_be_read(index):
     common.release_client()
-    (_active_path() / common._EDGE_CONFIG_MARKER).write_text("{not json")
+    (_active_path() / common.EDGE_CONFIG_MARKER).write_text("{not json")
     assert common.search_mode_for("acquire_lock", None) == ("vector", None)
 
 
