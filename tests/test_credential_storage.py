@@ -192,6 +192,50 @@ def test_list_does_not_suggest_migrate_when_there_is_no_backend(capsys):
     assert "griot auth migrate" not in capsys.readouterr().out
 
 
+# --- griot auth set / migrate: the moment the fallback happens ------------------------------------
+
+
+def test_set_into_the_keychain_does_not_claim_the_file(keychain, monkeypatch, capsys):
+    """It said "written to <config>/.env" whatever happened: a key that went
+    to the keychain was reported in the plaintext file."""
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: SECRET)
+
+    assert auth.cmd_set("openai") == 0
+
+    out = capsys.readouterr().out
+    assert "OS keychain" in out and "Fake Keyring" in out
+    assert str(common.ENV_PATH) not in out and "plaintext" not in out
+    _no_secret_in(out)
+
+
+def test_set_says_the_fallback_to_the_plaintext_file_and_why(monkeypatch, capsys):
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: SECRET)
+
+    assert auth.cmd_set("openai") == 0
+
+    out = capsys.readouterr().out
+    assert "plaintext" in out and str(common.ENV_PATH) in out
+    assert "no OS keychain backend" in out and "griot[keychain]" in out
+    _no_secret_in(out)
+
+
+def test_migrate_with_keyring_but_no_backend_does_not_say_install_it(monkeypatch, capsys):
+    class _FailBackend(_FakeKeyring):
+        """keyring's `fail` backend: picked when nothing is reachable, refuses every write."""
+
+        def set_password(self, *a):
+            raise RuntimeError("No recommended backend was available")
+
+    monkeypatch.setitem(sys.modules, "keyring", _FailBackend(_Backend("fail Keyring", 0)))
+    common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
+
+    assert auth.cmd_migrate() == 0
+
+    out = capsys.readouterr().out
+    assert "openai" in out and "griot[keychain]" not in out and "Secret Service" in out
+    assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == SECRET
+
+
 # --- griot doctor ----------------------------------------------------------------------------------
 
 
@@ -205,6 +249,8 @@ def test_doctor_names_credentials_still_in_plaintext_and_the_command_that_moves_
     assert "GRIOT_OPENAI_API_KEY" in check["detail"] and str(common.ENV_PATH) in check["detail"]
     assert "Fake Keyring" in check["detail"] and "GITLAB_PERSONAL_ACCESS_TOKEN" in check["detail"]
     assert "griot auth migrate" in check["fix"]
+    # The keychain is there: the advice is the move alone, not to find a backend first.
+    assert "Secret Service" not in check["fix"] and "griot[keychain]" not in check["fix"]
     _no_secret_in(check["detail"] + check["fix"])
 
 

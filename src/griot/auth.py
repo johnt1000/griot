@@ -169,7 +169,7 @@ def cmd_set(provider: str) -> int:
     _ensure_env_file()
     replaced = set_provider_key(provider, key)
 
-    print(f"{env_var} written to {common.ENV_PATH} (permission 0600).")
+    _say_where_it_went(env_var)
     _say_if_the_shell_overrides(env_var)
     if replaced:
         # [review] common.py resolves .env once, at import time
@@ -178,6 +178,26 @@ def cmd_set(provider: str) -> int:
         # doesn't affect `griot auth set` itself, only concurrent MCP sessions.
         print("Warning: an already-running MCP server won't see this change until restarted (common.py resolves .env only at import time).")
     return 0
+
+
+def _say_where_it_went(env_var: str) -> None:
+    """After a key was written: the keychain or the plaintext file, and, for
+    the file, why. This is the moment the fallback happens, and it used to
+    say "written to <config>/.env" whichever place the key went. Reads the
+    file, not the keychain: set_provider_key() writes the file only when the
+    keychain refused the key."""
+    # A value, not the name: the .env template carries every name, empty.
+    if not (dotenv_values(common.ENV_PATH).get(env_var) if common.ENV_PATH.exists() else None):
+        backend = common.keychain_status()["backend"]
+        print(f"{env_var} stored in the OS keychain{f' ({backend})' if backend else ''}.")
+        return
+    print(f"{env_var} written in plaintext to {common.ENV_PATH} (permission 0600).")
+    keychain = common.keychain_status()
+    if keychain["available"]:
+        print(f"Note: the OS keychain ({keychain['backend']}) refused it, so it went to the file; "
+              f"`griot auth migrate` retries.")
+    else:
+        print(f"Note: {keychain_phrase(keychain)}.")
 
 
 def _say_if_the_shell_overrides(env_var: str) -> None:
@@ -302,15 +322,19 @@ def cmd_migrate() -> int:
     if migrated:
         print(f"Migrated to the OS keychain: {', '.join(migrated)}.")
     if could_not_migrate:
-        print(f"Could not migrate (no keychain backend available): {', '.join(could_not_migrate)}.")
-        print('Install `pip install "griot[keychain]"` for OS keychain support.')
+        # Not "install the extra" whatever the cause: with keyring installed
+        # and no backend (headless Linux), installing it again fixes nothing.
+        keychain = common.keychain_status()
+        why = (f"the OS keychain ({keychain['backend']}) refused them" if keychain["available"]
+               else keychain_phrase(keychain))
+        print(f"Could not migrate, still in the file: {', '.join(could_not_migrate)}: {why}.")
     return 0
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot auth",
-        description="Manages paid embedding provider keys (securely edits <config_dir>/.env).",
+        description="Manages provider and platform keys: stored in the OS keychain when one is reachable, else in <config_dir>/.env (plaintext, 0600); `list` says which.",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
