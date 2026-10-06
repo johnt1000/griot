@@ -1434,7 +1434,10 @@ def credential_origin(env_var: str) -> dict:
     {"source": "environment" | "file" | "keychain" | None,
      "stored": "file" | "keychain" | None,
      "shadows_stored": the exported value differs from the stored one,
-     "exported_in": ["~/.zshrc:17", ...]}. No value is returned."""
+     "exported_in": ["~/.zshrc:17", ...],
+     "direnv_in": the places of exported_in that direnv loaded}. No value
+    is returned. direnv_in is kept apart because stopping a direnv export
+    takes different steps (export_advice())."""
     from dotenv import dotenv_values
 
     exported = env_var in EXPORTED_BEFORE_ENV_FILE
@@ -1450,8 +1453,47 @@ def credential_origin(env_var: str) -> dict:
     source = "environment" if exported else stored
     shadows = bool(exported and stored_value
                    and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
+    direnv = _direnv_exports(env_var) if exported else []
     return {"source": source, "stored": stored, "shadows_stored": shadows,
-            "exported_in": _shell_exports(env_var) + _direnv_exports(env_var) if exported else []}
+            "exported_in": _shell_exports(env_var) + direnv if exported else [], "direnv_in": direnv}
+
+
+# The one wording for an export no shell file or direnv file griot reads
+# names: `auth set/list/remove`, doctor and the refusal hint each had their
+# own, which read as three different findings for the same unknown.
+EXPORT_PLACE_UNKNOWN = "this shell (no shell file or direnv file griot knows sets it)"
+
+
+def export_places(origin: dict) -> str:
+    """Where an exported credential is set, from credential_origin(): its
+    places, or the one wording for none griot could find."""
+    return ", ".join(origin["exported_in"]) or EXPORT_PLACE_UNKNOWN
+
+
+def export_advice(env_var: str, origin: dict, places_said: bool = False) -> str:
+    """What stops an export from being in force, from credential_origin(),
+    as a clause. A shell file is read only when a shell starts, so the
+    terminals already open keep the value until it is unset there; direnv
+    watches the files it loaded and reloads its terminals by itself (an
+    edited .envrc is blocked until `direnv allow`), so `unset` is not the
+    advice for those: it would come back at the next prompt anyway.
+
+    places_said: the caller's sentence has just named export_places(), so
+    the advice says "there" instead of repeating them, unless it holds a
+    shell file and a direnv file at once, whose steps differ."""
+    direnv = origin["direnv_in"]
+    shell = [place for place in origin["exported_in"] if place not in direnv]
+    both = bool(shell and direnv)
+    steps = []
+    if shell:
+        where = "there" if places_said and not both else f"from {', '.join(shell)}"
+        steps.append(f"remove the export {where} and run `unset {env_var}` in terminals already open")
+    elif not direnv:
+        steps.append(f"remove the export wherever it is set and run `unset {env_var}` in terminals already open")
+    if direnv:
+        where = "there" if places_said and not both else f"from {', '.join(direnv)}"
+        steps.append(f"remove it {where}; direnv reloads its terminals by itself, after `direnv allow` if it asks")
+    return ", and ".join(steps)
 
 
 def _provider_of(env_var: str) -> str | None:
@@ -1474,13 +1516,13 @@ def _credential_hint(env_var: str) -> str:
     provider = _provider_of(env_var)
     set_it = f"`griot auth set {provider}`" if provider else f"`griot auth set <provider>`"
     if origin["source"] == "environment":
-        where = ", ".join(origin["exported_in"]) or "this shell (no shell file or direnv file griot knows sets it)"
-        text = f"{env_var} came from the environment, exported in {where}"
+        text = f"{env_var} came from the environment, exported in {export_places(origin)}"
         if origin["shadows_stored"]:
-            text += (f"; it overrides the different key griot stores, so remove that export (and `unset {env_var}` "
-                     f"in open terminals) to use the stored one (`griot auth list` shows which is in use)")
+            text += (f"; it overrides the different key griot stores: to use the stored one, "
+                     f"{export_advice(env_var, origin, places_said=True)} (`griot auth list` shows which is in use)")
         else:
-            text += f"; replace it there, or remove the export and use {set_it}"
+            # The advice goes last: a direnv one carries its own `;`.
+            text += f"; replace it there, or use {set_it} and then {export_advice(env_var, origin, places_said=True)}"
         return text + "."
     if origin["source"] == "file":
         return f"{env_var} came from {ENV_PATH}; set a new one with {set_it}."
