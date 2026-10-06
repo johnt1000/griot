@@ -6,7 +6,10 @@ writes/exposes.
 
 import argparse
 import json
+import os
+import shutil
 import statistics
+import sys
 from datetime import datetime, time, timedelta, timezone
 
 from griot import common, logdb
@@ -582,6 +585,138 @@ def _sparkline(values: list[float]) -> str:
     return "".join(_SPARK_LEVELS[round((v - lo) / span * top)] for v in values)
 
 
+# [debt 6, user decision 2026-10-06] Terminal charts for the three trends,
+# drawn from the same block characters as above: still no dependency. They
+# only replace the one-line forms when the output is a terminal that can show
+# them; everywhere else (a pipe, a file, NO_COLOR, a narrow window) the
+# report stays the plain text that scripts and pasted bug reports read.
+_MIN_CHART_WIDTH = 60
+# Past this a bar or a column chart gets longer without getting easier to
+# read, and a maximised window would stretch the report into a sparse mess.
+_MAX_CHART_WIDTH = 100
+_CHART_HEIGHT = 4
+# Every continuation line of the report starts under the section labels
+# ("API spend:   " is 13 columns); the charts keep that column.
+_INDENT = " " * 13
+# Index = eighths filled, 0..8. Index 0 is a space: zero draws nothing.
+_EIGHTHS = " ▁▂▃▄▅▆▇█"
+# Below this a bar cannot show a proportion worth reading: the breakdown stays
+# a sentence instead of truncating labels to make room.
+_MIN_BAR_WIDTH = 10
+
+
+def _chart_width(stream=None, environ=None) -> int | None:
+    """The width to draw charts at, or None for the plain text.
+
+    None when the output is not a terminal (the report is being piped or
+    saved), when NO_COLOR is set (no-color.org: present and not empty — the
+    convention for "plain output, please", which the charts are not), or
+    when the terminal is too narrow for a chart to stay legible."""
+    stream = sys.stdout if stream is None else stream
+    environ = os.environ if environ is None else environ
+    try:
+        tty = stream.isatty()
+    except (AttributeError, ValueError, OSError):  # a replaced or closed stream
+        tty = False
+    if not tty or environ.get("NO_COLOR"):
+        return None
+    columns = shutil.get_terminal_size().columns
+    if columns < _MIN_CHART_WIDTH:
+        return None
+    return min(columns, _MAX_CHART_WIDTH)
+
+
+def _fill_days(series: list[dict]) -> list[tuple[str, float]] | None:
+    """spend_by_date as one (date, amount) per CALENDAR day from the first to
+    the last. spend_by_date only lists days with recorded spend, and a time
+    axis that skipped the rest would draw two days a week apart as
+    neighbours. A day it does not list had no spend recorded: zero.
+
+    None when a date is not an ISO calendar date (what compute_stats()
+    writes today): the chart is a nicety, and the caller falls back to the
+    sparkline rather than crash a report the plain text could still show."""
+    if not series:
+        return []
+    try:
+        days = [datetime.strptime(p["date"], "%Y-%m-%d").date() for p in series]
+    except (KeyError, TypeError, ValueError):
+        return None
+    amounts = {}
+    for day, point in zip(days, series):
+        amounts[day] = point.get("amount") or 0.0
+    filled, day = [], min(days)
+    while day <= max(days):
+        filled.append((day.isoformat(), amounts.get(day, 0.0)))
+        day += timedelta(days=1)
+    return filled
+
+
+def _columns(values: list[float], top: float, height: int = _CHART_HEIGHT) -> list[str]:
+    """Rows, top first, of a column chart where `top` fills the height.
+
+    Resolution is an eighth of a row. A positive value too small to round to
+    one eighth still gets one: a day that spent something must not look like
+    a day that spent nothing."""
+    cells = []
+    for v in values:
+        units = round(max(0.0, v) / top * height * 8) if top > 0 else 0
+        if v > 0 and units == 0:
+            units = 1
+        cells.append(units)
+    rows = []
+    for level in range(height - 1, -1, -1):
+        # Clamped per row: a value above `top` just fills every row.
+        rows.append("".join(_EIGHTHS[max(0, min(8, units - level * 8))] for units in cells))
+    return rows
+
+
+def _column_chart(title: str, unit: str, values: list[float], labels: list[str], top: float,
+                  top_label: str, bottom_label: str, width: int) -> list[str]:
+    """A small column chart: a title, the columns against a labelled scale,
+    and the first and last label under them. One column per value; when
+    there are more values than room, the most recent ones are kept and the
+    title says how many of how many."""
+    gutter = max(len(top_label), len(bottom_label))
+    room = width - len(_INDENT) - gutter - 2  # the space and the axis
+    total = len(values)
+    if total > room:
+        values, labels = values[-room:], labels[-room:]
+    count = f"{total} {unit}" if total == len(values) else f"last {len(values)} of {total} {unit}"
+    lines = [f"{_INDENT}{title}, {count}"]
+    for i, row in enumerate(_columns(values, top)):
+        scale, axis = (top_label, "┤") if i == 0 else ("", "│")
+        lines.append(f"{_INDENT}{scale:>{gutter}} {axis}{row}".rstrip())
+    lines.append(f"{_INDENT}{bottom_label:>{gutter}} └{'─' * len(values)}")
+    lines.append(f"{_INDENT}{'':>{gutter}}  {labels[0]} → {labels[-1]}")
+    return lines
+
+
+def _local_day(timestamp) -> str:
+    """The local calendar date of a timestamp, the same day spend is counted
+    under; the raw value when it cannot be placed in time."""
+    when = _when(timestamp)
+    return when.astimezone().date().isoformat() if when else str(timestamp)
+
+
+def _source_bars(breakdown: dict[str, int], width: int) -> list[str] | None:
+    """The source breakdown as horizontal bars, largest first, the largest
+    filling the bar. None when the longest label leaves no room for a bar
+    worth reading: labels are never cut short to make room."""
+    items = sorted(breakdown.items(), key=lambda kv: -kv[1])
+    total = sum(breakdown.values())
+    biggest = items[0][1]
+    suffixes = [f" {count / total * 100:>3.0f}% ({count})" for _, count in items]
+    label_width = max(len(kind) for kind, _ in items)
+    indent = _INDENT + "  "
+    bar_width = width - len(indent) - label_width - 1 - max(len(s) for s in suffixes)
+    if bar_width < _MIN_BAR_WIDTH:
+        return None
+    lines = [f"{_INDENT}most used sources:"]
+    for (kind, count), suffix in zip(items, suffixes):
+        lines.append(f"{indent}{kind:<{label_width}} {_bar(count / biggest, bar_width)}{suffix}")
+    return lines
+
+
 def _behind_phrase(report: dict) -> str:
     """`one (3 commits; tags changed)`: the commits since for the sources
     that follow HEAD, and the refs sources that changed."""
@@ -610,7 +745,10 @@ def platform_refused_phrase(names: list[str]) -> str:
             + " in the last platform run: nothing of " + ("it" if len(names) == 1 else "them") + " was indexed")
 
 
-def format_stats(s: dict, days: int) -> str:
+def format_stats(s: dict, days: int, width: int | None = None) -> str:
+    """The report as text. `width` None is the plain form, the same for
+    every reader; a width (see _chart_width()) draws the trends as charts
+    that fit it."""
     opened = _when(s.get("window_start"))
     since = f", since {opened.date().isoformat()}, local time" if opened else ""
     lines = [
@@ -742,7 +880,11 @@ def format_stats(s: dict, days: int) -> str:
     # DAILY ceiling, matching how the breaker actually trips.
     if ceiling > 0:
         used = s["total_spend_usd"] / ceiling
-        lines.append(f"             {_bar(used)} {used * 100:.0f}% of one day's ceiling")
+        share = f"{used * 100:.0f}% of one day's ceiling"
+        # On a terminal the bar shrinks to fit rather than wrap; the plain
+        # form keeps its fixed width.
+        bar_width = min(24, width - len(_INDENT) - len(share) - 1) if width else 24
+        lines.append(f"{_INDENT}{_bar(used, bar_width)} {share}")
 
     # [real gap, left by the front end's removal] spend_by_date has always been computed
     # here; the only thing that ever rendered it was the removed front end's
@@ -750,7 +892,13 @@ def format_stats(s: dict, days: int) -> str:
     # discarded. One day is not a trend, hence the >1 guard.
     trend = s.get("spend_by_date") or []
     if len(trend) > 1:
-        lines.append(f"             {_sparkline([p['amount'] for p in trend])} spend trend, {len(trend)} days")
+        days_filled = _fill_days(trend) if width else None
+        if days_filled:
+            amounts = [amount for _, amount in days_filled]
+            lines.extend(_column_chart("spend per day", "days", amounts, [d for d, _ in days_filled],
+                                       max(amounts), f"${max(amounts):.4f}", "$0", width))
+        else:
+            lines.append(f"             {_sparkline([p['amount'] for p in trend])} spend trend, {len(trend)} days")
 
     lines.append("")
     if s["num_queries"]:
@@ -781,7 +929,10 @@ def format_stats(s: dict, days: int) -> str:
             lines.append(f"             {found}")
         elif s.get("empty_searches"):
             lines.append(f"             {s['empty_searches']} found nothing")
-        if s["source_breakdown"]:
+        bars = _source_bars(s["source_breakdown"], width) if width and s["source_breakdown"] else None
+        if bars:
+            lines.extend(bars)
+        elif s["source_breakdown"]:
             total = sum(s["source_breakdown"].values())
             breakdown = " · ".join(
                 f"{kind} {count / total * 100:.0f}%"
@@ -828,8 +979,16 @@ def format_stats(s: dict, days: int) -> str:
             # 0.60 > 0.50 — review finding, with the real slide hidden).
             baseline = statistics.median(rates[:-1])
             direction = "down" if rates[-1] < baseline else "up" if rates[-1] > baseline else "flat"
-            lines.append(f"             {_sparkline(rates)} trend {direction} "
-                         f"(median of earlier checks: {baseline * 100:.0f}%)")
+            median = f"(median of earlier checks: {baseline * 100:.0f}%)"
+            if width:
+                # A fixed 0-100% scale, unlike the sparkline's own range:
+                # 95% next to 96% must not draw as a cliff.
+                lines.extend(_column_chart("pass rate per check", "checks", rates,
+                                           [_local_day(q.get("timestamp")) for q in quality],
+                                           1.0, "100%", "0%", width))
+                lines.append(f"             trend {direction} {median}")
+            else:
+                lines.append(f"             {_sparkline(rates)} trend {direction} {median}")
     elif "last_quality_check_at" in s:
         # Nothing in the window is not the same as nothing ever, and both
         # are worth a line: the section used to vanish, which read as "fine".
@@ -969,7 +1128,9 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     else:
-        print(format_stats(result, args.days))
+        # The terminal decides between charts and plain text; --json above
+        # never asks, so scripts get the same data wherever they run.
+        print(format_stats(result, args.days, width=_chart_width()))
     return 0
 
 
