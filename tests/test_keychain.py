@@ -58,7 +58,7 @@ def test_keychain_unavailable_by_default_in_tests():
     override, the wrapper functions must already report 'unavailable'."""
     assert common._keychain_get("GRIOT_TEST_KEY") is None
     assert common._keychain_set("GRIOT_TEST_KEY", "value") is False
-    assert common._keychain_delete("GRIOT_TEST_KEY") is False
+    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_NOT_INSTALLED
 
 
 def test_keychain_set_and_get_round_trip(monkeypatch):
@@ -84,16 +84,74 @@ def test_keychain_set_returns_false_when_backend_raises(monkeypatch):
     assert common._keychain_set("GRIOT_TEST_KEY", "value") is False
 
 
-def test_keychain_delete_returns_false_when_nothing_stored(monkeypatch):
+class _PasswordDeleteError(Exception):
+    """Stands in for keyring.errors.PasswordDeleteError, which the real
+    backends raise both for "nothing to delete" (Secret Service, KWallet,
+    Windows, macOS item-not-found) AND for real failures (macOS wraps an
+    access denial in the same class; KWallet raises it when the user
+    cancels the unlock prompt) — so the class alone cannot tell the two
+    cases apart, and _keychain_delete() must not try to."""
+
+
+class _DeniedOnDeleteKeyring(_FakeKeyring):
+    """A backend that finds the item but refuses to delete it (macOS:
+    KeychainDenied wrapped in PasswordDeleteError)."""
+
+    def delete_password(self, service, username):
+        raise _PasswordDeleteError("Can't delete password in keychain: Keychain Access Denied")
+
+
+class _UnreachableKeyring:
+    """keyring.backends.fail.Keyring: every call raises NoKeyringError —
+    what headless Linux, or an SSH session with no D-Bus, gets while the
+    credential may still sit in the user's real Secret Service."""
+
+    def get_password(self, service, username):
+        raise RuntimeError("No recommended backend was available.")
+
+    def delete_password(self, service, username):
+        raise RuntimeError("No recommended backend was available.")
+
+
+class _SilentOnMissingKeyring(_FakeKeyring):
+    """keyring.backends.libsecret: delete_password() of an item that does
+    not exist returns quietly instead of raising, so "the call did not
+    raise" does not mean "something was deleted"."""
+
+    def delete_password(self, service, username):
+        self.store.pop((service, username), None)
+
+
+def test_keychain_delete_says_nothing_stored(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
-    assert common._keychain_delete("GRIOT_NEVER_STORED") is False
+    assert common._keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
 
 
-def test_keychain_delete_returns_true_after_removing(monkeypatch):
+def test_keychain_delete_says_nothing_stored_on_a_backend_that_does_not_raise(monkeypatch):
+    monkeypatch.setitem(sys.modules, "keyring", _SilentOnMissingKeyring())
+    assert common._keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
+
+
+def test_keychain_delete_says_deleted_after_removing(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
     common._keychain_set("GRIOT_TEST_KEY", "value")
-    assert common._keychain_delete("GRIOT_TEST_KEY") is True
+    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_DELETED
     assert common._keychain_get("GRIOT_TEST_KEY") is None
+
+
+def test_keychain_delete_says_unreachable_when_no_backend_answers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "keyring", _UnreachableKeyring())
+    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
+
+
+def test_keychain_delete_says_unreachable_when_the_delete_itself_is_refused(monkeypatch):
+    """The item is there and the backend refuses to delete it: an error,
+    not "nothing stored", although the exception class is the one keyring
+    also uses for "nothing to delete"."""
+    fake = _DeniedOnDeleteKeyring()
+    fake.store[(common._KEYCHAIN_SERVICE, "GRIOT_TEST_KEY")] = "value"
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
 
 
 # --- credential_env_vars() (moved from auth._providers(), single source) --
@@ -151,23 +209,79 @@ def test_set_provider_key_removes_stale_env_file_entry_when_moved_to_keychain(mo
 
 
 def test_remove_provider_key_removes_from_keychain_too(monkeypatch):
-    deleted = {}
-    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: deleted.setdefault(env_var, True) or True)
+    deleted = []
+    monkeypatch.setattr(common, "_keychain_delete",
+                        lambda env_var: deleted.append(env_var) or common.KEYCHAIN_DELETED)
 
-    removed = auth.remove_provider_key("openai")
+    result = auth.remove_provider_key("openai")
 
-    assert removed is True
-    assert deleted.get("GRIOT_OPENAI_API_KEY") is True
+    assert result.removed is True and result.keychain == common.KEYCHAIN_DELETED
+    assert deleted == ["GRIOT_OPENAI_API_KEY"]
 
 
 def test_remove_provider_key_reports_removed_when_only_in_keychain(monkeypatch):
     """The file has nothing to remove (never written there, keychain-only
-    credential) — must still report True, not silently claim 'nothing to
+    credential) — must still report removed, not silently claim 'nothing to
     remove' just because the FILE-based check alone would say so."""
-    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: True)
+    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: common.KEYCHAIN_DELETED)
     assert not common.ENV_PATH.exists()
 
-    assert auth.remove_provider_key("openai") is True
+    assert auth.remove_provider_key("openai").removed is True
+
+
+def test_remove_provider_key_still_removes_from_the_file_when_the_keychain_is_unreachable(monkeypatch):
+    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    auth.set_provider_key("openai", "sk-fake-1234")
+    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: common.KEYCHAIN_UNREACHABLE)
+
+    result = auth.remove_provider_key("openai")
+
+    assert result.removed is True and result.keychain == common.KEYCHAIN_UNREACHABLE
+    assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
+
+
+def test_auth_remove_says_the_keychain_could_not_be_reached(monkeypatch, capsys):
+    """Nothing in the file and an unreachable keychain is NOT "nothing to
+    remove": a key griot put there earlier may still be there. Exit 1,
+    because what was asked (the key gone) could not be confirmed."""
+    monkeypatch.setitem(sys.modules, "keyring", _UnreachableKeyring())
+
+    assert auth.cmd_remove("openai") == 1
+
+    out = capsys.readouterr()
+    assert "nothing to remove" not in out.out
+    assert "keychain could not be reached" in out.err and "GRIOT_OPENAI_API_KEY" in out.err
+
+
+def test_auth_remove_removes_the_file_copy_and_still_warns_when_the_keychain_is_unreachable(monkeypatch, capsys):
+    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    auth.set_provider_key("openai", "sk-fake-1234")
+    monkeypatch.setitem(sys.modules, "keyring", _UnreachableKeyring())
+
+    assert auth.cmd_remove("openai") == 1
+
+    out = capsys.readouterr()
+    assert "removed from" in out.out
+    assert "keychain could not be reached" in out.err
+    assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
+
+
+def test_auth_remove_without_keyring_installed_stays_quiet(capsys):
+    """No `keyring` package (the autouse default): griot never stored
+    anything in a keychain on this install, so nothing to warn about."""
+    assert auth.cmd_remove("openai") == 0
+    out = capsys.readouterr()
+    assert "nothing to remove" in out.out and out.err == ""
+
+
+def test_auth_remove_of_a_keychain_only_key_says_so(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
+    common._keychain_set("GRIOT_OPENAI_API_KEY", "sk-fake-1234")
+
+    assert auth.cmd_remove("openai") == 0
+
+    assert common._keychain_get("GRIOT_OPENAI_API_KEY") is None
+    assert capsys.readouterr().err == ""
 
 
 # --- _inject_keychain_credentials() (import-time population) --------------

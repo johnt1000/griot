@@ -1160,7 +1160,8 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
 # raises. Callers (auth.py) fall back to the existing file-based storage
-# whenever these return None/False.
+# whenever these return None/False (a delete returns one of the KEYCHAIN_*
+# results below instead, so "nothing was there" and "could not ask" differ).
 _KEYCHAIN_SERVICE = "griot"
 
 
@@ -1181,13 +1182,38 @@ def _keychain_set(env_var: str, value: str) -> bool:
         return False
 
 
-def _keychain_delete(env_var: str) -> bool:
+# What _keychain_delete() found. "not installed" is apart from "unreachable"
+# because without the `keyring` package griot never stored anything in a
+# keychain, so there is nothing to warn about; an installed package whose
+# backend fails may be hiding a stored credential that is still there.
+KEYCHAIN_DELETED = "deleted"
+KEYCHAIN_NOTHING_STORED = "nothing stored"
+KEYCHAIN_UNREACHABLE = "unreachable"
+KEYCHAIN_NOT_INSTALLED = "not installed"
+
+
+def _keychain_delete(env_var: str) -> str:
+    """One of the KEYCHAIN_* results above; never raises.
+
+    Existence is asked with get_password() first instead of read off the
+    exception delete_password() raises: keyring's own backends raise
+    PasswordDeleteError for "nothing to delete" (Secret Service, KWallet,
+    Windows, macOS item-not-found) but ALSO for real failures (macOS wraps
+    an access denial in it, KWallet a cancelled unlock), and libsecret
+    returns quietly when there was nothing. get_password() answers None for
+    a missing item on every backend and raises when the backend cannot be
+    asked, so after it any exception is a failure."""
     try:
         import keyring
-        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
-        return True
     except Exception:
-        return False
+        return KEYCHAIN_NOT_INSTALLED
+    try:
+        if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
+            return KEYCHAIN_NOTHING_STORED
+        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
+        return KEYCHAIN_DELETED
+    except Exception:
+        return KEYCHAIN_UNREACHABLE
 
 
 # The files a shell reads at start where a variable is usually exported. Read
