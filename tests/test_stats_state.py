@@ -305,8 +305,9 @@ def test_the_latest_record_is_the_last_one_written():
     assert [r["question"] for r in logdb.read_recent(common.LOG_DIR, "queries", limit=5)] == ["second", "first"]
     with pytest.raises(ValueError):
         logdb.read_latest(common.LOG_DIR, "queries; DROP TABLE runs")
-    with pytest.raises(ValueError):
-        logdb.read_latest(common.LOG_DIR, "queries", collection="any")
+    # Queries name their collection inside the record: the filter reads it there.
+    assert logdb.read_latest(common.LOG_DIR, "queries", collection="any") is None
+    assert logdb.read_latest(common.LOG_DIR, "queries", collection=common.COLLECTION_NAME)["question"] == "second"
 
 
 def test_a_check_without_the_golden_set_does_not_erase_its_last_result():
