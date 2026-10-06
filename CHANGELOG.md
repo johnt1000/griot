@@ -19,6 +19,22 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- `griot quality-check` and `griot_quality_check` no longer count a sampled
+  point with no text as passed. Such a point now fails the self-check with
+  the reason "no text to search with". Before, a collection whose samples
+  were all blank read as healthy, and `griot stats` showed 100%.
+- Two threads embedding for the first time at the same moment (sync MCP
+  tools run in worker threads) no longer build the local embedding model
+  twice, and two threads logging for the first time no longer attach two log
+  handlers (which wrote every later line to `griot.log` twice). A model
+  build that fails is not cached, so the next call tries again.
+- Writing a setting (`griot auth set`, `griot profiles use`, `griot config
+  set`, `griot config unset`) no longer replaces a symlinked `<config>/.env`
+  with a regular file: griot writes the file the link points to (relative
+  links and chains included) and keeps that file 0600. A link that leads
+  nowhere griot can write (a missing directory, a loop) leaves commands on
+  the defaults, makes a write fail with a one-line error naming where the
+  link leads, and is reported by `griot doctor`.
 - **`griot doctor` no longer fails a new installation.** The `.env` griot
   writes on first use leaves `GRIOT_MCP_INDEX_ROOTS` and `GRIOT_GITEA_HOSTS`
   empty, which their readers take as "none"; the settings check judged them
