@@ -31,6 +31,19 @@ def _no_harness_on_this_machine(monkeypatch):
     monkeypatch.setattr(harnesses, "HARNESSES", [])
 
 
+@pytest.fixture(autouse=True)
+def _pypi_is_not_asked(monkeypatch):
+    """The release check asks PyPI otherwise; the suite never touches the
+    network. As if the machine were offline: the tests about that check
+    put their own answer in its place."""
+    import requests
+
+    def offline():
+        raise requests.ConnectionError("the suite does not ask PyPI")
+
+    monkeypatch.setattr(doctor, "_latest_release", offline)
+
+
 def _cli(tmp_path, *args, file="", exported=None):
     """`griot doctor` in a fresh process, against a configuration of its own
     (under `tmp_path/isolated`: the suite's own fixture keeps this process's
@@ -44,8 +57,10 @@ def _cli(tmp_path, *args, file="", exported=None):
     # No harness on the machine this process sees: asking a real one about
     # its registration starts the registered server for a moment, which
     # writes a log of its own into the data directory under test.
+    # GRIOT_UPDATE_CHECK=false: a doctor in another process would ask PyPI
+    # for real, and the suite never touches the network.
     env.update(GRIOT_CONFIG_DIR=str(tmp_path / "config"), GRIOT_DATA_DIR=str(tmp_path / "data"),
-               HOME=str(tmp_path / "home"), PATH="/usr/bin:/bin", **(exported or {}))
+               HOME=str(tmp_path / "home"), PATH="/usr/bin:/bin", **{"GRIOT_UPDATE_CHECK": "false", **(exported or {})})
     (tmp_path / "home").mkdir(exist_ok=True)
     return subprocess.run([sys.executable, "-m", "griot.cli", "doctor", *args], env=env, capture_output=True, text=True,
                           timeout=180, stdin=subprocess.DEVNULL)
@@ -138,7 +153,7 @@ def test_a_settings_file_open_to_others_is_reported_even_though_griot_closes_it_
     env_file.chmod(0o644)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("GRIOT_", "RAG_", "CLAUDE_"))}
     env.update(GRIOT_CONFIG_DIR=str(tmp_path / "config"), GRIOT_DATA_DIR=str(tmp_path / "data"),
-               HOME=str(tmp_path), PATH="/usr/bin:/bin")
+               HOME=str(tmp_path), PATH="/usr/bin:/bin", GRIOT_UPDATE_CHECK="false")
 
     done = subprocess.run([sys.executable, "-m", "griot.cli", "doctor"], env=env, capture_output=True, text=True, timeout=180)
 
@@ -288,6 +303,29 @@ def test_repositories_behind_their_index_are_a_warning(tmp_path, monkeypatch):
 
     assert check["status"] == "warn" and "one" in check["detail"] and "4 commits" in check["detail"]
     assert "griot index all" in check["fix"]
+
+
+def test_a_repository_the_platform_refused_is_a_warning(tmp_path, monkeypatch):
+    """[debt 17 follow-up] The last platform run indexed the others and
+    could fetch nothing of this one: the doctor names it."""
+    from griot import freshness
+
+    repos = []
+    for name in ("good", "bad\x1b[2J"):
+        repo = tmp_path / name
+        repo.mkdir()
+        repos.append(repo)
+    monkeypatch.setattr(common, "load_repos", lambda: [str(r) for r in repos])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        {"repo": r.name, "path": str(r), "head": "a" * 40, "behind": False, "commits_behind": 0,
+         "behind_sources": [], "missing_sources": [], "platform_refused": r.name != "good",
+         "last_indexed_at": "2026-10-01T00:00:00+00:00", "sources": {}} for r in repos])
+
+    check = _by_name(doctor.run_checks())["repositories"]
+
+    assert check["status"] == "warn" and "refused" in check["detail"]
+    assert "bad?[2J" in check["detail"] and "good" not in check["detail"]
+    assert "griot auth list" in check["fix"]
 
 
 def test_spend_at_the_ceiling_is_a_warning(monkeypatch):
@@ -565,3 +603,343 @@ def test_the_file_griot_writes_on_first_use_passes_the_settings_check():
     common.ensure_env_template()
 
     assert doctor._settings_in_file(common.ENV_PATH) == []
+
+
+# --- a newer release ------------------------------------------------------------------------------
+#
+# Nothing told a user that a release came out, and 0.2.1 fixed a credential
+# problem that only an upgrade delivers. Asking PyPI is a request to the
+# network, so it is made where the person asked for a check (here, and on no
+# other command), it can be turned off, and the upgrade command is printed,
+# never run: how griot was installed is a guess.
+
+
+_REAL_LATEST_RELEASE = doctor._latest_release  # before the autouse fixture replaces it
+
+
+@pytest.fixture
+def pypi(monkeypatch):
+    """PyPI's answer, set by the test: a version, or an exception it raises.
+    Records each time it is asked."""
+    import griot
+
+    state = {"answer": "0.2.1", "asked": 0}
+
+    def latest():
+        state["asked"] += 1
+        if isinstance(state["answer"], BaseException):
+            raise state["answer"]
+        return state["answer"]
+
+    monkeypatch.setattr(doctor, "_latest_release", latest)
+    monkeypatch.setattr(griot, "__version__", "0.2.1")
+    monkeypatch.delenv("GRIOT_UPDATE_CHECK", raising=False)
+    return state
+
+
+def _release():
+    return _by_name(doctor.run_checks())["release"]
+
+
+def test_an_installation_behind_the_newest_release_is_a_warning_naming_both_and_the_upgrade(pypi):
+    pypi["answer"] = "0.3.0"
+
+    check = _release()
+
+    assert check["status"] == "warn" and "0.2.1" in check["detail"] and "0.3.0" in check["detail"]
+    assert "griot-rag" in check["fix"] and "upgrade" in check["fix"]
+    assert pypi["asked"] == 1
+
+
+def test_an_installation_on_the_newest_release_is_fine(pypi):
+    check = _release()
+
+    assert check["status"] == "ok" and "0.2.1" in check["detail"] and check["fix"] is None
+
+
+@pytest.mark.parametrize("installed, newest, status", [
+    ("0.9.0", "0.10.0", "warn"),   # not compared as text: "0.9" > "0.10" there
+    ("0.10.0", "0.9.0", "ok"),
+    ("0.2", "0.2.0", "ok"),        # the same release, written shorter
+    ("0.2.0", "0.2", "ok"),
+    ("0.2.1", "0.2.10", "warn"),
+    ("1.0.0", "0.99.99", "ok"),
+    ("0.2.1", "1.0", "warn"),
+])
+def test_versions_are_compared_as_numbers(monkeypatch, pypi, installed, newest, status):
+    import griot
+
+    monkeypatch.setattr(griot, "__version__", installed)
+    pypi["answer"] = newest
+
+    assert _release()["status"] == status
+
+
+def test_a_version_newer_than_the_newest_release_is_fine_and_said_so(monkeypatch, pypi):
+    import griot
+
+    monkeypatch.setattr(griot, "__version__", "0.3.0")
+
+    check = _release()
+
+    assert check["status"] == "ok" and "newer" in check["detail"] and "0.2.1" in check["detail"]
+
+
+@pytest.mark.parametrize("installed, newest", [("0.3.0.dev1", "0.2.1"), ("0.3.0rc1", "0.2.1"),
+                                              ("0.2.1", "0.3.0b2"), ("0.2.1", ""), ("0.2.1", "v0.3"),
+                                              ("0.2.1", "0..3"), ("0.2.1", "0.3."), ("0.2.1", "\u0661.3")])
+def test_a_version_that_cannot_be_compared_exactly_is_skipped_not_guessed(monkeypatch, pypi, installed, newest):
+    """A pre-release or a development version orders against a release by
+    rules a small parser does not carry; saying "behind" or "up to date"
+    about one would be a guess."""
+    import griot
+
+    monkeypatch.setattr(griot, "__version__", installed)
+    pypi["answer"] = newest
+
+    check = _release()
+
+    assert check["status"] == "skip" and "could not compare" in check["detail"]
+
+
+def test_pypi_that_cannot_be_reached_is_a_skip_never_a_failure(pypi):
+    import requests
+
+    for failure in (requests.ConnectionError("offline"), requests.Timeout("slow"),
+                    requests.HTTPError("503 Server Error"), ValueError("not JSON")):
+        pypi["answer"] = failure
+        check = _release()
+        assert check["status"] == "skip", failure
+        assert "could not ask PyPI" in check["detail"]
+
+
+@pytest.mark.parametrize("failure", [RecursionError("a JSON nested too deep"), UnicodeError("a bad header"),
+                                     RuntimeError("anything the HTTP stack raises that is not its own error")])
+def test_any_failure_to_ask_is_a_skip_never_a_failure(pypi, failure):
+    """The rule is that not hearing from PyPI says nothing about this
+    installation, whatever the exception: listing the ones requests raises
+    left the rest to the doctor's guard, which reports a FAIL."""
+    pypi["answer"] = failure
+
+    check = _release()
+
+    assert check["status"] == "skip" and "could not ask PyPI" in check["detail"]
+    assert doctor.exit_status([check]) == 0
+
+
+class _Response:
+    def __init__(self, status=200, body=None, text=None):
+        self.status_code, self._body, self._text = status, body, text
+
+    def raise_for_status(self):
+        import requests
+
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Error")
+
+    def json(self):
+        import requests
+
+        if self._text is not None:
+            raise requests.JSONDecodeError("Expecting value", self._text, 0)
+        return self._body
+
+
+class _Session:
+    def __init__(self, response):
+        self.response, self.calls = response, []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+
+def _session_answering(monkeypatch, response):
+    """The session common.py keeps, answering `response` to the real
+    _latest_release."""
+    session = _Session(response)
+    monkeypatch.setattr(common, "_http_session", lambda: session)
+    return session
+
+
+def test_the_request_is_one_get_to_pypi_with_a_short_timeout_and_no_redirect(monkeypatch):
+    session = _session_answering(monkeypatch, _Response(body={"info": {"version": "0.4.0"}}))
+
+    assert _REAL_LATEST_RELEASE() == "0.4.0"
+
+    [(url, kwargs)] = session.calls
+    assert url == "https://pypi.org/pypi/griot-rag/json"
+    assert 0 < kwargs["timeout"] <= 5, "a doctor offline must not hang"
+    assert kwargs.get("allow_redirects") is False
+
+
+@pytest.mark.parametrize("response", [
+    _Response(status=404, body={"info": {"version": "0.4.0"}}),
+    _Response(text="<html>"),
+    _Response(body={"info": {}}),
+    _Response(body={"info": {"version": 3}}),
+    _Response(body=["not", "a", "mapping"]),
+    _Response(body={"info": "x"}),
+    _Response(body={"info": None}),
+])
+def test_an_answer_pypi_did_not_mean_is_an_error_the_check_turns_into_a_skip(monkeypatch, pypi, response):
+    import requests
+
+    _session_answering(monkeypatch, response)
+    with pytest.raises((requests.RequestException, ValueError)):
+        _REAL_LATEST_RELEASE()
+
+    monkeypatch.setattr(doctor, "_latest_release", _REAL_LATEST_RELEASE)
+    check = _release()
+    assert check["status"] == "skip" and "could not ask PyPI" in check["detail"]
+
+
+@pytest.mark.parametrize("value", ["false", "no", "off", "0", "FALSE", " false\n"])
+def test_the_check_can_be_turned_off_and_then_pypi_is_not_asked(monkeypatch, pypi, value):
+    monkeypatch.setenv("GRIOT_UPDATE_CHECK", value)
+
+    check = _release()
+
+    assert check["status"] == "skip" and "update-check" in check["detail"]
+    assert pypi["asked"] == 0
+
+
+@pytest.mark.parametrize("value", ["true", "", "yes", "on", "1", " "])
+def test_the_check_is_on_by_default_and_with_an_empty_value(monkeypatch, pypi, value):
+    monkeypatch.setenv("GRIOT_UPDATE_CHECK", value)
+
+    _release()
+
+    assert pypi["asked"] == 1
+
+
+@pytest.mark.parametrize("prefix, expected", [
+    ("/Users/you/.local/pipx/venvs/griot-rag", ["pipx upgrade griot-rag"]),
+    ("/Users/you/.local/share/pipx/venvs/griot-rag", ["pipx upgrade griot-rag"]),
+    ("/Users/you/.local/share/uv/tools/griot-rag", ["uv tool upgrade griot-rag"]),
+    # A folder named after the tool is not the tool's own directory: a
+    # project checked out as `pipx` or `uv` keeps a venv of its own.
+    ("/Users/you/code/pipx/.venv", ["/Users/you/code/pipx/.venv/bin/python -m pip install --upgrade griot-rag"]),
+    ("/Users/you/code/uv/.venv", ["/Users/you/code/uv/.venv/bin/python -m pip install --upgrade griot-rag"]),
+])
+def test_the_upgrade_command_follows_where_griot_runs(prefix, expected):
+    assert doctor._upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == expected
+
+
+def test_in_a_virtual_environment_it_is_that_environment_s_pip():
+    commands = doctor._upgrade_commands("/Users/you/work/venv", "/usr", "/Users/you/work/venv/bin/python")
+
+    assert commands == ["/Users/you/work/venv/bin/python -m pip install --upgrade griot-rag"]
+
+
+def test_a_path_with_a_space_is_quoted_in_the_command():
+    commands = doctor._upgrade_commands("/Users/you/my work/venv", "/usr", "/Users/you/my work/venv/bin/python")
+
+    assert commands == ["'/Users/you/my work/venv/bin/python' -m pip install --upgrade griot-rag"]
+
+
+def test_when_it_cannot_tell_it_lists_the_likely_commands():
+    commands = doctor._upgrade_commands("/usr", "/usr", "/usr/bin/python3")
+
+    assert commands == ["pipx upgrade griot-rag", "uv tool upgrade griot-rag", "python3 -m pip install --upgrade griot-rag"]
+
+
+def test_the_warning_prints_the_command_for_this_installation(monkeypatch, pypi):
+    pypi["answer"] = "9.0.0"
+    monkeypatch.setattr(sys, "prefix", "/Users/you/.local/pipx/venvs/griot-rag")
+
+    assert _release()["fix"] == "pipx upgrade griot-rag"
+
+
+def test_the_warning_lists_the_commands_when_it_cannot_tell(monkeypatch, pypi):
+    pypi["answer"] = "9.0.0"
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+
+    fix = _release()["fix"]
+
+    assert "pipx upgrade griot-rag" in fix and "uv tool upgrade griot-rag" in fix and " or " in fix
+
+
+def test_the_upgrade_is_printed_never_run(monkeypatch, pypi):
+    pypi["answer"] = "9.0.0"
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the upgrade is the person's to run")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(os, "system", refuse)
+
+    assert doctor.check_release(common)["status"] == "warn"
+
+
+def test_the_release_check_is_the_last_and_skipped_when_the_configuration_does_not_load(tmp_path):
+    assert [c["check"] for c in doctor.run_checks()][-1] == "release"
+
+    done = _cli(tmp_path, "--json", file="GRIOT_SPEND_CEILING_USD=lots\n", exported={"GRIOT_UPDATE_CHECK": "true"})
+
+    release = _by_name(json.loads(done.stdout))["release"]
+    assert release["status"] == "skip" and "configuration did not load" in release["detail"]
+
+
+def test_turned_off_it_reads_as_a_skip_through_the_real_command(tmp_path):
+    done = _cli(tmp_path, "--json")
+
+    release = _by_name(json.loads(done.stdout))["release"]
+    assert release["status"] == "skip" and "update-check" in release["detail"]
+
+
+def test_the_setting_is_one_griot_config_knows_and_doctor_accepts(tmp_path):
+    setting = config.find("update-check")
+    assert setting is not None and setting.variable == "GRIOT_UPDATE_CHECK" and setting.kind == "flag"
+    assert config.default_of(setting) == "true"
+
+    env_path = tmp_path / ".env"
+    for good in ("GRIOT_UPDATE_CHECK=false\n", "GRIOT_UPDATE_CHECK=\n", "GRIOT_UPDATE_CHECK=on\n"):
+        env_path.write_text(good)
+        assert doctor._settings_in_file(env_path) == [], good
+    env_path.write_text("GRIOT_UPDATE_CHECK=maybe\n")
+    assert [b["variable"] for b in doctor._settings_in_file(env_path)] == ["GRIOT_UPDATE_CHECK"]
+
+
+def test_the_file_griot_writes_on_first_use_has_the_check_on_and_says_how_to_turn_it_off():
+    common.ENV_PATH.unlink(missing_ok=True)
+    common.ensure_env_template()
+
+    text = common.ENV_PATH.read_text()
+    assert "\nGRIOT_UPDATE_CHECK=true\n" in text and "PyPI" in text
+
+
+# --- no other command asks PyPI -------------------------------------------------------------------
+
+
+def test_only_doctor_knows_the_address_and_only_the_release_check_asks():
+    """Static, so that a command added later is held to it too: the address
+    is in doctor.py alone, and the function that asks is called from the
+    release check alone."""
+    import pathlib
+    import re
+
+    import griot
+
+    package = pathlib.Path(griot.__file__).parent
+    holders = sorted(p.name for p in package.rglob("*.py") if "pypi.org" in p.read_text())
+    assert holders == ["doctor.py"]
+    callers = sorted(p.name for p in package.rglob("*.py") if re.search(r"_latest_release\(", p.read_text()))
+    assert callers == ["doctor.py"]
+    source = (package / "doctor.py").read_text()
+    assert len(re.findall(r"(?<!def )_latest_release\(\)", source)) == 1, "one call, in check_release"
+    assert len(re.findall(r"(?<!def )check_release\(", source)) == 1, "called once, from run_checks"
+
+
+@pytest.mark.parametrize("argv", [["stats"], ["config", "list"], ["repos", "list"], ["profiles", "list"]])
+def test_other_commands_do_not_ask_pypi(monkeypatch, capsys, pypi, argv):
+    from griot import cli
+
+    try:
+        cli.main(argv)
+    except SystemExit:
+        pass
+
+    assert pypi["asked"] == 0

@@ -124,10 +124,22 @@ What CI runs is pinned, and `tests/test_supply_chain.py` holds it so: a
 GitHub Action is referenced by commit (with its version in a comment), and
 everything installed comes from `uv.lock`, the build backend included.
 When you change a dependency in `pyproject.toml`, run `uv lock` and commit
-the lock with it — `--locked` fails the build otherwise. A new command in a
-workflow that fetches or installs anything has to be added to the list in
-that test, which is the moment to check that it installs from the lock.
-Dependabot opens the routine updates.
+the lock with it — `--locked` fails the build otherwise. Write the lock
+with the uv the workflows pin (`version:` of `setup-uv`), running `uvx
+uv@0.11.6 lock` if yours is another version: two versions of uv write the
+same resolution with Python markers in different places, both pass
+`--locked`, and the next `uv lock` on the other one that changes anything
+rewrites dozens of unrelated lines. Dependabot writes the lock with its
+own uv, so its form can come back; to return the lock to the pinned form
+without moving any pin, run `uvx uv@0.11.6 lock --upgrade-package
+griot-rag` (it re-resolves only the project itself) in a commit of its
+own; a plain `uv lock` keeps a lock that already satisfies
+`pyproject.toml` as it is. CI does not check the form on purpose: such a
+check would fail every Dependabot lock update until someone regenerated
+it, for a difference that changes nothing that is installed. A new command
+in a workflow that fetches or installs anything has to be added to the
+list in that test, which is the moment to check that it installs from the
+lock. Dependabot opens the routine updates.
 
 **Manual verification is not hermetic.** If you run the `griot` binary
 directly (not through pytest) to smoke-test a change, export
@@ -145,7 +157,8 @@ you verified it. If it changes behaviour a user can see, add a line to
 
 `main` is protected: a change is expected to reach it through a pull
 request, and it only takes a commit whose CI passed on every job (`tests` on each Python and on macOS, `secret scan`,
-`package builds and installs`), on a branch that is up to date with
+`package builds and installs`) and whose pull request passed `pull request
+credits no assistant` (its title and description), on a branch that is up to date with
 `main`. When `main` moves first, bring it into the branch with a merge
 rather than a rebase and force-push, so a reviewer's view of the branch
 stays valid. Dependabot's pull requests are brought up to date by

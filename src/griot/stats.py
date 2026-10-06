@@ -331,6 +331,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if repositories_without_code:
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
+    refused = platform_refused_names(repositories)
+    if refused:
+        attention.append(platform_refused_phrase(refused)
+                         + " — check the platform's token (`griot auth list`), then `griot index platform`")
     if last_indexed.get("error"):
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say).
@@ -526,6 +530,19 @@ def _behind_phrase(report: dict) -> str:
     return f"{report['repo']} ({'; '.join(parts) or 'behind'})"
 
 
+def platform_refused_names(reports: list[dict]) -> list[str]:
+    """The repositories whose platform refused every fetch in the newest
+    platform run that concerned them (freshness.py), as they may be printed:
+    a directory name can hold an escape sequence."""
+    return [common.printable(r["repo"]) for r in reports if r.get("platform_refused")]
+
+
+def platform_refused_phrase(names: list[str]) -> str:
+    """Shared by `griot stats` and `griot doctor`, so both say it the same way."""
+    return ("the platform refused every fetch for " + ", ".join(names)
+            + " in the last platform run: nothing of " + ("it" if len(names) == 1 else "them") + " was indexed")
+
+
 def format_stats(s: dict, days: int) -> str:
     lines = [
         f"griot — report (last {days} days)",
@@ -685,6 +702,12 @@ def format_stats(s: dict, days: int) -> str:
             lines.append(f"             most used sources: {breakdown}")
     else:
         lines.append("Queries:     none in the period")
+    # A window longer than the retention counts searches and tool calls over
+    # the retention only (prune_logs_if_due): say so, or a 400-day report
+    # reads as a year in which nobody searched before last spring.
+    if days > common.LOG_RETENTION_DAYS:
+        lines.append(f"             searches and tool calls are kept for {common.LOG_RETENTION_DAYS} days "
+                     f"(log-retention-days): older ones are not counted")
 
     tools = s.get("tool_calls") or {}
     if tools:
@@ -820,6 +843,9 @@ def main(argv=None) -> int:
                            quality_checks=load_quality_window(args.days),
                            tool_calls=load_tool_calls(args.days),
                            state=load_state())
+    # Both front ends, so `--json` and griot_stats say over how long the
+    # search and tool-call counts can reach.
+    result["log_retention_days"] = common.LOG_RETENTION_DAYS
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
