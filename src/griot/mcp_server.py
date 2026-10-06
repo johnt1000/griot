@@ -1258,6 +1258,10 @@ class GoldenCheckCase(TypedDict):
 
 class GoldenCheck(TypedDict):
     note: str
+    # True: each case was searched as griot_search returns results (at most
+    # a few chunks per document, copies folded), so `top_results` read like
+    # a griot_search list. Runs recorded before this field searched raw.
+    diverse: bool
     total: int
     passed: int
     failed: int
@@ -2483,6 +2487,7 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
     asked = [case.get("limit", 5) for case in as_written]
     return {
         "note": GOLDEN_SET_NOTE,
+        "diverse": golden_check["diverse"],
         "total": golden_check["total"], "passed": golden_check["passed"], "failed": golden_check["failed"],
         "skipped": golden_check["skipped"], "ran_by_mode": golden_check["ran_by_mode"],
         "cases": [{
@@ -2510,7 +2515,8 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     itself: mechanical, it says the pipeline is intact. The curated golden
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
-    Each case is searched in its own `mode` (the one it was made in) and has
+    Each case is searched in its own `mode` (the one it was made in), as
+    griot_search returns results (`diverse`), and has
     `passed`, what was `missing`, and a `reason` when it could not pass at
     all (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor

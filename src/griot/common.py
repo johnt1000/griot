@@ -4511,8 +4511,9 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     model): see _diversified. It returns SearchHit objects: `limit` of them
     unless the store runs out, or the best matches are so few documents that
     even the widest window (SEARCH_MAX_EXTRA_WINDOWS) cannot fill the list.
-    Off by default because the quality check and the golden set measure
-    retrieval itself and need every point, in the store's order.
+    Off by default because the self-check measures retrieval itself and
+    needs every point, in the store's order. The golden set turns it on: its
+    cases assert what a reader gets (quality_check.GOLDEN_SET_DIVERSE).
 
     mode is one of SEARCH_MODES. "keyword" embeds nothing (no paid call on
     any profile) and returns only points that hold a word of the query;
