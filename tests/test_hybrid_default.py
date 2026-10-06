@@ -226,3 +226,63 @@ def test_the_retrieval_evaluation_searches_by_vector_explicitly(index, searches)
     retrieval_eval.evaluate_qrels([{"query": "acquire_lock", "repo": "alpha", "commit_hash": "x",
                                     "relevant_file_paths": ["src/lock.py"]}], k_values=[3])
     assert searches and set(searches) == {"vector"}
+
+
+# --- the fallback note: once per MCP server process, with every CLI command ----------------------
+
+
+@pytest.mark.anyio
+async def test_the_tool_gives_the_fallback_note_on_the_first_default_search_only(legacy_index):
+    """An agent reads every result of a session: the full `griot index
+    keywords` note on each default search is noise after the first. Later
+    searches still say which mode ran, and nothing replaces the note."""
+    async with Client(mcp_server.mcp) as client:
+        first = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+        second = await client.call_tool("griot_search", {"query": "release_lock", "limit": 3})
+    assert first.is_error is False and second.is_error is False
+    assert first.structured_content["note"].count("griot index keywords") == 1
+    assert "griot index keywords" not in second.structured_content["note"]
+    assert second.structured_content["note"] == mcp_server.SEARCH_RESULT_NOTE
+    assert first.structured_content["mode"] == second.structured_content["mode"] == "vector"
+
+
+@pytest.mark.anyio
+async def test_a_refused_default_search_does_not_use_up_the_fallback_note(legacy_index):
+    """The note counts as given when a result carried it: a first search
+    refused (here, an unknown repository) returned no note to anyone."""
+    async with Client(mcp_server.mcp) as client:
+        refused = await client.call_tool("griot_search", {"query": "acquire_lock", "repos": ["nowhere"]})
+        answered = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+    assert refused.is_error is True
+    assert answered.structured_content["note"].count("griot index keywords") == 1
+
+
+@pytest.mark.anyio
+async def test_the_fallback_note_given_for_another_collection_does_not_silence_this_one(legacy_index, monkeypatch):
+    """The note is about a collection: one given for another profile's
+    collection told nobody about this one."""
+    monkeypatch.setattr(mcp_server, "_KEYWORD_NOTE_GIVEN_FOR", {"another-collection"})
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+    assert result.structured_content["note"].count("griot index keywords") == 1
+
+
+@pytest.mark.anyio
+async def test_an_explicit_vector_search_does_not_use_up_the_fallback_note(legacy_index):
+    """An explicit `vector` ran what it asked for and carries no note, so the
+    first DEFAULT search after it still has to say why hybrid did not run."""
+    async with Client(mcp_server.mcp) as client:
+        await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3, "mode": "vector"})
+        default = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+    assert default.structured_content["note"].count("griot index keywords") == 1
+
+
+def test_the_cli_gives_the_fallback_note_with_every_command(legacy_index, capsys):
+    """One process per command, read by a person: each default search that
+    fell back says why and what to run, even when one process runs several
+    (as this test does)."""
+    for _ in range(2):
+        assert cli.main(["search", "acquire_lock", "--limit", "3"]) == 0
+        captured = capsys.readouterr()
+        assert "Mode: vector" in captured.out
+        assert (captured.out + captured.err).count("griot index keywords") == 1

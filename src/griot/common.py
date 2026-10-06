@@ -4439,9 +4439,14 @@ def _keyword_query(query: str) -> "qe.SparseVector":
 # it explicitly anyway.
 SEARCH_DEFAULT_MODE = "hybrid"
 
-# Said once with a default search that ran by meaning only because the
-# collection has no keyword vectors, so that the person or agent learns the
-# default is not what ran, and the one command that changes it.
+# Said with a default search that ran by meaning only because the collection
+# has no keyword vectors, so that the person or agent learns the default is
+# not what ran, and the one command that changes it. Once per result where it
+# is said; how often it is said is up to each surface: the CLI (`griot
+# search`, `griot ask`) says it with every command, one process each, while
+# the MCP server says it on the first default search of the process for each
+# collection and afterwards only reports `mode: vector`
+# (mcp_server._KEYWORD_NOTE_GIVEN_FOR).
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
     "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")

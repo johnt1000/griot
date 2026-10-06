@@ -121,7 +121,8 @@ as vector (0.67 / 0.64 / 0.76) and commit hashes far better (0.01 / 1.00 /
 0.80), while on function and class names it ranked a little below vector
 (0.72 / 0.61 / 0.68, with a higher recall@10). Where it cannot run, the
 default runs vector instead of failing: on a collection without keyword
-vectors (and then it says so, naming `griot index keywords`), or for a query
+vectors (and then it says so, naming `griot index keywords`: with every CLI
+command, and on the first default search of an MCP server process), or for a query
 with no word keyword search can match. Every result says which mode ran. The
 quality check, the golden set and the retrieval evaluation measure vector
 search explicitly, whatever the default. A keyword search embeds nothing, so it costs nothing on
