@@ -131,49 +131,77 @@ Resolved: one helper words it everywhere, with direnv advice for a direnv file (
 Resolved: the read-only row lists every read-only tool and is checked both ways; `griot_index_repo`'s confirmation is proven by behaviour (#58).
 
 
-### 30. The release build caches what it downloads
+### 30. ~~The release build caches what it downloads~~ — resolved
 
-`release.yml`'s build job sets up uv with `enable-cache: true`. A cache
-restored from another run can be poisoned, and the release build is the one
-place where that matters most (zizmor rates it high). zizmor also notes three
-low findings there: an `id-token` permission without a comment, job-level
-concurrency, and how the job names the repository's own workflow.
+Resolved: the build sets up uv without a cache, and every zizmor finding in release.yml is fixed or justified (#70). Two newer GitHub features (`cache-mode`, the `$/` form) were left out on purpose: no run had proven them.
 
-### 31. `tools_safe_to_preapprove` lists tools through a private SDK attribute
+### 31. ~~`tools_safe_to_preapprove` lists tools through a private SDK attribute~~ — resolved
 
-It uses `mcp._tool_manager.list_tools()`: the public `list_tools()` is
-async, and this function is called both from the CLI and from inside the
-async `griot_assist_install`.
+Resolved: it reads the server's public tool list (#66). Its test still used the private one as a reference: debt 38.
 
-### 32. Below Python 3.13 the server sends tool descriptions indented
+### 32. ~~Below Python 3.13 the server sends tool descriptions indented~~ — resolved
 
-Before 3.13 a docstring keeps its indentation, and the server sends it as it
-is: about 90 characters of spaces per `griot_search` listing, and the same
-for every other tool, prompt and resource. Registering each with its
-`inspect.cleandoc()` text would send the same thing on every Python.
+Resolved: descriptions are cleaned at registration and the same on every Python (#67). What they contain is debt 37.
 
-### 33. A platform run refused entirely is reported twice
+### 33. ~~A platform run refused entirely is reported twice~~ — resolved
 
-While that run is the newest of all, `griot doctor` and `griot stats` say
-both that the last indexing run failed and which repository was refused.
+Resolved: once, by the line naming its repositories (#68).
 
-### 34. `griot index keywords` does not say that it resumed
+### 34. ~~`griot index keywords` does not say that it resumed~~ — resolved
 
-After a resume it reports the points written in this run ("1 points
-copied"), which is accurate but does not say the copy continued an earlier
-one.
+Resolved: it says so and how much was already copied (#69).
 
-### 35. Two pieces of code the mutations proved unreachable
+### 35. ~~Two pieces of code the mutations proved unreachable~~ — resolved
 
-The environment check in `progress_begin` and the explicit
-`_secure_collection_dir` in `build_keyword_index`'s `finally` change nothing
-(equivalent mutants, #44): each is covered by another check. Kept on
-purpose by the team that found them; removing them is a small cleanup.
+Resolved: removed, with the equivalent re-checks beside them (#65).
 
-### 36. The resources heading of `griot stats` is out of line
+### 36. ~~The resources heading of `griot stats` is out of line~~ — resolved
 
-"MCP resources: " is wider than the 13-column label every other heading
-uses, so its value starts two columns to the right.
+Resolved: every heading's value starts at the same column (#64).
+
+### 37. MCP prompt descriptions carry notes meant for maintainers
+
+Each prompt's description is its whole docstring, so engineering notes such
+as "[user-requested] A PROMPT, not a tool..." reach every client. Tools and
+resources may hold the same kind of note.
+
+### 38. The pre-approval test still reads a private SDK attribute
+
+The production code reads the public tool list (#66), but its test keeps
+the old private-manager logic as a reference, so an SDK that drops it would
+break the test with production fine.
+
+### 39. `griot update` reaches into `griot doctor`'s private helpers
+
+update.py calls `_latest_release`, `_release_numbers` and
+`_upgrade_commands` of doctor.py: deliberate reuse, across a module
+boundary that names them private.
+
+### 40. The note that keyword search is not built repeats on every search
+
+On a collection without keyword vectors, every default search falls back to
+vector and repeats the full `griot index keywords` note, in the MCP result
+and the CLI output; the code comment says "once".
+
+### 41. The measurement that made hybrid the default cannot be re-run
+
+The script and the queries that gated #72 (MRR@10 and recall@10 per mode and
+kind of query) are not in the repository, so the gate cannot be run again
+when the profile or the fusion changes.
+
+### 42. The documentation still says keyword is better for identifiers
+
+README and the help say keyword search is for "an identifier, an error code
+or a commit hash". #72 measured keyword worse than vector at finding the
+defining file of a name (0.61 against 0.72 MRR@10), and far better on commit
+hashes (1.00 against 0.01).
+
+### 43. Readers' searches are diversified, the golden set's are not
+
+A reader's search keeps at most three chunks per document and folds copies;
+the quality check's golden set does not. A case made from a reader's list
+(`griot golden-set review`) can pass or fail there only because another
+document's chunks moved it.
 
 ---
 
