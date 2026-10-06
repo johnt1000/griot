@@ -214,6 +214,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
+| `GRIOT_LOG_RETENTION_DAYS` | days of searches and MCP tool calls kept in `logs/logs.db` (default 365); older ones are deleted, at most once a day, by the next search or tool call. Indexing runs and quality checks are kept |
 | `GRIOT_PROJECT` | name recorded with each `griot ask`, `griot_search` and MCP tool call so `griot stats` can show usage by project (default: the folder `CLAUDE_PROJECT_DIR` names, else the folder `griot` runs in; set it in the `env` of that project's MCP server entry, not in `.env`) |
 | `GRIOT_MCP_ENABLE_INDEX` | `true` enables the MCP indexing tool |
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |

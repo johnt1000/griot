@@ -258,6 +258,7 @@ _ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
+    ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs and quality checks are kept)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
     ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
@@ -657,6 +658,45 @@ def log_query(**fields) -> None:
     }
     secure_mkdir(LOG_DIR)
     logdb.write_query(LOG_DIR, record)
+    prune_logs_if_due()
+
+
+# At most one prune per process per day: the prune is cheap (an indexed
+# DELETE), but every search and tool call writes, and a long-lived MCP
+# server must still prune more than once in its life.
+_LOG_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+_last_log_prune: float | None = None
+_log_prune_lock = threading.Lock()
+
+
+def prune_logs_if_due() -> None:
+    """Applies LOG_RETENTION_DAYS to logs.db, when this process has not done
+    so in the last day. Called after a write of the tables it prunes, never
+    from a read: looking at a report must not change what it reads.
+
+    Never raises. A prune that fails is logged and the write that called it
+    stands; it is not retried before the interval either, so a broken file
+    is not hit again on every search."""
+    global _last_log_prune
+    if not _log_prune_lock.acquire(blocking=False):
+        return  # another thread of this process is pruning right now
+    try:
+        now = time.monotonic()
+        if _last_log_prune is not None and now - _last_log_prune < _LOG_PRUNE_INTERVAL_SECONDS:
+            return
+        _last_log_prune = now
+        removed = logdb.prune_older_than(LOG_DIR, LOG_RETENTION_DAYS)
+        searches, calls = removed.get("queries", 0), removed.get("tool_calls", 0)
+        if searches or calls:
+            log_and_print(f"Log retention: removed {searches} search(es) and {calls} tool call(s) older than "
+                          f"{LOG_RETENTION_DAYS} days from logs.db", echo=False)
+    except Exception as e:  # noqa: BLE001 — housekeeping must not fail the command that logged
+        try:
+            log_and_print(f"Warning: could not prune logs.db: {e}", level="warning", echo=False)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _log_prune_lock.release()
 
 
 def _check_env_file_permissions(env_path: Path) -> None:
@@ -1014,14 +1054,17 @@ def _amount_env(name: str, default: str | None) -> float | None:
     return value
 
 
-def _count_env(name: str, default: str) -> int:
+def _count_env(name: str, default: str, minimum: int | None = None) -> int:
     """A whole number from the environment, reported like the amounts are:
     one line that names the variable."""
     raw = os.getenv(name, default)
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix()}") from None
+    if minimum is not None and value < minimum:
+        raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix()}")
+    return value
 
 
 CHAT_PRICE_PER_1M_TOKENS = _amount_env("GRIOT_CHAT_PRICE_PER_1M_TOKENS", "2.50")
@@ -1160,7 +1203,8 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
 # raises. Callers (auth.py) fall back to the existing file-based storage
-# whenever these return None/False.
+# whenever these return None/False (a delete returns one of the KEYCHAIN_*
+# results below instead, so "nothing was there" and "could not ask" differ).
 _KEYCHAIN_SERVICE = "griot"
 
 
@@ -1181,13 +1225,42 @@ def _keychain_set(env_var: str, value: str) -> bool:
         return False
 
 
-def _keychain_delete(env_var: str) -> bool:
+# What _keychain_delete() found. "not installed" is apart from "unreachable"
+# because without the `keyring` package griot never stored anything in a
+# keychain, so there is nothing to warn about; an installed package whose
+# backend fails may be hiding a stored credential that is still there.
+KEYCHAIN_DELETED = "deleted"
+KEYCHAIN_NOTHING_STORED = "nothing stored"
+KEYCHAIN_UNREACHABLE = "unreachable"
+KEYCHAIN_NOT_INSTALLED = "not installed"
+
+
+def _keychain_delete(env_var: str) -> str:
+    """One of the KEYCHAIN_* results above; never raises.
+
+    Existence is asked with get_password() first instead of read off the
+    exception delete_password() raises: keyring's own backends raise
+    PasswordDeleteError for "nothing to delete" (Secret Service, KWallet,
+    Windows, macOS item-not-found) but ALSO for real failures (macOS wraps
+    an access denial in it, KWallet a cancelled unlock), and libsecret
+    returns quietly when there was nothing. get_password() answers None for
+    a missing item on every backend and raises when the backend cannot be
+    asked, so after it any exception is a failure."""
     try:
         import keyring
-        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
-        return True
+    except ImportError:
+        return KEYCHAIN_NOT_INSTALLED
     except Exception:
-        return False
+        # Installed but broken while loading: a key stored through it
+        # earlier may still be there, so this is not "not installed".
+        return KEYCHAIN_UNREACHABLE
+    try:
+        if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
+            return KEYCHAIN_NOTHING_STORED
+        keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
+        return KEYCHAIN_DELETED
+    except Exception:
+        return KEYCHAIN_UNREACHABLE
 
 
 # The files a shell reads at start where a variable is usually exported. Read
@@ -1419,6 +1492,16 @@ SPEND_VELOCITY_CEILING_USD = _amount_env("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.
 # (external API down, invalid credential, etc.) — better to stop early and
 # loudly than to spend hours producing only empty batches.
 MAX_CONSECUTIVE_FAILED_BATCHES = _count_env("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5")
+
+# How many days of searches and MCP tool calls logs.db keeps (see
+# prune_logs_if_due()). Generous on purpose: deleting history someone reads
+# is worse than a file that grows slowly. `griot stats --days` (30 by
+# default) and griot_stats take any window; the MCP usage logs are what
+# show how agents use griot over weeks; and the idea of curating golden-set
+# cases from real queries (ROADMAP) wants months of them. A year of daily
+# use is a few thousand rows. At least 1: under a day a prune would delete
+# what was just written.
+LOG_RETENTION_DAYS = _count_env("GRIOT_LOG_RETENTION_DAYS", "365", minimum=1)
 
 # Single-process lock — besides Qdrant's native lock (which only blocks
 # access to the same collection), this one fails fast with a clear message

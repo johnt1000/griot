@@ -280,9 +280,9 @@ def test_set_provider_key_rejects_empty_key():
 
 
 def test_remove_provider_key_deletes_and_returns_whether_it_existed():
-    assert auth.remove_provider_key("openai") is False  # nothing to remove
+    assert auth.remove_provider_key("openai").removed is False  # nothing to remove
     auth.set_provider_key("openai", "sk-fake-0000")
-    assert auth.remove_provider_key("openai") is True
+    assert auth.remove_provider_key("openai").removed is True
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
 
 

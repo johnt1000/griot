@@ -129,15 +129,30 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     repository to compare with), else whether any source is behind;
     `behind_sources` names them; `commits_behind` is the worst count among
     the sources that follow HEAD, None when one of them cannot be counted
-    (history rewritten); `missing_sources` are those that never ran."""
+    (history rewritten); `missing_sources` are those that never ran;
+    `platform_refused` is True when the newest platform run that concerned
+    the repository could fetch nothing of it (the platform refused every
+    fetch while it answered for other repositories)."""
     reports = []
     for repository in repositories:
         name, path, now = repository["name"], repository["path"], repository["head"]
         refs_now = repository.get("refs") or {}
         sources: dict[str, dict] = {}
         last_indexed_at = None
+        platform_refused = None
         for run in runs:
             heads = run.get("heads")
+            if platform_refused is None and not run.get("error") and run.get("script") == "index_platform.py":
+                # The newest platform run that concerned this repository
+                # decides: one that refused it lists it under refused_repos
+                # (index_platform.py) and has no head for it; one that
+                # indexed it has its head. A run that died fetched nothing,
+                # so it says neither.
+                refused = run.get("refused_repos")
+                if isinstance(refused, list) and name in refused:
+                    platform_refused = True
+                elif isinstance(heads, dict) and name in heads:
+                    platform_refused = False
             if run.get("error") or not isinstance(heads, dict) or name not in heads:
                 continue
             last_indexed_at = last_indexed_at or run.get("timestamp")
@@ -165,6 +180,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                         "behind": behind, "commits_behind": commits_behind, "behind_sources": behind_sources,
                         # Nothing could have run for a path that is not a repository.
                         "missing_sources": [source for source in SOURCES if source not in sources] if now is not None else [],
+                        "platform_refused": bool(platform_refused),
                         "sources": sources})
     return reports
 
