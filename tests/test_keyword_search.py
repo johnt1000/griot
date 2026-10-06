@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 
 import pytest
 import qdrant_edge as qe
@@ -226,6 +227,27 @@ def test_a_credential_in_a_stored_detail_is_not_made_findable_by_its_value(fake_
     common.index_documents([_doc("alpha", "branch", "b", "Branch: wip", branch_name=f"wip-{token}")])
     common.release_lock()
     assert common.search("wip", mode="keyword"), "the branch itself is indexed"
+    assert common.search(token, mode="keyword") == []
+
+
+def test_a_credential_stored_raw_by_an_older_version_is_not_made_findable_by_its_value(fake_embeddings):
+    """An older griot stored some text raw, and it stays so until its
+    repository is indexed again: the keyword vector is made from the text as
+    it may leave griot (stored_text), not from the payload as stored. Today's
+    index_documents() replaces it before storing, so the point is written to
+    the store directly, as that older griot left it."""
+    token = "".join(("ghp_", "Z9y8X7w6V5u4T3s2R1q0", "P9o8N7m6L5k4J3i2"))
+    _legacy_collection()
+    shard = qe.EdgeShard.load(str(_active_path()))
+    shard.update(qe.UpdateOperation.upsert_points([qe.Point(
+        id=common.stable_id("alpha:code:old.py:0"),
+        vector={"dense": _vector("old", common.EMBED_DIM)},
+        payload={"source_type": "code", "repo": "alpha", "file_path": "src/old.py", "chunk_index": 0,
+                 "content": f"connect with {token} here"})]))
+    shard.flush()
+    shard.close()
+    common.build_keyword_index()
+    assert common.search("connect", mode="keyword"), "the chunk itself is indexed"
     assert common.search(token, mode="keyword") == []
 
 
@@ -488,6 +510,46 @@ def test_a_swap_interrupted_after_the_new_copy_is_in_place_is_finished(legacy_in
     assert sorted(os.listdir(common.QDRANT_PATH)) == [common.COLLECTION_NAME]
 
 
+def test_a_collection_in_place_beside_an_old_whole_copy_is_opened_as_it_is(legacy_index):
+    """A build that died after its second rename and before deleting the old
+    copy leaves a whole collection on each side. The one in place is the new
+    one: opening it must neither fail on it nor put the old one back over it
+    (the next build deletes the old copy)."""
+    common.release_client()
+    common.build_keyword_index()
+    common.release_client()
+    path = _active_path()
+    _, previous = common._keyword_rebuild_paths(path)
+    shutil.copytree(path, previous)
+
+    assert len(common.search("acquire_lock", limit=10)) == len(DOCS)
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
+def test_a_swap_whose_second_rename_fails_puts_the_collection_back_at_once(legacy_index, monkeypatch):
+    """Undone there and then, not left for the next open to find: until the
+    next open the collection's place would be empty, and anything that looks
+    at the directory (status, doctor, a backup) would see nothing indexed."""
+    common.release_client()
+    path = _active_path()
+    real_rename = os.rename
+    calls = []
+
+    def rename(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 2:
+            raise OSError("cross-device link")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(common.os, "rename", rename)
+    with pytest.raises(RuntimeError, match="left as it was"):
+        common.build_keyword_index()
+    monkeypatch.setattr(common.os, "rename", real_rename)
+    assert (path / common._EDGE_CONFIG_MARKER).exists()
+    assert not common._keyword_rebuild_paths(path)[1].exists()
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False
+
+
 def test_the_rebuilt_collection_is_closed_to_other_users(legacy_index):
     common.release_client()
     common.build_keyword_index()
@@ -566,11 +628,30 @@ def test_ask_takes_a_mode(index, monkeypatch, capsys):
     assert logdb.read_latest(common.LOG_DIR, "queries")["mode"] == "keyword"
 
 
+def test_ask_explains_a_legacy_collection_and_pays_for_nothing(legacy_index, monkeypatch, capsys):
+    from griot import ask
+    prompts = []
+    monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: prompts.append(prompt) or "answer")
+    assert ask.main(["acquire_lock", "--mode", "keyword"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and "griot index keywords" in err
+    assert prompts == []
+
+
 def test_index_status_says_whether_keyword_search_is_built(legacy_index):
     assert common.get_index_status()["keyword_search"] is False
     common.release_client()
     common.build_keyword_index()
     assert common.get_index_status()["keyword_search"] is True
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]"])
+def test_index_status_of_a_collection_whose_config_cannot_be_read_cannot_say(index, content):
+    """A status read answers whatever the config file holds: unreadable is
+    "cannot say" (None), never an exception that takes the status down."""
+    common.release_client()
+    (_active_path() / common._EDGE_CONFIG_MARKER).write_text(content)
+    assert common._keyword_search_status(common.COLLECTION_NAME) is None
 
 
 def test_index_status_of_a_collection_that_does_not_exist():

@@ -565,6 +565,44 @@ def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: flo
 # prunes itself on every write (write_spend).
 _PRUNED_BY_AGE = ("queries", "tool_calls")
 
+# Which rows a prune takes, written once: count_older_than() states this
+# number to a person before they shorten the window, and a count that drifted
+# from the delete would be a promise the next search breaks. {table} is one
+# of _PRUNED_BY_AGE, never user-controlled; the one parameter is the cutoff.
+_OLDER_THAN = "WHERE timestamp < ? AND id < (SELECT MAX(id) FROM {table})"
+
+
+def _cutoff(days: int, now: datetime | None) -> str:
+    if days < 1:
+        raise ValueError(f"a retention under one day would delete what was just written (got {days})")
+    return ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
+
+
+def count_older_than(log_dir: Path, days: int, now: datetime | None = None) -> dict[str, int]:
+    """How many rows of each _PRUNED_BY_AGE table prune_older_than() would
+    delete with the same `days` and `now`, without deleting them.
+
+    Read-only, opened so: it answers a question asked BEFORE anything is
+    decided (`griot config set log-retention-days`), so it must not create
+    the database, migrate legacy files into it or touch it in any way. A
+    database that predates a table counts nothing for it."""
+    cutoff = _cutoff(days, now)
+    counted = {table: 0 for table in _PRUNED_BY_AGE}
+    db_path = log_dir / DB_FILENAME
+    if not db_path.is_file():
+        return counted
+    conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        for table in _PRUNED_BY_AGE:  # a fixed allowlist, never user-controlled
+            if table in present:
+                counted[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} {_OLDER_THAN.format(table=table)}", (cutoff,)
+                ).fetchone()[0]
+    finally:
+        conn.close()
+    return counted
+
 
 def prune_older_than(log_dir: Path, days: int, now: datetime | None = None) -> dict[str, int]:
     """Deletes the rows of _PRUNED_BY_AGE written more than `days` days
@@ -578,11 +616,9 @@ def prune_older_than(log_dir: Path, days: int, now: datetime | None = None) -> d
     processes write to the same file meanwhile; they wait on SQLite's lock
     (the busy timeout in _connect()) and nothing they write is older than
     the cutoff."""
-    if days < 1:
-        raise ValueError(f"a retention under one day would delete what was just written (got {days})")
+    cutoff = _cutoff(days, now)
     if _nothing_logged_yet(log_dir):
         return {table: 0 for table in _PRUNED_BY_AGE}
-    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
     conn = _connect(log_dir)
     try:
         # Zeroes what is deleted: a question deleted from the table would
@@ -593,8 +629,7 @@ def prune_older_than(log_dir: Path, days: int, now: datetime | None = None) -> d
         with conn:
             for table in _PRUNED_BY_AGE:  # a fixed allowlist, never user-controlled
                 removed[table] = conn.execute(
-                    f"DELETE FROM {table} WHERE timestamp < ? AND id < (SELECT MAX(id) FROM {table})",
-                    (cutoff,),
+                    f"DELETE FROM {table} {_OLDER_THAN.format(table=table)}", (cutoff,),
                 ).rowcount
     finally:
         conn.close()
