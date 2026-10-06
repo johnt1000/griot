@@ -10,7 +10,7 @@ The tools and prompts are not listed here: a list in prose went stale three
 times. `list_tools()` and `list_prompts()` on the server are the authority.
 Tools that change state sit behind _confirmed(). griot_index_repo is
 registered only if GRIOT_MCP_ENABLE_INDEX is set (conditional registration
-around @mcp.tool(), empirically confirmed this works this way, see the design
+around @_tool(), empirically confirmed this works this way, see the design
 notes). Prompts are registered under short names, without a `griot_` prefix:
 clients compose the server segment themselves, so the prefix would say it
 twice.
@@ -59,6 +59,7 @@ import shlex
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -131,6 +132,27 @@ Subagents often do not look for griot on their own: when you hand research to on
 
 mcp = MCPServer("griot", instructions=SERVER_INSTRUCTIONS)
 
+
+# The SDK sends a function's __doc__ as its description untouched, and before
+# Python 3.13 the compiler keeps a docstring's indentation: every line after
+# the first went out with the function body's spaces in front (some ninety per
+# griot_search listing, read by every agent that loads it). Registering the
+# cleaned text ourselves makes the server send the same words on every Python.
+# The resources pass their description explicitly and need none of this.
+def _tool(**kwargs):
+    """@mcp.tool(...), with the docstring cleaned as the description."""
+    def register(fn):
+        return mcp.tool(description=inspect.cleandoc(fn.__doc__ or ""), **kwargs)(fn)
+    return register
+
+
+def _prompt(**kwargs):
+    """@mcp.prompt(...), with the docstring cleaned as the description."""
+    def register(fn):
+        return mcp.prompt(description=inspect.cleandoc(fn.__doc__ or ""), **kwargs)(fn)
+    return register
+
+
 # Marked read-only, and still not something to run without a person: it
 # embeds one query per sampled point (billed on a paid profile, up to the
 # sample ceiling) and records a trend point. A search costs one embedding.
@@ -152,9 +174,19 @@ def tools_safe_to_preapprove() -> list[str]:
     server itself marks read-only, minus the exceptions above. Asked of the
     registered tools, not kept as a list, so that a new tool is in or out by
     its own annotation. `griot assist install` offers these and only these;
-    tests/test_tool_approval.py holds the result to what a real client sees."""
+    tests/test_tool_approval.py holds the result to what a real client sees.
+
+    Read through the server's public list_tools(), not the SDK's private
+    tool manager, whose shape may change in any release. That call is async
+    and the callers are not: the CLI and doctor are sync, while a tool of this
+    server calls in from inside the running event loop, where a nested
+    anyio.run() is refused. A fresh worker thread has no loop of its own, so
+    the same call works from both; list_tools() awaits nothing, so blocking
+    the caller's loop for it costs no more than the private read did."""
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        tools = worker.submit(anyio.run, mcp.list_tools).result()
     names = []
-    for tool in mcp._tool_manager.list_tools():
+    for tool in tools:
         read_only = getattr(tool.annotations, "read_only_hint", None) is True
         human_only = (tool.meta or {}).get("anthropic/requiresUserInteraction")
         if read_only and not human_only and tool.name not in _READ_ONLY_BUT_ASKED:
@@ -1213,7 +1245,7 @@ def _search_result(hit) -> SearchResult:
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_document: bool = False,
                  repos: list[str] | None = None, source_types: list[str] | None = None,
@@ -1286,7 +1318,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_spend_status() -> SpendStatusOutput:
     """Estimated spend today from the local circuit breaker, plus the
@@ -1302,7 +1334,7 @@ def griot_spend_status() -> SpendStatusOutput:
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_repos_list() -> ReposListOutput:
     """The repositories registered for indexing (repos.json) — which ones
@@ -1378,7 +1410,7 @@ AUDIT_PLACES_SHOWN = 200
 AUDIT_WHERE_MAX = 300
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_audit(repos: list[str] | None = None) -> AuditOutput:
     """Where the index of the active profile holds credential-looking
@@ -1461,7 +1493,7 @@ def _setting_shown(value: str | None) -> str | None:
     return common.shown(_URL_USERINFO.sub(r"\1[REDACTED]@", value))
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_config_list() -> ConfigListOutput:
     """The settings THIS server is running with, and where each comes from.
@@ -1502,7 +1534,7 @@ def griot_config_list() -> ConfigListOutput:
             "restart_needed": any(entry["restart_needed"] for entry in settings), "note": _CONFIG_LIST_NOTE}
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_profiles_list() -> ProfilesListOutput:
     """The embedding profiles griot knows, which one is active, and whether
@@ -1548,7 +1580,7 @@ def _ask_repos_add(ctx: Context, path: str, confirm: bool = False):
     return _resolve_ask(ctx, _repos_add_question(path), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
           meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
@@ -1597,7 +1629,7 @@ def _ask_repos_remove(ctx: Context, path: str, confirm: bool = False):
     return _resolve_ask(ctx, _repos_remove_question(path), confirm=confirm, human_required=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
 @_records_call
 async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = None,
                              answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_repos_remove)] = None,
@@ -1628,7 +1660,7 @@ def _ask_profiles_delete(ctx: Context, profile: str, confirm: bool = False):
     return _resolve_ask(ctx, _profiles_delete_question(profile), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
           meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Context = None,
@@ -1669,7 +1701,7 @@ async def griot_profiles_delete(profile: str, confirm: bool = False, ctx: Contex
     return {"changed": True, "message": message}
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_golden_set_list() -> GoldenSetListOutput:
     """The curated cases that define what "this index is working" means:
@@ -1718,7 +1750,7 @@ def _commit_message_shown(message: str) -> str:
     return shown if any(ch.isalnum() for ch in shown) else ""
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_golden_set_suggest(path: str, limit: int = 10,
                              max_commits: int = GOLDEN_SET_SUGGEST_DEFAULT_COMMITS) -> GoldenSetSuggestOutput:
@@ -1818,7 +1850,7 @@ def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, confirm: bool 
     return _resolve_ask(ctx, _golden_set_add_question(query), confirm=confirm, human_required=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 @_records_call
 async def griot_golden_set_add(query: str, must_include: list[dict], limit: int = 5,
                                confirm: bool = False, ctx: Context = None,
@@ -1868,7 +1900,7 @@ def _ask_golden_set_remove(ctx: Context, index: int, confirm: bool = False):
     return _resolve_ask(ctx, _golden_set_remove_question(index), confirm=confirm, human_required=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False))
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False))
 @_records_call
 async def griot_golden_set_remove(index: int, confirm: bool = False,
                                   ctx: Context = None,
@@ -1893,7 +1925,7 @@ async def griot_golden_set_remove(index: int, confirm: bool = False,
     return {"changed": True, "message": f"Removed {case.get('query')!r}"}
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_auth_guidance() -> AuthGuidanceOutput:
     """Which credentials are configured, and how to set them — from a
@@ -1925,7 +1957,7 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_stats(days: int = stats.DEFAULT_DAYS, all_profiles: bool = False) -> StatsOutput:
     """The full usage report `griot stats` prints, as structured data:
@@ -1977,7 +2009,7 @@ def _stats(days: int, all_profiles: bool = False) -> StatsOutput:
     return result
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_index_status(collection: str | None = None) -> IndexStatusOutput:
     """"Does this collection have data? when was it last indexed? is an
@@ -2090,7 +2122,7 @@ def griot_index_status_resource() -> IndexStatusOutput:
     return _index_status(None)
 
 
-@mcp.prompt(name="stats", title="griot usage report")
+@_prompt(name="stats", title="griot usage report")
 def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
     """Summarize griot's index health and usage.
 
@@ -2129,7 +2161,7 @@ def griot_stats_report(days: int = stats.DEFAULT_DAYS) -> str:
     )
 
 
-@mcp.prompt(name="history", title="why is this the way it is")
+@_prompt(name="history", title="why is this the way it is")
 def griot_history_report(question: str) -> str:
     """Investigate a question against the full indexed history, not just code.
 
@@ -2180,7 +2212,7 @@ def griot_history_report(question: str) -> str:
     )
 
 
-@mcp.prompt(name="health", title="is this index worth trusting")
+@_prompt(name="health", title="is this index worth trusting")
 def griot_health_report() -> str:
     """Check whether the index is answering, and say what kind of failure it is.
 
@@ -2244,7 +2276,7 @@ def griot_health_report() -> str:
     )
 
 
-@mcp.prompt(name="overview", title="what griot knows here")
+@_prompt(name="overview", title="what griot knows here")
 def griot_overview_report() -> str:
     """Summarize what is indexed, for someone arriving cold.
 
@@ -2328,7 +2360,7 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
                         golden_set: bool = True) -> QualityCheckOutput:
@@ -2381,7 +2413,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             # used to vanish with the error of the half that came after it.
             quality_check._record_for_trend(common.COLLECTION_NAME, result, None)
             raise RuntimeError(
-                f"The curated golden set stopped before it finished: {e}. The self-check did run and is "
+                f"The curated golden set stopped before it finished: {common.sentence(str(e))} The self-check did run and is "
                 f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
@@ -2446,7 +2478,7 @@ def _ask_assist_install(ctx: Context, harness: str = "all", scope: str = "local"
     return _resolve_ask(ctx, _assist_install_question(harness, scope), confirm=confirm, human_required=True)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+@_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
           meta=_HUMAN_ONLY_META)
 @_records_call
 async def griot_assist_install(harness: str = "all", scope: str = "local",
@@ -2543,7 +2575,7 @@ class IndexPreviewOutput(TypedDict):
     estimated_cost_usd: float | None
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@_tool(annotations=ToolAnnotations(readOnlyHint=True))
 @_records_call
 def griot_index_preview(
     path: str,
@@ -2647,7 +2679,7 @@ def _progress_numbers(sources: list[str], progress: dict | None) -> tuple[float,
 
 
 if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
+    @_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     @_records_call
     async def griot_index_repo(
         path: str,
@@ -2723,7 +2755,7 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         # No waiting inside the event loop: the wait was the line above.
         return jobs.start_index_job(path, sources, release=functools.partial(_release_for_a_subprocess, patience=0))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @_tool(annotations=ToolAnnotations(readOnlyHint=True))
     @_records_call
     async def griot_index_wait(timeout_seconds: int = _INDEX_WAIT_DEFAULT_SECONDS,
                                ctx: Context = None) -> IndexWaitOutput:
