@@ -105,7 +105,18 @@ def test_the_workflows_pull_requests_trigger_are_ci_and_pr_text_not_the_release(
 # --- runners ----------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("workflow", [CI, RELEASE, PR_TEXT], ids=["ci", "release", "pr-text"])
+def _every_workflow():
+    return sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
+
+
+def test_the_runner_check_reads_every_workflow():
+    assert {"ci.yml", "release.yml", "pr-text.yml", "dependabot-lock.yml"} <= {path.name for path in _every_workflow()}
+
+
+# Every workflow in the directory, not a list of them: a new one would
+# otherwise be left out of the check.
+@pytest.mark.parametrize("workflow", [yaml.safe_load(path.read_text()) for path in _every_workflow()],
+                         ids=[path.stem for path in _every_workflow()])
 def test_every_runner_is_named_by_version(workflow):
     for name, job in workflow["jobs"].items():
         if "uses" in job:
