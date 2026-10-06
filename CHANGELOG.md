@@ -8,8 +8,121 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Added
+
+- **Keyword search beside vector search.** `griot search --mode
+  keyword|hybrid`, `griot ask --mode` and `griot_search`'s `mode` find what
+  embeddings rank poorly: an exact identifier, an error code, a file name, a
+  commit hash (whole or abbreviated). `keyword` ranks by BM25 over the text
+  plus the file path, commit hash and ref names, embeds nothing and so is
+  free on every profile; `hybrid` fuses both rankings by rank (RRF).
+  `vector` stays the default and is unchanged. Points indexed from now on
+  get the keyword vector as they are written; an index made before this
+  needs `griot index keywords` once. That command runs locally, embeds
+  nothing, is safe to run again and needs about as much free disk as the
+  collection while it runs. Until it has run, keyword and hybrid searches
+  are refused with that command in the message. `griot doctor` and
+  `griot_index_status` (`keyword_search`) say whether it has run, and `griot
+  stats` counts searches by mode and keeps its median score over vector
+  searches only. Measured on this repository with the default model
+  (MRR@10): identifiers 0.54 vector / 0.89 keyword / 0.84 hybrid; commit
+  hashes 0.00 / 1.00 / 0.80; descriptive queries 0.58 / 0.48 / 0.58.
+- The MCP server also offers the registered repositories, the usage report
+  and the index status as read-only resources (`griot://repos`,
+  `griot://stats`, `griot://index-status`, JSON), for clients that read
+  context by URI or let a person attach it. Each one is the matching tool at
+  its default arguments, produced by the same code, so the two cannot
+  disagree; the tools stay. A corrupt `repos.json` is reported with the file
+  to fix, as the tool reports it, and a read is recorded in `griot stats`
+  under its URI.
+- **An indexing run started from the MCP server now reports its progress.**
+  The `griot index all` subprocess records each source's state (`pending`,
+  `reading`, `embedding`, `done`, `failed`) and the chunks done of the total
+  once known, to a private file written atomically, never to stdout.
+  `griot_index_status` shows it under `job` while the run lives, and no
+  longer says "not running" while a run is still listing or reading files
+  (before it takes the lock). The new read-only `griot_index_wait`
+  (registered with `griot_index_repo`) waits for at most five minutes,
+  sending progress notifications to a client that asks for them, and returns
+  how the run ended or where it is.
+- `griot doctor` says when a newer griot was released: it asks PyPI for the
+  newest `griot-rag` version and, when the installation is behind, warns
+  with both versions and prints the upgrade command for how griot seems to
+  be installed (pipx, `uv tool`, pip in a virtual environment, or all three
+  when it cannot tell), never running it. When PyPI cannot be reached, gives
+  a bad answer, or reports a version that cannot be compared exactly, the
+  check is skipped, never a failure. No other command makes this request
+  (SECURITY.md has the row). Turn it off with `griot config set update-check
+  false` (`GRIOT_UPDATE_CHECK`).
+- **logs.db no longer grows forever.** Searches and MCP tool calls are
+  deleted after `GRIOT_LOG_RETENTION_DAYS` days (`griot config set
+  log-retention-days <days>`, 365 by default). The next search or tool call
+  deletes them, at most once a day per process. What is deleted is
+  overwritten in the file, the newest search is kept so `griot stats` can
+  still say when the last one was, and a prune that fails is logged without
+  failing the command. Indexing runs and quality checks are kept, because
+  the freshness report, `griot doctor` and the quality trend read them.
+  `griot stats` says when its window is longer than the retention, and
+  `griot_stats` returns `log_retention_days`. An MCP server's environment
+  cannot shorten the retention your configuration keeps.
+- `griot stats` draws its trends as terminal charts (debt 6): spend per day
+  and the quality trend become small column charts and the source breakdown
+  becomes horizontal bars, made of unicode block characters with no new
+  dependency. A day with no spend shows as zero, and a long period keeps the
+  most recent days and says how many of how many are shown. Charts only
+  appear on a terminal at least 60 columns wide with `NO_COLOR` unset. Piped
+  output, `NO_COLOR`, a narrow window and `--json` keep the plain text, and
+  the MCP tool `griot_stats` still returns data, not art. A spend date the
+  chart cannot read falls back to the one-line trend instead of crashing the
+  report.
+
 ### Changed
 
+- Opening the index no longer re-checks the permissions of every file each
+  time: only the directories that changed since the last check are listed
+  again, with a full check after every index or prune run and at least every
+  10 minutes (about 0.9 ms instead of 89 ms on a 20,000-file collection). A
+  permission repair that fails is tried once more and logged. Releasing the
+  index or exiting the process now also closes `segment.json`, which the
+  engine rewrote world-readable on every close. `griot doctor` reports
+  entries in the data directory that other users can read (the model cache
+  aside).
+- A pull request whose title or description credits an AI assistant now
+  fails a check (`pull request credits no assistant`, in
+  `.github/workflows/pr-text.yml`). The check applies the git hooks' own
+  pattern from `scripts/git-hooks/common.sh`, and runs again whenever the
+  text is edited. Before this, the squash commit GitHub builds from that
+  text reached main without any hook seeing it. The title and description
+  reach the check only as environment variables.
+- The pull request text check (`pull request credits no assistant`) is now
+  one of the checks `main` requires, and the pipeline test that keeps those
+  check names now reads every workflow that runs on pull requests, not only
+  `ci.yml`, so renaming that job or removing its `pull_request` trigger
+  makes the test fail.
+- The CLI confirmations that no flag can answer now say what they need. The
+  `--help` of `griot repos add`, `griot profiles delete`, `griot config set`
+  and `griot assist install` names the interactive terminal, and so do the
+  installer's no-terminal messages for the instructions block and for tool
+  approval, which also say no flag answers them. It is a guard against the
+  plain command an agent runs from a shell, not a security boundary
+  (SECURITY.md).
+- `uv.lock` is now written by the uv the workflows pin (0.11.6), not by
+  Dependabot's, so the next `uv lock` no longer rewrites a few dozen
+  unrelated lines of Python markers. The resolution is the same: same
+  packages, versions and hashes (debt 14).
+- CONTRIBUTING.md says to write `uv.lock` with the uv the workflows pin
+  (`uvx uv@<pinned> lock`), and how to bring a lock written by Dependabot's
+  uv back to that form without moving any pin (`--upgrade-package
+  griot-rag`). A test reads the pinned version from the workflows, so the
+  note cannot go stale. CI deliberately does not check the lock's form,
+  because that check would fail every Dependabot lock update. (Follow-up to
+  debt 14.)
+- The MCP confirmation policy is stated in README.md, SECURITY.md and the
+  management surface table in docs/mcp-capability-coverage.md, and a test
+  now checks all three against what the server registers: which tools need a
+  person's answer, which accept `confirm=true` where nobody can be asked,
+  and how many need a person. README now names each tool that changes state;
+  before, it named only two of them.
 - **The git hooks refuse a commit message that credits an AI assistant.**
   `commit-msg` refuses a co-author line naming an assistant, a session link
   or a "Generated with" line, and `pre-push` refuses them in the commits a
@@ -19,6 +132,64 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- `griot stats` counts days and records the same way its other lines do.
+  `--days N` is today since local midnight plus the N-1 local days before
+  it, the days the spend ceiling counts. Before, the window was cut in UTC,
+  so its first local day came in partial. The counts (runs, chunks,
+  failures, searches, sources, quality trend) are the active profile's
+  collection, like the state lines. `--all-profiles` (`all_profiles` on
+  `griot_stats`) counts every profile. The report says which scope it shows
+  and that spend and MCP tool calls are always every profile's. Old records
+  that name no collection are counted only with `--all-profiles`, and the
+  report says how many there are.
+- A search for readers (`griot search`, `griot ask`, the `griot_search`
+  tool) returns `limit` results even when the best matches are all chunks of
+  two or three long documents. It now looks at most two wider windows
+  further down the ranking instead of returning fewer, and `also_in` names
+  copies found in those windows too. A search whose first window already
+  fills the list still asks the store only once.
+- `griot auth list` and `griot doctor` now say where each credential is
+  stored (the OS keychain, plaintext in `<config>/.env`, or only the
+  environment) and whether a keychain backend is reachable, telling "keyring
+  not installed" apart from "installed but no backend". When a keychain is
+  reachable and a credential is still in the plaintext file, both name it
+  and point to `griot auth migrate`. Nothing is moved unless you ask. With
+  no backend reachable, doctor notes the fallback instead of raising a
+  warning that nothing could clear. `griot auth set` and `griot auth remove`
+  used to say `<config>/.env` even when the key was in the keychain; they
+  now name the place they actually wrote to or removed from. `griot auth
+  migrate` no longer tells someone who has keyring installed but no backend
+  to install the extra. The MCP tools still never read the keychain.
+- `griot auth set`/`list`/`remove`, `griot doctor` and the 401/403 hint now
+  name the direnv file a credential comes from. Before, they said "this
+  shell (no shell file griot knows sets it)". When direnv is active
+  (DIRENV_FILE, or DIRENV_DIR), griot reads the .envrc it loaded and names
+  the line that exports the variable (`export`, `declare -x`, `typeset -x`),
+  or the line in a `.env` that the .envrc loads with
+  `dotenv`/`dotenv_if_exists` or that direnv's load_dotenv loads directly.
+  It gives the file and line, never the value. A plain `VAR=x` in an .envrc
+  is not counted, because bash does not export it. A file that cannot be
+  read, an unknown `~user` or a NUL byte in a path names nothing and never
+  makes a command fail.
+- `griot auth remove` now says when the OS keychain could not be reached,
+  instead of reporting "nothing to remove" while a stored key may still be
+  there. The key is still removed from the `.env` file, a warning goes to
+  stderr and the exit code is 1. Underneath, the keychain delete now reports
+  one of four outcomes: deleted, nothing stored, unreachable, or `keyring`
+  not installed. It no longer returns a single `False` for both "nothing
+  stored" and "backend error".
+- `griot index platform` fails (exit 1, with a stderr line naming the
+  repository) when the platform refused every fetch for one repository, even
+  if others answered, so `griot index all` stops there. The repositories
+  that answered are still indexed, and the refused one no longer reads as
+  indexed in the freshness report (debt 17).
+- When the platform refused every fetch for one repository while it answered
+  for the others, only the run's stderr said so. `griot doctor` and the
+  `griot stats` attention list now name that repository, and
+  `griot_index_status` marks it `platform_refused`, until a later platform
+  run indexes it. The run records it under `refused_repos`. Repository names
+  and project paths printed by `griot index platform` can no longer carry
+  terminal escape sequences.
 - `griot quality-check` and `griot_quality_check` no longer count a sampled
   point with no text as passed. Such a point now fails the self-check with
   the reason "no text to search with". Before, a collection whose samples
@@ -57,6 +228,7 @@ between minor versions. Breaking changes are called out explicitly.
   and `griot stats` report it and the source does not read as indexed. A
   run where only some fetches were refused exits 0 and shows them as
   failures, like a document that failed to embed; a dry run records nothing.
+
 
 ## [0.2.1] — 2026-10-05
 
