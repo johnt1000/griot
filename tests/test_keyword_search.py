@@ -726,7 +726,7 @@ def test_the_command_builds_and_says_so(legacy_index, capsys):
     assert f"{len(DOCS)} points copied into a collection with keyword vectors" in out
     assert "embedded nothing" in out
     # A fresh copy continued nothing, so it must not claim it did.
-    assert "esum" not in out and "already" not in out
+    assert "Resumed" not in out
     assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
 
 
@@ -753,6 +753,33 @@ def test_the_command_says_a_resumed_copy_that_held_one_point(legacy_index, monke
     assert f"1 point was already copied, {len(DOCS) - 1} points copied now" in out
 
 
+def test_the_command_says_it_resumed_a_copy_that_already_held_every_point(legacy_index, monkeypatch, capsys):
+    """Killed after the last page was copied but before the copy took the
+    collection's place, the next run writes nothing and swaps the finished
+    copy in: that is a resume, not a collection that already had keyword
+    vectors (it had none until this run)."""
+    real_swap = common._swap_in
+
+    def swap_in(*args):
+        monkeypatch.setattr(common, "_swap_in", real_swap)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(common, "_swap_in", swap_in)
+    common.release_client()
+    with pytest.raises(KeyboardInterrupt):
+        common.build_keyword_index()
+    common.release_client()
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is False, "the copy never took the place"
+    capsys.readouterr()
+
+    assert cli.main(["index", "keywords"]) == 0
+    out = capsys.readouterr().out
+    assert (f"Resumed an interrupted copy of collection '{common.COLLECTION_NAME}': {len(DOCS)} points "
+            f"were already copied, 0 points copied now (embedded nothing)") in out
+    assert "already have keyword vectors" not in out
+    assert common.has_keyword_vectors(common.COLLECTION_NAME) is True
+
+
 def test_a_copy_interrupted_before_it_held_anything_reads_as_a_fresh_one(legacy_index, monkeypatch, capsys):
     """Interrupted inside its first page, the copy left holds no point: the
     run that follows copies everything, and saying it resumed would claim
@@ -762,7 +789,7 @@ def test_a_copy_interrupted_before_it_held_anything_reads_as_a_fresh_one(legacy_
     assert cli.main(["index", "keywords"]) == 0
     out = capsys.readouterr().out
     assert f"{len(DOCS)} points copied into a collection with keyword vectors" in out
-    assert "esum" not in out
+    assert "Resumed" not in out
 
 
 def test_the_command_says_when_there_is_nothing_to_do(index, capsys):
@@ -770,7 +797,7 @@ def test_the_command_says_when_there_is_nothing_to_do(index, capsys):
     assert cli.main(["index", "keywords"]) == 0
     out = capsys.readouterr().out
     assert f"All {len(DOCS)} points of collection '{common.COLLECTION_NAME}' already have keyword vectors." in out
-    assert "esum" not in out
+    assert "Resumed" not in out
 
 
 def test_the_command_counts_a_single_point_in_the_singular(fake_embeddings, capsys):

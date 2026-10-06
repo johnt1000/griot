@@ -178,7 +178,10 @@ def _cmd_index_keywords(rest: list) -> int:
     if not result["points"]:
         print(f"Nothing is indexed in collection '{common.COLLECTION_NAME}' yet: an index run adds keyword "
               f"vectors as it writes.")
-    elif not result["written"]:
+    elif not result["written"] and not result["rebuilt"]:
+        # A rebuilt collection is never a no-op, even with nothing written:
+        # a copy killed after its last page but before the swap is finished
+        # here, and the collection had no keyword vectors until then.
         if result["points"] == 1:
             print(f"The 1 point of collection '{common.COLLECTION_NAME}' already has keyword vectors.")
         else:
