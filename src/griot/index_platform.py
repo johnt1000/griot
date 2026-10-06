@@ -102,7 +102,11 @@ def build_issue_documents(repo_name: str, platform: str, project_id: str, host: 
     return documents
 
 
-def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
+def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list | None = None) -> list[dict]:
+    """The documents of one repository's merge/pull requests, releases and
+    issues. Each fetch attempted is appended to `fetches`, when given, as
+    `{"id", "ok", "reason"}`: a fetch the platform refused is a failure of
+    the run, not only a warning on the screen."""
     key = repo_key or repo_path.name
     remote_url = _remote_url(repo_path)
     if not remote_url:
@@ -128,9 +132,16 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
             docs = builder(repo_path.name, platform, project_id, host, id_prefix=key)
             print(f"  {repo_path.name} [{platform}:{project_id}]: {len(docs)} chunks from {label}")
             documents.extend(docs)
+            if fetches is not None:
+                fetches.append({"id": f"{key}:platform:{label}", "ok": True, "reason": None})
         except Exception as e:
             print(f"  WARNING: failed fetching {label} from {project_id} ({platform}): {e}")
             status = getattr(getattr(e, "response", None), "status_code", None)
+            if fetches is not None:
+                # The status or the kind of error, never its text: the text
+                # can hold the request URL, and this goes into logs.db.
+                reason = f"HTTP {status}" if status else type(e).__name__
+                fetches.append({"id": f"{key}:platform:{label}", "ok": False, "reason": reason})
             env_var = platforms.TOKEN_ENV.get(platform)
             if status in (401, 403) and env_var and not hinted:
                 # Which token the platform refused: the one exported in the
@@ -183,16 +194,37 @@ def main(argv=None):
         return 1
 
     all_documents = []
+    fetches: list[dict] = []
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
             print(f"WARNING: '{repo_path}' is not a valid directory.")
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
-        all_documents.extend(build_documents(repo_path, repo_key=repo_key))
+        all_documents.extend(build_documents(repo_path, repo_key=repo_key, fetches=fetches))
+
+    refused = [{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
+    if refused and not any(f["ok"] for f in fetches):
+        # Nothing the platform was asked for came back (an expired token
+        # answers 401 to all of it): the run could not do its job, and an
+        # exit status of 0 would let `griot index all` call it complete.
+        print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed. "
+              f"Check the token (`griot auth list`) and the warnings above.", file=sys.stderr)
+        # `error` is what makes the record a run that did not do its job: the
+        # freshness report does not count it as indexing the source, and
+        # `griot doctor` and `griot stats` report it.
+        # A dry run writes no run (cli.py::_run_index_source): one would
+        # shadow the last real run in griot_index_status.
+        reasons = ", ".join(sorted({f["reason"] for f in refused}))
+        if not args.dry_run:
+            _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused,
+                     error=f"the platform refused every fetch ({reasons})")
+        return 1
 
     if not all_documents:
         print("\nNo platform items to index.")
+        if refused and not args.dry_run:
+            _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused)
         return
 
     if args.dry_run:
@@ -204,15 +236,23 @@ def main(argv=None):
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed.")
+    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed + len(refused)} failed"
+          + (f" ({len(refused)} fetch(es) refused by the platform)." if refused else "."))
+    _log_run(args, repo_paths_str, start_time, indexed=indexed, skipped=skipped, failed=failed + len(refused),
+             redacted=redacted,
+             # [user-requested] WHICH documents failed, not just how many —
+             # the count alone forced a grep through griot.log to diagnose.
+             failures=(refused + common.last_run_failures())[:common.MAX_RECORDED_FAILURES])
+
+
+def _log_run(args, repo_paths_str, start_time, *, indexed, skipped, failed, failures, redacted=0, **extra) -> None:
     common.log_run_summary(
         script="index_platform.py", repo=args.repo or args.path or "all", repo_paths=repo_paths_str,
         indexed=indexed, skipped=skipped, failed=failed, redacted=redacted,
-        duration_seconds=round(elapsed, 2),
+        duration_seconds=round(time.time() - start_time, 2),
         spend_today_usd=common.get_spend_today(),
-        # [user-requested] WHICH documents failed, not just how many —
-        # the count alone forced a grep through griot.log to diagnose.
-        failures=common.last_run_failures(),
+        failures=failures,
+        **extra,
     )
 
 

@@ -243,6 +243,20 @@ def test_a_last_run_that_died_is_a_warning(monkeypatch):
     assert check["status"] == "warn" and "did not finish" in check["detail"]
 
 
+def test_a_last_run_that_counted_and_failed_is_not_said_to_have_died(monkeypatch):
+    """A run with counts and an error finished: the platform refused every
+    fetch, say. "Did not finish" would send someone looking for a crash."""
+    monkeypatch.setattr(common, "get_index_status", lambda **k: {
+        "points_count": 12, "points_error": None, "repositories": [],
+        "last_indexed": {"timestamp": "2026-10-01T00:00:00+00:00", "indexed": 0, "failed": 3,
+                         "error": "the platform refused every fetch (HTTP 401)"}})
+
+    check = _by_name(doctor.run_checks())["index"]
+
+    assert check["status"] == "warn" and "did not finish" not in check["detail"]
+    assert "failed" in check["detail"] and "refused every fetch" in check["detail"]
+
+
 def test_no_registered_repository_is_a_warning_that_says_how_to_register_one(monkeypatch):
     monkeypatch.setattr(common, "load_repos", lambda: [])
 

@@ -83,6 +83,14 @@ def test_a_last_run_that_died_leads_the_report_even_when_it_is_outside_the_windo
     assert "last indexing attempt 20 days ago" in text and "last indexed 20" not in text, "a run that died indexed nothing"
 
 
+def test_a_last_run_that_counted_and_failed_is_not_said_to_have_died():
+    status = _status(last_indexed={"timestamp": _at(days=1), "indexed": 0, "failed": 3,
+                                   "error": "the platform refused every fetch (HTTP 401)"})
+    result, _ = _report(status=status)
+    (item,) = [item for item in result["attention"] if "refused every fetch" in item]
+    assert "did not finish" not in item and "failed" in item
+
+
 def test_a_reached_spend_ceiling_is_said_first():
     result, _ = _report(status=_status(spend_ceiling_exceeded=True))
     assert any("ceiling" in item for item in result["attention"])

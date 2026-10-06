@@ -332,7 +332,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
     if last_indexed.get("error"):
-        attention.append(f"the last indexing run did not finish: {last_indexed['error']}")
+        # A run with no counts died; one with counts finished and could not
+        # do its job (the platform refused every fetch, say).
+        what = "did not finish" if last_indexed.get("indexed") is None else "failed"
+        attention.append(f"the last indexing run {what}: {last_indexed['error']}")
     if index_status.get("spend_ceiling_exceeded"):
         attention.append("today's spend reached the daily ceiling: paid calls are refused until "
                          "tomorrow, or until the ceiling is raised")

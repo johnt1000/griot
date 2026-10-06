@@ -23,18 +23,8 @@ What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
 
 ## Next
 
-- **Bug: a platform that refuses every request still reads as a clean run.**
-  `griot index platform` catches a failed fetch of pull requests, releases
-  or issues, prints a warning and goes on. Nothing counts it: when every
-  fetch fails (an expired or wrong token answers 401 to all three), the run
-  prints "No platform items to index.", exits 0 and records no run at all;
-  when some fail, the run is recorded with `failed: 0`. `griot index all`,
-  `griot stats` and the freshness report therefore see nothing wrong. A
-  fetch the platform refused should count as a failure of the run, appear in
-  its record and give a non-zero exit, like a chunk that failed to embed.
-
-Everything else that was queued is done (see the [changelog](CHANGELOG.md));
-what comes after is chosen from the list below.
+Nothing is queued here right now (see the [changelog](CHANGELOG.md) for what
+was); what comes next is chosen from the list below.
 
 ## Considered, not scheduled
 
