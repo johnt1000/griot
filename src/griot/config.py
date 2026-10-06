@@ -576,7 +576,12 @@ def main(argv=None) -> int:
     p_list.add_argument("--json", action="store_true", help="One JSON document instead of the table")
     p_get = sub.add_parser("get", help="Prints the value in force of one setting")
     p_get.add_argument("name")
-    p_set = sub.add_parser("set", help="Checks a value and writes it to the config .env")
+    p_set = sub.add_parser(
+        "set", help="Checks a value and writes it to the config .env",
+        description="Checks a value and writes it to the config .env. A change that raises a spend ceiling, turns "
+                    "on indexing through MCP, adds a directory an agent may index, or points a platform token at "
+                    "another host is asked about at an interactive terminal, and there is no flag that answers: "
+                    "run from a script or an agent's shell, with no terminal, it changes nothing.")
     p_set.add_argument("name")
     p_set.add_argument("value")
     p_unset = sub.add_parser("unset", help="Removes a setting from the config .env, back to its default")
