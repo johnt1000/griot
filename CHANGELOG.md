@@ -8,6 +8,8 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-10-05
+
 ### Security
 
 - **What reaches `main`, and what reaches PyPI, goes through the same
@@ -19,6 +21,10 @@ between minor versions. Breaking changes are called out explicitly.
   Python 3.14 and on macOS as well, the runners are named by version
   (`ubuntu-24.04`, `macos-15`) instead of `-latest`, and the tests that need
   the real scanner run instead of being skipped.
+- **The locked dependencies are past known vulnerabilities.** `uv.lock`
+  moves `pyjwt` to 2.15.0 and `urllib3` to 2.8.0. The published package does
+  not pin them, so an install from PyPI already picked up the fixed releases;
+  this is what CI and a development checkout run.
 
 ### Fixed
 
@@ -743,5 +749,6 @@ PyPI is 0.2.0.
 - Apache-2.0 license, packaging metadata, and an English README.
 - Code, CLI-facing strings and tests are entirely in English (2026-08-20).
 
-[Unreleased]: https://github.com/johnt1000/griot/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/johnt1000/griot/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/johnt1000/griot/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/johnt1000/griot/releases/tag/v0.2.0
