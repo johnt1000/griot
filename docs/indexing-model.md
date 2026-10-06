@@ -112,14 +112,17 @@ stopwords), plus the identifying fields the text does not hold: `file_path`,
 `commit_hash` and `last_commit_hash` (whole, and abbreviated to 7 to 12
 characters, as git abbreviates them), `tag_name`, `branch_name`,
 `source_branch` and `target_branch`. It is what a search by the exact words
-compares (`--mode keyword`): a function name, an error code, a file name, a
-commit hash. `--mode hybrid` runs both and fuses the two rankings (reciprocal
+compares (`--mode keyword`), which is for a commit hash, an error code, a
+file name, or where a name is used. `--mode hybrid` runs both and fuses the two rankings (reciprocal
 rank fusion, k=60); it is the default of `griot search`, `griot ask` and
 `griot_search`, because, measured on 2026-10-06 on two repositories (MRR@10,
 vector / keyword / hybrid), it ranked descriptive questions at least as well
 as vector (0.67 / 0.64 / 0.76) and commit hashes far better (0.01 / 1.00 /
-0.80), while on function and class names it ranked a little below vector
-(0.72 / 0.61 / 0.68, with a higher recall@10). Where it cannot run, the
+0.80), while on function and class names, the defining file counted
+relevant, it ranked a little below vector (0.72 / 0.61 / 0.68, with a higher
+recall@10): keyword alone ranked that defining file lowest, because it
+returns only the chunks that mention a name, which are where the name is
+used. Where it cannot run, the
 default runs vector instead of failing: on a collection without keyword
 vectors (and then it says so, naming `griot index keywords`), or for a query
 with no word keyword search can match. Every result says which mode ran. The

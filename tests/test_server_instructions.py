@@ -65,7 +65,8 @@ async def test_the_instructions_say_when_to_use_it_and_when_not_to():
 async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     instructions, _ = await _server()
     # Raised from 1600 when keyword search came: the one place an agent learns
-    # that an exact identifier in ANOTHER repository is now worth a search.
+    # that a commit hash, or where a name is used, in ANOTHER repository is
+    # now worth a search (tests/test_keyword_claims.py holds what it says).
     # A string literal at column 0, not a docstring, so it measures the same
     # on every Python; measured like the tool description all the same, so
     # moving the text into a docstring cannot change what the limit means.
