@@ -113,6 +113,10 @@ def _reset_common_globals(monkeypatch, tmp_path):
     monkeypatch.setattr(common, "_client", None)
     monkeypatch.setattr(common, "_client_last_used_at", None)
     monkeypatch.setattr(common, "_embed_model", None)
+    # Process-wide "pruned in the last day" (prune_logs_if_due): without the
+    # reset, whether a test's first logged search prunes would depend on
+    # which test happened to log one first.
+    monkeypatch.setattr(common, "_last_log_prune", None)
     monkeypatch.setattr(common, "QDRANT_PATH", data_dir / "qdrant_data")
     monkeypatch.setattr(common, "SPEND_STATE_PATH", data_dir / ".spend_state.json")
     monkeypatch.setattr(common, "LOCK_PATH", data_dir / ".griot.lock")
