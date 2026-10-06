@@ -250,6 +250,21 @@ def _no_test_leaves_this_process_marked_as_a_server():
 
 
 @pytest.fixture(autouse=True)
+def _the_test_directory_was_not_deleted_from_outside(tmp_path):
+    """A test's own temporary directory gone at the end of it was deleted by
+    something outside the test: no test removes its tmp_path. On 2026-10-06
+    an agent ran `rm -rf` on a scratch path that another agent's full run
+    used as --basetemp; one test lost its repository mid-way and failed as
+    `assert set() == {'v1', 'v2'}`, which was then chased as a flake. Named
+    here, the next such failure says what happened."""
+    yield
+    if not tmp_path.is_dir():
+        pytest.fail(f"{tmp_path} was deleted while the test ran, by something outside it (another process "
+                    f"removing pytest's --basetemp?). Its result says nothing about the code: give every run "
+                    f"a --basetemp of its own.", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_test_opens_a_real_http_session(monkeypatch):
     """The calls to embedding and chat APIs go through common._http_post(),
     over a session the process keeps. Tests stand in for that function; one
