@@ -8,7 +8,7 @@ griot indexes the contents of your repositories — which may be private — and
 
 One exception is not configurable: the **first run of any local profile downloads its ONNX model from Hugging Face** and caches it. That request carries no data of yours — it is a model download, and every run afterwards is offline — but it is a network call to a third party, so it belongs in this table rather than in a footnote.
 
-Data leaves your machine when **you** configure it to, plus that one download:
+Data leaves your machine when **you** configure it to, plus that one download and the release check of `griot doctor` (on by default, off with one setting):
 
 | Action | What is sent | To |
 |---|---|---|
@@ -17,6 +17,7 @@ Data leaves your machine when **you** configure it to, plus that one download:
 | `griot search` / `griot_search` with a paid profile | the query text | same provider |
 | `griot ask` | the question + retrieved context chunks | the chat provider you selected |
 | `griot index platform` | authenticated API reads only | the platform (GitHub/GitLab/…) |
+| `griot doctor`, and no other command | an HTTP GET for the newest version of `griot-rag`, with nothing of yours in it; the request itself reveals your address and that griot is in use. Turn it off with `griot config set update-check false` (`GRIOT_UPDATE_CHECK=false`) | pypi.org |
 
 The spend circuit breaker (daily + 5-minute velocity ceilings) bounds how much paid traffic can happen before griot refuses further calls. It counts each call by the tokens the provider reports; when a provider reports none, the call is counted from the size of the text instead (an estimate, and griot says so), so that a call is never free to the ceiling.
 
@@ -30,6 +31,7 @@ Protections applied:
 - API keys are sent in headers only — never in URLs — and error/log messages never interpolate provider exception text that could contain them.
 - Credentialed HTTP requests never follow redirects, and server-provided pagination URLs are refused if they point to a different host.
 - `GRIOT_LOG_QUESTIONS=false` keeps question text out of the persistent query log.
+- Searches (with their question text) and MCP tool calls are deleted from `logs.db` after `GRIOT_LOG_RETENTION_DAYS` days (365 by default), overwritten in the file rather than only unlinked from the table. Indexing runs and quality checks are kept.
 - Each logged search and tool call also carries the **name** of the project it came from: the folder `CLAUDE_PROJECT_DIR` names or else the one griot ran in (never its path), or exactly what you set in `GRIOT_PROJECT`. The home directory is not recorded as a project, and the name is stripped of control characters and cut at 100 characters. It is stored locally in `logs.db` and is never sent anywhere.
 
 ## Encryption at rest — deliberate position
@@ -109,9 +111,16 @@ want the exact set the tests ran on, install from a checkout with
 
 A secret scan is a backstop, not a control. Nothing in this repository should
 ever contain a credential in the first place: `griot auth set` reads keys with
-`getpass` (never echoed, never in argv) and writes them to `<config>/.env` at
-mode 0600, outside the working tree, or to the OS keychain when `keyring` is
-installed.
+`getpass` (never echoed, never in argv) and stores them outside the working
+tree: in the OS keychain when the optional `keyring` package is installed and
+finds a backend, otherwise in `<config>/.env` in plaintext at mode 0600. The
+keychain is best-effort, not a guarantee: headless Linux without a Secret
+Service provider, and most containers, have none, and griot then keeps working
+with the file. `griot auth list` and `griot doctor` say where each credential
+is kept and whether a keychain backend is reachable. A credential already in
+the file is moved into the keychain only when you ask, with `griot auth
+migrate`; `griot doctor` names the ones still in the file (names, never
+values) when a keychain is there to take them.
 
 ## Reporting a vulnerability
 

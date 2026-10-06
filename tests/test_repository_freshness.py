@@ -629,3 +629,126 @@ def test_stats_from_a_status_that_knows_nothing_of_repositories():
                                      "spend_ceiling_exceeded": False})
 
     assert s["repositories_behind"] == [] and s["repositories_without_code"] == []
+
+
+# --- a repository the platform refused entirely ----------------------------------------------------
+#
+# [debt 17 follow-up] index_platform.py records, under `refused_repos`, the
+# repositories whose platform refused every fetch while others answered.
+# The newest platform run that concerned a repository (covered it, or
+# refused it) says whether its platform is refusing it now.
+
+
+def _platform_run(heads, refused=None, **kwargs):
+    record = _run("index_platform.py", heads, **kwargs)
+    if refused is not None:
+        record["refused_repos"] = refused
+    return record
+
+
+def test_a_repository_the_last_platform_run_refused_is_said_to_be(tmp_path):
+    good, bad = _repo(tmp_path, "good"), _repo(tmp_path, "bad")
+    runs = [_platform_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["bad"])]
+
+    good_report, bad_report = freshness.assess(runs, _now(good, bad))
+
+    assert bad_report["platform_refused"] is True
+    assert good_report["platform_refused"] is False
+
+
+def test_a_later_platform_run_that_indexed_it_clears_the_refusal(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    runs = [_platform_run({"bad": head}, at="2026-10-03T10:00:00+00:00"),
+            _platform_run({}, refused=["bad"], at="2026-10-02T10:00:00+00:00")]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is False
+
+
+def test_a_later_platform_run_of_another_repository_leaves_the_refusal(tmp_path):
+    good, bad = _repo(tmp_path, "good"), _repo(tmp_path, "bad")
+    runs = [_platform_run({"good": _git(good, "rev-parse", "HEAD")}, at="2026-10-03T10:00:00+00:00"),
+            _platform_run({}, refused=["bad"], at="2026-10-02T10:00:00+00:00")]
+
+    _, report = freshness.assess(runs, _now(good, bad))
+
+    assert report["platform_refused"] is True
+
+
+def test_a_refusal_newer_than_the_last_platform_run_that_indexed_it_stands(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    runs = [_platform_run({}, refused=["bad"], at="2026-10-03T10:00:00+00:00"),
+            _platform_run({"bad": _git(bad, "rev-parse", "HEAD")}, at="2026-10-02T10:00:00+00:00")]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is True
+
+
+def test_only_platform_runs_say_whether_the_platform_refused(tmp_path):
+    """A code run covering the repository after the refusal says nothing
+    about the platform."""
+    bad = _repo(tmp_path, "bad")
+    runs = [_run("index_code.py", {"bad": _git(bad, "rev-parse", "HEAD")}, at="2026-10-03T10:00:00+00:00"),
+            _platform_run({}, refused=["bad"], at="2026-10-02T10:00:00+00:00")]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is True
+
+
+def test_a_platform_run_that_died_says_nothing_about_a_refusal(tmp_path):
+    """A run that died fetched nothing: it neither clears nor makes one."""
+    bad = _repo(tmp_path, "bad")
+    runs = [_platform_run({"bad": _git(bad, "rev-parse", "HEAD")}, error="killed", at="2026-10-03T10:00:00+00:00"),
+            _platform_run({}, refused=["bad"], at="2026-10-02T10:00:00+00:00")]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is True
+
+
+def test_a_refused_list_edited_into_something_else_is_ignored(tmp_path):
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_platform_run({}, refused="bad")], _now(bad))
+
+    assert report["platform_refused"] is False
+
+
+def test_stats_asks_for_attention_to_a_repository_the_platform_refused():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [
+                  {"repo": "bad\x1b[2J", "path": "/x/bad", "head": "a" * 40, "behind": None, "commits_behind": None,
+                   "behind_sources": [], "missing_sources": [], "platform_refused": True,
+                   "last_indexed_at": "2026-10-01T00:00:00+00:00", "sources": {}},
+                  {"repo": "good", "path": "/x/good", "head": "b" * 40, "behind": False, "commits_behind": 0,
+                   "behind_sources": [], "missing_sources": [], "platform_refused": False,
+                   "last_indexed_at": "2026-10-01T00:00:00+00:00", "sources": {}}]}
+
+    s = stats.compute_stats([], [], status)
+
+    [line] = [line for line in s["attention"] if "refused" in line]
+    assert "bad?[2J" in line and "good" not in line and "griot auth list" in line
+
+
+@pytest.mark.anyio
+async def test_the_status_and_stats_tools_say_which_repository_the_platform_refused(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    good, bad = _repo(tmp_path, "good"), _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(good), str(bad)])
+    common.secure_mkdir(common.LOG_DIR)
+    logdb.write_run(common.LOG_DIR, {**_platform_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["bad"]),
+                                     "collection": common.COLLECTION_NAME})
+
+    async with Client(mcp_server.mcp) as client:
+        status = (await client.call_tool("griot_index_status", {})).structured_content
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert {r["repo"]: r["platform_refused"] for r in status["repositories"]} == {"good": False, "bad": True}
+    assert any("refused" in line and "bad" in line for line in out["attention"])

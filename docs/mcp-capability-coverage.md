@@ -6,7 +6,7 @@ adopting each unused capability would concretely mean here.
 Kept as a reference to return to — not a plan. Nothing below is scheduled;
 see the reasoning at the end for why.
 
-**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the progress section and the tool count on 2026-10-06), against the `mcp` SDK installed in this
+**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06), against the `mcp` SDK installed in this
 repo's venv.
 
 ## How to re-verify
@@ -33,6 +33,7 @@ async def m():
     async with Client(mcp_server.mcp) as c:
         print(len((await c.list_tools()).tools), 'tools')
         print([p.name for p in (await c.list_prompts()).prompts], 'prompts')
+        print([str(r.uri) for r in (await c.list_resources()).resources], 'resources')
 anyio.run(m)"
 ```
 
@@ -45,7 +46,7 @@ anyio.run(m)"
 |---|---|---|---|
 | Tools | yes | **19** (21 with `GRIOT_MCP_ENABLE_INDEX`) | Covered |
 | Prompts | yes | **4** | Covered |
-| Resources | yes | no | Gap worth revisiting |
+| Resources | yes | **yes** (see `list_resources()`) | Covered: duplicates of read-only tools |
 | Resource templates | yes | no | Follows from resources |
 | Progress (`ctx.report_progress`) | yes | **yes** (`griot_index_wait`) | Covered |
 | Client-side logging (`ctx.log`) | yes | no | Minor |
@@ -76,6 +77,13 @@ is set.
 
 All return `TypedDict`s so the SDK generates a real `output_schema` and
 clients receive `structured_content`.
+
+**Resources** (`@mcp.resource`): read-only data the agent fetches by URI, as
+JSON, without a tool call. Each one is a read-only tool at its default
+arguments — the repositories, the usage report, the index status — and
+`list_resources()` is the inventory (each description names its tool). See
+[Resources](#resources) for why they duplicate the tools rather than replace
+them, and how the two are kept from disagreeing.
 
 **Elicitation** is used, but never alone — see `_confirmed()` in
 `mcp_server.py` for the three-layer policy and why no single layer is
@@ -227,18 +235,35 @@ and fetched when the agent wants context — without spending a tool call.
 Some clients also let a *person* attach a resource to the context
 explicitly, and clients may cache them.
 
-In griot the natural candidates are the read-only tools that are really
-just data: `griot://repos`, `griot://stats`, `griot://collections`.
+The open question was whether the read-only tools that are really just data
+should *move* to resources or be *duplicated*. Decided on 2026-10-06:
+**duplicated**. The tools stay, because they are what agents are known to
+call and they take arguments a static resource cannot (`griot_stats`'s
+window, `griot_index_status`'s collection); a resource is the tool at its
+defaults. `griot://collections` was not added: no tool lists collections,
+and a resource with nothing behind it would be a second implementation, not
+a copy. `griot_profiles_list` already names each profile's collection.
 
-```python
-@mcp.resource("griot://repos", mime_type="application/json")
-def repos_resource() -> str:
-    return json.dumps(repos.repo_status())
-```
+A tool and a resource exposing the same data is two surfaces to keep in
+agreement, so neither has its own code. In `mcp_server.py`, each resource
+runs the function its tool runs (`_repos_list()`, `_stats()`,
+`_index_status()`) and is serialized by the output model the SDK built for
+that tool: the same model that turns the tool's dict into the structured
+content a client receives, which drops undeclared keys and renders values as
+JSON. `tests/test_mcp_resources.py` compares a resource read with the tool
+call through a real client.
 
-The open question is not how, it is whether — and specifically whether
-these should *move* or be *duplicated*. A tool and a resource exposing the
-same data is two surfaces to keep in agreement.
+Two behaviours a resource gets from the SDK that a tool does not, both
+handled:
+
+- An error raised while reading becomes a bare "Error reading resource";
+  the message (a corrupt `repos.json`, and which file to fix) would be lost.
+  The read raises an `MCPError` carrying the tool's own message instead.
+- A read is not a tool call, so it would bypass `_records_call`. It goes
+  through it: recorded in `tool_calls` under its URI, and counted as a call
+  in flight, so the idle reaper does not close the collection under it.
+
+## Gaps worth revisiting
 
 ### Elicitation (URL) — the sanctioned channel for secrets
 
@@ -264,7 +289,8 @@ single-endpoint, loopback-only listener that dies after one request is a
 genuinely small thing, so this is not a hard
 "no". But it buys little: griot's providers use **static API keys**, not
 OAuth, and `griot auth set <provider>` already reads the key with
-`getpass` (never echoed, never in argv) and stores it in the OS keychain.
+`getpass` (never echoed, never in argv) and stores it in the OS keychain
+when one is reachable (else in `<config>/.env` at 0600).
 Routing the same secret through a browser and a local socket adds moving
 parts without removing an exposure.
 
@@ -423,12 +449,14 @@ host's permission system's job.
 
 ## Why none of this is scheduled
 
-The remaining gaps — resources, `elicit_url` — are improvements
+The remaining gap — `elicit_url` — is an improvement
 to the *shape* of functionality that has not yet met a real agent. Most
 of the tools were added on 2026-08-21 and 2026-08-22 and have
 never been called outside tests.
-Turning them into resources before knowing whether an agent calls them at
-all would be choosing a format for protocol elegance rather than for use.
+The same held for resources, which is why they were added as copies of
+three tools rather than in their place: nothing is taken away from the
+surface agents use, and `tool_calls` (which records a resource read under
+its URI) now shows which of the two gets used.
 
 The end-to-end MCP validation (see ROADMAP) produces exactly the evidence
 that decides this, and as of 2026-08-22 griot records it: the `tool_calls`

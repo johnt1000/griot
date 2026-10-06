@@ -133,12 +133,139 @@ def test_a_commit_and_a_file_with_the_same_text_are_two_results(fake_embedding):
     assert len(common.search("same words", limit=5, diverse=True)) == 2
 
 
-def test_limit_is_a_ceiling_when_the_best_matches_are_a_few_long_documents(fake_embedding):
-    """The store is asked for six times `limit`. When that whole window is
-    chunks of two documents, there are six slots to give, not eight: the
-    contract is "up to `limit`", and this holds it in place."""
+def test_an_index_of_two_long_documents_gives_six_and_not_more(fake_embedding):
+    """Three chunks of each of two documents is everything there is to give:
+    the search looks further, finds nothing else, and returns six for a
+    `limit` of eight rather than breaking the per-document rule."""
     _index([_code("alpha", f"long{d}.py", i, f"retry policy document {d} part {i}") for d in range(2) for i in range(30)])
     assert len(common.search("retry policy", limit=8, diverse=True)) == 6
+
+
+# --- when the first window is not enough -------------------------------------------------
+#
+# The vectors above are random per text, so which chunk ranks where is luck.
+# These tests need a ranking: the query is one fixed vector, and a text is
+# that vector plus noise whose size its marker sets (smaller is closer).
+
+_NOISE = {"[closest]": 0.01, "[near]": 0.05, "[mid]": 0.3, "[far]": 1.0}
+
+
+def _ranked_vector(text: str, dim: int, noise: float | None = None) -> list[float]:
+    base = _vector("the query", dim)
+    if noise is None:
+        noise = next((size for marker, size in _NOISE.items() if marker in text), 0.0)
+    jitter = _vector(text, dim)
+    return [b + noise * j for b, j in zip(base, jitter)]
+
+
+@pytest.fixture
+def ranked_embedding(monkeypatch):
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **kw: [_ranked_vector(t, common.EMBED_DIM) for t in texts])
+
+
+@pytest.fixture
+def store_queries(monkeypatch):
+    """How many times the search asked the store, and for how many points."""
+    asked = []
+    real = common.get_client
+
+    class Counting:
+        def __init__(self, shard):
+            self._shard = shard
+
+        def query(self, request):
+            asked.append(request.limit)
+            return self._shard.query(request)
+
+        def __getattr__(self, name):
+            return getattr(self._shard, name)
+
+    monkeypatch.setattr(common, "get_client", lambda *a, **kw: Counting(real(*a, **kw)))
+    return asked
+
+
+def _long(repo: str, documents: int, chunks: int, marker: str = "[near]") -> list[dict]:
+    return [_code(repo, f"long{d}.py", i, f"{marker} document {d} part {i}") for d in range(documents) for i in range(chunks)]
+
+
+MID = [_code("alpha", f"mid{i}.py", 0, f"[mid] another file number {i}") for i in range(10)]
+
+
+def test_when_two_long_documents_fill_the_first_window_the_list_is_still_full(ranked_embedding, store_queries):
+    """Debt 9: the first window (six times `limit`) is all chunks of two long
+    documents, so it has six slots to give. There is more in the index, and
+    the reader asked for eight."""
+    _index(_long("alpha", 2, 30) + MID)
+    hits = common.search("the query", limit=8, diverse=True)
+    assert len(hits) == 8
+    assert sum(1 for h in hits if h.payload["file_path"].startswith("long")) == 6, "the cap still holds"
+    assert len(store_queries) == 2 and store_queries[1] > store_queries[0]
+
+
+def test_the_list_is_the_best_of_the_wider_window_in_its_order(ranked_embedding):
+    _index(_long("alpha", 2, 30) + MID)
+    hits = common.search("the query", limit=8, diverse=True)
+    scores = [h.score for h in hits]
+    assert scores == sorted(scores, reverse=True)
+    raw = [str(h.id) for h in common.search("the query", limit=70)]
+    kept = [str(h.id) for h in hits]
+    assert kept == [i for i in raw if i in set(kept)], "a subsequence of the plain ranking"
+    assert [h.payload["file_path"] for h in hits[6:]] == [h.payload["file_path"] for h in
+                                                          common.search("the query", limit=70)[60:62]], \
+        "after the capped documents, the next best of everything the store holds"
+
+
+def test_a_first_window_that_fills_the_list_is_the_only_query(fake_embedding, store_queries):
+    """The common case must not pay for the rare one."""
+    many = [_code("alpha", f"file{i}.py", 0, f"retry policy in file number {i}") for i in range(30)]
+    _index(many)
+    assert len(common.search("retry policy", limit=3, diverse=True)) == 3
+    assert store_queries == [3 * 6], "the store had more than the window (30 points), and was not asked again"
+
+
+def test_the_search_stops_when_the_store_has_nothing_more(ranked_embedding, store_queries):
+    """A window that came back short of what was asked for is the whole
+    index: asking again would bring nothing new."""
+    _index(_long("alpha", 2, 30))
+    assert len(common.search("the query", limit=8, diverse=True)) == 6
+    assert len(store_queries) == 2
+
+
+def test_the_search_looks_a_bounded_number_of_windows_further(ranked_embedding, store_queries):
+    """Two documents so long that no window griot is willing to fetch gets
+    past them: the list stays short rather than the search going on."""
+    _index(_long("alpha", 2, 300) + MID)
+    assert len(common.search("the query", limit=8, diverse=True)) == 6
+    # Spelled out rather than read from SEARCH_MAX_EXTRA_WINDOWS: a test that
+    # reads the constant it checks agrees with any value of it.
+    assert store_queries == [48, 96, 192]
+
+
+def test_a_grouped_search_fills_its_documents_from_a_wider_window_too(ranked_embedding, store_queries):
+    _index(_long("alpha", 2, 20) + MID)
+    hits = common.search("the query", limit=5, group_by_document=True, diverse=True)
+    assert len(hits) == 5 and len(set(_documents(hits))) == 5
+    assert len(store_queries) == 2
+
+
+def test_a_copy_found_in_a_later_window_is_named_in_also_in(ranked_embedding, monkeypatch):
+    """The runbook is among the best matches; its copy in another repository
+    ranks far below, past the first window. When the search had to look
+    further anyway, the copy it found there is named, not shown again."""
+    runbook = "[closest] the runbook, copied into two repositories"
+    _index(_long("alpha", 2, 24) + MID + [_code("alpha", "docs/runbook.md", 0, runbook)])
+    monkeypatch.setattr(common, "embed_texts",
+                        lambda texts, **kw: [_ranked_vector(t, common.EMBED_DIM, noise=0.2) for t in texts])
+    _index([_code("beta", "docs/runbook.md", 0, runbook)])
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **kw: [_ranked_vector(t, common.EMBED_DIM) for t in texts])
+    plain = [h.payload["repo"] for h in common.search("the query", limit=60) if h.payload["file_path"] == "docs/runbook.md"]
+    assert plain == ["alpha", "beta"] and len(common.search("the query", limit=48)) == 48
+    beta_rank = [h.payload["repo"] for h in common.search("the query", limit=60)].index("beta")
+    assert beta_rank >= 48, "the copy is past the first window"
+    hits = common.search("the query", limit=8, diverse=True)
+    assert len(hits) == 8
+    runbooks = [h for h in hits if h.payload["file_path"] == "docs/runbook.md"]
+    assert len(runbooks) == 1 and runbooks[0].also_in == ["beta/docs/runbook.md"]
 
 
 def test_a_plain_search_still_returns_both_copies(fake_embedding):
@@ -260,6 +387,15 @@ async def test_the_tool_caps_one_document_at_three(fake_embedding):
     _index(LONG_FILE + OTHERS)
     results = await _search({"query": "retry policy", "limit": 9})
     assert len([r for r in results if r["metadata"]["file_path"] == "long.py"]) == 3
+
+
+@pytest.mark.anyio
+async def test_the_tool_returns_the_limit_when_two_long_documents_lead(ranked_embedding):
+    """Debt 9 through the protocol: the agent asked for eight."""
+    _index(_long("alpha", 2, 30) + MID)
+    results = await _search({"query": "the query", "limit": 8})
+    assert len(results) == 8
+    assert sum(1 for r in results if r["metadata"]["file_path"].startswith("long")) == 6
 
 
 @pytest.mark.anyio

@@ -567,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
-        ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration); changes no setting, index or file of yours"),
+        ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration, a newer release); changes no setting, index or file of yours"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal
@@ -591,7 +591,10 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Do not ask before switching to a profile that calls an API")
     p_profiles_use.set_defaults(func=_cmd_profiles_use)
     p_profiles_delete = profiles_sub.add_parser(
-        "delete", help="Permanently deletes a profile's on-disk collection (frees disk space)"
+        "delete", help="Permanently deletes a profile's on-disk collection (frees disk space)",
+        description="Permanently deletes a profile's on-disk collection (frees disk space). It cannot be undone, "
+                    "so it asks first, at an interactive terminal, and there is no flag that answers: run from a "
+                    "script or an agent's shell, with no terminal, it changes nothing.",
     )
     p_profiles_delete.add_argument("profile", help="Profile name (see `griot profiles list`)")
     p_profiles_delete.set_defaults(func=_cmd_profiles_delete)

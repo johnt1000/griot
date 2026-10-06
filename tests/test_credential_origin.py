@@ -34,6 +34,10 @@ def shell(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # A test run started from a direnv-managed directory must not read that
+    # directory's .envrc as if it were part of the scenario.
+    monkeypatch.delenv("DIRENV_FILE", raising=False)
+    monkeypatch.delenv("DIRENV_DIR", raising=False)
     (home / ".zshrc").write_text(f"# settings\nexport PATH=/usr/bin\nexport {VAR}={OLD}\n")
     monkeypatch.setenv(VAR, OLD)
     monkeypatch.setattr(common, "EXPORTED_BEFORE_ENV_FILE", {VAR: _digest(OLD)})
