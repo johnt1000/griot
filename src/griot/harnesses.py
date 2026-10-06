@@ -469,7 +469,7 @@ def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: 
         return "malformed"
     if not _is_interactive():
         print(f"  instructions: {path} has no up-to-date griot block. Run `griot assist install` "
-              f"in a terminal to be asked; nothing is written without your answer.")
+              f"in a terminal to be asked; there is no flag that answers, and nothing is written without your answer.")
         return "not-interactive"
 
     verb = "update the griot block in" if state == "outdated" else "add this to"
@@ -974,7 +974,8 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
     if not _is_interactive():
         print(f"  tool approval: {harness.display_name} asks before each griot tool call. Run "
               f"`griot assist install{'' if everywhere else ' --scope local'}` in a terminal to be asked "
-              f"whether the read-only ones may run without that; nothing is written without your answer.")
+              f"whether the read-only ones may run without that; there is no flag that answers, and nothing is "
+              f"written without your answer.")
         return "not-interactive"
 
     print(f"\n  griot can let {harness.display_name} call griot's read-only tools without asking each time, "
@@ -1179,7 +1180,12 @@ def main(argv=None) -> int:
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
-    p_install = sub.add_parser("install", help="Copies griot's bundled skills/agents into each detected harness's config dir")
+    p_install = sub.add_parser(
+        "install", help="Copies griot's bundled skills/agents into each detected harness's config dir",
+        description="Copies griot's bundled skills/agents into each detected harness's config dir, then asks, at an "
+                    "interactive terminal, whether to register the MCP server, to let its read-only tools run "
+                    "without a prompt and (--scope global) to add griot's block to the global instructions file. "
+                    "There is no flag that answers the last two: with no terminal they are left as they are.")
     p_install.add_argument(
         "--scope",
         choices=["local", "global"],
