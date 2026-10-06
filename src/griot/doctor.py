@@ -209,15 +209,22 @@ def check_repositories(common) -> dict:
     reports = freshness.repository_freshness()
     behind = [r for r in reports if r.get("behind")]
     without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]
-    if behind or without_code:
+    from griot import stats
+    refused = stats.platform_refused_names(reports)
+    if behind or without_code or refused:
         parts = []
         if behind:
-            from griot import stats
             parts.append("index behind in " + ", ".join(stats._behind_phrase(r) for r in behind))
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
-        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts),
-                      "griot index all   # or one with --repo <name>")
+        if refused:
+            parts.append(stats.platform_refused_phrase(refused))
+        # A refusal is fixed with the token first: indexing again before
+        # that is refused again.
+        fix = "griot index all   # or one with --repo <name>"
+        if refused:
+            fix = "griot auth list   # check the platform's token, then: " + fix
+        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
 

@@ -275,7 +275,11 @@ def test_a_run_the_platform_refused_entirely_does_not_count_as_indexing_it(platf
 def two_repo_run(tmp_path, monkeypatch):
     """Two registered repositories, `good` and `bad`, each with its own
     project on a fake GitHub; returns what was recorded and embedded."""
-    good, bad = GitRepo(tmp_path / "good"), GitRepo(tmp_path / "bad")
+    return _two_repos(tmp_path, monkeypatch)
+
+
+def _two_repos(tmp_path, monkeypatch, bad_name="bad"):
+    good, bad = GitRepo(tmp_path / "good"), GitRepo(tmp_path / bad_name)
     seen = {"runs": [], "documents": None, "good": str(good.path), "bad": str(bad.path)}
     monkeypatch.setattr(index_platform.common, "load_repos", lambda: [seen["good"], seen["bad"]])
     monkeypatch.setattr(index_platform, "_remote_url", lambda repo_path: f"git@github.com:group/{repo_path.name}.git")
@@ -415,3 +419,94 @@ def test_a_repository_on_no_known_platform_is_not_one_refused(two_repo_run, monk
                         lambda url: None if "/bad" in url else ("github", "group/good", None))
 
     assert not index_platform.main([])
+
+
+# --- the refused repository stays visible after the run -----------------------
+#
+# [debt 17 follow-up] The run above exits 1 and says so on stderr, and that
+# is all: the record held the refused repository only as failure ids, and
+# `griot doctor` and `griot stats` said nothing of it.
+
+def test_the_run_records_which_repository_the_platform_refused(two_repo_run, monkeypatch):
+    """By name, explicitly: deriving it from the failure ids would break
+    once more than MAX_RECORDED_FAILURES fetches were refused, and under
+    --path the ids carry another key than the repository's name."""
+    _refuse_everything_of(monkeypatch, "/bad")
+
+    index_platform.main([])
+
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["bad"]
+
+
+def test_the_refused_repository_is_recorded_when_nothing_else_was_indexed_either(two_repo_run, monkeypatch):
+    monkeypatch.setattr(index_platform.platforms, "fetch_pull_requests", lambda platform, project_id, host=None: [])
+    _refuse_everything_of(monkeypatch, "/bad")
+
+    index_platform.main([])
+
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["bad"]
+
+
+def test_a_repository_refused_in_part_is_not_recorded_as_refused(two_repo_run, monkeypatch):
+    monkeypatch.setattr(index_platform.platforms, "fetch_issues",
+                        _refuse_for("/bad", index_platform.platforms.fetch_issues))
+
+    index_platform.main([])
+
+    (run,) = two_repo_run["runs"]
+    assert not run.get("refused_repos")
+
+
+def test_every_repository_name_printed_is_made_printable(tmp_path, monkeypatch, capsys):
+    """A directory name can hold an escape sequence, which would drive the
+    terminal the run prints to."""
+    seen = _two_repos(tmp_path, monkeypatch, bad_name="bad\x1b[2Jx")
+    monkeypatch.setattr(index_platform.common, "load_repos", lambda: [seen["good"], seen["bad"], str(tmp_path / "gone\x1b[2J")])
+    _refuse_everything_of(monkeypatch, "Jx")
+
+    index_platform.main([])
+
+    out, err = capsys.readouterr()
+    assert "\x1b" not in out and "\x1b" not in err
+    assert "bad?[2Jx" in err and "bad?[2Jx" in out and "gone?[2J" in out
+
+
+def test_a_repository_name_asked_for_and_not_found_is_printed_printable(two_repo_run, monkeypatch, capsys):
+    assert index_platform.main(["--repo", "x\x1b[2J"]) == 1
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "x?[2J" in err
+
+
+def test_the_lines_of_a_repository_that_answered_are_printable(tmp_path, monkeypatch, capsys):
+    _two_repos(tmp_path, monkeypatch, bad_name="bad\x1b[2Jx")
+
+    index_platform.main([])
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "  bad?[2Jx [github:group/bad?[2Jx]: " in out
+
+
+def test_paths_that_are_not_directories_are_printed_printable(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(index_platform.common, "load_repos", lambda: [str(tmp_path / "gone\x1b[2J")])
+
+    assert index_platform.main([]) == 1
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "gone?[2J" in err
+
+
+@pytest.mark.parametrize("no_remote", [True, False], ids=["no remote", "unrecognized remote"])
+def test_a_repository_skipped_for_its_remote_is_named_printable(tmp_path, monkeypatch, capsys, no_remote):
+    _two_repos(tmp_path, monkeypatch, bad_name="bad\x1b[2Jx")
+    if no_remote:
+        monkeypatch.setattr(index_platform, "_remote_url", lambda repo_path: None)
+    else:
+        monkeypatch.setattr(index_platform.platforms, "detect_platform", lambda url: None)
+
+    index_platform.main([])
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "bad?[2Jx" in out
