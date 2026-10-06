@@ -191,6 +191,27 @@ reported as exported in "this shell (no shell file griot knows sets it)".
 Reading every mechanism that can set a variable is open-ended; the message
 says what it does not know rather than guessing.
 
+### 16. The attribution rule stops where the hooks stop
+
+The hooks refuse a message that credits an AI assistant (CONTRIBUTING.md),
+but a pull request's description and the message GitHub writes for a squash
+merge are made on the server, where no hook runs: there the rule is kept by
+review. The pattern also has edges, accepted because they are rare: a
+"generated with" followed by a word that is an agent's name
+(`generated with cursor-based paging`) is refused, and a "Generated with"
+with more than a few bytes of decoration before the assistant's name gets
+through in the C locale. A CI check on pull request text would close the
+first gap; it would also need the pattern in a second place.
+
+### 17. One repository refused entirely does not stop a platform run
+
+`griot index platform` fails the run (exit 1, recorded with an error) when
+every fetch was refused. With several repositories, one whose platform
+refused everything while the others answered only adds failures to a run
+that exits 0, so `griot index all` goes on. The refusals are in the run's
+failures and in `griot stats`; deciding that one repository's refusal is the
+whole run's failure was left for when it bites.
+
 ---
 
 ## Lessons
