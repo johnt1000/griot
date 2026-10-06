@@ -200,7 +200,11 @@ Two readers:
   progress, while it runs. It also reports `running: true` for it while no
   lock is held: the lock covers the embedding of each source, not the
   listing and reading before it, and the status used to say "not running"
-  about a run in that phase.
+  about a run in that phase. The registry of runs is kept in
+  `.index_jobs.json` in the data directory, so a server that restarts while
+  a run goes on finds it again (the same process: its pid and its start
+  time) and, when the run ended in between, reports the exit status the run
+  recorded at its end.
 - `griot_index_wait(timeout_seconds)` blocks for at most 300 seconds
   (30 by default; 0 answers at once), reading the file about once a second
   and sending `notifications/progress` to a client that passed a progress
