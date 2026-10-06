@@ -51,7 +51,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(doctor, "_latest_release", latest)
     monkeypatch.setattr(griot, "__version__", "0.2.1")
-    monkeypatch.setattr(update, "_development_install", lambda: state["development"])
+    monkeypatch.setattr(doctor, "development_install", lambda: state["development"])
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("subprocess.run only"))
     monkeypatch.setattr("griot.common.is_interactive", lambda: state["interactive"])
@@ -189,41 +189,41 @@ class _Distribution:
 
 def test_an_editable_install_is_development(monkeypatch):
     found = _Distribution(json.dumps({"url": "file:///Users/you/code/griot", "dir_info": {"editable": True}}))
-    monkeypatch.setattr(update.metadata, "distribution", lambda name: found)
+    monkeypatch.setattr(doctor.metadata, "distribution", lambda name: found)
 
-    reason = update._development_install()
+    reason = doctor.development_install()
 
     assert reason is not None and "/Users/you/code/griot" in reason
 
 
 def test_an_install_from_an_index_is_not_development(monkeypatch):
-    monkeypatch.setattr(update.metadata, "distribution", lambda name: _Distribution(None))
+    monkeypatch.setattr(doctor.metadata, "distribution", lambda name: _Distribution(None))
 
-    assert update._development_install() is None
+    assert doctor.development_install() is None
 
 
 def test_a_non_editable_install_from_a_directory_is_not_development(monkeypatch):
     found = _Distribution(json.dumps({"url": "file:///Users/you/code/griot", "dir_info": {}}))
-    monkeypatch.setattr(update.metadata, "distribution", lambda name: found)
+    monkeypatch.setattr(doctor.metadata, "distribution", lambda name: found)
 
-    assert update._development_install() is None
+    assert doctor.development_install() is None
 
 
 def test_no_installed_distribution_is_development(monkeypatch):
     """griot imported from a source tree on the path, with no package
     installed: there is nothing for an installer to upgrade."""
     def missing(name):
-        raise update.metadata.PackageNotFoundError(name)
+        raise doctor.metadata.PackageNotFoundError(name)
 
-    monkeypatch.setattr(update.metadata, "distribution", missing)
+    monkeypatch.setattr(doctor.metadata, "distribution", missing)
 
-    assert update._development_install() is not None
+    assert doctor.development_install() is not None
 
 
 def test_an_unreadable_direct_url_is_refused_not_guessed(monkeypatch):
-    monkeypatch.setattr(update.metadata, "distribution", lambda name: _Distribution("{not json"))
+    monkeypatch.setattr(doctor.metadata, "distribution", lambda name: _Distribution("{not json"))
 
-    assert update._development_install() is not None
+    assert doctor.development_install() is not None
 
 
 # --- the confirmation -----------------------------------------------------------------------------

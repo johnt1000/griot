@@ -20,42 +20,14 @@ check only; asking PyPI is what this explicit command is for.
 """
 
 import argparse
-import json
 import subprocess
 import sys
-from importlib import metadata
 
 from griot import doctor
 
 # Read in a new interpreter: this process has the old griot loaded, and its
 # metadata may be cached; only a fresh one sees what the installer left.
 _VERSION_PROGRAM = f"import importlib.metadata as m; print(m.version({doctor.DISTRIBUTION!r}))"
-
-
-def _development_install() -> str | None:
-    """Why this griot is a development install (a phrase naming where it
-    comes from), or None for an install an installer can upgrade.
-
-    PEP 610's direct_url.json is what pip, uv and pipx write for an install
-    from a directory; `dir_info.editable` marks an editable one. A file that
-    cannot be read is refused rather than taken as a regular install: a
-    wrong guess here replaces someone's checkout with a release."""
-    try:
-        distribution = metadata.distribution(doctor.DISTRIBUTION)
-    except metadata.PackageNotFoundError:
-        return f"griot runs from a source tree ({doctor.DISTRIBUTION} is not installed as a package)"
-    raw = distribution.read_text("direct_url.json")
-    if raw is None:
-        return None  # installed from an index: the ordinary case
-    try:
-        direct = json.loads(raw)
-        editable = direct.get("dir_info", {}).get("editable") is True
-        url = direct.get("url")
-    except (ValueError, AttributeError):
-        return f"griot's install record (direct_url.json) could not be read: {raw[:80]!r}"
-    if editable:
-        return f"an editable install of {url}"
-    return None
 
 
 def _installed_version(executable: str) -> str | None:
@@ -103,7 +75,7 @@ def main(argv=None) -> int:
         print(f"griot {installed} is newer than the newest release on PyPI ({newest}): nothing to update.")
         return 0
 
-    development = _development_install()
+    development = doctor.development_install()
     if development is not None:
         print(f"Error: griot {newest} is out, but this is a development install: {development}. An installer "
               f"would replace it with the release; update the checkout instead (git pull). Nothing was run.",

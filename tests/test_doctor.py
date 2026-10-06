@@ -646,6 +646,9 @@ def pypi(monkeypatch):
     monkeypatch.setattr(doctor, "_latest_release", latest)
     monkeypatch.setattr(griot, "__version__", "0.2.1")
     monkeypatch.delenv("GRIOT_UPDATE_CHECK", raising=False)
+    # The suite itself runs from an editable install; the tests about the
+    # printed upgrade are about an installed griot unless they say otherwise.
+    monkeypatch.setattr(doctor, "development_install", lambda: None)
     return state
 
 
@@ -871,6 +874,21 @@ def test_the_warning_lists_the_commands_when_it_cannot_tell(monkeypatch, pypi):
     fix = _release()["fix"]
 
     assert "pipx upgrade griot-rag" in fix and "uv tool upgrade griot-rag" in fix and " or " in fix
+
+
+def test_a_development_install_behind_the_release_is_told_to_update_the_checkout(monkeypatch, pypi):
+    """An installer would replace the checkout with the release: the doctor
+    must not print one there, the same refusal `griot update` makes."""
+    pypi["answer"] = "9.0.0"
+    monkeypatch.setattr(sys, "prefix", "/Users/you/code/griot/.venv")
+    monkeypatch.setattr(doctor, "development_install",
+                        lambda: "an editable install of file:///Users/you/code/griot")
+
+    check = _release()
+
+    assert check["status"] == "warn" and "9.0.0" in check["detail"]
+    assert "/Users/you/code/griot" in check["fix"] and "git pull" in check["fix"]
+    assert "install --upgrade" not in check["fix"] and "upgrade griot-rag" not in check["fix"]
 
 
 def test_the_upgrade_is_printed_never_run(monkeypatch, pypi):

@@ -33,6 +33,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from importlib import metadata
 from pathlib import Path
 
 from griot import ConfigurationError, UnknownEmbedProfile
@@ -494,6 +495,38 @@ def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[st
     return [shlex.join(argv) for argv in upgrade_argvs(prefix, base_prefix, executable)]
 
 
+def development_install() -> str | None:
+    """Why this griot is a development install (a phrase naming where it
+    comes from), or None for an install an installer can upgrade.
+
+    PEP 610's direct_url.json is what pip, uv and pipx write for an install
+    from a directory; `dir_info.editable` marks an editable one. A file that
+    cannot be read is refused rather than taken as a regular install: a
+    wrong guess here replaces someone's checkout with a release. A legacy
+    `setup.py develop` install writes no direct_url.json and so reads as an
+    install from an index: a known gap, left because that way of installing
+    predates PEP 610 and griot never documented it.
+
+    Here and not in update.py: the doctor prints an upgrade command too, and
+    must not print one that would replace a checkout."""
+    try:
+        distribution = metadata.distribution(DISTRIBUTION)
+    except metadata.PackageNotFoundError:
+        return f"griot runs from a source tree ({DISTRIBUTION} is not installed as a package)"
+    raw = distribution.read_text("direct_url.json")
+    if raw is None:
+        return None  # installed from an index: the ordinary case
+    try:
+        direct = json.loads(raw)
+        editable = direct.get("dir_info", {}).get("editable") is True
+        url = direct.get("url")
+    except (ValueError, AttributeError):
+        return f"griot's install record (direct_url.json) could not be read: {raw[:80]!r}"
+    if editable:
+        return f"an editable install of {url}"
+    return None
+
+
 def _upgrade_fix(commands: list[str]) -> str:
     if len(commands) == 1:
         return commands[0]
@@ -525,7 +558,14 @@ def check_release(common) -> dict:
     if mine is None or theirs is None:
         return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
     if mine < theirs:
-        return _check(RELEASE, WARN, f"{installed} is installed; {newest} is the newest release on PyPI",
+        detail = f"{installed} is installed; {newest} is the newest release on PyPI"
+        development = development_install()
+        if development is not None:
+            # An installer would replace the checkout with the release: the
+            # same refusal `griot update` makes, so no command is printed.
+            return _check(RELEASE, WARN, detail, f"update the checkout (git pull): this is a development install, "
+                                                 f"{development}")
+        return _check(RELEASE, WARN, detail,
                       _upgrade_fix(_upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
     if mine > theirs:
         return _check(RELEASE, OK, f"{installed} is newer than the newest release on PyPI ({newest}): "
