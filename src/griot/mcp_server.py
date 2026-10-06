@@ -850,7 +850,7 @@ def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = Non
 
 def _log_search(query: str, limit: int, results: list, elapsed: float, *,
                 repos: list[str] | None = None, source_types: list[str] | None = None,
-                mode: str = "vector") -> None:
+                mode: str = "vector", group_by_document: bool = False) -> None:
     """Records one griot_search call, the same way ask.py records a CLI
     question — same log_query(), same table, no second schema.
 
@@ -868,7 +868,7 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             # Same GRIOT_LOG_QUESTIONS contract the CLI honors — questions
             # about work repos are frequently sensitive, and the setting is
             # the user's answer to that, not the caller's to reinterpret.
-            question=query if common.log_questions_enabled() else "<omitted: GRIOT_LOG_QUESTIONS=false>",
+            question=common.logged_question(query),
             # "which surface was this?" — the question the MCP validation
             # exists to answer. Without it, agent traffic and terminal
             # traffic are indistinguishable in the same table.
@@ -882,9 +882,17 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             # How it ranked: top_score is a cosine similarity only for
             # "vector", and griot stats takes its median over those alone.
             mode=mode,
+            # Grouped, `limit` counts documents and each result is the best
+            # chunk of one: `griot golden-set review` must not make a case
+            # from it, since a case is checked by an ungrouped search.
+            group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
             sources=[ask.source_label(r.payload or {}) for r in results],
+            # What `griot golden-set review` needs to turn this query into a
+            # case: a label is cut and redacted, so it cannot say which
+            # document must come back.
+            results=common.logged_results(results),
             # The most direct "did retrieval find anything relevant?"
             # signal: a run of searches whose BEST score is low says the
             # index isn't answering, which no query count would reveal.
@@ -1305,7 +1313,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     results = common.search(query, limit, group_by_document=group_by_document,
                             repos=repos, source_types=source_types, diverse=True, mode=mode)
     _log_search(query, limit, results, time.time() - started_at, repos=repos, source_types=source_types,
-                mode=mode)
+                mode=mode, group_by_document=group_by_document)
     behind = freshness.behind_among([(r.payload or {}).get("repo") for r in results if (r.payload or {}).get("repo")])
     note = SEARCH_RESULT_NOTE
     if behind:

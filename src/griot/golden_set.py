@@ -8,8 +8,10 @@ the same function that already feeds the Recall@k/MRR ruler), with
 case-by-case human approval — no case enters the golden set without explicit
 confirmation. `add` runs a REAL search against the current index and lets the
 human pick which results form the `must_include` — covers questions that
-don't come from any specific commit. `list`/`remove` round out the CRUD, same
-pattern as `griot repos`."""
+don't come from any specific commit. `review` derives candidates from the
+query log instead (questions asked more than once, or that scored low), and a
+person at a terminal picks which logged result was right. `list`/`remove`
+round out the CRUD, same pattern as `griot repos`."""
 
 import argparse
 import contextlib
@@ -18,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from griot import common, retrieval_eval
+from griot import common, logdb, retrieval_eval
 
 # Fields that identify an item of each source_type specifically but without
 # overfitting (e.g. it does NOT include chunk_index for code — a question
@@ -41,21 +43,10 @@ def has_effective_constraint(entry: dict) -> bool:
     return any(value is not None for value in entry.values())
 
 
-def _must_include_entry(payload: dict) -> dict:
-    source_type = payload.get("source_type", "code")
-    entry = {"source_type": source_type}
-    # [review finding] `repo` is written only when the payload HAS one. It
-    # used to be set unconditionally to payload.get("repo"), so a payload
-    # without a repo produced {"repo": None} — an entry that matches only
-    # results which themselves have no repo, i.e. never. Same None-versus-
-    # absent confusion as the guard in add_case(), pointing the other way:
-    # a case that can never pass instead of one that can never fail.
-    if payload.get("repo") is not None:
-        entry["repo"] = payload["repo"]
-    for field in _IDENTIFYING_FIELDS.get(source_type, []):
-        if field in payload:
-            entry[field] = payload[field]
-    return entry
+# Moved to common.case_entry() when the query log began recording the same
+# entry for every result (see `review`); this name is what `add` and the
+# tests have always used.
+_must_include_entry = common.case_entry
 
 
 def _load() -> list:
@@ -379,6 +370,331 @@ def cmd_remove(index: int) -> int:
     return 0
 
 
+# --- review: cases from the questions actually asked ---------------------
+#
+# The golden set grows from real use here, the way `suggest` grows it from
+# git history: the query log proposes, a person approves each case. Nothing
+# is written anywhere but the golden set and the private record of
+# rejections beside it; the index stays a copy derived from the
+# repositories alone, which is why this reads the log and never the index.
+
+# Fewer vector searches than this in one collection and none of them is
+# called "hard": the bottom quarter of a handful of scores moves with every
+# new search, so it would measure the sample, not the question.
+HARD_MIN_SEARCHES = 20
+
+
+def query_key(text: str) -> str:
+    """When two logged questions are the same question: the same set of
+    words, ignoring case, punctuation, spacing and word order. Cheap and
+    explainable (no embedding call, nothing paid): "How is the lock
+    released?" and "released: how is the lock" are one question, "how is
+    the lock acquired" is another. Anything looser (stemming, synonyms)
+    would merge questions a person meant differently."""
+    import unicodedata
+
+    spaced = "".join(" " if unicodedata.category(ch).startswith("P") else ch for ch in text.casefold())
+    return " ".join(sorted(set(spaced.split())))
+
+
+def rejected_path() -> Path:
+    """The private record of questions a person rejected in a review: beside
+    the golden set, in the configuration directory, never in the index."""
+    return common.GOLDEN_SET_PATH.with_name("golden_set_rejected.json")
+
+
+def _digest(key: str) -> str:
+    # A digest, not the text: remembering "never offer this again" should
+    # not keep a copy of a question the person chose to throw away.
+    import hashlib
+
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _load_rejected() -> set[str]:
+    path = rejected_path()
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        # An unreadable record offers rejected questions again: a person
+        # sees them and can reject them again, which is the harmless way to fail.
+        return set()
+    return {item for item in data if isinstance(item, str)} if isinstance(data, list) else set()
+
+
+def _reject(key: str) -> None:
+    rejected = _load_rejected()
+    rejected.add(_digest(key))
+    path = rejected_path()
+    common.secure_mkdir(path.parent)
+    common.secure_write_text_atomic(path, json.dumps(sorted(rejected)))
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _mode(row: dict) -> str:
+    return row.get("mode") or "vector"  # a row from before modes existed was a vector search
+
+
+def _hard_thresholds(rows: list[dict]) -> dict:
+    """Per collection, the top score at or under which a vector search counts
+    as hard: the first quartile of that collection's vector top scores.
+
+    Per collection because two embedding models do not score on one scale.
+    Vector only: a keyword score grows with the query's words and their
+    rarity, and a hybrid score is a rank (reciprocal rank fusion), so a low
+    one says nothing about how well the best result matched. The other hard
+    signal, the vector and keyword rankings disagreeing, is not used: a
+    hybrid search logs only the fused results, not the two rankings."""
+    import statistics
+
+    scores: dict = {}
+    for row in rows:
+        if _mode(row) == "vector" and _is_number(row.get("top_score")):
+            scores.setdefault(row.get("collection"), []).append(float(row["top_score"]))
+    return {collection: statistics.quantiles(values, n=4, method="inclusive")[0]
+            for collection, values in scores.items() if len(values) >= HARD_MIN_SEARCHES}
+
+
+def _unlike_the_check(row: dict) -> list[str]:
+    """How this logged search differs from the one that checks a case.
+
+    quality_check.run_golden_set() checks every case with a plain vector
+    search over every repository, ungrouped. A case made from a keyword or
+    hybrid ranking, a search narrowed to some repositories or source types,
+    or a grouped one (where the limit counts documents, not chunks) asserts
+    what THAT search returned, so it can fail on every check without
+    retrieval getting any worse: a permanently red case in the very ruler
+    the golden set is. Empty when the check would repeat this search."""
+    unlike = []
+    if _mode(row) != "vector":
+        unlike.append(f"a {_mode(row)} search")
+    narrowed = [f"{name} {', '.join(map(str, row[name]))}" for name in ("repos", "source_types")
+                if isinstance(row.get(name), list) and row[name]]
+    if narrowed:
+        unlike.append("narrowed to " + "; ".join(common.shown(n) for n in narrowed))
+    if row.get("group_by_document"):
+        unlike.append("grouped by document")
+    return unlike
+
+
+def _has_pickable_results(row: dict) -> bool:
+    return any(isinstance(e, dict) for e in row.get("results") or [])
+
+
+def _candidate(kind: str, key: str, group: list[dict], thresholds: dict) -> dict:
+    # The newest asking a case can be made from (results recorded, and a
+    # search the check repeats); failing that, the newest with results;
+    # failing that, the newest.
+    row = (next((r for r in reversed(group) if _has_pickable_results(r) and not _unlike_the_check(r)), None)
+           or next((r for r in reversed(group) if _has_pickable_results(r)), None)
+           or group[-1])
+    sources = [s for s in row.get("sources") or [] if isinstance(s, str)]
+    results = row.get("results")
+    if not isinstance(results, list) or len(results) != len(sources):
+        results = None  # logged before results were recorded: shown, not made a case
+    limit = row.get("limit")
+    return {
+        "kind": kind, "key": key, "query": row["question"], "times": len(group),
+        "projects": len({r.get("project") for r in group if r.get("project")}),
+        "mode": _mode(row), "collection": row.get("collection"),
+        "top_score": row.get("top_score") if _is_number(row.get("top_score")) else None,
+        "threshold": thresholds.get(row.get("collection")),
+        "limit": limit if isinstance(limit, int) and not isinstance(limit, bool) and limit >= 1 else CASE_LIMIT,
+        "timestamp": row.get("timestamp"), "unlike": _unlike_the_check(row),
+        "sources": sources, "results": results,
+    }
+
+
+def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dict:
+    """Data half of `golden-set review`: questions from the query log worth
+    making into cases, none written.
+
+    Two kinds, repeated first: a question asked more than once (by
+    query_key(), across sessions and projects), most asked first; then a
+    vector search whose best result scored in the bottom quarter of its
+    collection's (see _hard_thresholds()), lowest first. A question already
+    in the golden set, or rejected in an earlier review, is not offered.
+    A search logged without its question (GRIOT_LOG_QUESTIONS off) cannot
+    be: it is counted in `omitted`.
+
+    {candidates, searches, omitted}. `rows` defaults to every search the log
+    still keeps."""
+    if rows is None:
+        rows = logdb.read_since(common.LOG_DIR, "queries", days=common.LOG_RETENTION_DAYS)
+    covered = {query_key(case["query"]) for case in _load()
+               if isinstance(case, dict) and isinstance(case.get("query"), str)}
+    rejected = _load_rejected()
+    omitted = 0
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        question = row.get("question")
+        if question == common.OMITTED_QUESTION:
+            omitted += 1
+            continue
+        if not isinstance(question, str):
+            continue
+        key = query_key(question)
+        if key and key not in covered and _digest(key) not in rejected:
+            groups.setdefault(key, []).append(row)
+
+    # Over every search, not only the candidates: the threshold describes
+    # how this collection usually scores.
+    thresholds = _hard_thresholds(rows)
+    repeated, hard = [], []
+    for key, group in groups.items():
+        if len(group) > 1:
+            repeated.append(_candidate("repeated", key, group, thresholds))
+            continue
+        row = group[0]
+        threshold = thresholds.get(row.get("collection"))
+        if threshold is not None and _mode(row) == "vector" and _is_number(row.get("top_score")) \
+                and row["top_score"] <= threshold:
+            hard.append(_candidate("hard", key, group, thresholds))
+    repeated.sort(key=lambda c: (c["times"], c["timestamp"] or ""), reverse=True)
+    hard.sort(key=lambda c: c["top_score"])
+    return {"candidates": (repeated + hard)[:limit], "searches": len(rows), "omitted": omitted}
+
+
+def _not_logged_note(omitted: int) -> str | None:
+    if not omitted and common.log_questions_enabled():
+        return None
+    said = f"{omitted} search(es) were logged without their question" if omitted else "No question was withheld yet"
+    return (f"{said}: question logging is "
+            f"{'on now' if common.log_questions_enabled() else 'off (GRIOT_LOG_QUESTIONS=false)'}, and a search "
+            f"logged without its question cannot be reviewed. To log questions from now on: "
+            f"griot config set log-questions true")
+
+
+_CANNOT = ("cannot become a case: it was logged before griot recorded what a case matches on, "
+           "or its name looked like a credential")
+
+
+def _unlike_note(unlike: list[str]) -> str:
+    return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked by a "
+            f"plain vector search over every repository, ungrouped, which may never return them. Asked again "
+            f"as a plain vector search, the question can be.")
+
+
+def _show(candidate: dict, number: int, total: int) -> None:
+    print(f"\n[{number}/{total}] {common.shown(candidate['query'].splitlines()[0] if candidate['query'] else '')}")
+    if candidate["kind"] == "repeated":
+        where = f", from {candidate['projects']} projects" if candidate["projects"] > 1 else ""
+        print(f"  Why: asked {candidate['times']} times{where}.")
+    else:
+        print(f"  Why: low score. Its best result scored {candidate['top_score']:.2f}, at or under "
+              f"{candidate['threshold']:.2f}: the bottom quarter of the vector searches in this collection.")
+    unlike = candidate["unlike"]
+    print(f"  Results logged for it ({candidate['mode']} search, {str(candidate['timestamp'] or '?')[:10]}):")
+    results = candidate["results"]
+    for j, label in enumerate(candidate["sources"], start=1):
+        flag = "" if not unlike and results is not None and isinstance(results[j - 1], dict) \
+            else "  (cannot become a case)"
+        print(f"    [{j}] {common.shown(label)}{flag}")
+    if unlike:
+        print(f"  {_unlike_note(unlike)}")
+    elif results is None:
+        print(f"  These results {_CANNOT}. Asked again, the question can be.")
+
+
+def _ask(candidate: dict) -> str | list[dict]:
+    """The person's answer for one candidate: "skip", "none", "reject",
+    "quit", or the must_include entries of the results they picked."""
+    sources, results = candidate["sources"], candidate["results"]
+    pickable = not candidate["unlike"] and results is not None and any(isinstance(e, dict) for e in results)
+    prompt = (("Which result is the right one? number(s), comma-separated; " if pickable else "")
+              + "n = none of them, s = skip, r = reject (never offer again), q = quit: ")
+    while True:
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            return "quit"
+        if answer in ("", "s", "skip"):
+            return "skip"
+        if answer in ("n", "none"):
+            return "none"
+        if answer in ("r", "reject"):
+            return "reject"
+        if answer in ("q", "quit"):
+            return "quit"
+        try:
+            picked = sorted({int(part) for part in answer.split(",") if part.strip()})
+        except ValueError:
+            print("  Answer with numbers (e.g. 1,3), n, s, r or q.")
+            continue
+        wrong = [j for j in picked if not 1 <= j <= len(sources)]
+        if not picked or wrong:
+            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{len(sources)}).")
+            continue
+        if candidate["unlike"]:
+            print(f"  {_unlike_note(candidate['unlike'])}")
+            continue
+        unusable = [j for j in picked if results is None or not isinstance(results[j - 1], dict)]
+        if unusable:
+            print(f"  Result {', '.join(map(str, unusable))} {_CANNOT}.")
+            continue
+        return [results[j - 1] for j in picked]
+
+
+def cmd_review(limit: int = 10) -> int:
+    if limit < 1:
+        print(f"Error: --limit must be at least 1 (got {limit}).", file=sys.stderr)
+        return 2
+    # A person decides which result was right: that is what makes a case
+    # worth trusting. Like the confirmations (see common.confirm), a guard
+    # against the plain command run from an agent's shell, not a boundary.
+    if not common.is_interactive():
+        print("Error: the review asks a person which result was the right one, and there is no terminal to ask "
+              "on. Nothing was changed. Run it in an interactive terminal.", file=sys.stderr)
+        return 2
+    try:
+        found = review_candidates(limit=limit)
+    except (OSError, ValueError) as e:
+        print(f"Error: cannot read {common.GOLDEN_SET_PATH}: {e}", file=sys.stderr)
+        return 1
+    note = _not_logged_note(found["omitted"])
+    candidates = found["candidates"]
+    if not candidates:
+        print(f"No candidates among {found['searches']} logged search(es): none asked more than once, or scoring "
+              f"in the bottom quarter of its collection's vector searches (of at least {HARD_MIN_SEARCHES}), "
+              f"that is not already a case or rejected.")
+        if note:
+            print(note)
+        return 0
+    if note:
+        print(note)
+
+    added = 0
+    for number, candidate in enumerate(candidates, start=1):
+        _show(candidate, number, len(candidates))
+        try:
+            answer = _ask(candidate)
+        except KeyboardInterrupt:
+            print(f"\nStopped. {added} case(s) added to {common.GOLDEN_SET_PATH}.")
+            return 130
+        if answer == "quit":
+            break
+        if answer == "none":
+            print("  Nothing added: a case needs the result that should come back. It will be offered again.")
+        elif answer == "reject":
+            _reject(candidate["key"])
+            print("  Rejected: it will not be offered again.")
+        elif isinstance(answer, list):
+            try:
+                add_case(candidate["query"], answer, limit=candidate["limit"])
+            except ValueError as e:
+                print(f"  Not added: {e}")
+                continue
+            added += 1
+            print("  Case added.")
+    print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="griot golden-set",
@@ -395,6 +711,10 @@ def main(argv=None) -> int:
     p_add.add_argument("query", help="Natural language question/term")
     p_add.add_argument("--limit", type=int, default=5, help="How many results to show to choose from (default: %(default)s)")
 
+    p_review = sub.add_parser("review", help="Offers questions from the query log (asked more than once, or scoring "
+                                             "low) as cases; at a terminal, you pick the right result")
+    p_review.add_argument("--limit", type=int, default=10, help="How many candidates to offer (default: %(default)s)")
+
     sub.add_parser("list", help="Lists the already-curated cases")
 
     p_remove = sub.add_parser("remove", help="Removes a case by number (see `list`)")
@@ -408,6 +728,8 @@ def main(argv=None) -> int:
         return cmd_add(args.query, limit=args.limit)
     if args.action == "list":
         return cmd_list()
+    if args.action == "review":
+        return cmd_review(limit=args.limit)
     # Checked before asking, and the question shows WHICH case: a number
     # alone is easy to get wrong after an earlier removal shifted the list.
     try:

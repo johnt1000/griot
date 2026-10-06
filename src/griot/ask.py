@@ -77,7 +77,7 @@ def main(argv=None):
         # [M1] GRIOT_LOG_QUESTIONS=false omits the question text from the
         # persistent log (metrics keep being recorded) — questions about
         # work repos are frequently sensitive.
-        question=args.question if common.log_questions_enabled() else "<omitted: GRIOT_LOG_QUESTIONS=false>",
+        question=common.logged_question(args.question),
         # Counterpart to mcp_server._log_search()'s via="mcp": both surfaces
         # write to the same table, so each has to say which one it was or
         # the two become indistinguishable in analysis.
@@ -89,6 +89,9 @@ def main(argv=None):
         mode=mode,
         num_sources=len(results), duration_seconds=round(elapsed, 2),
         sources=[source_label(r.payload or {}) for r in results],
+        # What `griot golden-set review` needs to turn this question into a
+        # case: the labels above are for reading only.
+        results=common.logged_results(results),
         # [real finding] without this, griot stats never saw chat spend —
         # only indexing wrote spend_today_usd, but it's the SAME circuit
         # breaker for both (shared .spend_state.json).

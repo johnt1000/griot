@@ -645,7 +645,7 @@ def build_parser() -> argparse.ArgumentParser:
         # inventory in sync. The server answers list_tools() authoritatively.
         ("mcp", "Starts the MCP server (stdio) — exposes search, status, quality and management tools to an MCP client"),
         ("repos", "Manages the list of repos indexed in bulk (add/list/remove)"),
-        ("golden-set", "Manages the curated golden set for quality-check (suggest/add/list/remove)"),
+        ("golden-set", "Manages the curated golden set for quality-check (suggest/review/add/list/remove)"),
         ("assist", "Installs griot's Claude Code/opencode skills and agents for onboarding, indexing and workflow help (install)"),
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),

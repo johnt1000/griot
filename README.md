@@ -206,7 +206,7 @@ The vector store is embedded (no server), so only one process can hold a given c
 
 | Path | Contents |
 |---|---|
-| `~/.config/griot/` | `.env` (credentials, 0600), `repos.json`, `quality_golden_set.json` |
+| `~/.config/griot/` | `.env` (credentials, 0600), `repos.json`, `quality_golden_set.json`, `golden_set_rejected.json` (questions rejected in `golden-set review`, as digests) |
 | `~/.local/share/griot/` | `qdrant_data/` (vectors + indexed content), `models/` (local embedding models), `logs/`, `.spend_state.json`, `.index_jobs.json` (indexing runs started from the MCP server) |
 
 Override with `GRIOT_CONFIG_DIR` / `GRIOT_DATA_DIR` (XDG variables are also honored). Everything griot writes is chmod 0600 (files) / 0700 (dirs).
@@ -239,10 +239,13 @@ The most used ones; `griot config list` shows them all.
 ```bash
 griot quality-check              # self-check: sampled points must find themselves
 griot golden-set suggest ~/code/my-app  # derive curated test cases from that repository's git log (human-approved)
+griot golden-set review          # curate cases from the questions actually asked (at a terminal)
 griot golden-set add "query"     # curate a case from a real search
 ```
 
 `griot quality-check` scores retrieval against your curated golden set — useful before/after switching embedding profiles.
+
+`griot golden-set review` grows the golden set from real use. It reads the query log (`griot ask` and the `griot_search` tool record each question) and offers, at most `--limit` (10) at a time: first the questions asked more than once, most asked first, in any session or project, including the same session (an agent retrying a search counts too; the same words count as the same question, whatever the case, punctuation or word order); then the vector searches whose best result scored in the bottom quarter of that collection's vector searches (once there are at least 20 of them; keyword and hybrid scores are not similarity, so they are not used). Only `griot_search` logs a best score, so a `griot ask` question can be offered as asked more than once but never as scoring low. For each it shows the question, why it is a candidate, and the results logged for it; you type the number of the right one (or several), `n` when none of them was, `s` to skip, `r` to reject it for good, `q` to stop. A pick becomes a case exactly as `golden-set add` makes one, asserting that result comes back. Questions already in the golden set and ones you rejected are not offered again; rejections are kept as digests, not text, in `golden_set_rejected.json` beside the golden set. Nothing is written to the index. A case is checked by a plain vector search over every repository, ungrouped (see `griot quality-check`), so only a search like that can become one: a keyword or hybrid search, one narrowed with `repos` or `source_types`, or one grouped by document is shown, with the reason, but cannot be picked (when the same question was also asked as a plain search, that asking is the one offered). The same goes for a search logged before griot recorded what a case needs, and for a result whose name looked like a credential. With `GRIOT_LOG_QUESTIONS=false` there is nothing to review, and the command says so.
 
 ### Credentials in indexed content
 
