@@ -100,9 +100,11 @@ def set_provider_key(provider: str, key: str) -> bool:
     Falls back to the existing common.env_file_set() path (same one
     cmd_set() always used) whenever the keychain is unavailable — no
     `keyring` installed, no reachable backend (headless Linux without a
-    Secret Service provider, a container), or any other failure. This
-    fallback is silent by design: a missing OS keychain is an expected,
-    normal environment, not an error condition worth surfacing.
+    Secret Service provider, a container), or any other failure. The
+    fallback is not an error (a missing OS keychain is a normal
+    environment), so it does not fail here; `griot auth list` and
+    `griot doctor` say where each key is kept and whether a keychain is
+    reachable (common.keychain_status()), so it is not silent either.
 
     [real gap, review-caught] A credential that already exists in
     plaintext .env (set before this feature existed, or on a machine that
@@ -190,16 +192,52 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
           f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
 
 
+def keychain_phrase(keychain: dict) -> str:
+    """Where a key set now goes, from common.keychain_status(): said by
+    `auth list` and `doctor` so the fallback to the plaintext file is never
+    silent. Not installed and not reachable get different advice: the extra
+    fixes the first, not the second."""
+    if keychain["available"]:
+        return f"the OS keychain ({keychain['backend']}) is reachable: a key set now is stored there"
+    if keychain["installed"]:
+        why = "keyring is installed but finds none: on Linux it needs a Secret Service provider"
+    else:
+        why = 'the keyring package is not installed: pip install "griot[keychain]"'
+    return f"no OS keychain backend ({why}), so keys are kept in plaintext in {common.ENV_PATH} (mode 0600)"
+
+
+def where_stored(origin: dict) -> str:
+    """Where a configured credential is kept, from common.credential_origin():
+    a place, never a value."""
+    if origin["stored"] == "keychain":
+        where = "in the OS keychain"
+    elif origin["stored"] == "file":
+        where = f"in plaintext in {common.ENV_PATH}"
+    else:
+        return "from the environment only (griot stores none)"
+    if origin["source"] == "environment" and not origin["shadows_stored"]:
+        where += f", also exported in {', '.join(origin['exported_in']) or 'this shell'}"
+    return where
+
+
 def cmd_list() -> int:
     # env-first precedence preserved exactly as before (a shell-exported
     # value always wins over the file for THIS process) — provider_status()
     # exposes both explicitly (file_masked/env_masked) for a UI that needs
     # to show the file's value even when it's currently shadowed; the CLI
     # keeps showing only what's effectively active.
+    keychain = common.keychain_status()
+    print(f"Storage: {keychain_phrase(keychain)}.")
     for status in provider_status():
         masked = status["env_masked"] or status["file_masked"]
         line = f"✓ configured ({masked})" if masked else f"✗ missing — griot auth set {status['provider']}"
+        # The keychain is read here (CLI only, never on an MCP path): where a
+        # key is kept is what makes a plaintext copy visible at all.
         origin = common.credential_origin(status["env_var"])
+        if masked:
+            line += f", {where_stored(origin)}"
+            if origin["stored"] == "file" and keychain["available"]:
+                line += " — `griot auth migrate` moves it to the keychain"
         if origin["shadows_stored"]:
             where = ", ".join(origin["exported_in"]) or "this shell"
             line += (f" — from the environment ({where}), which overrides the key griot stores; the stored one "

@@ -146,26 +146,52 @@ def check_profile(common) -> dict:
 
 
 def check_credentials(common) -> dict:
-    """A credential exported in the shell overrides the one griot stores:
+    """Where each credential is kept, and what hides or exposes it. Names and
+    places, never values, and it moves nothing: a secret is moved only when
+    the person asks (`griot auth migrate`).
+
+    A credential exported in the shell overrides the one griot stores:
     `griot auth set` then changes nothing in that shell, and an API that
-    refuses the key looks like a bad new key. Places, never values."""
-    overridden, exported = [], []
+    refuses the key looks like a bad new key. A credential still in the
+    plaintext file while a keychain is reachable is one `griot auth migrate`
+    would protect; with no keychain reachable the file is griot's fallback,
+    which is said here instead of happening silently."""
+    from griot import auth
+
+    keychain = common.keychain_status()
+    overridden, exported, in_file, in_keychain = [], [], [], []
     for provider, env_var in sorted(common.credential_env_vars().items()):
         origin = common.credential_origin(env_var)
+        {"file": in_file, "keychain": in_keychain}.get(origin["stored"], []).append(env_var)
         if origin["source"] != "environment":
             continue
         where = ", ".join(origin["exported_in"]) or "this shell"
         (overridden if origin["shadows_stored"] else exported).append((env_var, where))
+
+    details, fixes = [], []
     if overridden:
-        return _check("credentials", WARN,
-                      "exported in the shell with a value other than the one griot stores, which it hides: "
-                      + "; ".join(f"{var} ({where})" for var, where in overridden),
-                      "remove the export from " + "; ".join(where for _, where in overridden)
-                      + ", and `unset` it in terminals already open")
+        details.append("exported in the shell with a value other than the one griot stores, which it hides: "
+                       + "; ".join(f"{var} ({where})" for var, where in overridden))
+        fixes.append("remove the export from " + "; ".join(where for _, where in overridden)
+                     + ", and `unset` it in terminals already open")
+    if in_file:
+        details.append(f"in plaintext in {common.ENV_PATH}: {', '.join(in_file)}")
+        if keychain["available"]:
+            fixes.append("`griot auth migrate` moves them into the OS keychain")
+        elif keychain["installed"]:
+            fixes.append("make an OS keychain backend reachable (on Linux, a Secret Service provider), "
+                         "then run `griot auth migrate`")
+        else:
+            fixes.append('pip install "griot[keychain]", then run `griot auth migrate`')
+    if in_keychain:
+        details.append(f"in the OS keychain: {', '.join(in_keychain)}")
     if exported:
-        return _check("credentials", OK, "from the shell, and griot stores no other value: "
-                      + "; ".join(f"{var} ({where})" for var, where in exported))
-    return _check("credentials", OK, "none is overridden by the shell")
+        details.append("from the environment, and griot stores no other value: "
+                       + "; ".join(f"{var} ({where})" for var, where in exported))
+    if not overridden:
+        details.append("none is overridden by the shell")
+    details.append(auth.keychain_phrase(keychain))
+    return _check("credentials", WARN if fixes else OK, "; ".join(details), "; ".join(fixes) or None)
 
 
 def check_index(common) -> dict:

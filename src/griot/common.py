@@ -1190,6 +1190,31 @@ def _keychain_delete(env_var: str) -> bool:
         return False
 
 
+def keychain_status() -> dict:
+    """Whether a credential set now would go to an OS keychain, so the
+    fallback to the plaintext file can be said instead of happening silently.
+
+    {"available": bool, "backend": its name or None, "installed": whether
+    `keyring` imports at all}: "not installed" is fixed by the extra, "no
+    backend" is not (headless Linux, a container), and the advice differs.
+    Asks keyring which backend it chose and reads no credential, so it never
+    makes macOS ask the person. keyring falls back to its `fail` backend
+    (priority 0) when nothing is reachable, and `null` (priority -1) turns it
+    off: neither stores anything."""
+    try:
+        import keyring
+    except Exception:
+        return {"available": False, "backend": None, "installed": False}
+    try:
+        backend = keyring.get_keyring()
+        if backend.priority > 0:
+            return {"available": True, "backend": str(getattr(backend, "name", type(backend).__name__)),
+                    "installed": True}
+    except Exception:
+        pass
+    return {"available": False, "backend": None, "installed": True}
+
+
 # The files a shell reads at start where a variable is usually exported. Read
 # only to say WHERE (file and line), never what.
 _SHELL_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin", ".bashrc", ".bash_profile", ".profile",

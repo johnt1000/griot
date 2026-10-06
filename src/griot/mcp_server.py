@@ -1783,7 +1783,11 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
     return {
         "providers": [{"provider": s["provider"], "configured": s["configured"]}
                       for s in auth.provider_status()],
-        "how_to_set": "griot auth set <provider>    # hidden prompt; stores in the OS keychain",
+        # Not "stores in the OS keychain" flatly: with no backend reachable it
+        # goes to the plaintext .env, and checking here would read the keychain
+        # on every call. `griot auth list` says which, from a terminal.
+        "how_to_set": ("griot auth set <provider>    # hidden prompt; stores in the OS keychain when one is "
+                       "reachable, else in <config>/.env (plaintext, 0600); `griot auth list` says which"),
         "how_to_remove": "griot auth remove <provider>",
         "why_not_here": (
             "Credentials are never set through MCP: a value typed into a chat reaches the "
