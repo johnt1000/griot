@@ -1035,6 +1035,9 @@ class LastIndexedInfo(TypedDict):
     # that case, and an agent reading this must be able to tell a failure
     # apart from a run that succeeded without doing any work.
     error: str | None
+    # The repositories a platform run could fetch nothing of; None for any
+    # other run, and for one that refused nothing.
+    refused_repos: list[str] | None
 
 
 class _IndexStatusMayLack(_WhyNoPointCount, total=False):

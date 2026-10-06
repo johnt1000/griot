@@ -390,9 +390,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if refused:
         attention.append(platform_refused_phrase(refused)
                          + " — check the platform's token (`griot auth list`), then `griot index platform`")
-    if last_indexed.get("error"):
+    if last_indexed.get("error") and not refusal_names_last_run(last_indexed, repositories):
         # A run with no counts died; one with counts finished and could not
-        # do its job (the platform refused every fetch, say).
+        # do its job (the platform refused every fetch, say). A refusal the
+        # line above already names is not said a second time.
         what = "did not finish" if last_indexed.get("indexed") is None else "failed"
         attention.append(f"the last indexing run {what}: {last_indexed['error']}")
     if index_status.get("spend_ceiling_exceeded"):
@@ -751,6 +752,22 @@ def platform_refused_names(reports: list[dict]) -> list[str]:
     platform run that concerned them (freshness.py), as they may be printed:
     a directory name can hold an escape sequence."""
     return [common.printable(r["repo"]) for r in reports if r.get("platform_refused")]
+
+
+def refusal_names_last_run(last_indexed: dict, reports: list[dict]) -> bool:
+    """Whether the last run failed only because its platform refused
+    repositories that the platform_refused_phrase() line already names.
+
+    Then `griot stats` and `griot doctor` leave out their generic "the last
+    indexing run failed" line: the same refusal said twice, and the line
+    naming the repositories says more. Any other failure keeps it, and so
+    does a refusal of a repository no longer registered (no line names it)
+    or a run recorded before `refused_repos` existed (it names nothing)."""
+    refused = last_indexed.get("refused_repos")
+    if not last_indexed.get("error") or not isinstance(refused, list) or not refused:
+        return False
+    named = set(platform_refused_names(reports))
+    return all(isinstance(name, str) and common.printable(name) in named for name in refused)
 
 
 def platform_refused_phrase(names: list[str]) -> str:

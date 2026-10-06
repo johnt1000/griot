@@ -3957,6 +3957,14 @@ def _points_error(collection: str, error: Exception) -> str:
     return f"unreadable: {error}"
 
 
+def _names_or_none(value) -> list[str] | None:
+    """`value` when it is a non-empty list of strings, else None: a field a
+    run record should hold as names, read from a log that can be edited."""
+    if isinstance(value, list) and value and all(isinstance(name, str) for name in value):
+        return value
+    return None
+
+
 def get_index_status(collection: str | None = None, *, reuse_active_handle: bool = True) -> dict:
     """Snapshot of state for "does this collection have data? when was it
     last indexed? is any indexing running right now?" (section 2.4 of the
@@ -4050,6 +4058,15 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             # successful no-op — the exact illusion recording died runs
             # exists to remove.
             "error": record.get("error"),
+            # The repositories a platform run could fetch nothing of
+            # (index_platform.py), None for any other run. Lets `griot
+            # doctor` and `griot stats` say a run refused entirely once,
+            # by the line naming those repositories (stats.py::
+            # refusal_names_last_run), instead of twice. Anything but a list
+            # of names (a record edited by hand) is None: griot_index_status
+            # declares a list, and a value of another shape would fail the
+            # whole tool, not just this field.
+            "refused_repos": _names_or_none(record.get("refused_repos")),
         }
 
     from griot import freshness
