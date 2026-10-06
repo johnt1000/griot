@@ -206,15 +206,13 @@ def check_credentials(common) -> dict:
         {"file": in_file, "keychain": in_keychain}.get(origin["stored"], []).append(env_var)
         if origin["source"] != "environment":
             continue
-        where = ", ".join(origin["exported_in"]) or "this shell"
-        (overridden if origin["shadows_stored"] else exported).append((env_var, where))
+        (overridden if origin["shadows_stored"] else exported).append((env_var, origin))
 
     details, fixes = [], []
     if overridden:
         details.append("exported in the shell with a value other than the one griot stores, which it hides: "
-                       + "; ".join(f"{var} ({where})" for var, where in overridden))
-        fixes.append("remove the export from " + "; ".join(where for _, where in overridden)
-                     + ", and `unset` it in terminals already open")
+                       + "; ".join(f"{var} ({common.export_places(origin)})" for var, origin in overridden))
+        fixes.append("; ".join(f"{var}: {common.export_advice(var, origin)}" for var, origin in overridden))
     if in_file:
         details.append(f"in plaintext in {common.ENV_PATH}: {', '.join(in_file)}")
         if keychain["available"]:
@@ -228,7 +226,7 @@ def check_credentials(common) -> dict:
         details.append(f"in the OS keychain: {', '.join(in_keychain)}")
     if exported:
         details.append("from the environment, and griot stores no other value: "
-                       + "; ".join(f"{var} ({where})" for var, where in exported))
+                       + "; ".join(f"{var} ({common.export_places(origin)})" for var, origin in exported))
     if not overridden:
         details.append("none is overridden by the shell")
     details.append(auth.keychain_phrase(keychain))
