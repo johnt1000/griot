@@ -448,7 +448,11 @@ def check_log(common) -> dict:
     return _check("log", OK, f"readable; last run {runs[0].get('timestamp')}" if runs else "readable; no run yet")
 
 
-def _latest_release() -> str:
+# Public, with upgrade_argvs, upgrade_commands and development_install: the
+# release check's pieces that `griot update` (update.py) reuses, so that
+# asking PyPI, ordering versions and detecting the installer each have one
+# implementation, and a change here is a change to a published name.
+def latest_release() -> str:
     """The newest version on PyPI, or an exception (requests.RequestException,
     ValueError) when there is no answer to trust.
 
@@ -467,7 +471,7 @@ def _latest_release() -> str:
     return version
 
 
-def _release_numbers(version: str) -> tuple[int, ...] | None:
+def release_numbers(version: str) -> tuple[int, ...] | None:
     """`0.10.1` as (0, 10, 1), with trailing zeros dropped so that 0.2 and
     0.2.0 are the same release; None for anything else. A pre-release, a
     development or a local version orders against a release by PEP 440
@@ -487,7 +491,7 @@ def upgrade_argvs(prefix: str, base_prefix: str, executable: str) -> list[list[s
     guessed from the environment's location (pipx and `uv tool` each keep one
     per tool under a directory of their own); every likely one when that says
     nothing. One answer is as sure as this gets: `griot update` runs it only
-    then, and the doctor prints it either way (see _upgrade_commands)."""
+    then, and the doctor prints it either way (see upgrade_commands)."""
     parts = Path(prefix).parts
     if "pipx" in parts and "venvs" in parts:
         return [["pipx", "upgrade", DISTRIBUTION]]
@@ -499,7 +503,7 @@ def upgrade_argvs(prefix: str, base_prefix: str, executable: str) -> list[list[s
             ["python3", "-m", "pip", "install", "--upgrade", DISTRIBUTION]]
 
 
-def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
+def upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
     """upgrade_argvs() as a person types them, quoted for a shell: what the
     doctor prints and `griot update` shows (the same lists it runs)."""
     return [shlex.join(argv) for argv in upgrade_argvs(prefix, base_prefix, executable)]
@@ -557,14 +561,14 @@ def check_release(common) -> dict:
         return _check(RELEASE, SKIP, "turned off (update-check is false): PyPI was not asked")
     installed = griot.__version__
     try:
-        newest = _latest_release()
+        newest = latest_release()
     # Every exception, not the ones requests documents: whatever stopped the
     # answer, there is none, and the doctor's guard would turn the rest into
     # a FAIL about an installation that has nothing wrong with it.
     except Exception as e:
         return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({type(e).__name__}); "
                                      f"this is {installed}")
-    mine, theirs = _release_numbers(installed), _release_numbers(newest)
+    mine, theirs = release_numbers(installed), release_numbers(newest)
     if mine is None or theirs is None:
         return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
     if mine < theirs:
@@ -576,7 +580,7 @@ def check_release(common) -> dict:
             return _check(RELEASE, WARN, detail, f"update the checkout (git pull): this is a development install, "
                                                  f"{development}")
         return _check(RELEASE, WARN, detail,
-                      _upgrade_fix(_upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
+                      _upgrade_fix(upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
     if mine > theirs:
         return _check(RELEASE, OK, f"{installed} is newer than the newest release on PyPI ({newest}): "
                                    f"a version not released yet")

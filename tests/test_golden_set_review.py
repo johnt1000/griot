@@ -278,13 +278,13 @@ def test_a_pick_goes_through_add_case(terminal, monkeypatch):
     _log("q one")
     _log("q one")
     seen = []
-    monkeypatch.setattr(golden_set, "add_case", lambda query, must_include, limit=5: seen.append(
-        (query, must_include, limit)) or {})
+    monkeypatch.setattr(golden_set, "add_case", lambda query, must_include, limit=5, mode="vector": seen.append(
+        (query, must_include, limit, mode)) or {})
     terminal.append("1,2")
 
     golden_set.cmd_review()
 
-    assert seen == [("q one", [CODE, COMMIT], 8)]
+    assert seen == [("q one", [CODE, COMMIT], 8, "vector")]
 
 
 def test_a_hard_candidate_says_why(terminal, capsys):
@@ -395,16 +395,14 @@ def test_a_result_recorded_as_null_cannot_be_picked(terminal, capsys):
 
 # --- only a search the check repeats can become a case ---------------------
 #
-# quality_check.run_golden_set() checks every case with a plain vector
-# search over every repository, ungrouped. A case made from a search that
-# ranked differently, was narrowed or was grouped could fail on every check
-# without retrieval getting any worse: a permanently red case in the ruler
-# the golden set exists to be.
+# quality_check.run_golden_set() checks every case in its own mode (vector,
+# keyword or hybrid: tests/test_golden_set_modes.py) over every repository,
+# ungrouped. A case made from a search that was narrowed or grouped could
+# fail on every check without retrieval getting any worse: a permanently red
+# case in the ruler the golden set exists to be.
 
 
 @pytest.mark.parametrize("unlike, why", [
-    ({"mode": "hybrid"}, "hybrid search"),
-    ({"mode": "keyword"}, "keyword search"),
     ({"repos": ["r"]}, "narrowed"),
     ({"source_types": ["commit"]}, "narrowed"),
     ({"group_by_document": True}, "grouped by document"),
@@ -419,7 +417,7 @@ def test_a_search_the_check_would_not_repeat_is_shown_but_not_made_a_case(termin
     out = capsys.readouterr().out
     assert "r/src/lock.py" in out  # still shown: the question is worth seeing
     assert why in out and "cannot become a case" in out.lower()
-    assert "plain vector search" in out  # and what would make it one
+    assert "Asked again that way, the question can be" in out  # and what would make it one
     assert "which result is the right one" not in out.lower()  # not asked for a pick it would refuse
     assert _cases() == []
 
