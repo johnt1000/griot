@@ -59,6 +59,7 @@ import shlex
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -152,9 +153,19 @@ def tools_safe_to_preapprove() -> list[str]:
     server itself marks read-only, minus the exceptions above. Asked of the
     registered tools, not kept as a list, so that a new tool is in or out by
     its own annotation. `griot assist install` offers these and only these;
-    tests/test_tool_approval.py holds the result to what a real client sees."""
+    tests/test_tool_approval.py holds the result to what a real client sees.
+
+    Read through the server's public list_tools(), not the SDK's private
+    tool manager, whose shape may change in any release. That call is async
+    and the callers are not: the CLI and doctor are sync, while a tool of this
+    server calls in from inside the running event loop, where a nested
+    anyio.run() is refused. A fresh worker thread has no loop of its own, so
+    the same call works from both; list_tools() awaits nothing, so blocking
+    the caller's loop for it costs no more than the private read did."""
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        tools = worker.submit(anyio.run, mcp.list_tools).result()
     names = []
-    for tool in mcp._tool_manager.list_tools():
+    for tool in tools:
         read_only = getattr(tool.annotations, "read_only_hint", None) is True
         human_only = (tool.meta or {}).get("anthropic/requiresUserInteraction")
         if read_only and not human_only and tool.name not in _READ_ONLY_BUT_ASKED:
