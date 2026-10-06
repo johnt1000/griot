@@ -122,7 +122,22 @@ as vector (0.67 / 0.64 / 0.76) and commit hashes far better (0.01 / 1.00 /
 relevant, it ranked a little below vector (0.72 / 0.61 / 0.68, with a higher
 recall@10): keyword alone ranked that defining file lowest, because it
 returns only the chunks that mention a name, which are where the name is
-used. Where it cannot run, the
+used. That measurement is
+`scripts/measure-search-modes.py`, to run again before keeping the default
+when the default profile or the fusion changes: `.venv/bin/python
+scripts/measure-search-modes.py --repo /Users/you/code/griot --queries
+scripts/search-mode-queries/griot.json` (more `--repo` and `--queries` for
+more repositories; the query file format is in the script's docstring). It
+indexes the repositories into a throwaway directory it deletes afterwards,
+never the real index, and prints MRR@10 and recall@10 per mode and per kind
+of query. The query set shipped is this repository's own; the second
+repository of the 2026-10-06 numbers was a copy of click, whose queries are
+not shipped, so this repository alone gives numbers of its own, not those
+(on 2026-10-06, 25 descriptive questions 0.64 / 0.55 / 0.59, 25 identifiers
+0.59 / 0.55 / 0.57, 15 commit hashes 0.00 / 1.00 / 0.80; recall@10 of the
+descriptive questions 0.80 / 0.70 / 0.88).
+A repository is named by its directory, so the query file's `"repo":
+"griot"` needs a checkout in a directory called `griot`. Where it cannot run, the
 default runs vector instead of failing: on a collection without keyword
 vectors (and then it says so, naming `griot index keywords`: with every CLI
 command, and on the first default search of an MCP server process), or for a query
