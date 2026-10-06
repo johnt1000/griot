@@ -449,6 +449,46 @@ def test_the_refused_repository_is_recorded_when_nothing_else_was_indexed_either
     assert run["refused_repos"] == ["bad"]
 
 
+# [debt 19] When the platform refused every fetch of the whole run, the run
+# was recorded with `error` and without `refused_repos`: `griot doctor` and
+# `griot stats` named the refused repositories only while that run was the
+# newest of all, and a later code or commits run hid it.
+
+def test_a_run_the_platform_refused_entirely_records_every_refused_repository(two_repo_run, monkeypatch):
+    _refuse_everything_of(monkeypatch, "/bad")
+    _refuse_everything_of(monkeypatch, "/good")
+
+    assert index_platform.main([]) == 1
+
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["good", "bad"]
+    # Still a run that did not do its job: freshness does not count it.
+    assert "refused every fetch" in run["error"]
+
+
+def test_a_run_refused_entirely_does_not_record_a_repository_it_asked_nothing_of(two_repo_run, monkeypatch):
+    """`good` is on no known platform: no fetch was attempted for it, so
+    nothing of it was refused."""
+    monkeypatch.setattr(index_platform.platforms, "detect_platform",
+                        lambda url: None if "/good" in url else ("github", "group/bad", None))
+    _refuse_everything_of(monkeypatch, "/bad")
+
+    assert index_platform.main([]) == 1
+
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["bad"] and run["error"]
+
+
+def test_a_run_refused_entirely_under_path_records_the_repository_by_its_name(platform_run, monkeypatch):
+    for name in ("fetch_pull_requests", "fetch_releases", "fetch_issues"):
+        monkeypatch.setattr(index_platform.platforms, name, _refused(401))
+
+    index_platform.main(["--path", platform_run["path"]])
+
+    (run,) = platform_run["runs"]
+    assert run["refused_repos"] == [Path(platform_run["path"]).name]
+
+
 def test_a_repository_refused_in_part_is_not_recorded_as_refused(two_repo_run, monkeypatch):
     monkeypatch.setattr(index_platform.platforms, "fetch_issues",
                         _refuse_for("/bad", index_platform.platforms.fetch_issues))
