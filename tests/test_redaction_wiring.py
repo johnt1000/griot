@@ -378,7 +378,7 @@ def test_index_branches_reports_and_records(git_repo, capsys):
 
 def test_index_platform_reports_and_records(tmp_path, monkeypatch, capsys):
     path = _register(tmp_path)
-    monkeypatch.setattr(index_platform, "build_documents", lambda repo_path, repo_key=None: index_platform.build_chunks(
+    monkeypatch.setattr(index_platform, "build_documents", lambda repo_path, repo_key=None, fetches=None: index_platform.build_chunks(
         "PR body with " + TOKEN, "proj:merge_request:7", {"source_type": "merge_request", "repo": "proj", "mr_iid": 7}))
     index_platform.main(["--repo", "proj", "--dry-run"])
     assert "credential-looking" in capsys.readouterr().out

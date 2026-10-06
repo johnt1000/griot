@@ -166,7 +166,10 @@ def check_index(common) -> dict:
     if error and str(error).startswith("unreadable"):
         return _check("index", FAIL, f"the collection could not be read: {str(error)[len('unreadable: '):]}", None)
     if last.get("error"):
-        return _check("index", WARN, f"the last indexing run did not finish: {last['error']}",
+        # A run with no counts died; one with counts finished and could not
+        # do its job (the platform refused every fetch, say).
+        what = "did not finish" if last.get("indexed") is None else "failed"
+        return _check("index", WARN, f"the last indexing run {what}: {last['error']}",
                       "griot index all   # and read what it says")
     if error:
         return _check("index", OK, "the collection is held by another process (a running server or index run): "

@@ -3154,7 +3154,9 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             "skipped": record.get("skipped"),
             "failed": record.get("failed"),
             # None on a normal run; set when the run DIED before it could
-            # count anything (cli.py::_run_index_source). Passed through so
+            # count anything (cli.py::_run_index_source), or when it could
+            # not do its job at all (the platform refused every fetch,
+            # index_platform.py). Passed through so
             # consumers can render a failure as a failure instead of as
             # "None indexed, None skipped, None failed", which reads like a
             # successful no-op — the exact illusion recording died runs

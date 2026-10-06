@@ -8,6 +8,22 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A platform that refuses a fetch is a failure of the run, not only a
+  warning.** `griot index platform` printed a warning for a fetch of pull
+  requests, releases or issues the platform refused, and counted nothing:
+  when an expired token was refused everything, the run said "No platform
+  items to index.", exited 0 and left no record, so `griot index all`,
+  `griot stats` and the freshness report saw nothing wrong. Now each refused
+  fetch counts in the run's `failed` and is listed among its failures by
+  HTTP status (never the error's text, which can hold the request URL); a
+  run where everything was refused exits 1, which also stops `griot index
+  all`, and is recorded as a run that did not do its job, so `griot doctor`
+  and `griot stats` report it and the source does not read as indexed. A
+  run where only some fetches were refused exits 0 and shows them as
+  failures, like a document that failed to embed; a dry run records nothing.
+
 ## [0.2.1] — 2026-10-05
 
 ### Security
