@@ -15,8 +15,9 @@ configuration file left open to other users, as every griot command does
 (reported under settings); and asking a harness which server it has
 registered may start that server for a moment, as `griot assist install`
 does when it asks the same. One goes to the network: the release check asks
-PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off), and no
-other griot command makes that request.
+PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off); the only
+other griot command that makes that request is `griot update`, which a person
+runs to upgrade and which that setting does not govern.
 
 Loaded BEFORE the configuration (cli.py runs it without importing common
 first): the check that matters most is the one for a file griot cannot
@@ -470,20 +471,27 @@ def _release_numbers(version: str) -> tuple[int, ...] | None:
     return tuple(numbers)
 
 
-def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
-    """The command that upgrades griot where it runs, guessed from the
-    environment's location (pipx and `uv tool` each keep one per tool under a
-    directory of their own); every likely one when that says nothing. A guess,
-    which is why it is printed and never run."""
+def upgrade_argvs(prefix: str, base_prefix: str, executable: str) -> list[list[str]]:
+    """The command that upgrades griot where it runs, as argument lists,
+    guessed from the environment's location (pipx and `uv tool` each keep one
+    per tool under a directory of their own); every likely one when that says
+    nothing. One answer is as sure as this gets: `griot update` runs it only
+    then, and the doctor prints it either way (see _upgrade_commands)."""
     parts = Path(prefix).parts
     if "pipx" in parts and "venvs" in parts:
-        return [f"pipx upgrade {DISTRIBUTION}"]
+        return [["pipx", "upgrade", DISTRIBUTION]]
     if "uv" in parts and "tools" in parts:
-        return [f"uv tool upgrade {DISTRIBUTION}"]
+        return [["uv", "tool", "upgrade", DISTRIBUTION]]
     if prefix != base_prefix:
-        return [f"{shlex.quote(executable)} -m pip install --upgrade {DISTRIBUTION}"]
-    return [f"pipx upgrade {DISTRIBUTION}", f"uv tool upgrade {DISTRIBUTION}",
-            f"python3 -m pip install --upgrade {DISTRIBUTION}"]
+        return [[executable, "-m", "pip", "install", "--upgrade", DISTRIBUTION]]
+    return [["pipx", "upgrade", DISTRIBUTION], ["uv", "tool", "upgrade", DISTRIBUTION],
+            ["python3", "-m", "pip", "install", "--upgrade", DISTRIBUTION]]
+
+
+def _upgrade_commands(prefix: str, base_prefix: str, executable: str) -> list[str]:
+    """upgrade_argvs() as a person types them, quoted for a shell: what the
+    doctor prints and `griot update` shows (the same lists it runs)."""
+    return [shlex.join(argv) for argv in upgrade_argvs(prefix, base_prefix, executable)]
 
 
 def _upgrade_fix(commands: list[str]) -> str:

@@ -923,13 +923,14 @@ def test_the_file_griot_writes_on_first_use_has_the_check_on_and_says_how_to_tur
     assert "\nGRIOT_UPDATE_CHECK=true\n" in text and "PyPI" in text
 
 
-# --- no other command asks PyPI -------------------------------------------------------------------
+# --- no other command asks PyPI (but `griot update`, run to upgrade) ------------------------------
 
 
-def test_only_doctor_knows_the_address_and_only_the_release_check_asks():
+def test_only_doctor_knows_the_address_and_only_the_release_check_and_update_ask():
     """Static, so that a command added later is held to it too: the address
     is in doctor.py alone, and the function that asks is called from the
-    release check alone."""
+    release check and, once, from `griot update` (whose whole purpose is the
+    upgrade; tests/test_update.py), nowhere else."""
     import pathlib
     import re
 
@@ -939,7 +940,8 @@ def test_only_doctor_knows_the_address_and_only_the_release_check_asks():
     holders = sorted(p.name for p in package.rglob("*.py") if "pypi.org" in p.read_text())
     assert holders == ["doctor.py"]
     callers = sorted(p.name for p in package.rglob("*.py") if re.search(r"_latest_release\(", p.read_text()))
-    assert callers == ["doctor.py"]
+    assert callers == ["doctor.py", "update.py"]
+    assert len(re.findall(r"(?<!def )_latest_release\(\)", (package / "update.py").read_text())) == 1
     source = (package / "doctor.py").read_text()
     assert len(re.findall(r"(?<!def )_latest_release\(\)", source)) == 1, "one call, in check_release"
     assert len(re.findall(r"(?<!def )check_release\(", source)) == 1, "called once, from run_checks"
