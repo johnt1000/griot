@@ -71,6 +71,40 @@ def list_cases() -> list[dict]:
     return _load()
 
 
+def case_mode(case: dict) -> str:
+    """The search mode a case is checked with. A case without one was made
+    when every check searched by meaning, so absent is "vector": that keeps
+    each older case's meaning, and the pass-rate trend comparable."""
+    return case.get("mode", "vector")
+
+
+def _mode_problem(mode) -> str | None:
+    """Why `mode` cannot be a case's mode, or None. The search modes only,
+    exactly as written: a case is spent later, by a check nobody watches,
+    so a value the search would refuse is refused where it is written."""
+    # `in` on a tuple compares with ==, so a null, a number or a list is
+    # simply not found: no type check needed first.
+    if mode not in common.SEARCH_MODES:
+        return (f"`mode` must be one of {', '.join(common.SEARCH_MODES)} "
+                f"(got {common.printable(repr(mode))[:40]}).")
+    return None
+
+
+def mode_refusal(query: str, mode) -> str | None:
+    """Why a case of `query` cannot be checked in `mode`, or None: a mode
+    that is not a search mode, or a keyword or hybrid case whose query has
+    no word keyword search can match (the search refuses it on every check:
+    a case that could never run). Local and free, so a caller that asks a
+    person first (griot_golden_set_add) asks this before."""
+    problem = _mode_problem(mode)
+    if problem:
+        return problem
+    if mode != "vector" and not common.keyword_query_matches(query):
+        return (f"a {mode} case needs a query with a word keyword search can match; this one has only common "
+                f"English words or punctuation. Name the identifier itself, or use mode 'vector'.")
+    return None
+
+
 def check_cases(cases) -> None:
     """Raises ValueError when what the file holds cannot be run as cases.
 
@@ -95,9 +129,14 @@ def check_cases(cases) -> None:
         limit = case.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError(f"case {number} has a `limit` that is not a whole number of at least 1")
+        # Present means it was written on purpose: a null or a misspelling
+        # is refused rather than read as "vector", which would run the case
+        # in a mode nobody chose.
+        if "mode" in case and (problem := _mode_problem(case["mode"])):
+            raise ValueError(f"case {number}: {problem}")
 
 
-def add_case(query: str, must_include: list[dict], limit: int = 5) -> dict:
+def add_case(query: str, must_include: list[dict], limit: int = 5, mode: str = "vector") -> dict:
     """Data half of `golden-set add`: persists a case and returns it. The
     caller decides which search results are correct and passes the
     already-built must_include entries (see _must_include_entry() for how
@@ -105,8 +144,14 @@ def add_case(query: str, must_include: list[dict], limit: int = 5) -> dict:
     call common.search() itself, so it works for cases that don't come from
     an interactive search session too. Raises ValueError (message with no
     "Error: " prefix — that's the CLI's job, see cmd_add()) on an empty
-    query, an empty must_include, or an entry that constrains nothing (see
-    has_effective_constraint); never touches the file in those cases."""
+    query, an empty must_include, an entry that constrains nothing (see
+    has_effective_constraint), a mode that is not a search mode, or a keyword
+    or hybrid case whose query has no word keyword search can match; never
+    touches the file in those cases.
+
+    `mode` is the search the case is checked with (see case_mode()): the one
+    its results came from. Written only when it is not "vector", so a vector
+    case is stored exactly as every case was before modes existed."""
     if not query.strip():
         raise ValueError("query must not be empty.")
     if not must_include:
@@ -131,7 +176,13 @@ def add_case(query: str, must_include: list[dict], limit: int = 5) -> dict:
                          "to a non-null value (e.g. repo, source_type) — an entry of "
                          "only null values matches every result and can never fail.")
 
+    problem = mode_refusal(query, mode)
+    if problem:
+        raise ValueError(problem)
+
     case = {"query": query, "limit": limit, "must_include": must_include}
+    if mode != "vector":
+        case["mode"] = mode
     cases = _load()
     cases.append(case)
     _save(cases)
@@ -304,14 +355,20 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
     return 0
 
 
-def cmd_add(query: str, limit: int = 5) -> int:
+def cmd_add(query: str, limit: int = 5, mode: str = "vector") -> int:
     from griot import ask  # lazy — same pattern as cli.py, avoids pulling in qdrant/fastembed before needed
 
-    # What the golden-set check will search (vector, shaped for a reader:
-    # see quality_check.run_golden_set), so the results a person approves
-    # are the ones the case is later held to.
+    # The search the golden-set check will repeat for this case (in its
+    # mode, shaped for a reader: see quality_check.run_golden_set), so the results a person
+    # approves are the ones the case is later held to.
     from griot import quality_check  # lazy: quality_check imports this module
-    results = common.search(query, limit=limit, mode="vector", diverse=quality_check.GOLDEN_SET_DIVERSE)
+    try:
+        results = common.search(query, limit=limit, mode=mode, diverse=quality_check.GOLDEN_SET_DIVERSE)
+    except common.SearchFilterError as e:
+        # A mode this collection cannot run yet, or a query it cannot match:
+        # what to do instead, not a traceback.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     if not results:
         print("Error: search returned no results — nothing to approve.", file=sys.stderr)
         return 1
@@ -340,7 +397,7 @@ def cmd_add(query: str, limit: int = 5) -> int:
         must_include.append(_must_include_entry(results[i - 1].payload or {}))
 
     try:
-        add_case(query, must_include, limit=limit)
+        add_case(query, must_include, limit=limit, mode=mode)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -356,7 +413,8 @@ def cmd_list() -> int:
     for i, case in enumerate(cases, start=1):
         query = case.get("query", "")
         preview = query if len(query) <= 80 else query[:80] + "..."
-        print(f"  [{i}] {preview} ({len(case.get('must_include', []))} must_include)")
+        print(f"  [{i}] {preview} ({len(case.get('must_include', []))} must_include, "
+              f"{common.printable(str(case_mode(case)))[:20]} search)")
     return 0
 
 
@@ -464,16 +522,17 @@ def _hard_thresholds(rows: list[dict]) -> dict:
 def _unlike_the_check(row: dict) -> list[str]:
     """How this logged search differs from the one that checks a case.
 
-    quality_check.run_golden_set() checks every case with a plain vector
-    search over every repository, ungrouped. A case made from a keyword or
-    hybrid ranking, a search narrowed to some repositories or source types,
-    or a grouped one (where the limit counts documents, not chunks) asserts
-    what THAT search returned, so it can fail on every check without
-    retrieval getting any worse: a permanently red case in the very ruler
-    the golden set is. Empty when the check would repeat this search."""
+    quality_check.run_golden_set() checks every case in the case's own mode
+    (the one recorded here: the mode that RAN), over every repository,
+    ungrouped. A search narrowed to some repositories or source types, or a
+    grouped one (where the limit counts documents, not chunks), asserts what
+    THAT search returned, so it can fail on every check without retrieval
+    getting any worse: a permanently red case in the very ruler the golden
+    set is. So can a mode the check does not know. Empty when the check
+    would repeat this search."""
     unlike = []
-    if _mode(row) != "vector":
-        unlike.append(f"a {_mode(row)} search")
+    if _mode(row) not in common.SEARCH_MODES:
+        unlike.append(f"a {common.printable(str(_mode(row)))[:20]} search")
     narrowed = [f"{name} {', '.join(map(str, row[name]))}" for name in ("repos", "source_types")
                 if isinstance(row.get(name), list) and row[name]]
     if narrowed:
@@ -577,8 +636,8 @@ _CANNOT = ("cannot become a case: it was logged before griot recorded what a cas
 
 def _unlike_note(unlike: list[str]) -> str:
     return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked by a "
-            f"plain vector search over every repository, ungrouped, which may never return them. Asked again "
-            f"as a plain vector search, the question can be.")
+            f"search over every repository, ungrouped (vector, keyword or hybrid), which may never return them. "
+            f"Asked again that way, the question can be.")
 
 
 def _show(candidate: dict, number: int, total: int) -> None:
@@ -686,7 +745,7 @@ def cmd_review(limit: int = 10) -> int:
             print("  Rejected: it will not be offered again.")
         elif isinstance(answer, list):
             try:
-                add_case(candidate["query"], answer, limit=candidate["limit"])
+                add_case(candidate["query"], answer, limit=candidate["limit"], mode=candidate["mode"])
             except ValueError as e:
                 print(f"  Not added: {e}")
                 continue
@@ -711,6 +770,10 @@ def main(argv=None) -> int:
     p_add = sub.add_parser("add", help="Runs a real search and lets you approve which results are the must_include")
     p_add.add_argument("query", help="Natural language question/term")
     p_add.add_argument("--limit", type=int, default=5, help="How many results to show to choose from (default: %(default)s)")
+    p_add.add_argument("--mode", choices=common.SEARCH_MODES, default="vector",
+                       help="How to search, now and every time the case is checked: vector (by meaning), keyword "
+                            "(the exact words) or hybrid (both). Keyword and hybrid need `griot index keywords` on "
+                            "an older collection (default: %(default)s)")
 
     p_review = sub.add_parser("review", help="Offers questions from the query log (asked more than once, or scoring "
                                              "low) as cases; at a terminal, you pick the right result")
@@ -726,7 +789,7 @@ def main(argv=None) -> int:
     if args.action == "suggest":
         return cmd_suggest(args.repo_path, max_commits=args.max_commits, limit=args.limit)
     if args.action == "add":
-        return cmd_add(args.query, limit=args.limit)
+        return cmd_add(args.query, limit=args.limit, mode=args.mode)
     if args.action == "list":
         return cmd_list()
     if args.action == "review":

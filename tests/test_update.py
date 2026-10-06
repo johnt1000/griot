@@ -49,7 +49,7 @@ def world(monkeypatch):
         state["prompts"].append(prompt)
         return state["answer"]
 
-    monkeypatch.setattr(doctor, "_latest_release", latest)
+    monkeypatch.setattr(doctor, "latest_release", latest)
     monkeypatch.setattr(griot, "__version__", "0.2.1")
     monkeypatch.setattr(doctor, "development_install", lambda: state["development"])
     monkeypatch.setattr(subprocess, "run", run)
@@ -174,7 +174,7 @@ def test_the_commands_are_the_ones_doctor_prints():
     joined."""
     for prefix in (PIPX_PREFIX, UV_PREFIX, VENV_PREFIX, "/usr", "/Users/you/my work/venv"):
         argvs = doctor.upgrade_argvs(prefix, "/usr", f"{prefix}/bin/python")
-        assert doctor._upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == [
+        assert doctor.upgrade_commands(prefix, "/usr", f"{prefix}/bin/python") == [
             __import__("shlex").join(a) for a in argvs]
 
 
@@ -373,3 +373,18 @@ def test_update_check_turned_off_does_not_stop_the_explicit_command(world, monke
     assert update.main(["--yes"]) == 0
 
     assert world["asked"] == 1 and _installer_calls(world) == [["pipx", "upgrade", "griot-rag"]]
+
+
+def test_update_uses_only_the_doctor_s_public_names():
+    """update.py reuses the doctor's release query, version rules and
+    upgrade detection (one implementation of each), through names the doctor
+    publishes: a private helper renamed or reshaped inside doctor.py would
+    otherwise break `griot update` with nothing in doctor.py saying so."""
+    import pathlib
+    import re
+
+    source = pathlib.Path(update.__file__).read_text()
+    assert re.findall(r"\bdoctor\._\w+", source) == []
+    for name in ("latest_release", "release_numbers", "upgrade_commands", "upgrade_argvs", "development_install"):
+        assert callable(getattr(doctor, name)), name
+        assert f"doctor.{name}(" in source, name

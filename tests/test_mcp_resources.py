@@ -228,11 +228,17 @@ async def test_the_resources_do_not_reach_into_the_sdks_private_tool_manager(mon
     """The resources used to serialize through
     mcp._tool_manager.get_tool(name).fn_metadata.output_model, a private
     attribute of the SDK. Every resource still reads, and still equals its
-    tool, with that lookup gone."""
+    tool, with that lookup gone.
+
+    The one test allowed to name the private manager (see
+    test_preapprove_public_list.py): it must, to take the lookup away. On an
+    SDK that no longer has the attribute there is nothing to take away, and
+    the comparison below still holds the resources to their tools."""
     _register(tmp_path)
     monkeypatch.setattr(mcp_server, "_record_call", lambda *a, **k: None)
-    monkeypatch.setattr(mcp_server.mcp, "_tool_manager",
-                        _ToolManagerWithoutLookup(mcp_server.mcp._tool_manager))
+    real_manager = getattr(mcp_server.mcp, "_tool_manager", None)
+    if real_manager is not None:
+        monkeypatch.setattr(mcp_server.mcp, "_tool_manager", _ToolManagerWithoutLookup(real_manager))
 
     async with Client(mcp_server.mcp) as client:
         for uri, tool in RESOURCES.items():

@@ -80,7 +80,8 @@ griot search "f96634a" --mode keyword --source-type commit
 For a name in a repository you have open, grep is still the better tool;
 `keyword` is for the ones you cannot grep (another project, history).
 On an index built before keyword search the default runs `vector` and
-says so, naming `griot index keywords`, which adds the keyword vectors
+says so on the first default search of the session, naming
+`griot index keywords` (later results only say `mode: vector`), which adds the keyword vectors
 once (local, embeds nothing); an explicit `keyword` or `hybrid` is refused
 there with the same command.
 

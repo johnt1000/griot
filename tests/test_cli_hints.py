@@ -79,7 +79,7 @@ def test_repos_add_hint_reads_an_option_like_path_as_a_path(monkeypatch, value):
 @pytest.mark.parametrize("value", OPTION_LIKE)
 def test_golden_set_add_hint_reads_an_option_like_query_as_a_query(monkeypatch, value):
     seen = []
-    monkeypatch.setattr(golden_set, "cmd_add", lambda query, limit: seen.append(query) or 0)
+    monkeypatch.setattr(golden_set, "cmd_add", lambda query, limit, mode="vector": seen.append(query) or 0)
     argv = shlex.split(mcp_server._cli_command("golden-set", "add", positional=[value]))[2:]
     assert golden_set.main(argv) == 0
     assert seen == [value]
