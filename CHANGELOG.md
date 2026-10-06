@@ -8,6 +8,15 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+
+- **The git hooks refuse a commit message that credits an AI assistant.**
+  `commit-msg` refuses a co-author line naming an assistant, a session link
+  or a "Generated with" line, and `pre-push` refuses them in the commits a
+  push sends (a cherry-pick or a rebase runs no commit hook). It does not
+  depend on `.git/sensitive-terms.txt`. Naming an assistant otherwise is
+  fine. See CONTRIBUTING.md.
+
 ### Fixed
 
 - **`griot doctor` no longer fails a new installation.** The `.env` griot

@@ -97,3 +97,14 @@ write_active_terms() {
   tr -d '\r' < "$1" | sed "1s/^$mark//" | grep -v -E '^[[:space:]]*(#|$)' > "$2"
   [ -s "$2" ]
 }
+
+# A line of a commit message that credits an AI assistant: as co-author, by a
+# session link, or as "Generated with/by". The author of a commit here is the
+# person who makes it. Naming an assistant otherwise is fine (griot supports
+# Claude Code, and a commit says so): only the credit is refused. Extended
+# regular expression, matched per line and ignoring case; `#` may lead the
+# line, since a message given with -m keeps such a line. A co-author is an
+# assistant by the forms assistants sign with (a model name, a vendor's
+# noreply address, an agent's name), not by a word a person can carry:
+# Claude is a given name, and people work at these vendors.
+ATTRIBUTION_PATTERN='^[[:space:]#]*co-authored-by:.*(claude (opus|sonnet|haiku|code|[0-9])|noreply@(anthropic|openai)\.com|chatgpt|copilot|gemini|codex|cursor ?agent|devin[ -]ai|aider|windsurf|codeium)|^[[:space:]#]*claude-session:|claude\.ai/code/session_|generated (with|by)[^a-z]{0,8}(claude|chatgpt|copilot|gemini|codex|cursor|devin|aider|windsurf)'

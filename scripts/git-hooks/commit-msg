@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # commit-msg. A commit message becomes public together with the history, so the
 # private terms the pre-commit hook refuses in files are refused here too.
-# Terms come from .git/sensitive-terms.txt (local, never committed).
+# Terms come from .git/sensitive-terms.txt (local, never committed). A line
+# that credits an AI assistant (ATTRIBUTION_PATTERN in common.sh) is refused
+# whether or not that list exists.
 #
 # Which lines are the message? In an editor git offers a template whose
 # comment lines (the branch, the files) it takes out again afterwards, and
@@ -18,11 +20,8 @@
 hooks_dir=$(cd "$(dirname "$0")" && pwd)
 . "$hooks_dir/common.sh"
 terms_file=$(terms_file_path) || exit 1
-[ -f "$terms_file" ] || exit 0
-
-patterns=$(mktemp) || exit 1
-trap 'rm -f "$patterns"' EXIT
-write_active_terms "$terms_file" "$patterns" || exit 0
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT
 
 comment=$(git config --get core.commentString 2>/dev/null || git config --get core.commentChar 2>/dev/null || true)
 [ -n "$comment" ] || comment='#'
@@ -33,12 +32,21 @@ case "$(git config --get commit.cleanup 2>/dev/null || true)" in
   verbatim|whitespace|scissors) keeps_comments=1 ;;
 esac
 
+# The lines git will keep: the message as it will be stored.
 if [ "$keeps_comments" -eq 1 ]; then
   cat "$1"
 else
   awk -v comment="$comment" 'index($0, comment) != 1' "$1"
-fi | grep -q -a -i -F -f "$patterns"
-if [ $? -eq 0 ]; then
+fi > "$work/message" || exit 1
+
+if grep -q -a -i -E "$ATTRIBUTION_PATTERN" "$work/message"; then
+  printf 'commit-msg: the commit message has an attribution line (an AI assistant as co-author, a session link, "Generated with"). The author of a commit here is the person who makes it: take the line out.\n' >&2
+  exit 1
+fi
+
+[ -f "$terms_file" ] || exit 0
+write_active_terms "$terms_file" "$work/patterns" || exit 0
+if grep -q -a -i -F -f "$work/patterns" "$work/message"; then
   printf 'commit-msg: the commit message contains a private term from sensitive-terms.txt. Reword it: messages become public with the history.\n' >&2
   exit 1
 fi
