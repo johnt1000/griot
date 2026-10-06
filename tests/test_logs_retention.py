@@ -113,6 +113,62 @@ def test_nothing_logged_yet_creates_nothing(tmp_path):
     assert not log_dir.exists()
 
 
+# --- counting what a prune would remove, without removing it ----------------------------------
+
+
+def test_the_count_is_what_the_prune_then_removes(tmp_path):
+    """`griot config set log-retention-days` states this number before the
+    person answers: a count that disagreed with the prune would be a promise
+    the next search breaks. Same rows: the cutoff, and the newest row kept."""
+    _fill(tmp_path, 500, 400, 91, 30, 1)
+    logdb.write_query(tmp_path, {"timestamp": _at(200), "question": "an older one written last"})
+
+    counted = logdb.count_older_than(tmp_path, 30, now=NOW)
+
+    assert counted == {"queries": 3, "tool_calls": 3}
+    assert logdb.prune_older_than(tmp_path, 30, now=NOW) == counted
+
+
+def test_the_count_keeps_the_newest_row_like_the_prune(tmp_path):
+    _fill(tmp_path, 500, 400)
+
+    assert logdb.count_older_than(tmp_path, 30, now=NOW) == {"queries": 1, "tool_calls": 1}
+
+
+def test_counting_changes_nothing_in_the_file(tmp_path):
+    _fill(tmp_path, 400, 1)
+    before = (tmp_path / logdb.DB_FILENAME).read_bytes()
+
+    logdb.count_older_than(tmp_path, 30, now=NOW)
+
+    assert (tmp_path / logdb.DB_FILENAME).read_bytes() == before
+    assert _rows(tmp_path, "queries") == [_at(400), _at(1)]
+
+
+def test_counting_does_not_migrate_or_repair_the_file(tmp_path):
+    """Opening logs.db the way a write does would import a legacy
+    queries.jsonl and reset the file's mode: a question asked before
+    anything is decided must leave the file exactly as it found it."""
+    import json
+
+    _fill(tmp_path, 400, 1)
+    (tmp_path / "queries.jsonl").write_text(json.dumps({"timestamp": _at(300), "question": "legacy"}) + "\n")
+    db = tmp_path / logdb.DB_FILENAME
+    db.chmod(0o400)
+    before = db.read_bytes()
+
+    assert logdb.count_older_than(tmp_path, 30, now=NOW) == {"queries": 1, "tool_calls": 1}
+
+    assert db.read_bytes() == before and (db.stat().st_mode & 0o777) == 0o400
+
+
+def test_counting_with_nothing_logged_creates_nothing(tmp_path):
+    log_dir = tmp_path / "logs"
+
+    assert logdb.count_older_than(log_dir, 30, now=NOW) == {"queries": 0, "tool_calls": 0}
+    assert not log_dir.exists()
+
+
 def test_concurrent_writers_lose_nothing_while_the_prune_runs(tmp_path):
     """Several griot processes share logs.db: a prune must neither fail nor
     take a row it should not while others write."""
@@ -230,8 +286,9 @@ def test_config_set_writes_a_valid_window_and_refuses_zero(monkeypatch):
     monkeypatch.setattr(common, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail(f"asked: {prompt}"))
 
-    assert config.main(["set", "log-retention-days", "30"]) == 0
-    assert dotenv_values(common.ENV_PATH).get("GRIOT_LOG_RETENTION_DAYS") == "30"
+    # Longer than the default: a shorter one asks first (tests/test_config_command.py).
+    assert config.main(["set", "log-retention-days", "400"]) == 0
+    assert dotenv_values(common.ENV_PATH).get("GRIOT_LOG_RETENTION_DAYS") == "400"
     assert config.main(["set", "log-retention-days", "0"]) != 0
 
 

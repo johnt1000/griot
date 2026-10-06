@@ -62,6 +62,12 @@ def test_raising_a_ceiling_refusal_names_the_terminal(no_terminal, capsys):
     assert "interactive terminal" in err and "no flag" in err
 
 
+def test_shortening_the_log_retention_refusal_names_the_terminal(no_terminal, capsys):
+    assert config.main(["set", "log-retention-days", "30"]) == 2
+    err = _refusal(capsys)
+    assert "interactive terminal" in err and "no flag" in err
+
+
 @pytest.fixture
 def claude(monkeypatch, tmp_path):
     """The real harness, its user directory moved under tmp_path."""
