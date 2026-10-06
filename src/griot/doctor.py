@@ -461,7 +461,7 @@ def latest_release() -> str:
     PyPI's own, and an answer from anywhere else is not PyPI's."""
     from griot import common
 
-    response = common._http_session().get(PYPI_URL, timeout=3, allow_redirects=False)
+    response = common.http_session().get(PYPI_URL, timeout=3, allow_redirects=False)
     response.raise_for_status()
     info = response.json()
     info = info.get("info") if isinstance(info, dict) else None

@@ -773,7 +773,7 @@ def _session_answering(monkeypatch, response):
     """The session common.py keeps, answering `response` to the real
     latest_release."""
     session = _Session(response)
-    monkeypatch.setattr(common, "_http_session", lambda: session)
+    monkeypatch.setattr(common, "http_session", lambda: session)
     return session
 
 
