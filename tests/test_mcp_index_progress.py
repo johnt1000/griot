@@ -11,6 +11,8 @@ the tool function does not exercise.
 import importlib
 import time
 
+import anyio
+
 import pytest
 from mcp.client.client import Client
 
@@ -235,11 +237,12 @@ async def test_wait_is_bounded_whatever_the_caller_asks(server_with_index, monke
     monkeypatch.setattr(server_with_index, "_INDEX_WAIT_MAX_SECONDS", 0.2)
     _register_job(monkeypatch, tmp_path, _FakeProc())
 
-    started = time.monotonic()
-    async with Client(server_with_index.mcp) as client:
-        out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 100_000})).structured_content
+    # fail_after: without the bound the call would never return, and a test
+    # that hangs does not fail, it stalls the whole suite.
+    with anyio.fail_after(3):
+        async with Client(server_with_index.mcp) as client:
+            out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 100_000})).structured_content
 
-    assert time.monotonic() - started < 3
     assert out["timeout_seconds"] == 0.2
     assert out["running"] is True
 

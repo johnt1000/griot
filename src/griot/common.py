@@ -2697,6 +2697,9 @@ INDEX_PROGRESS_ENV = "GRIOT_INDEX_PROGRESS"
 _PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
 _progress_clock = time.monotonic  # a function of its own so that a test can stop time
 
+# Every state a source can be in, in the order a source goes through them
+# ("failed" instead of "done" when it stops the run).
+INDEX_PROGRESS_STATES = ("pending", "reading", "embedding", "done", "failed")
 _PROGRESS_COUNT_FIELDS = ("chunks_total", "chunks_done", "indexed", "skipped", "failed")
 # This process's record and when it was last written. Only ever touched by
 # the run itself, which is single-threaded.
@@ -2790,8 +2793,10 @@ def read_index_progress(path) -> dict | None:
         return None
     sources = []
     for entry in data["sources"]:
+        # A state outside the known ones is refused, not passed on: the
+        # readers (griot_index_wait's arithmetic, an agent) decide on it.
         if not isinstance(entry, dict) or not isinstance(entry.get("source"), str) \
-                or False:
+                or entry.get("state") not in INDEX_PROGRESS_STATES:
             return None
         sources.append({"source": entry["source"], "state": entry["state"],
                         **{field: _count_or_none(entry.get(field)) for field in _PROGRESS_COUNT_FIELDS}})

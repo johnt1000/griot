@@ -193,9 +193,11 @@ def test_index_all_marks_a_source_that_exited_as_failed(progress_file, monkeypat
 # --- the reader ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("content", [None, "", "{not json", "[]", '{"sources": "code"}',
+@pytest.mark.parametrize("content", [None, "", "{not json", "[]", '{"sources": "code"}', '{"sources": 5}',
                                      '{"sources": [{"source": 1, "state": "done"}]}',
                                      '{"sources": [{"source": "code"}]}',
+                                     '{"sources": [{"source": "code", "state": 3}]}',
+                                     '{"sources": [{"source": "code", "state": "sleeping"}]}',
                                      '{"sources": [], "current_source": 5}'])
 def test_a_missing_or_malformed_file_reads_as_no_progress(tmp_path, content):
     """Read while the child may be anywhere (not started writing, killed):

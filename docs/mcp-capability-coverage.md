@@ -201,8 +201,10 @@ Two readers:
   source at a time). It returns how the run ended (exit code, last
   progress) or, when the time is up, where it is. A client that asked for
   no progress gets the same answer without the notifications. Verified
-  through the SDK's in-memory client on both protocol revisions, and
-  against a real `griot index all` subprocess.
+  through the SDK's in-memory client on both protocol revisions; the file
+  itself was checked against a real `griot index all` child process (with
+  the embedding stubbed), read while it ran: `reading`, then `embedding`
+  128/400, 400/400, then `done` and the next source.
 
 The wait is a separate tool rather than a `wait` argument of
 `griot_index_repo`: that tool asks a person to confirm, and folding a
