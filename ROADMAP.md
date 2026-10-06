@@ -23,10 +23,18 @@ What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
 
 ## Next
 
-Nothing is queued here right now: the gap between the CLI and the MCP tools,
-the defects a code analysis reported and the cheap indexing speed-ups are
-all done (see the [changelog](CHANGELOG.md)). What comes next is chosen from
-the list below.
+- **Bug: a platform that refuses every request still reads as a clean run.**
+  `griot index platform` catches a failed fetch of pull requests, releases
+  or issues, prints a warning and goes on. Nothing counts it: when every
+  fetch fails (an expired or wrong token answers 401 to all three), the run
+  prints "No platform items to index.", exits 0 and records no run at all;
+  when some fail, the run is recorded with `failed: 0`. `griot index all`,
+  `griot stats` and the freshness report therefore see nothing wrong. A
+  fetch the platform refused should count as a failure of the run, appear in
+  its record and give a non-zero exit, like a chunk that failed to embed.
+
+Everything else that was queued is done (see the [changelog](CHANGELOG.md));
+what comes after is chosen from the list below.
 
 ## Considered, not scheduled
 
@@ -36,7 +44,9 @@ the list below.
   - **Rejected**: a codified multi-agent documentation-audit workflow (like the one that produced these findings). It happened once in this project's history, for a one-time "prepare for public release" reason — not a recurring task — so `/code-review` with ad-hoc personas already covers the next time this is needed without a maintenance commitment.
 
 - **Platform adapters built ahead of confirmed demand.** Four of the five (GitLab self-hosted, Bitbucket Cloud, Azure DevOps, Gitea/Forgejo) have only ever been exercised against mocked HTTP — only GitHub has run against a real account. Kept rather than trimmed because each is small, behind one common interface, and covered by tests, unlike the removed dashboard's cost profile (see [lessons and debts](docs/lessons-and-debts.md#measure-before-deciding-whether-a-component-earns-its-place)). If one goes unused after the PyPI release, removing it is a one-file deletion, not a design change — but "built ahead of demand" is worth naming rather than leaving implicit.
-- **More CI steps.** The pipeline runs tests (3.10, 3.13 and 3.14 on Linux, 3.13 on macOS), a gitleaks scan over full history (merge commits included), and a build that installs the wheel in a clean environment. Deliberately not added yet: a linter (the codebase has no style CI and adding one now would produce a large mechanical diff over code that is being actively changed), `pip-audit` (worth it once there is a release to protect, and it fails on advisories in transitive dependencies nobody here can fix), and coverage reporting (a number that invites optimising the number). Each is a one-job addition when the reason for it becomes concrete.
+- **More CI steps.** The pipeline runs tests (3.10, 3.13 and 3.14 on Linux, 3.13 on macOS), a gitleaks scan over full history (merge commits included), and a build that installs the wheel in a clean environment. Deliberately not added yet: a linter (the codebase has no style CI and adding one now would produce a large mechanical diff over code that is being actively changed) and coverage reporting (a number that invites optimising the number). Each is a one-job addition when the reason for it becomes concrete. **Rejected: a scheduled `pip-audit` job.** GitHub's Dependabot alerts read `uv.lock` against the same advisories and open the pull request that fixes one (they did, for `pyjwt` and `urllib3`, the day they were turned on); a second scanner would only repeat the warning.
+- **Check the tag before the CI, not after it.** A release now runs the whole CI (about six minutes, macOS included) before `scripts/release-check.py` looks at the tag, so a tag that does not match the version, or is not on `main`, fails only at the end. Running the check as its own first job, with `ci` depending on it, would fail in seconds. Small; not done because a wrong tag costs minutes, not a bad release.
+- **Audit the whole history in CI.** CI already scans every commit for secrets; `scripts/audit-history.sh` also looks for files that never belong and for private terms in contents, names and messages, but only on the maintainer's machine, because the list of private terms is private by design. A CI job could read it from an encrypted repository secret. Not scheduled: the list would then live in a second place, and the pre-push hook already examines everything a push sends.
 
 - **Broaden MCP protocol coverage** — griot uses 3 of the ~10 capabilities the protocol offers (tools, prompts — four of them — and elicitation). Two of the absences are genuine gaps worth revisiting: **resources** (the read-only tools that are really just data — repos, stats, collections — could be URI-addressed and client-cacheable) and **progress** (`griot_index_repo` returns immediately and leaves the agent polling; reporting progress is blocked on indexing running in a subprocess, which is a design change rather than a decorator). The rest are correctly absent. The management surface itself is settled and implemented (the server's own `list_tools()` and `list_prompts()` are the inventory; a confirmation policy; secrets and settings deliberately excluded). Full mapping, with what implementing each would mean concretely: [docs/mcp-capability-coverage.md](docs/mcp-capability-coverage.md). Not scheduled because both gaps reshape functionality that has never met a real agent — the end-to-end validation above produces the evidence that decides, and `tool_calls` now records it.
 
@@ -48,7 +58,7 @@ the list below.
 - **The installer and opencode's configuration directory.** Claude Code's user directory follows `CLAUDE_CONFIG_DIR`. opencode's is assumed to be `~/.config/opencode`; whether it honours `XDG_CONFIG_HOME` or a variable of its own was not checked.
 - **Rejected: mirroring content hashes into SQLite.** Tempting, because `_split_pending()` does a Qdrant round-trip per batch to compare hashes, and a local table would be faster and would work even while another process holds the collection. Rejected because it creates a SECOND source of truth about the same fact: if the two diverge — a failed write, or a bulk cleanup of stale points — the mirror would report "unchanged" for a point that no longer exists. That is exactly the failure class this project has already been bitten by: an id-scheme mismatch that silently duplicated an index while every run reported success. Asking the store that actually holds the data is self-consistent by construction, and this is not a bottleneck anyway (a full reindex is dominated by embedding, not by the local read). A mirror used as an AUDIT reference is a different proposition — divergence would be the signal rather than a silent lie — but that is not this.
 
-- **Ship as a Claude Code plugin** (`/griot:stats` instead of `/mcp__griot__stats`). A plugin is a thin packaging shell — `.claude-plugin/plugin.json` naming the plugin and listing `commands/*.md`, plus a `.mcp.json` pointing at the `griot mcp` server that already exists — where the plugin name becomes the command namespace. Verified against the official Vercel plugin, which uses both layers at once: `/vercel:env` comes from its `commands/` list, while its MCP server is registered separately through `.mcp.json`. Deliberately NOT scheduled: it is a Claude Code convention, not part of MCP, so it trades portability for integration with one client — and griot has no PyPI release yet, so a third distribution channel would come before the second one exists.
+- **Ship as a Claude Code plugin** (`/griot:stats` instead of `/mcp__griot__stats`). A plugin is a thin packaging shell — `.claude-plugin/plugin.json` naming the plugin and listing `commands/*.md`, plus a `.mcp.json` pointing at the `griot mcp` server that already exists — where the plugin name becomes the command namespace. Verified against the official Vercel plugin, which uses both layers at once: `/vercel:env` comes from its `commands/` list, while its MCP server is registered separately through `.mcp.json`. Deliberately NOT scheduled: it is a Claude Code convention, not part of MCP, so it trades portability for integration with one client, and it would be a third distribution channel, next to PyPI and `griot assist install`, to keep in step with every release.
 
 ## Later / deferred
 
