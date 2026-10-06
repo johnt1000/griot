@@ -9,9 +9,11 @@ followed by that file's directory) in the environment it exports
 what it EXPORTS reaches the environment: a plain `VAR=x` stays a shell
 variable. A `.env` it loads with direnv's `dotenv`/`dotenv_if_exists`
 (no argument: `.env` next to the .envrc, since source_env evaluates from
-that directory; a directory: its `.env`) exports every key, with or
-without `export`. direnv itself is not needed: the tests set what it would
-have set."""
+that directory) exports every key, with or
+without `export`. A directory argument loads nothing: stdlib's dotenv
+checks for `<dir>/.env` but hands `direnv dotenv` the directory itself,
+whose os.ReadFile fails. direnv itself is not needed: the tests set what it
+would have set."""
 
 import pytest
 
@@ -141,14 +143,12 @@ def test_a_direnv_file_that_cannot_be_read_names_nothing_and_raises_nothing(proj
 
 @pytest.mark.parametrize("call,dotenv_path", [
     ("dotenv", ".env"), ("dotenv_if_exists", ".env"), ("dotenv .env.local", ".env.local"),
-    ("dotenv_if_exists 'secrets/.env.dev'", "secrets/.env.dev"), ("dotenv config", "config/.env"),
-    ("  dotenv  # load the keys", ".env"),
+    ("dotenv_if_exists 'secrets/.env.dev'", "secrets/.env.dev"), ("  dotenv  # load the keys", ".env"),
 ])
 def test_a_dotenv_the_envrc_loads_is_named_with_its_line(project, call, dotenv_path):
     _envrc(project, f"use nix\n{call}\n")
     target = project / dotenv_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    (project / "config").mkdir(exist_ok=True)
     target.write_text(f"OTHER=1\n{VAR}={OLD}\n")
 
     origin = common.credential_origin(VAR)
@@ -174,6 +174,42 @@ def test_a_dotenv_the_envrc_does_not_load_is_not_read(project):
     (project / ".env").write_text(f"{VAR}=x\n")
 
     assert common.credential_origin(VAR)["exported_in"] == []
+
+
+@pytest.mark.parametrize("call", ["dotenv config", "dotenv_if_exists config"])
+def test_a_dotenv_given_a_directory_loads_nothing_so_names_nothing(project, call):
+    """stdlib's dotenv finds `config/.env` but runs `direnv dotenv bash
+    config`, and reading a directory fails: no key of it is exported."""
+    _envrc(project, call + "\n")
+    (project / "config").mkdir()
+    (project / "config" / ".env").write_text(f"{VAR}=x\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == []
+
+
+def test_a_dotenv_given_an_absolute_path_is_named(project, tmp_path):
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(f"{VAR}=x\n")
+    _envrc(project, f"dotenv {secrets}\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == [f"{secrets}:1"]
+
+
+def test_an_unquoted_tilde_in_a_dotenv_path_is_the_home_directory(shell, project):
+    """bash expands an unquoted leading ~; quoted, it stays a literal name."""
+    (shell / "keys.env").write_text(f"{VAR}=x\n")
+    _envrc(project, "dotenv ~/keys.env\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == ["~/keys.env:1"]
+
+
+def test_a_quoted_tilde_in_a_dotenv_path_is_a_literal_name(shell, project):
+    (shell / "keys.env").write_text(f"{VAR}=x\n")
+    (project / "~").mkdir()
+    (project / "~" / "keys.env").write_text(f"OTHER=1\n{VAR}=x\n")
+    _envrc(project, "dotenv '~/keys.env'\n")
+
+    assert common.credential_origin(VAR)["exported_in"] == [f"{project}/~/keys.env:2"]
 
 
 def test_a_dotenv_path_built_from_a_variable_is_not_guessed(project):
@@ -252,10 +288,11 @@ def test_doctor_names_the_envrc(project):
 
 
 def test_a_dotenv_path_that_cannot_be_looked_at_raises_nothing(project):
-    """Checking whether the argument is a directory stats it, which raises
-    PermissionError under a directory that cannot be searched."""
-    _envrc(project, "dotenv locked/sub\n")
-    (project / "locked" / "sub").mkdir(parents=True)
+    """Opening a file under a directory that cannot be searched raises
+    PermissionError."""
+    _envrc(project, "dotenv locked/.env\n")
+    (project / "locked").mkdir()
+    (project / "locked" / ".env").write_text(f"{VAR}=x\n")
     (project / "locked").chmod(0o000)
     try:
         assert common.credential_origin(VAR)["exported_in"] == []

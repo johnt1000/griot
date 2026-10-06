@@ -1217,6 +1217,14 @@ def _lines_matching(path: Path, pattern: re.Pattern, groups: bool = False) -> li
     return [f"{shown}:{number}" for number, match in matches if match]
 
 
+def _export_statement(env_var: str) -> str:
+    """A POSIX-shell statement that exports `env_var` (`export`, `typeset
+    -x`, `declare -x`, with or without a value, after other assignments),
+    as a regex fragment: shared by the shell files and the .envrc, which
+    bash evaluates the same way."""
+    return rf"(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{re.escape(env_var)}(?:=|\s*$)"
+
+
 def _shell_exports(env_var: str) -> list[str]:
     """`~/.zshrc:17`-style places where a shell file sets `env_var`. zsh
     reads its files from ZDOTDIR when that is set. A line that only sets it
@@ -1226,7 +1234,7 @@ def _shell_exports(env_var: str) -> list[str]:
     home = Path.home()
     name = re.escape(env_var)
     pattern = re.compile(
-        rf"^\s*(?:(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)"
+        rf"^\s*(?:{_export_statement(env_var)}"
         rf"|{name}=\S*\s*(?:#.*)?$"
         rf"|set\s+-\w*x\w*\s+{name}\s)")
     zdotdir = Path(os.environ["ZDOTDIR"]).expanduser() if os.environ.get("ZDOTDIR") else home
@@ -1248,9 +1256,9 @@ def _direnv_exports(env_var: str) -> list[str]:
     not one guessed from the current directory. The .envrc is evaluated by
     bash, and only what it exports reaches the environment: a plain
     `VAR=x` stays a shell variable and is not counted. A `.env` it loads
-    with `dotenv`/`dotenv_if_exists` (none: the `.env` beside it, as
-    source_env evaluates from that directory; a directory: its `.env`)
-    exports every key, `export` or not; so does the `.env` DIRENV_FILE
+    with `dotenv`/`dotenv_if_exists` (no argument: the `.env` beside it,
+    as source_env evaluates from that directory) exports every key,
+    `export` or not; so does the `.env` DIRENV_FILE
     names when direnv's load_dotenv loads one directly. Other ways an
     .envrc can set it (source_env, source_up, a variable path) are not
     followed: they end up without a place, never a wrong one."""
@@ -1266,16 +1274,15 @@ def _direnv_exports(env_var: str) -> list[str]:
     dotenv_key = re.compile(rf"^\s*(?:export\s+)?{name}(?:\s*=|:\s)")
     if loaded.name == ".env":
         return _lines_matching(loaded, dotenv_key)
-    exported = re.compile(
-        rf"^\s*(?:export|typeset\s+-\w*x\w*|declare\s+-\w*x\w*)\s+(?:\S+=\S*\s+)*{name}(?:=|\s*$)")
-    found = _lines_matching(loaded, exported)
+    found = _lines_matching(loaded, re.compile(rf"^\s*{_export_statement(env_var)}"))
     for call in _lines_matching(loaded, _DIRENV_DOTENV_CALL, groups=True):
-        target = loaded.parent / (call["path"] or ".env")
-        try:
-            if target.is_dir():
-                target = target / ".env"
-        except OSError:  # under a directory that cannot be searched: nothing there can be read either
-            continue
+        path = call["path"] or ".env"
+        # bash expands a leading ~ only when the word is not quoted
+        target = loaded.parent / (Path(path).expanduser() if not call["q"] else Path(path))
+        # A directory is read as nothing (_lines_matching), which is right:
+        # stdlib's dotenv checks `<dir>/.env` exists but then runs `direnv
+        # dotenv bash <dir>`, whose os.ReadFile of a directory fails, so
+        # no key of it is exported.
         found.extend(_lines_matching(target, dotenv_key))
     return found
 
