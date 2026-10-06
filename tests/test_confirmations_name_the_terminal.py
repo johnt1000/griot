@@ -9,6 +9,8 @@ is the wording: the refusal and the --help both name the terminal, so
 nobody reads "refused" as "forbidden" and nobody looks for a flag that is
 not there."""
 
+import dataclasses
+
 import pytest
 
 from griot import cli, common, config, harnesses, repos
@@ -58,6 +60,32 @@ def test_raising_a_ceiling_refusal_names_the_terminal(no_terminal, capsys):
     assert config.main(["set", "spend-ceiling", "10"]) == 2
     err = _refusal(capsys)
     assert "interactive terminal" in err and "no flag" in err
+
+
+@pytest.fixture
+def claude(monkeypatch, tmp_path):
+    """The real harness, its user directory moved under tmp_path."""
+    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    real = next(h for h in harnesses.HARNESSES if h.id == "claude-code")
+    return dataclasses.replace(
+        real, user_dir_problem=None,
+        global_instructions_file=lambda home: tmp_path / "CLAUDE.md",
+        global_settings_file=lambda home: tmp_path / "settings.json",
+    )
+
+
+# The installer's last two questions have no flag that answers (--mcp answers
+# the first one, so its message rightly offers that instead).
+def test_installer_instructions_refusal_names_the_terminal(no_terminal, claude, tmp_path, capsys):
+    assert harnesses.offer_instructions(claude, "global", home=tmp_path) == "not-interactive"
+    out = _flat(capsys.readouterr().out)
+    assert "in a terminal" in out and "no flag" in out
+
+
+def test_installer_tool_approval_refusal_names_the_terminal(no_terminal, claude, tmp_path, capsys):
+    assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "not-interactive"
+    out = _flat(capsys.readouterr().out)
+    assert "in a terminal" in out and "no flag" in out
 
 
 # --- the --help of each says it before anyone runs it ----------------------------------------

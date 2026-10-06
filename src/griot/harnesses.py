@@ -469,7 +469,7 @@ def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: 
         return "malformed"
     if not _is_interactive():
         print(f"  instructions: {path} has no up-to-date griot block. Run `griot assist install` "
-              f"in a terminal to be asked; nothing is written without your answer.")
+              f"in a terminal to be asked; there is no flag that answers, and nothing is written without your answer.")
         return "not-interactive"
 
     verb = "update the griot block in" if state == "outdated" else "add this to"
@@ -974,7 +974,8 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
     if not _is_interactive():
         print(f"  tool approval: {harness.display_name} asks before each griot tool call. Run "
               f"`griot assist install{'' if everywhere else ' --scope local'}` in a terminal to be asked "
-              f"whether the read-only ones may run without that; nothing is written without your answer.")
+              f"whether the read-only ones may run without that; there is no flag that answers, and nothing is "
+              f"written without your answer.")
         return "not-interactive"
 
     print(f"\n  griot can let {harness.display_name} call griot's read-only tools without asking each time, "
