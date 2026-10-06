@@ -3304,7 +3304,8 @@ SEARCH_MAX_CHUNKS_PER_DOCUMENT = 3
 class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
-    places where the same thing was found among the best matches."""
+    places where the same thing was found among the matches the search
+    looked at (every window it fetched)."""
 
     __slots__ = ("id", "score", "payload", "also_in")
 
@@ -3369,11 +3370,12 @@ _GROUPING_OVERFETCH = 6
 # first window is not enough when its best matches are all chunks of two or
 # three long documents. Wider windows rather than the next one: Qdrant Edge
 # does not skip `offset` points, it returns `offset + limit` from the top
-# (checked on qdrant-edge's shard), and with HNSW a narrower window is not
-# always a prefix of a wider one, so replacing the window keeps one ranking.
+# (checked on an EdgeShard: offset=10, limit=10 gave 20 points), and with
+# HNSW the search effort grows with the limit, so a narrower window need not
+# be a prefix of a wider one; replacing the window keeps one ranking.
 # Two at most, so the widest window is four times the first: measured on a
-# throwaway 20,000-point index (1536 dimensions), 48 points take 2.3 ms,
-# 300 take 5.9 ms and 900 take 14 ms, against an embedding of the query
+# throwaway 20,000-point index (1536 dimensions), 48 points take 1 ms,
+# 192 take 2.3 ms and 900 take 8 ms, against an embedding of the query
 # that takes far longer. Past that, two documents so long that they fill
 # 24 times `limit` are what the query is about.
 SEARCH_MAX_EXTRA_WINDOWS = 2

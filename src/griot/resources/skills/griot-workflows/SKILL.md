@@ -95,9 +95,10 @@ with a date (for a branch, the date of its last commit). That is what to
 act on: open that file, show that commit, say when. A file or a commit that
 is indexed in more than one place (a copied file, a fork) comes back once,
 with the other places found among the best matches in `also_in`; two
-different commits with the same message stay two results. `limit` is a
-ceiling: a search whose best matches are all chunks of two long files
-returns six results, not eight.
+different commits with the same message stay two results. One document
+fills at most three results, and the search looks further down the ranking
+to fill the rest, so `limit` results come back unless the index runs out
+or a few very long files are all the query matches.
 
 (`griot search` prints a labeled excerpt per hit, e.g. `commit a1b2c3d4 — my-service` or
 `MR !245 (merged) — my-api`, so the source kind is visible at a glance even
