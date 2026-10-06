@@ -41,7 +41,9 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
   also refuses a message that credits an AI assistant (as a co-author, with a
   session link, or as "Generated with"), and `pre-push` refuses it in the
   commits a push sends. Saying that a change concerns an assistant, such as
-  the Claude Code support, is fine. A pull request's description and the
+  the Claude Code support, is fine, and so is quoting someone else's credit
+  (a line where it follows a `>` or a `<`, as in the release notes a
+  Dependabot description quotes). A pull request's description and the
   message GitHub writes for a squash merge are made on the server, where no
   hook runs: keep them free of such lines too. A merge that makes a commit
   goes through the same checks
