@@ -301,8 +301,9 @@ def run_golden_set(golden_set: list) -> dict:
 
 def golden_summary(golden_check: dict) -> str:
     """One line for a run of the golden set: how many passed, how many were
-    searched in each mode, and how many were skipped, which a pass count
-    alone would hide inside the total."""
+    searched in each mode, and how many were skipped. The total counts only
+    the cases that ran, so the skipped ones are named here or they would
+    not appear at all."""
     ran = ", ".join(f"{count} {mode}" for mode, count in sorted(golden_check["ran_by_mode"].items()))
     detail = [f"searched: {ran}"] if ran else []
     if golden_check["skipped"]:

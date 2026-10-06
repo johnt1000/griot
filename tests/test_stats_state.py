@@ -427,7 +427,11 @@ async def test_the_health_prompt_points_at_golden_set_fields_that_exist():
     golden = set(tool.output_schema["$defs"]["GoldenSetState"]["properties"])
     assert "golden_set" in tool.output_schema["properties"]
     named = set(re.findall(r"\blast_[a-z_]+\b", text))
-    assert named == {"last_passed", "last_total", "last_run_at"} and named <= golden
+    # last_total counts only the cases that ran, so the prompt has to name
+    # last_skipped too: an agent reading "last_passed of last_total" alone
+    # would report "8 of 8" and drop the skipped cases.
+    assert named == {"last_passed", "last_total", "last_skipped", "last_run_at"} and named <= golden
+    assert "last_skipped skipped" in text
     assert "past run" in text
 
 
