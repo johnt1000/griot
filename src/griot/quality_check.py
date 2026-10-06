@@ -103,7 +103,9 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
     anything about the repos' domain — works for any new collection. Catches
     pipeline breakage (wrong dimension, model swapped without reindexing,
     empty/corrupted collection, etc), not fine-grained semantic quality
-    (that's the golden set, level 2).
+    (that's the golden set, level 2). A sampled point with blank content is
+    a failure, not a pass: there is nothing to search with, and counting it
+    as passed made an all-blank collection read as healthy.
 
     common.search() (used below for the re-match) always searches the ACTIVE
     collection (common.COLLECTION_NAME) — it doesn't take 'collection' as a
@@ -123,6 +125,14 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
         for point in samples:
             content = common.stored_text(point.payload)
             if not content.strip():
+                # A failure, not a skip: a point with no text cannot be
+                # retrieved by anything, which is the breakage this check is
+                # for. Skipped, it still counted as passed, so a collection
+                # whose samples were all blank read as healthy. Excluding it
+                # from `sampled` instead would hide it inside a mix of good
+                # samples. Not searched: there is nothing to embed.
+                failures.append({"id": str(point.id), "repo": point.payload.get("repo"),
+                                 "reason": "no text to search with (the stored content is blank)"})
                 continue
             results = common.search(content, limit=5)
             match = next((r for r in results if str(r.id) == str(point.id)), None)

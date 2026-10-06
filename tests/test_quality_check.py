@@ -104,18 +104,72 @@ def test_run_self_check_on_nonexistent_collection_is_empty_not_error():
     assert result == {"sampled": 0, "passed": 0, "failed": 0, "failures": [], "avg_score": None}
 
 
-def test_run_self_check_skips_points_with_blank_content(monkeypatch):
+def test_run_self_check_counts_a_blank_sample_as_failed(monkeypatch):
+    """[debt 10] A sampled point with no text used to be skipped AND counted
+    in `passed`, so a collection whose samples were all blank read as
+    healthy. It is a failure with its own reason: a point with nothing to
+    retrieve it by is exactly the kind of pipeline breakage this check is
+    for. It is not embedded: there is nothing to search with."""
     _fake_embed(monkeypatch)
     docs = _docs(3)
-    docs[0]["content"] = "   "  # just whitespace -> skipped, doesn't count as sampled or failed
+    docs[0]["content"] = "   "
+    common.index_documents(docs)
+    common.release_lock()
+    searched = []
+    real_search = common.search
+    monkeypatch.setattr(common, "search", lambda q, limit=5: searched.append(q) or real_search(q, limit=limit))
+
+    result = quality_check.run_self_check(common.COLLECTION_NAME, sample_size=3, min_score=0.90)
+
+    assert result["sampled"] == 3
+    assert result["failed"] == 1
+    assert result["passed"] == 2
+    [failure] = result["failures"]
+    assert failure["id"] == common.stable_id(docs[0]["id"])
+    assert failure["repo"] == "repo"
+    assert "no text" in failure["reason"]
+    assert len(searched) == 2, "a blank sample has nothing to search with and must not be embedded"
+
+
+def _all_blank_collection(monkeypatch, n=3):
+    _fake_embed(monkeypatch)
+    docs = _docs(n)
+    for doc in docs:
+        doc["content"] = " \n "
     common.index_documents(docs)
     common.release_lock()
 
-    result = quality_check.run_self_check(common.COLLECTION_NAME, sample_size=3, min_score=0.90)
-    # all 3 points are SAMPLED (sample_points doesn't filter by content), but
-    # the one with blank content generates neither a failure nor a score.
-    assert result["sampled"] == 3
-    assert result["failed"] == 0
+
+def test_a_collection_of_blank_samples_does_not_pass_the_gate(monkeypatch, capsys):
+    """[debt 10] The reading that matters: every sample blank must not end
+    in "Quality OK." and exit 0."""
+    _all_blank_collection(monkeypatch)
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc_info:
+        quality_check.main(["--sample-size", "3", "--skip-golden-set"])
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Quality OK." not in out
+    assert "0/3 samples self-recovered" in out
+    assert "no text" in out
+
+
+def test_a_collection_of_blank_samples_records_a_zero_pass_rate(monkeypatch, capsys):
+    """[debt 10] The trend griot stats shows must read 0, not 100%."""
+    _all_blank_collection(monkeypatch)
+
+    with pytest.raises(SystemExit):
+        quality_check.main(["--sample-size", "3", "--skip-golden-set", "--json"])
+
+    trend = stats.load_quality_window(30)
+    assert [t["pass_rate"] for t in trend] == [0.0]
+    capsys.readouterr()
+    # And it is shown: a 0.0 rate is falsy, and a reader that tested it for
+    # truth would drop the line and read as "never checked".
+    stats.main(["--days", "30"])
+    assert "Quality:     0% of sampled points self-retrieved" in capsys.readouterr().out
 
 
 # --- sample_points -----------------------------------------------------------

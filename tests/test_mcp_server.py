@@ -2496,3 +2496,35 @@ async def test_index_repo_answer_parameter_is_not_in_the_schema(mcp_server_with_
     async with Client(mcp_server_with_index_enabled.mcp) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
     assert set(tools["griot_index_repo"].input_schema["properties"]) == {"path", "sources", "confirm"}
+
+
+@pytest.mark.anyio
+async def test_quality_check_tool_fails_a_blank_sample_through_the_protocol(monkeypatch):
+    """[debt 10] A sampled point with no text used to be counted as passed,
+    so an index whose samples were all blank got a clean bill from the tool
+    the health prompt recommends. Through the protocol, against a real
+    index: the failure has to survive the output schema, not only exist in
+    the dict the function returns."""
+    import hashlib
+    import random
+
+    def fake_embed(texts, **kwargs):
+        vectors = []
+        for text in texts:
+            rng = random.Random(int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**32))
+            vectors.append([rng.uniform(-1, 1) for _ in range(common.EMBED_DIM)])
+        return vectors
+
+    monkeypatch.setattr(common, "embed_texts", fake_embed)
+    common.index_documents([{"id": f"repo:code:f{i}.py:0", "content": " ",
+                             "metadata": {"source_type": "code", "repo": "repo", "file_path": f"f{i}.py",
+                                          "chunk_index": 0}} for i in range(2)])
+
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_quality_check", {"sample_size": 2, "golden_set": False})
+
+    assert result.is_error is False
+    out = result.structured_content
+    assert (out["sampled"], out["passed"], out["failed"]) == (2, 0, 2)
+    assert all("no text" in f["reason"] for f in out["failures"])
+    assert [r["self_check"]["passed"] for r in logdb.read_since(common.LOG_DIR, "quality_checks", days=1)] == [0]
