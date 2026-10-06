@@ -266,7 +266,7 @@ def test_a_call_that_ends_after_its_session_was_dropped_does_not_vouch_for_the_n
     slow.start()
     assert started.wait(5)
     common._drop_http_session()   # the session is replaced while the call is in flight
-    common.http_session()        # and the new one is already there when the slow call ends
+    common.http_session()         # and the new one is already there when the slow call ends
     release.set()
     slow.join(timeout=5)
     with pytest.raises(requests.ConnectionError):
@@ -312,29 +312,59 @@ def test_no_other_test_can_open_a_real_session():
 
 # --- the session is shared under a public name ------------------------------------------------
 
-def test_the_kept_session_is_public_and_is_the_one_the_calls_use():
-    """doctor's PyPI check rides the same kept session as the API calls; it
-    reaches it through a public name, not a private one of common.py."""
+def test_the_kept_session_is_public_and_kept_once_per_process():
+    """doctor's PyPI check reaches the kept session through a public name.
+    That the API calls ride this same session is the reuse tests' job above;
+    this one only pins the public name and that it is kept, not rebuilt."""
     session = common.http_session()
     assert isinstance(session, requests.Session)
     assert common.http_session() is session, "one session for the process, not one per call"
 
 
-def test_no_module_outside_common_reaches_the_private_session_name():
-    """A private name of common.py used across a module boundary breaks
-    silently when common.py renames it; the shared session has a public one."""
+def _private_http_names_of_common() -> set:
+    """Every private module-level name common.py defines for its HTTP session
+    machinery, read from common.py itself so a name added later (a new
+    helper, a renamed lock) is covered without editing this test."""
     import ast
     import pathlib
 
+    tree = ast.parse(pathlib.Path(common.__file__).read_text(encoding="utf-8"))
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return {n for n in names if n.startswith("_") and "http" in n.lower()}
+
+
+def test_the_private_http_names_are_read_from_common():
+    """The guard below is only as wide as this set: if reading common.py
+    stopped finding the session's private names, it would pass on nothing."""
+    assert {"_new_http_session", "_drop_http_session", "_http_post",
+            "_http_lock", "_http_session_kept"} <= _private_http_names_of_common()
+
+
+def test_no_module_outside_common_reaches_a_private_session_name():
+    """A private name of common.py used across a module boundary breaks
+    silently when common.py renames it; the shared session has a public one.
+    The rule covers the whole private HTTP machinery, not only the name that
+    was once crossed (_http_session), so a later helper such as
+    _new_http_session cannot be reached from outside either."""
+    import ast
+    import pathlib
+
+    private = _private_http_names_of_common()
     package = pathlib.Path(common.__file__).parent
     offenders = []
     for path in sorted(package.rglob("*.py")):
         if path.name == "common.py":
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else None
-            if name == "_http_session":
-                offenders.append(f"{path.relative_to(package)}:{node.lineno}")
-            if isinstance(node, ast.ImportFrom) and any(a.name == "_http_session" for a in node.names):
-                offenders.append(f"{path.relative_to(package)}:{node.lineno}")
+            if isinstance(node, ast.Attribute) and node.attr in private:
+                offenders.append(f"{path.relative_to(package)}:{node.lineno} {node.attr}")
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("common"):
+                offenders.extend(f"{path.relative_to(package)}:{node.lineno} {a.name}"
+                                 for a in node.names if a.name in private)
     assert offenders == []
