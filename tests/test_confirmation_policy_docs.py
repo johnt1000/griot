@@ -6,7 +6,8 @@ answer, which also accept a `confirm=true` from the agent, and which ask for
 nothing. The three restatements are kept on purpose, one per reader; this is
 the check that they still say what the server does.
 
-The policy is read from the server through a real client, never from a list
+The policy is read from the server through a real client (in a child
+process, see `policy`), never from a list
 kept here: a tool that carries the `anthropic/requiresUserInteraction` marker
 needs a person (tests/test_confirmation.py proves that marker coincides with
 the tools that refuse `confirm=true`), one that otherwise takes a `confirm`
@@ -15,13 +16,14 @@ nothing. The documents are parsed narrowly: only the one paragraph or table
 that states the policy, and only tool names written as code, so prose around
 them can change freely."""
 
-import importlib
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
-import anyio
 import pytest
-from mcp.client.client import Client
 
 from griot import mcp_server
 
@@ -31,38 +33,63 @@ MARKER = "anthropic/requiresUserInteraction"
 HUMAN, CONFIRM, NONE = "a person's answer only", "confirm=true where nobody can ask", "no confirmation"
 
 
-async def _listed_tools():
+# GRIOT_MCP_ENABLE_INDEX is read when the module is imported, and reloading
+# the module in this process would swap the objects other test modules took
+# from it. So a child process imports the server fresh with the variable set
+# and prints what a real client lists, nothing more.
+_LIST_TOOLS = """
+import json, anyio
+from mcp.client.client import Client
+from griot import mcp_server
+
+async def listed():
     async with Client(mcp_server.mcp) as client:
         return (await client.list_tools()).tools
 
+print(json.dumps([
+    {"name": t.name, "meta": t.meta or {}, "input_schema": t.input_schema,
+     "read_only_hint": t.annotations.read_only_hint if t.annotations else None}
+    for t in anyio.run(listed)
+]))
+"""
 
-@pytest.fixture
-def policy(monkeypatch):
+
+@pytest.fixture(scope="module")
+def policy(tmp_path_factory):
+    """Module scope: the listing does not change between tests, and each
+    child process pays the server's whole import."""
+    return _read_policy(tmp_path_factory.mktemp("policy"))
+
+
+def _read_policy(base):
     """{tool name: HUMAN | CONFIRM | NONE} for every tool the server can
     register. griot_index_repo exists only with GRIOT_MCP_ENABLE_INDEX, and
     it is the one state-changing tool off by default, so the documents name
-    it: the module is reloaded with it on, then back to the default."""
-    monkeypatch.setenv("GRIOT_MCP_ENABLE_INDEX", "true")
-    importlib.reload(mcp_server)
-    try:
-        tools = anyio.run(_listed_tools)
-    finally:
-        monkeypatch.delenv("GRIOT_MCP_ENABLE_INDEX", raising=False)
-        importlib.reload(mcp_server)
+    it: the tools are listed by a child process that has it on."""
+    # os.environ carries conftest's keyring isolation (PYTHON_KEYRING_BACKEND)
+    # into the child; directories of its own keep its import off real ones.
+    env = {**os.environ, "GRIOT_MCP_ENABLE_INDEX": "true",
+           "GRIOT_CONFIG_DIR": str(base / "config"), "GRIOT_DATA_DIR": str(base / "data")}
+    done = subprocess.run([sys.executable, "-c", _LIST_TOOLS], env=env, cwd=base, capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL, timeout=120)
+    assert done.returncode == 0, done.stderr
+    # The last line: anything the import prints goes before the listing.
+    tools = json.loads(done.stdout.strip().splitlines()[-1])
     out = {}
     for tool in tools:
-        if (tool.meta or {}).get(MARKER) is True:
-            out[tool.name] = HUMAN
-        elif "confirm" in tool.input_schema.get("properties", {}):
-            out[tool.name] = CONFIRM
+        name = tool["name"]
+        if tool["meta"].get(MARKER) is True:
+            out[name] = HUMAN
+        elif "confirm" in tool["input_schema"].get("properties", {}):
+            out[name] = CONFIRM
         else:
-            out[tool.name] = NONE
+            out[name] = NONE
         # The derivation itself: whatever the server says changes state must
         # be behind one of the two confirmations, or "names every
         # state-changing tool" below would quietly mean fewer tools.
-        changes_state = tool.annotations.read_only_hint is not True
-        assert changes_state == (out[tool.name] != NONE), tool.name
-    assert "griot_index_repo" in out, "the reload did not register the conditional tool"
+        changes_state = tool["read_only_hint"] is not True
+        assert changes_state == (out[name] != NONE), name
+    assert "griot_index_repo" in out, "the child process did not register the conditional tool"
     return out
 
 
@@ -107,6 +134,18 @@ def test_the_policy_has_all_three_kinds(policy):
     so a broken derivation cannot make every document check vacuous."""
     assert _of(policy, HUMAN) and _of(policy, CONFIRM) and _of(policy, NONE)
     assert policy["griot_search"] == NONE
+
+
+def test_reading_the_policy_leaves_this_processs_server_module_alone(tmp_path):
+    """Other test modules hold `mcp_server.mcp` and functions taken from the
+    module at import time; a reload here would leave them pointing at
+    objects the module no longer has, and the result would depend on the
+    order the files run in. So the policy is read without touching this
+    process's copy of the server. It calls the reader itself, not the
+    module-scoped fixture, which an earlier test may already have built."""
+    server, search = mcp_server.mcp, mcp_server.griot_search
+    _read_policy(tmp_path)
+    assert mcp_server.mcp is server and mcp_server.griot_search is search
 
 
 # --- README.md ---------------------------------------------------------------------
