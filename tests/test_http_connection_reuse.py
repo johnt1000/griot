@@ -266,7 +266,7 @@ def test_a_call_that_ends_after_its_session_was_dropped_does_not_vouch_for_the_n
     slow.start()
     assert started.wait(5)
     common._drop_http_session()   # the session is replaced while the call is in flight
-    common._http_session()        # and the new one is already there when the slow call ends
+    common.http_session()        # and the new one is already there when the slow call ends
     release.set()
     slow.join(timeout=5)
     with pytest.raises(requests.ConnectionError):
@@ -308,3 +308,33 @@ def test_no_other_test_can_open_a_real_session():
     with whatever credential the machine has."""
     with pytest.raises(AssertionError, match="real HTTP"):
         common._http_post("http://127.0.0.1:1/")
+
+
+# --- the session is shared under a public name ------------------------------------------------
+
+def test_the_kept_session_is_public_and_is_the_one_the_calls_use():
+    """doctor's PyPI check rides the same kept session as the API calls; it
+    reaches it through a public name, not a private one of common.py."""
+    session = common.http_session()
+    assert isinstance(session, requests.Session)
+    assert common.http_session() is session, "one session for the process, not one per call"
+
+
+def test_no_module_outside_common_reaches_the_private_session_name():
+    """A private name of common.py used across a module boundary breaks
+    silently when common.py renames it; the shared session has a public one."""
+    import ast
+    import pathlib
+
+    package = pathlib.Path(common.__file__).parent
+    offenders = []
+    for path in sorted(package.rglob("*.py")):
+        if path.name == "common.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else None
+            if name == "_http_session":
+                offenders.append(f"{path.relative_to(package)}:{node.lineno}")
+            if isinstance(node, ast.ImportFrom) and any(a.name == "_http_session" for a in node.names):
+                offenders.append(f"{path.relative_to(package)}:{node.lineno}")
+    assert offenders == []
