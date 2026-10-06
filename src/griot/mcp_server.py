@@ -951,6 +951,9 @@ class GoldenSetState(TypedDict):
     # quality-check` in a terminal), or nulls. A PAST run: last_run_at says when.
     last_passed: int | None
     last_total: int | None
+    # Of last_total, the cases not run: their mode needs keyword search the
+    # collection did not have. Neither passed nor failed.
+    last_skipped: int | None
     last_run_at: str | None
 
 
@@ -1224,7 +1227,13 @@ class QualityCheckFailure(TypedDict):
 
 class GoldenCheckCase(TypedDict):
     query: str
+    # The search the case was made in and is checked with: vector, keyword
+    # or hybrid.
+    mode: str
     passed: bool
+    # Not run: a keyword or hybrid case on a collection without keyword
+    # vectors (`reason` says what builds them). Neither passed nor failed.
+    skipped: bool
     # The expected entries no result matched.
     missing: list[dict]
     # Set when the case could not pass whatever the search returned (its
@@ -1241,6 +1250,9 @@ class GoldenCheck(TypedDict):
     total: int
     passed: int
     failed: int
+    skipped: int
+    # How many cases were searched in each mode.
+    ran_by_mode: dict[str, int]
     cases: list[GoldenCheckCase]
 
 
@@ -1765,7 +1777,8 @@ def griot_golden_set_list() -> GoldenSetListOutput:
     griot_quality_check's self-check measures whether indexed points
     retrieve themselves — a mechanical property. These cases measure
     whether the index answers questions someone actually cares about,
-    which is the judgement no automated check can make for you."""
+    which is the judgement no automated check can make for you. Each case's
+    `mode` (vector, keyword or hybrid) is the search it is checked with."""
     try:
         cases = golden_set.list_cases()
     except (OSError, ValueError) as e:
@@ -1775,7 +1788,11 @@ def griot_golden_set_list() -> GoldenSetListOutput:
     # `must_include`. Text that reaches an agent's context via a file another
     # agent wrote is stored injection, so it carries the same delimiter
     # griot_search results do.
-    return {"note": GOLDEN_SET_NOTE, "cases": cases, "count": len(cases)}
+    # Every case says its mode, the one absent stands for too: an agent
+    # reading a case without one should not have to know that absent means
+    # vector. Only what is returned; the file is not rewritten.
+    shown = [{**case, "mode": golden_set.case_mode(case)} if isinstance(case, dict) else case for case in cases]
+    return {"note": GOLDEN_SET_NOTE, "cases": shown, "count": len(cases)}
 
 
 # One call reads a bounded stretch of the log: `git log --all` over a long
@@ -1899,8 +1916,8 @@ def _golden_set_add_question(query: str) -> str:
     return f"Add a test case for {_shown(query)} to the golden set. You can undo this by removing the case."
 
 
-def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, confirm: bool = False):
-    if limit < 1:
+def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, mode: str = "vector", confirm: bool = False):
+    if limit < 1 or golden_set.mode_refusal(query, mode):
         return _NO_CHANNEL
     return _resolve_ask(ctx, _golden_set_add_question(query), confirm=confirm, human_required=False)
 
@@ -1908,6 +1925,7 @@ def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, confirm: bool 
 @_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 @_records_call
 async def griot_golden_set_add(query: str, must_include: list[dict], limit: int = 5,
+                               mode: Literal["vector", "keyword", "hybrid"] = "vector",
                                confirm: bool = False, ctx: Context = None,
                                answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_golden_set_add)] = None,
                                ) -> ManagementOutput:
@@ -1915,6 +1933,13 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
 
     `must_include` describes the results YOU judged correct — get them from
     griot_search first, then pass the ones that should always be retrieved.
+
+    `mode` is the search the case is checked with, every time: pass the
+    `mode` griot_search reported for the results you picked (its default is
+    hybrid), or the case is held to a ranking those results never came
+    from. Default "vector". A keyword or hybrid case needs a query with a
+    word keyword search can match, and is skipped by the check on a
+    collection without keyword vectors.
 
     Confirmed like every state change, but with the confirm= fallback
     intact: curating widens no security boundary and destroys no indexed
@@ -1930,14 +1955,23 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
         return {"changed": False,
                 "message": f"limit must be at least 1 (got {limit}) — a case that retrieves "
                            f"nothing reports every expected result as missing, forever."}
+    # Same reason: a mode the case could never be checked in is known
+    # before anyone is asked (and keeps an unchecked value out of the hint).
+    unrunnable = golden_set.mode_refusal(query, mode)
+    if unrunnable:
+        return {"changed": False, "message": unrunnable}
+    # The hint repeats the search in the case's mode, so a person at the
+    # terminal approves results from the ranking the case will be held to.
+    mode_words = ("--mode", mode) if mode != "vector" else ()
     ok, refusal = await _confirmed(ctx, _golden_set_add_question(query),
-                                   confirm=confirm, cli_hint=_cli_command("golden-set", "add", positional=[query]),
+                                   confirm=confirm,
+                                   cli_hint=_cli_command("golden-set", "add", *mode_words, positional=[query]),
                                    cli_note=_GOLDEN_SET_ADD_CLI_NOTE, answer=answer)
     if not ok:
         return {"changed": False, "message": refusal}
     limit = min(limit, SEARCH_LIMIT_MAX)
     try:
-        case = golden_set.add_case(query=query, must_include=must_include, limit=limit)
+        case = golden_set.add_case(query=query, must_include=must_include, limit=limit, mode=mode)
     except json.JSONDecodeError as e:
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
@@ -2334,7 +2368,10 @@ def griot_health_report() -> str:
         "whatever search returned (its repository has nothing indexed under this "
         "profile — an indexing gap, not a search failure); no `reason` means search "
         "ran and did not return what was expected, and `missing` and `top_results` "
-        "show what it returned instead. A failed case with `limit_reduced_from` set "
+        "show what it returned instead. A case with `skipped` true was not run: it is a "
+        "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
+        "(`griot index keywords` builds them); report it as not measured, never as passing "
+        "or failing. A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "
@@ -2431,8 +2468,10 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
     return {
         "note": GOLDEN_SET_NOTE,
         "total": golden_check["total"], "passed": golden_check["passed"], "failed": golden_check["failed"],
+        "skipped": golden_check["skipped"], "ran_by_mode": golden_check["ran_by_mode"],
         "cases": [{
-            "query": case["query"], "passed": case["passed"], "missing": case["missing"],
+            "query": case["query"], "mode": case["mode"], "passed": case["passed"], "skipped": case["skipped"],
+            "missing": case["missing"],
             "reason": case.get("reason"),
             "top_results": [{"score": hit["score"], "source_type": hit["source_type"],
                              "repo": common.shown(str(hit["repo"])) if hit["repo"] is not None else None}
@@ -2455,9 +2494,13 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     itself: mechanical, it says the pipeline is intact. The curated golden
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
-    Each case has `passed`, what was `missing`, and a `reason` when it could
-    not pass at all (its repository has nothing indexed). A case that asks
-    for more results than this tool searches is run with fewer and says so
+    Each case is searched in its own `mode` (the one it was made in) and has
+    `passed`, what was `missing`, and a `reason` when it could not pass at
+    all (its repository has nothing indexed). A keyword or hybrid case on a
+    collection without keyword vectors is `skipped`, neither passed nor
+    failed, with `reason` naming the command that builds them; `ran_by_mode`
+    counts the cases searched per mode. A case that asks for more results
+    than this tool searches is run with fewer and says so
     (`limit_reduced_from`).
 
     `golden_check` is null when the cases were not run, and

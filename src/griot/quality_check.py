@@ -166,14 +166,28 @@ def run_golden_set(golden_set: list) -> dict:
     the top-K — tests actual search quality (not just "the pipeline didn't
     break"). Always against the ACTIVE collection: common.search() has no
     other, whatever --collection the self-check was given. Cases in quality_golden_set.json, manually validated against the
-    full corpus before becoming a golden case (see griot's README.md)."""
+    full corpus before becoming a golden case (see griot's README.md).
+
+    Each case is searched in its own mode (golden_set.case_mode). A keyword
+    or hybrid case on a collection without keyword vectors is `skipped`:
+    counted apart from `passed` and `failed`, so it neither closes the gate
+    nor passes it. `ran_by_mode` counts the cases searched in each mode."""
     results = []
+    ran_by_mode: dict[str, int] = {}
     indexed: dict[str, bool] = {}
+    built: list = []
 
     def is_indexed(repo: str) -> bool:
         if repo not in indexed:
             indexed[repo] = common.repository_is_indexed(common.get_client(), repo)
         return indexed[repo]
+
+    def keyword_search_built() -> bool | None:
+        # Read once per run, and only when a case needs it. Unreadable is
+        # None and skips the case like "not built": no run would be sound.
+        if not built:
+            built.append(common._keyword_search_status(common.COLLECTION_NAME))
+        return built[0]
 
     for case in golden_set:
         # [review finding] add_case() guards the two write paths that go
@@ -191,7 +205,9 @@ def run_golden_set(golden_set: list) -> dict:
         if vacuous:
             results.append({
                 "query": case["query"],
+                "mode": golden_set_mod.case_mode(case),
                 "passed": False,
+                "skipped": False,
                 "missing": vacuous,
                 "reason": ("must_include entries that constrain nothing — every value is null, "
                            "so this case matches any result and can never fail. Re-curate it with "
@@ -212,7 +228,9 @@ def run_golden_set(golden_set: list) -> dict:
             names = ", ".join(sorted({common.shown(exp["repo"]) for exp in nowhere}))
             results.append({
                 "query": case["query"],
+                "mode": golden_set_mod.case_mode(case),
                 "passed": False,
+                "skipped": False,
                 "missing": nowhere,
                 "reason": (f"nothing is indexed for {names} with profile '{common.ACTIVE_PROFILE_NAME}': "
                            f"this case cannot pass until that repository is indexed. If it is gone for "
@@ -220,28 +238,76 @@ def run_golden_set(golden_set: list) -> dict:
                 "top_results": [],
             })
             continue
-        # Vector, explicitly: a case measures retrieval by meaning, and its
-        # pass rate must not move when the surfaces' default does.
-        hits = common.search(case["query"], limit=case.get("limit", 5), mode="vector")
+        # The case's own mode, never the surfaces' default: a case asserts
+        # what ONE search returned, and its pass rate must not move when the
+        # default does. Absent is vector (golden_set.case_mode), so a case
+        # written before modes is checked as it always was.
+        mode = golden_set_mod.case_mode(case)
+        # Only a mode that exists: an unknown one goes on to the search,
+        # which refuses it, and fails below rather than being skipped.
+        if mode in ("keyword", "hybrid") and keyword_search_built() is not True:
+            # SKIPPED, not failed and not run by meaning: nothing about
+            # search got worse, and a vector search would measure a ranking
+            # the case was never made from. Said with the one command that
+            # makes it runnable; asked before the search, so it embeds nothing.
+            results.append({
+                "query": case["query"], "mode": mode, "passed": False, "skipped": True, "missing": [],
+                "reason": (f"not run: this case is a {mode} search, and collection '{common.COLLECTION_NAME}' has "
+                           f"no keyword vectors yet. `griot index keywords` builds them once (local, embeds "
+                           f"nothing); until then the case is neither passed nor failed."),
+                "top_results": [],
+            })
+            continue
+        try:
+            hits = common.search(case["query"], limit=case.get("limit", 5), mode=mode)
+        except common.SearchFilterError as e:
+            # A case this search refuses (a hand-written keyword case of only
+            # common words, a mode no search knows): FAILED by name, for the
+            # reason the vacuous case is, and the remaining cases still run.
+            results.append({"query": case["query"], "mode": mode, "passed": False, "skipped": False,
+                            "missing": case["must_include"], "reason": f"the search refused this case: {e}",
+                            "top_results": []})
+            continue
         payloads = [h.payload for h in hits]
         missing = [exp for exp in case["must_include"] if not any(_matches(p, exp) for p in payloads)]
+        ran_by_mode[mode] = ran_by_mode.get(mode, 0) + 1
         results.append({
             "query": case["query"],
+            "mode": mode,
             "passed": not missing,
+            "skipped": False,
             "missing": missing,
             "top_results": [{"score": round(h.score, 3), "source_type": h.payload.get("source_type"), "repo": h.payload.get("repo")} for h in hits],
         })
+    skipped = sum(1 for r in results if r.get("skipped"))
     return {
         "total": len(results),
         "passed": sum(1 for r in results if r["passed"]),
-        "failed": sum(1 for r in results if not r["passed"]),
+        "failed": sum(1 for r in results if not r["passed"] and not r.get("skipped")),
+        "skipped": skipped,
+        # How many cases were searched in each mode: a pass rate over a mix
+        # of modes reads differently from one over vector searches alone.
+        "ran_by_mode": ran_by_mode,
         "cases": results,
     }
 
 
+def golden_summary(golden_check: dict) -> str:
+    """One line for a run of the golden set: how many passed, how many were
+    searched in each mode, and how many were skipped, which a pass count
+    alone would hide inside the total."""
+    ran = ", ".join(f"{count} {mode}" for mode, count in sorted(golden_check["ran_by_mode"].items()))
+    detail = [f"searched: {ran}"] if ran else []
+    if golden_check["skipped"]:
+        detail.append(f"{golden_check['skipped']} skipped")
+    return (f"{golden_check['passed']}/{golden_check['total']} golden set questions passed"
+            + (f" ({'; '.join(detail)})" if detail else ""))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Tests the VECTOR SEARCH quality of a collection (self-check + curated golden set). "
+        description="Tests the SEARCH quality of a collection (self-check + curated golden set, each case in "
+                    "the search mode it was made in). "
                     "Does not call any chat LLM (only embeds the query) — tests retrieval, not ask.py's "
                     "final answer, which isn't deterministic."
     )
@@ -309,14 +375,14 @@ def main(argv=None):
                 raise
             if not args.json:
                 for case in golden_check["cases"]:
-                    status = "OK" if case["passed"] else "FAILED"
-                    print(f"  [{status}] {case['query']!r}")
+                    status = "SKIPPED" if case["skipped"] else "OK" if case["passed"] else "FAILED"
+                    print(f"  [{status}] {case['query']!r} ({common.printable(str(case['mode']))[:20]})")
                     if not case["passed"] and case.get("reason"):
                         print(f"        {case['reason']}")
                     elif not case["passed"]:
                         print(f"        expected and not found: {case['missing']}")
                         print(f"        top results: {case['top_results']}")
-                print(f"\n{golden_check['passed']}/{golden_check['total']} golden set questions passed")
+                print(f"\n{golden_summary(golden_check)}")
 
     _record_for_trend(collection, self_check, golden_check)
 
@@ -337,6 +403,11 @@ def main(argv=None):
         print(f"\nQuality NOT measured: collection '{collection}' has nothing to sample. Index a repository first.")
     else:
         print("\nQuality OK." if ok else "\nQuality FAILED — see failures above.")
+        if golden_check and golden_check["skipped"]:
+            # The gate stays open (nothing failed), but "OK" must not read as
+            # "every case was measured".
+            print(f"{golden_check['skipped']} golden set case(s) were not run: they need keyword search "
+                  f"(`griot index keywords`).")
     if not ok:
         raise SystemExit(1)
 
