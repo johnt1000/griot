@@ -37,6 +37,11 @@ CREDITS = [
     "Co-authored-by: Windsurf <windsurf@codeium.com>",
     "Co-authored-by: Windsurf Cascade <cascade@example.com>",
     "Co-authored-by: Claude Sonnet 4 <claude@example.com>",
+    # A bullet or prose is not a quote: only what follows a `>` or a `<` on
+    # its line is someone else's text.
+    "- Generated with Copilot by upstream",
+    "docs: the notes (generated with Claude Code)",
+    "See https://claude.ai/code/session_0123456789",
 ]
 
 FINE = [
@@ -49,6 +54,16 @@ FINE = [
     "Co-authored-by: Claude Dupont <claude@example.fr>",
     "Co-authored-by: Ana Lima <ana@openai.com>",
     "Co-authored-by: Devin Smith <devin@example.com>",
+    # Someone else's words, quoted: a release note Dependabot quotes, as a
+    # Markdown quote or inside the HTML it writes (<blockquote><li>...).
+    "> Generated with Copilot by upstream",
+    "> \U0001F916 Generated with [Claude Code](https://claude.com/claude-code)",
+    "  > > https://claude.ai/code/session_0123456789",
+    "<li>Generated with Copilot by upstream</li>",
+    '<p><a href="https://claude.ai/code/session_0123456789">the session</a></p>',
+    # Inside a tag, before any `>`: a wrapped line of that HTML can start so.
+    '<a href="https://claude.ai/code/session_0123456789">the session</a>',
+    '<img alt="Generated with Claude Code" src="badge.svg">',
 ]
 
 
@@ -134,6 +149,38 @@ def test_a_push_of_clean_commits_goes_through(repo, remote):
     done = _git(repo, "push", "-q", "origin", "main", env=repo.env)
 
     assert done.returncode == 0, done.stderr
+
+
+QUOTING_A_CREDIT = """build(deps): bump setup-uv from 10.2.0 to 10.3.0
+
+<blockquote>
+<li>Generated with Copilot by upstream</li>
+</blockquote>
+> https://claude.ai/code/session_0123456789"""
+
+
+def test_a_commit_that_quotes_a_credit_is_pushed(repo, remote):
+    """pre-push reads messages through git's own regex: a quote has to pass
+    there too, not only in grep."""
+    assert _commit(repo, QUOTING_A_CREDIT, hooks=False, name="more.md").returncode == 0
+
+    done = _git(repo, "push", "-q", "origin", "main", env=repo.env)
+
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("hooks", [True, False], ids=["commit-msg", "pre-push"])
+def test_a_quote_on_one_line_does_not_cover_a_credit_on_the_next(repo, remote, hooks):
+    """`<` or `>` exempts what follows it on its own line only: a quote
+    earlier in the message does not stretch over a credit below it."""
+    message = f"fix: the <details> block\n\n> quoted\n{CREDITS[6]}"
+    if hooks:
+        done = _commit(repo, message, name="more.md")
+    else:
+        assert _commit(repo, message, hooks=False, name="more.md").returncode == 0
+        done = _git(repo, "push", "-q", "origin", "main", env=repo.env)
+
+    assert done.returncode != 0 and "attribution" in done.stderr
 
 
 def test_the_rule_holds_with_a_terms_list_too(repo):

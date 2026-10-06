@@ -18,6 +18,7 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -454,6 +455,48 @@ def test_a_file_gone_before_its_chmod_is_not_a_failure(monkeypatch):
     common._secure_collection_dir(name)
 
     assert logged == []
+
+
+def test_a_target_already_gone_counts_as_closed(tmp_path, monkeypatch):
+    """_repair_mode's contract: gone is closed (open to no one), so the
+    caller does not count it as a failed repair and nothing is logged."""
+    logged = _logged(monkeypatch)
+
+    assert common._repair_mode(str(tmp_path / "never-there"), 0o600) is True
+    assert logged == []
+
+
+def test_a_directory_removed_after_its_parent_was_listed_is_skipped(monkeypatch):
+    """The engine removes whole segment directories while the repair walks:
+    one listed by its parent and gone before its own turn is open to no one,
+    and the walk goes on instead of raising out of a search."""
+    import shutil
+
+    name, path = _collection()
+    doomed = path / "segments" / "a"
+    real_scandir = os.scandir
+
+    class _ThenRemove:
+        def __init__(self, directory):
+            self.directory = directory
+            self.inner = real_scandir(directory)
+
+        def __enter__(self):
+            return self.inner.__enter__()
+
+        def __exit__(self, *exc):
+            result = self.inner.__exit__(*exc)
+            # shutil.rmtree lists by file descriptor: only the walk's own call matches.
+            if isinstance(self.directory, str) and Path(self.directory) == path / "segments":
+                shutil.rmtree(doomed)
+            return result
+
+    monkeypatch.setattr(os, "scandir", _ThenRemove)
+    logged = _logged(monkeypatch)
+
+    common._secure_collection_dir(name)  # must not raise
+
+    assert not doomed.exists() and logged == []
 
 
 # --- griot doctor shows what is still open -----------------------------------------------------
