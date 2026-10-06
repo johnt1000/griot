@@ -103,7 +103,9 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
     anything about the repos' domain — works for any new collection. Catches
     pipeline breakage (wrong dimension, model swapped without reindexing,
     empty/corrupted collection, etc), not fine-grained semantic quality
-    (that's the golden set, level 2).
+    (that's the golden set, level 2). A sampled point with blank content is
+    a failure, not a pass: there is nothing to search with, and counting it
+    as passed made an all-blank collection read as healthy.
 
     common.search() (used below for the re-match) always searches the ACTIVE
     collection (common.COLLECTION_NAME) — it doesn't take 'collection' as a
