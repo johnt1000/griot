@@ -5,6 +5,11 @@ protocol Claude Code negotiates (2026-07-28) as well as on older ones. The
 rule these tests protect: only an ACCEPTED answer carrying the confirmation
 model authorizes. A client that cannot ask must never read as a yes."""
 
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 from mcp.client.client import Client
 from mcp.server.elicitation import AcceptedElicitation, CancelledElicitation, DeclinedElicitation
@@ -357,3 +362,128 @@ async def test_exactly_the_human_only_tools_carry_the_user_interaction_marker():
         tools = (await client.list_tools()).tools
     marked = {t.name for t in tools if (t.meta or {}).get(MARKER) is True}
     assert marked == {t[0] for t in TOOLS if t[3]}
+
+
+# --- griot_index_repo, the conditional tool, in a server of its own ----------------
+# It is registered only when GRIOT_MCP_ENABLE_INDEX is set at import, and
+# reloading the module here would swap the objects other test modules took
+# from it (tests/test_confirmation_policy_docs.py reads its policy the same
+# way, for the same reason). So a child process imports the server with the
+# setting on, makes the calls the TOOLS tests above make, through a real
+# client, and prints what each call did.
+
+_INDEX_REPO_CALLS = """
+import json, anyio
+from mcp.client.client import Client
+from mcp_types import ElicitResult
+from griot import jobs, mcp_server
+
+started = []
+# What the confirmation guards: the run is never spawned here. The cheap
+# refusal is cleared so every call reaches the question.
+jobs.index_job_refusal = lambda path: None
+jobs.start_index_job = lambda path, sources, **kw: started.append(path) or {
+    "started": True, "reason": None, "path": path, "pid": 1, "sources": sources}
+
+async def call(mode, action, args):
+    async def callback(ctx, params):
+        return ElicitResult(action=action, content={})
+    kwargs = {"mode": mode}
+    if action is not None:
+        kwargs["elicitation_callback"] = callback
+    before = len(started)
+    async with Client(mcp_server.mcp, **kwargs) as client:
+        result = await client.call_tool("griot_index_repo", args)
+    return {"acted": len(started) > before, "out": result.structured_content}
+
+async def main():
+    async with Client(mcp_server.mcp) as client:
+        tools = (await client.list_tools()).tools
+    calls = {}
+    for mode in %(modes)r:
+        for action in ["accept", "decline", "cancel", None]:
+            for confirm in [False, True]:
+                args = {"path": "/tmp/some-repo", "confirm": confirm}
+                calls[f"{mode}/{action}/{confirm}"] = await call(mode, action, args)
+    tool = next(t for t in tools if t.name == "griot_index_repo")
+    return {"marked": sorted(t.name for t in tools if (t.meta or {}).get(%(marker)r) is True),
+            "schema": sorted(tool.input_schema["properties"]), "calls": calls}
+
+print(json.dumps(anyio.run(main)))
+""" % {"modes": MODES, "marker": MARKER}
+
+
+@pytest.fixture(scope="module")
+def index_repo(tmp_path_factory):
+    """Module scope: each child process pays the server's whole import."""
+    return _index_repo_calls(tmp_path_factory.mktemp("index-repo"))
+
+
+def _index_repo_calls(base):
+    # os.environ carries conftest's keyring isolation (PYTHON_KEYRING_BACKEND)
+    # into the child; directories of its own keep its import off real ones.
+    env = {**os.environ, "GRIOT_MCP_ENABLE_INDEX": "true",
+           "GRIOT_CONFIG_DIR": str(base / "config"), "GRIOT_DATA_DIR": str(base / "data")}
+    done = subprocess.run([sys.executable, "-c", _INDEX_REPO_CALLS], env=env, cwd=base, capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL, timeout=120)
+    assert done.returncode == 0, done.stderr
+    # The last line: anything the import prints goes before the listing.
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def _index_call(index_repo, mode, action, confirm):
+    return index_repo["calls"][f"{mode}/{action}/{confirm}"]
+
+
+def test_reading_the_index_repo_calls_leaves_this_processs_server_module_alone(tmp_path):
+    """Other test modules hold `mcp_server.mcp` and functions taken from the
+    module at import time, so the calls run without touching this process's
+    copy of the server. It calls the reader itself, not the module-scoped
+    fixture, which an earlier test may already have built."""
+    server, search = mcp_server.mcp, mcp_server.griot_search
+    _index_repo_calls(tmp_path)
+    assert mcp_server.mcp is server and mcp_server.griot_search is search
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_index_repo_acts_on_an_accept(index_repo, mode):
+    call = _index_call(index_repo, mode, "accept", False)
+    assert call["acted"] and call["out"]["started"] is True, call
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+@pytest.mark.parametrize("confirm", [False, True], ids=["plain", "confirm"])
+def test_index_repo_does_nothing_on_a_no_even_with_confirm(index_repo, mode, action, confirm):
+    call = _index_call(index_repo, mode, action, confirm)
+    assert not call["acted"] and call["out"]["started"] is False, call
+    assert "Nothing was changed" in call["out"]["reason"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_index_repo_does_not_read_a_client_that_cannot_ask_as_a_yes(index_repo, mode):
+    call = _index_call(index_repo, mode, None, False)
+    assert not call["acted"] and "confirm=true" in call["out"]["reason"], call
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_index_repo_accepts_confirm_where_nobody_can_be_asked(index_repo, mode):
+    """It spends money but widens no boundary (the path was authorized by
+    the operator beforehand), so it is not human-only: the marker test below
+    reads that from this behaviour."""
+    call = _index_call(index_repo, mode, None, True)
+    assert call["acted"] and call["out"]["started"] is True, call
+
+
+def test_index_repos_answer_parameter_never_reaches_the_agents_schema(index_repo):
+    assert "answer" not in index_repo["schema"] and "confirm" in index_repo["schema"]
+
+
+def test_the_marker_follows_behaviour_with_index_repo_registered(index_repo):
+    """The marker test above, on a server that registers griot_index_repo:
+    a tool is human-only when confirm=true does not move it where nobody can
+    be asked, on any protocol, and exactly the human-only tools are marked."""
+    human_only = {t[0] for t in TOOLS if t[3]}
+    if not any(_index_call(index_repo, mode, None, True)["acted"] for mode in MODES):
+        human_only.add("griot_index_repo")
+    assert set(index_repo["marked"]) == human_only

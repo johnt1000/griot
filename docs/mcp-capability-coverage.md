@@ -416,7 +416,7 @@ over MCP, and under what mechanism.
 
 | Kind of operation | Over MCP | Mechanism |
 |---|---|---|
-| Read-only (`search`, `stats`, `repos list`, `profiles list`, `golden-set list`) | yes | plain tool |
+| Read-only: every tool the server marks `readOnlyHint=True`, all listed here (`griot_search`, `griot_stats`, `griot_spend_status`, `griot_index_status`, `griot_index_preview`, `griot_repos_list`, `griot_profiles_list`, `griot_golden_set_list`, `griot_golden_set_suggest`, `griot_quality_check`, `griot_audit`, `griot_config_list`, `griot_auth_guidance`; with `GRIOT_MCP_ENABLE_INDEX`, `griot_index_wait`) | yes | plain tool |
 | State-changing or costly (`index`, `repos remove`, `golden-set add/remove`) | yes, confirmed | a confirmation dialog when the client can ask (then `confirm=true` is ignored and a decline is final), `confirm=true` otherwise |
 | Widens a security boundary (`repos add`), destroys irreversibly (`profiles delete`), or installs standing instructions a future AI session auto-loads (`assist install`) | yes, confirmed | a confirmation dialog only — `human_required=True`, no argument bypasses it; plus the `anthropic/requiresUserInteraction` marker |
 | **Secrets** (`auth set/list/remove`) | **never** | MCP answers with the CLI command to run |
