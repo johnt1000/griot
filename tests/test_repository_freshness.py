@@ -752,3 +752,107 @@ async def test_the_status_and_stats_tools_say_which_repository_the_platform_refu
 
     assert {r["repo"]: r["platform_refused"] for r in status["repositories"]} == {"good": False, "bad": True}
     assert any("refused" in line and "bad" in line for line in out["attention"])
+
+
+# --- a run the platform refused entirely ------------------------------------------------------------
+#
+# [debt 19] A run whose every fetch was refused is recorded with `error`
+# (it did not do its job) and, now, with `refused_repos`. The refusal is
+# found in the newest PLATFORM run, not only while that run is the newest
+# run of all: a later code or commits run used to hide it.
+
+
+def _all_refused_run(heads, refused, at="2026-10-02T10:00:00+00:00"):
+    """As index_platform.py records it: counts, an error, every head of
+    the run, and the repositories refused."""
+    record = _platform_run(heads, refused=refused, at=at)
+    record.update(indexed=0, skipped=0, failed=3, error="the platform refused every fetch (HTTP 401)")
+    return record
+
+
+def test_a_run_refused_entirely_is_still_named_after_a_later_code_run(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    runs = [_run("index_code.py", {"bad": head}, at="2026-10-03T10:00:00+00:00"),
+            _all_refused_run({"bad": head}, refused=["bad"])]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is True
+
+
+def test_a_run_refused_entirely_still_does_not_count_as_indexing_the_platform(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    runs = [_all_refused_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=["bad"])]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert "platform" not in report["sources"] and "platform" in report["missing_sources"]
+    assert report["last_indexed_at"] is None
+
+
+def test_a_run_refused_entirely_clears_no_older_refusal_of_a_repository_it_did_not_refuse(tmp_path):
+    """Its heads hold every repository of the run; only those it names as
+    refused say anything about the platform."""
+    good, bad = _repo(tmp_path, "good"), _repo(tmp_path, "bad")
+    heads = {"good": _git(good, "rev-parse", "HEAD"), "bad": _git(bad, "rev-parse", "HEAD")}
+    runs = [_all_refused_run(heads, refused=["good"], at="2026-10-03T10:00:00+00:00"),
+            _platform_run({"good": heads["good"]}, refused=["bad"], at="2026-10-02T10:00:00+00:00")]
+
+    good_report, bad_report = freshness.assess(runs, _now(good, bad))
+
+    assert good_report["platform_refused"] is True and bad_report["platform_refused"] is True
+
+
+def test_a_later_platform_run_that_indexed_it_clears_a_refusal_of_the_whole_run(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    runs = [_platform_run({"bad": head}, at="2026-10-03T10:00:00+00:00"),
+            _all_refused_run({"bad": head}, refused=["bad"])]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is False
+
+
+def _write_runs(*records):
+    common.secure_mkdir(common.LOG_DIR)
+    for record in records:  # oldest first, as they happened
+        logdb.write_run(common.LOG_DIR, {**record, "collection": common.COLLECTION_NAME})
+
+
+def test_doctor_names_a_repository_refused_by_a_whole_run_after_a_later_code_run(tmp_path, monkeypatch):
+    from griot import doctor
+
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": head}, refused=["bad"]),
+                _run("index_code.py", {"bad": head}, at="2026-10-03T10:00:00+00:00"))
+
+    check = doctor.check_repositories(common)
+
+    assert check["status"] == "warn" and "refused" in check["detail"] and "bad" in check["detail"]
+
+
+@pytest.mark.anyio
+async def test_the_tools_name_a_repository_refused_by_a_whole_run_after_a_later_code_run(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    bad = _repo(tmp_path, "bad")
+    head = _git(bad, "rev-parse", "HEAD")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    _write_runs(_all_refused_run({"bad": head}, refused=["bad"]),
+                _run("index_code.py", {"bad": head}, at="2026-10-03T10:00:00+00:00"))
+
+    async with Client(mcp_server.mcp) as client:
+        status = (await client.call_tool("griot_index_status", {})).structured_content
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert [r["platform_refused"] for r in status["repositories"]] == [True]
+    # The newest run of all is the code run, which did its job: only the
+    # newest platform run can still say the platform refused.
+    assert not (status.get("last_indexed") or {}).get("error")
+    assert any("refused" in line and "bad" in line for line in out["attention"])

@@ -132,7 +132,8 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     (history rewritten); `missing_sources` are those that never ran;
     `platform_refused` is True when the newest platform run that concerned
     the repository could fetch nothing of it (the platform refused every
-    fetch while it answered for other repositories)."""
+    fetch for it, whether or not it answered for other repositories), even
+    when runs of other sources came after it."""
     reports = []
     for repository in repositories:
         name, path, now = repository["name"], repository["path"], repository["head"]
@@ -142,16 +143,19 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
         platform_refused = None
         for run in runs:
             heads = run.get("heads")
-            if platform_refused is None and not run.get("error") and run.get("script") == "index_platform.py":
+            if platform_refused is None and run.get("script") == "index_platform.py":
                 # The newest platform run that concerned this repository
-                # decides: one that refused it lists it under refused_repos
-                # (index_platform.py) and has no head for it; one that
-                # indexed it has its head. A run that died fetched nothing,
-                # so it says neither.
+                # decides, whatever ran after it for other sources: one that
+                # refused it lists it under refused_repos (index_platform.py),
+                # including a run whose EVERY fetch was refused, which also
+                # carries an `error`; one that indexed it has its head. A
+                # run with an error indexed nothing, so its heads clear
+                # nothing; a run that died lists no refusal either, so it
+                # says neither.
                 refused = run.get("refused_repos")
                 if isinstance(refused, list) and name in refused:
                     platform_refused = True
-                elif isinstance(heads, dict) and name in heads:
+                elif not run.get("error") and isinstance(heads, dict) and name in heads:
                     platform_refused = False
             if run.get("error") or not isinstance(heads, dict) or name not in heads:
                 continue

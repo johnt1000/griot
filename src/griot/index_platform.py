@@ -214,6 +214,13 @@ def main(argv=None):
             refused_repos.append(path_str)
 
     refused = [{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
+    # Named in the record, so `griot doctor` and `griot stats` can say which
+    # repository was refused once this stderr is gone (freshness.py).
+    # Explicitly, not derived from the failure ids: those are capped at
+    # MAX_RECORDED_FAILURES, and under --path they carry the repository's
+    # key instead of its name, which is what the freshness report matches.
+    refused_names = [Path(p).name for p in refused_repos]
+    marked = {"refused_repos": refused_names} if refused_names else {}
     if refused and not any(f["ok"] for f in fetches):
         # Nothing the platform was asked for came back (an expired token
         # answers 401 to all of it): the run could not do its job, and an
@@ -227,8 +234,13 @@ def main(argv=None):
         # shadow the last real run in griot_index_status.
         reasons = ", ".join(sorted({f["reason"] for f in refused}))
         if not args.dry_run:
+            # refused_repos too: the error is reported only while this is the
+            # newest run of all, and a later code or commits run would hide
+            # it; the freshness report finds the refusal in the newest
+            # PLATFORM run instead. The error still keeps the run from
+            # counting as indexing.
             _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused,
-                     error=f"the platform refused every fetch ({reasons})")
+                     error=f"the platform refused every fetch ({reasons})", **marked)
         return 1
 
     # Some repository was refused entirely while others answered: theirs are
@@ -239,13 +251,6 @@ def main(argv=None):
     # (its recorded heads), so the freshness report does not count it for
     # the refused ones; its failures name them (`<repo>:platform:<label>`).
     covered = [p for p in repo_paths_str if p not in refused_repos]
-    # Named in the record too, so `griot doctor` and `griot stats` can say
-    # which repository was refused once this stderr is gone (freshness.py).
-    # Explicitly, not derived from the failure ids: those are capped at
-    # MAX_RECORDED_FAILURES, and under --path they carry the repository's
-    # key instead of its name, which is what the freshness report matches.
-    refused_names = [Path(p).name for p in refused_repos]
-    marked = {"refused_repos": refused_names} if refused_names else {}
     rc = None
     if refused_repos:
         print(f"Error: the platform refused every fetch for {', '.join(common.printable(n) for n in refused_names)}; "
