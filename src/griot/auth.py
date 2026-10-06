@@ -227,9 +227,8 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
     origin = common.credential_origin(env_var)
     if not origin["shadows_stored"]:
         return
-    where = ", ".join(origin["exported_in"]) or "this shell (not in a shell file or direnv file griot knows)"
-    print(f"Warning: {env_var} is also exported, with a different value, in {where}. The environment wins, so "
-          f"griot keeps using that one: remove the export there, and run `unset {env_var}` in terminals already open.")
+    print(f"Warning: {env_var} is also exported, with a different value, in {common.export_places(origin)}. "
+          f"The environment wins, so griot keeps using that one: {common.export_advice(env_var, origin, places_said=True)}.")
 
 
 def keychain_phrase(keychain: dict) -> str:
@@ -256,7 +255,7 @@ def where_stored(origin: dict) -> str:
     else:
         return "from the environment only (griot stores none)"
     if origin["source"] == "environment" and not origin["shadows_stored"]:
-        where += f", also exported in {', '.join(origin['exported_in']) or 'this shell'}"
+        where += f", also exported in {common.export_places(origin)}"
     return where
 
 
@@ -279,8 +278,7 @@ def cmd_list() -> int:
             if origin["stored"] == "file" and keychain["available"]:
                 line += " — `griot auth migrate` moves it to the keychain"
         if origin["shadows_stored"]:
-            where = ", ".join(origin["exported_in"]) or "this shell"
-            line += (f" — from the environment ({where}), which overrides the key griot stores; the stored one "
+            line += (f" — from the environment ({common.export_places(origin)}), which overrides the key griot stores; the stored one "
                      f"differs and is not used")
         print(f"  {status['provider']:<10} {line}")
     return 0
@@ -311,8 +309,8 @@ def cmd_remove(provider: str) -> int:
         print(f"{env_var} removed from {' and '.join(names[p] for p in result.places)}.")
         origin = common.credential_origin(env_var)
         if origin["source"] == "environment":
-            where = ", ".join(origin["exported_in"]) or "this shell"
-            print(f"Note: {env_var} is still exported in {where}: griot keeps using that value until the export is removed.")
+            print(f"Note: {env_var} is still exported in {common.export_places(origin)}: griot keeps using that "
+                  f"value until it is not; to stop it, {common.export_advice(env_var, origin, places_said=True)}.")
     if unreachable:
         # Not "nothing to remove": a key stored there earlier may still be
         # there, and saying it is gone would be the one wrong answer. Exit 1
