@@ -555,7 +555,8 @@ def _unlike_the_check(row: dict) -> list[str]:
 
     quality_check.run_golden_set() checks every case in the case's own mode
     (the one recorded here: the mode that RAN), over every repository,
-    ungrouped. A search narrowed to some repositories or source types, or a
+    searched as readers search (at most a few chunks per document, copies of
+    the same text folded), never grouped by document. A search narrowed to some repositories or source types, or a
     grouped one (where the limit counts documents, not chunks), asserts what
     THAT search returned, so it can fail on every check without retrieval
     getting any worse: a permanently red case in the very ruler the golden
@@ -666,8 +667,9 @@ _CANNOT = ("cannot become a case: it was logged before griot recorded what a cas
 
 
 def _unlike_note(unlike: list[str]) -> str:
-    return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked by a "
-            f"search over every repository, ungrouped (vector, keyword or hybrid), which may never return them. "
+    return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked in its own "
+            f"mode (vector, keyword or hybrid) over every repository, searched as readers search and not grouped "
+            f"by document, which may never return them. "
             f"Asked again that way, the question can be.")
 
 

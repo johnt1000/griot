@@ -947,7 +947,7 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             mode=mode,
             # Grouped, `limit` counts documents and each result is the best
             # chunk of one: `griot golden-set review` must not make a case
-            # from it, since a case is checked by an ungrouped search.
+            # from it, since a case is checked by a search not grouped by document.
             group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
@@ -1261,6 +1261,13 @@ class QualityCheckFailure(TypedDict):
     reason: str
 
 
+class MetByCopy(TypedDict):
+    expected: dict
+    result: int
+    result_source: str
+    copy: str
+
+
 class GoldenCheckCase(TypedDict):
     query: str
     # The search the case was made in and is checked with: vector, keyword
@@ -1272,6 +1279,11 @@ class GoldenCheckCase(TypedDict):
     skipped: bool
     # The expected entries no result matched.
     missing: list[dict]
+    # The expected entries met only as a copy: the same text, found in the
+    # place the case names, folded into result number `result` (1-based,
+    # named `result_source`) and listed in its `also_in` as `copy`. The case
+    # passes on them: a reader got that text, under another name.
+    met_by_copy: list[MetByCopy]
     # Set when the case could not pass whatever the search returned (its
     # repository has nothing indexed, or it constrains nothing).
     reason: str | None
@@ -2429,7 +2441,9 @@ def griot_health_report() -> str:
         "show what it returned instead. A case with `skipped` true was not run: it is a "
         "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
         "(`griot index keywords` builds them); report it as not measured, never as passing "
-        "or failing. A failed case with `limit_reduced_from` set "
+        "or failing. A passed case with `met_by_copy` got the text it names from a copy in "
+        "another place (the result it names carried it): report it as met by a copy. "
+        "A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "
@@ -2531,6 +2545,8 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
         "cases": [{
             "query": case["query"], "mode": case["mode"], "passed": case["passed"], "skipped": case["skipped"],
             "missing": case["missing"],
+            "met_by_copy": [{**met, "result_source": common.shown(met["result_source"]),
+                             "copy": common.shown(met["copy"])} for met in case["met_by_copy"]],
             "reason": case.get("reason"),
             "top_results": [{"score": hit["score"], "source_type": hit["source_type"],
                              "repo": common.shown(str(hit["repo"])) if hit["repo"] is not None else None}
@@ -2555,8 +2571,10 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     results that must come back: the only one that says search is useful.
     Each case is searched in its own `mode` (the one it was made in), as
     griot_search returns results (`diverse`), and has
-    `passed`, what was `missing`, and a `reason` when it could not pass at
-    all (its repository has nothing indexed). A keyword or hybrid case on a
+    `passed`, what was `missing`, `met_by_copy` (an expected document that
+    came back only as a copy of the same text, named in a result's
+    `also_in`: met, and said which result carried it), and a `reason` when
+    it could not pass at all (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
     failed, with `reason` naming the command that builds them; `ran_by_mode`
     counts the cases searched per mode. A case that asks for more results
