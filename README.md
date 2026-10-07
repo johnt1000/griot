@@ -74,7 +74,7 @@ Each profile gets its own collection (vectors from different models aren't compa
 | Profile | Backend | Cost | Notes |
 |---|---|---|---|
 | `jina-code` (default) | local ONNX | free | code-specialist, 768-dim |
-| `bge-small`, `nomic-q`, `mxbai-large`, `bge-m3`, `bge-large-en` | local ONNX | free | RAM-tiered alternatives — `griot profiles list` shows what fits your machine |
+| `bge-small`, `nomic-q`, `mxbai-large`, `bge-large-en` | local ONNX | free | RAM-tiered alternatives — `griot profiles list` shows what fits your machine |
 | `openai-small` | OpenAI API | paid | needs `GRIOT_OPENAI_API_KEY` |
 | `gemini` | Gemini API | paid | needs `GEMINI_TOKEN` |
 

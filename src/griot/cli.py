@@ -330,7 +330,7 @@ def _cmd_profiles_list(args) -> int:
     (light=8GB/medium=16GB/heavy=32GB), not a percentage computed on top of
     rss_estimate_mb — an earlier version tried "a model alone shouldn't
     exceed ~25-30% of total RAM", which matched section 9.3's TEXT, but
-    diverges from that same section's own mockup (16GB: bge-m3/bge-large-en,
+    diverges from that same section's own mockup (16GB: bge-large-en,
     heavy tier, shown as "might be tight" even though it fits under that
     percentage). The nominal floor per tier reproduces the mockup exactly
     and is the source of truth when the plan's two criteria conflict with
@@ -404,7 +404,8 @@ def _cmd_profiles_use(args) -> int:
 
     name = args.profile
     if name not in common.EMBED_PROFILES:
-        print(f"Error: unknown profile {name!r}. Options: {', '.join(common.EMBED_PROFILES)}.", file=sys.stderr)
+        print(f"Error: unknown profile {name!r}.{common.unknown_profile_reason(name)} "
+              f"Options: {', '.join(common.EMBED_PROFILES)}.", file=sys.stderr)
         return 2
     profile = common.EMBED_PROFILES[name]
     in_file = dotenv_values(common.ENV_PATH).get("GRIOT_EMBED_PROFILE") if common.ENV_PATH.exists() else None
@@ -495,7 +496,9 @@ def check_delete_profile(profile_name: str, *, active_profile_name: str | None =
     the answer."""
     from griot import common
 
-    if profile_name not in common.EMBED_PROFILES:
+    # A retired profile is still deletable: a run on it opened its collection
+    # before the first embedding failed, and nothing else removes that one.
+    if profile_name not in common.EMBED_PROFILES and profile_name not in common.RETIRED_EMBED_PROFILES:
         raise ValueError(f"unknown profile '{profile_name}'.")
     active = active_profile_name if active_profile_name is not None else common.ACTIVE_PROFILE_NAME
     if profile_name == active:
@@ -817,7 +820,8 @@ def _main(argv=None) -> int:
             if e.name != args.profile:
                 raise
             # The name came from the command line, not from a setting: say so.
-            print(f"Error: unknown profile {args.profile!r}. Options: {', '.join(e.options)}.", file=sys.stderr)
+            print(f"Error: unknown profile {args.profile!r}.{e.reason} Options: {', '.join(e.options)}.",
+                  file=sys.stderr)
             return 2
     from griot import common
     common.ensure_env_template()

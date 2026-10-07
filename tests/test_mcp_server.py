@@ -518,12 +518,12 @@ async def test_profiles_delete_resolves_the_active_profile_live(monkeypatch):
     monkeypatch.setattr(mcp_server.cli, "delete_profile",
                         lambda name, **kw: seen.update(kw) or "deleted")
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
-    monkeypatch.setenv("GRIOT_EMBED_PROFILE", "bge-m3")
+    monkeypatch.setenv("GRIOT_EMBED_PROFILE", "bge-large-en")
     ctx = _FakeCtx()
 
     await mcp_server.griot_profiles_delete("bge-small", ctx=ctx, answer=_accepted())
 
-    assert seen["active_profile_name"] == "bge-m3"
+    assert seen["active_profile_name"] == "bge-large-en"
 
 
 @pytest.mark.anyio
