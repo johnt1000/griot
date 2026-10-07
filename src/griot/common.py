@@ -4233,13 +4233,17 @@ class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
     places where the same thing was found among the matches the search
-    looked at (every window it fetched)."""
+    looked at (every window it fetched). `copies` are the payloads behind
+    `also_in`, in the same order: a label is cut and redacted, so the golden
+    set needs the stored fields to tell whether a case's document came back
+    as one of them. Not for a reader: it carries each copy's text again."""
 
-    __slots__ = ("id", "score", "payload", "also_in")
+    __slots__ = ("id", "score", "payload", "also_in", "copies")
 
     def __init__(self, hit):
         self.id, self.score, self.payload = hit.id, hit.score, hit.payload or {}
         self.also_in: list[str] = []
+        self.copies: list[dict] = []
 
 
 def _diversified(hits: list, limit: int, per_document: int) -> list:
@@ -4272,6 +4276,7 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
             label = source_label(payload)
             if label != source_label(twin.payload) and label not in twin.also_in:
                 twin.also_in.append(label)
+                twin.copies.append(payload)
             continue
         if len(kept) >= limit:
             continue  # still reading on: a copy of something kept may come later

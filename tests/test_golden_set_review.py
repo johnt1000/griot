@@ -397,7 +397,7 @@ def test_a_result_recorded_as_null_cannot_be_picked(terminal, capsys):
 #
 # quality_check.run_golden_set() checks every case in its own mode (vector,
 # keyword or hybrid: tests/test_golden_set_modes.py) over every repository,
-# ungrouped. A case made from a search that was narrowed or grouped could
+# searched as readers search and never grouped by document. A case made from a search that was narrowed or grouped could
 # fail on every check without retrieval getting any worse: a permanently red
 # case in the ruler the golden set exists to be.
 

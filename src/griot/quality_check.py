@@ -173,6 +173,31 @@ def _matches(payload: dict, expected: dict) -> bool:
     return all(payload.get(k) == v for k, v in expected.items())
 
 
+def _met_by_copy(expected: list[dict], hits: list) -> tuple[list[dict], list[dict]]:
+    """(the expected entries no result matched, the ones a folded copy of a
+    result matched). A diverse search shows the same text once, the other
+    places it lives named in the result's `also_in`: a case naming one of
+    those places asked for text the reader DID get, so it is met. Said
+    apart (which result carried it, under which name) because a pass by a
+    copy is not the named document ranking: a case meant to pin one
+    repository's copy can re-curate itself from what it sees here. A result
+    that matches directly wins: only what no result matched is looked for
+    among the copies."""
+    missing, by_copy = [], []
+    for exp in expected:
+        if any(_matches(h.payload, exp) for h in hits):
+            continue
+        carrier = next(((rank, h, copy) for rank, h in enumerate(hits, start=1)
+                        for copy in getattr(h, "copies", []) if _matches(copy, exp)), None)
+        if carrier is None:
+            missing.append(exp)
+        else:
+            rank, hit, copy = carrier
+            by_copy.append({"expected": exp, "result": rank, "result_source": common.source_label(hit.payload),
+                            "copy": common.source_label(copy)})
+    return missing, by_copy
+
+
 def run_golden_set(golden_set: list) -> dict:
     """Level 2 (curated): real semantic questions with what SHOULD appear in
     the top-K — tests actual search quality (not just "the pipeline didn't
@@ -227,7 +252,7 @@ def run_golden_set(golden_set: list) -> dict:
                 "reason": ("must_include entries that constrain nothing — every value is null, "
                            "so this case matches any result and can never fail. Re-curate it with "
                            "`griot golden-set remove` then `griot golden-set add`."),
-                "top_results": [],
+                "met_by_copy": [], "top_results": [],
             })
             continue
         # "Search did not find it" and "there is nothing to find" are
@@ -250,7 +275,7 @@ def run_golden_set(golden_set: list) -> dict:
                 "reason": (f"nothing is indexed for {names} with profile '{common.ACTIVE_PROFILE_NAME}': "
                            f"this case cannot pass until that repository is indexed. If it is gone for "
                            f"good, remove the case with `griot golden-set remove`."),
-                "top_results": [],
+                "met_by_copy": [], "top_results": [],
             })
             continue
         # The case's own mode, never the surfaces' default: a case asserts
@@ -270,7 +295,7 @@ def run_golden_set(golden_set: list) -> dict:
                 "reason": (f"not run: this case is a {mode} search, and collection '{common.COLLECTION_NAME}' has "
                            f"no keyword vectors yet. `griot index keywords` builds them once (local, embeds "
                            f"nothing); until then the case is neither passed nor failed."),
-                "top_results": [],
+                "met_by_copy": [], "top_results": [],
             })
             continue
         # Diverse, as every surface a reader gets results from searches (see
@@ -286,10 +311,9 @@ def run_golden_set(golden_set: list) -> dict:
             # reason the vacuous case is, and the remaining cases still run.
             results.append({"query": case["query"], "mode": mode, "passed": False, "skipped": False,
                             "missing": case["must_include"], "reason": f"the search refused this case: {e}",
-                            "top_results": []})
+                            "met_by_copy": [], "top_results": []})
             continue
-        payloads = [h.payload for h in hits]
-        missing = [exp for exp in case["must_include"] if not any(_matches(p, exp) for p in payloads)]
+        missing, met_by_copy = _met_by_copy(case["must_include"], hits)
         ran_by_mode[mode] = ran_by_mode.get(mode, 0) + 1
         results.append({
             "query": case["query"],
@@ -297,6 +321,7 @@ def run_golden_set(golden_set: list) -> dict:
             "passed": not missing,
             "skipped": False,
             "missing": missing,
+            "met_by_copy": met_by_copy,
             "top_results": [{"score": round(h.score, 3), "source_type": h.payload.get("source_type"), "repo": h.payload.get("repo")} for h in hits],
         })
     skipped = sum(1 for r in results if r.get("skipped"))
@@ -406,6 +431,11 @@ def main(argv=None):
                 for case in golden_check["cases"]:
                     status = "SKIPPED" if case["skipped"] else "OK" if case["passed"] else "FAILED"
                     print(f"  [{status}] {case['query']!r} ({common.printable(str(case['mode']))[:20]})")
+                    for met in case.get("met_by_copy") or []:
+                        # Said even on a pass: the case names a place a
+                        # reader was not shown, only told about.
+                        print(f"        met by a copy: {common.shown(met['copy'])} is the same text as result "
+                              f"{met['result']} ({common.shown(met['result_source'])})")
                     if not case["passed"] and case.get("reason"):
                         print(f"        {case['reason']}")
                     elif not case["passed"]:
