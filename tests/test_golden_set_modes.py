@@ -121,10 +121,12 @@ def test_add_searches_in_the_mode_asked_and_the_case_keeps_it(index, searches, m
     assert case["must_include"] == [{"repo": "alpha", "source_type": "code", "file_path": "src/net.py"}]
 
 
-def test_add_without_a_mode_searches_by_vector(index, searches, monkeypatch):
+def test_add_without_a_mode_searches_in_hybrid_like_griot_search(index, searches, monkeypatch):
+    """The default since 2026-10-06 (tests/test_golden_set_add_default_mode.py
+    has the fallback on a collection without keyword vectors)."""
     monkeypatch.setattr("builtins.input", lambda *a: "1")
     assert golden_set.main(["add", "acquire_lock", "--limit", "1"]) == 0
-    assert searches == ["vector"] and "mode" not in _cases()[0]
+    assert searches == ["hybrid"] and _cases()[0]["mode"] == "hybrid"
 
 
 def test_add_in_a_word_mode_on_a_collection_without_keyword_vectors_says_what_to_run(legacy_index, capsys,
@@ -314,7 +316,9 @@ async def test_the_mcp_tool_refuses_a_mode_that_is_not_a_search_mode():
         out = await client.call_tool("griot_golden_set_add", {
             "query": "acquire_lock", "must_include": [{"repo": "alpha"}], "mode": "semantic", "confirm": True})
     schema = tools["griot_golden_set_add"].input_schema["properties"]["mode"]
-    assert set(schema.get("enum") or []) == set(common.SEARCH_MODES)
+    # An enum beside null: leaving `mode` out is the default (hybrid where it can run).
+    offered = {value for option in schema.get("anyOf", [schema]) for value in option.get("enum", [])}
+    assert offered == set(common.SEARCH_MODES)
     assert "mode" in tools["griot_golden_set_add"].description
     assert out.is_error and not common.GOLDEN_SET_PATH.exists()
 

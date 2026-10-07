@@ -41,8 +41,8 @@ def shell(tmp_path, monkeypatch):
     (home / ".zshrc").write_text(f"# settings\nexport PATH=/usr/bin\nexport {VAR}={OLD}\n")
     monkeypatch.setenv(VAR, OLD)
     monkeypatch.setattr(common, "EXPORTED_BEFORE_ENV_FILE", {VAR: _digest(OLD)})
-    monkeypatch.setattr(common, "_keychain_get", lambda var: None)
-    monkeypatch.setattr(common, "_keychain_set", lambda var, value: False)
+    monkeypatch.setattr(common, "keychain_get", lambda var: None)
+    monkeypatch.setattr(common, "keychain_set", lambda var, value: False)
     common.secure_mkdir(common.CONFIG_DIR)
     return home
 
@@ -82,14 +82,14 @@ def test_a_key_only_in_the_file_comes_from_the_file(shell, monkeypatch):
 
 def test_a_key_only_in_the_keychain_comes_from_the_keychain(shell, monkeypatch):
     monkeypatch.setattr(common, "EXPORTED_BEFORE_ENV_FILE", {})
-    monkeypatch.setattr(common, "_keychain_get", lambda var: NEW if var == VAR else None)
+    monkeypatch.setattr(common, "keychain_get", lambda var: NEW if var == VAR else None)
     monkeypatch.setenv(VAR, NEW)  # injected at load time
 
     assert common.credential_origin(VAR)["source"] == "keychain"
 
 
 def test_an_export_over_a_different_key_in_the_keychain_shadows_it(shell, monkeypatch):
-    monkeypatch.setattr(common, "_keychain_get", lambda var: NEW if var == VAR else None)
+    monkeypatch.setattr(common, "keychain_get", lambda var: NEW if var == VAR else None)
 
     origin = common.credential_origin(VAR)
 
@@ -179,7 +179,7 @@ def test_auth_remove_says_the_exported_key_is_still_used(shell, capsys):
 
 
 def test_auth_list_compares_with_the_keychain_too(shell, monkeypatch, capsys):
-    monkeypatch.setattr(common, "_keychain_get", lambda var: NEW if var == VAR else None)
+    monkeypatch.setattr(common, "keychain_get", lambda var: NEW if var == VAR else None)
 
     auth.cmd_list()
 
@@ -191,7 +191,7 @@ def test_the_status_the_mcp_tools_read_does_not_touch_the_keychain(shell, monkey
     """`griot_profiles_list` and `griot_auth_guidance` call this on every
     call; on macOS a keychain read from a binary the item does not trust
     asks the person, every time."""
-    monkeypatch.setattr(common, "_keychain_get", lambda var: pytest.fail("the keychain was read"))
+    monkeypatch.setattr(common, "keychain_get", lambda var: pytest.fail("the keychain was read"))
 
     auth.provider_status()
 

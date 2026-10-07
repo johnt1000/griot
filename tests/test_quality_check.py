@@ -396,7 +396,7 @@ def test_golden_set_counts_a_case_with_no_real_constraint_as_failed(monkeypatch)
     exit 0 having measured nothing, and it is used as a gate. Skipping would
     leave that gate open; failing closes it and names the case to fix."""
     monkeypatch.setattr(quality_check.common, "search",
-                        lambda query, limit=5, mode=None: [_Hit(0.9, {"repo": "alpha", "source_type": "code"})])
+                        lambda query, limit=5, mode=None, diverse=False: [_Hit(0.9, {"repo": "alpha", "source_type": "code"})])
     # The search is faked, so the index is too: `alpha` is there.
     monkeypatch.setattr(quality_check.common, "get_client", lambda: None)
     monkeypatch.setattr(quality_check.common, "repository_is_indexed", lambda client, repo: True)

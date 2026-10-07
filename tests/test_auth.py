@@ -325,7 +325,7 @@ def test_cmd_migrate_moves_file_credential_to_keychain_when_available(monkeypatc
 
     assert rc == 0
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
-    assert common._keychain_get("GRIOT_OPENAI_API_KEY") == "sk-plaintext-1234"
+    assert common.keychain_get("GRIOT_OPENAI_API_KEY") == "sk-plaintext-1234"
 
 
 def test_cmd_migrate_leaves_file_untouched_without_keychain_backend(capsys):
@@ -358,4 +358,4 @@ def test_main_dispatches_migrate(monkeypatch):
     assert auth.main(["migrate"]) == 0
 
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
-    assert common._keychain_get("GRIOT_OPENAI_API_KEY") == "sk-via-main-migrate"
+    assert common.keychain_get("GRIOT_OPENAI_API_KEY") == "sk-via-main-migrate"

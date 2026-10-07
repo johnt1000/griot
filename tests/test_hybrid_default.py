@@ -56,7 +56,7 @@ def test_the_default_falls_back_to_vector_when_nothing_is_indexed():
 
 def test_the_default_falls_back_to_vector_when_the_collection_config_cannot_be_read(index):
     common.release_client()
-    (_active_path() / common._EDGE_CONFIG_MARKER).write_text("{not json")
+    (_active_path() / common.EDGE_CONFIG_MARKER).write_text("{not json")
     assert common.search_mode_for("acquire_lock", None) == ("vector", None)
 
 
@@ -218,10 +218,12 @@ def test_the_golden_set_check_searches_by_vector_explicitly(index, searches):
     assert searches and set(searches) == {"vector"}
 
 
-def test_adding_a_golden_case_shows_what_the_check_will_search_by_vector(index, searches, monkeypatch):
+def test_adding_a_golden_case_shows_what_the_check_will_search_in_the_new_case_s_mode(index, searches, monkeypatch):
+    """A new case defaults to hybrid (it is written with `mode: hybrid`, and
+    the check repeats it in that mode), so its results come from hybrid."""
     monkeypatch.setattr("builtins.input", lambda *a: "")
     golden_set.cmd_add("acquire_lock", limit=3)
-    assert searches and set(searches) == {"vector"}
+    assert searches and set(searches) == {"hybrid"}
 
 
 def test_the_retrieval_evaluation_searches_by_vector_explicitly(index, searches):
