@@ -947,7 +947,8 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             mode=mode,
             # Grouped, `limit` counts documents and each result is the best
             # chunk of one: `griot golden-set review` must not make a case
-            # from it, since a case is checked by a search not grouped by document.
+            # from it, since a case is checked by a search not grouped by
+            # document.
             group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
@@ -1893,7 +1894,8 @@ def griot_golden_set_suggest(path: str, limit: int = 10,
     can require, or has no message, is left out (`left_out` counts them).
     Each candidate has the `query`, `must_include` and `limit` that
     griot_golden_set_add takes; that tool is how one becomes a case, and a
-    person confirms it there. Pick the ones whose message reads like a
+    person confirms it there. Added without a `mode`, it is a hybrid case,
+    as the terminal command makes it. Pick the ones whose message reads like a
     question someone would ask; skip "fix typo".
 
     `path` must be registered (`griot repos add`) or under
@@ -1997,9 +1999,11 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     `mode` is the search the case is checked with, every time: pass the
     `mode` griot_search reported for the results you picked, or the case is
     held to a ranking those results never came from. Left out, it is
-    hybrid, as griot_search's default; on a collection without keyword
+    hybrid, as griot_search's default, also with nothing indexed yet (an
+    index run builds keyword vectors); on a collection without keyword
     vectors it is vector, and the message says so and names
-    `griot index keywords`. A keyword or hybrid case needs a query with a
+    `griot index keywords`, and on one whose config cannot be read it is
+    vector, and the message says that. A keyword or hybrid case needs a query with a
     word keyword search can match.
 
     Confirmed like every state change, but with the confirm= fallback
@@ -2574,11 +2578,11 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
     Each case is searched in its own `mode` (the one it was made in), as
-    griot_search returns results (`diverse`), and has
-    `passed`, what was `missing`, `met_by_copy` (an expected document that
-    came back only as a copy of the same text, named in a result's
-    `also_in`: met, and said which result carried it), and a `reason` when
-    it could not pass at all (its repository has nothing indexed). A keyword or hybrid case on a
+    griot_search returns results (`diverse`), and has `passed`, what was
+    `missing`, `met_by_copy` (an expected document that came back only as a
+    copy of the same text, named in a result's `also_in`: met, and said
+    which result carried it), and a `reason` when it could not pass at all
+    (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
     failed, with `reason` naming the command that builds them; `ran_by_mode`
     counts the cases searched per mode. A case that asks for more results
