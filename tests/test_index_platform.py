@@ -550,3 +550,79 @@ def test_a_repository_skipped_for_its_remote_is_named_printable(tmp_path, monkey
 
     out = capsys.readouterr().out
     assert "\x1b" not in out and "bad?[2Jx" in out
+
+
+# --- GitLab read without a token (public projects) -------------------------
+
+
+@pytest.fixture
+def gitlab_run(platform_run, monkeypatch):
+    monkeypatch.setattr(index_platform, "_remote_url", lambda repo_path: "https://gitlab.com/group/project.git")
+    monkeypatch.setattr(index_platform.platforms, "detect_platform", lambda url: ("gitlab", "group/project", None))
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    return platform_run
+
+
+def test_a_gitlab_run_without_a_token_says_it_read_public_data_only(gitlab_run, capsys):
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    out = capsys.readouterr().out
+    assert "without a token" in out and "public" in out
+
+
+def test_a_gitlab_run_with_a_token_says_nothing_about_reading_without_one(gitlab_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    assert "without a token" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [401, 404])
+def test_a_private_gitlab_project_without_a_token_is_a_recorded_refusal(gitlab_run, monkeypatch, capsys, status):
+    """GitLab hides a private project from an anonymous caller (404, or 401):
+    the run fails and is recorded like any other refusal, and the screen says
+    which variable to set and how, without a traceback."""
+    response = requests.Response()
+    response.status_code = status
+
+    def hidden(platform, project_id, host=None):
+        raise index_platform.platforms.TokenNeeded(
+            f"GitLab answered HTTP {status} to a request made without a token; "
+            "set GITLAB_PERSONAL_ACCESS_TOKEN with `griot auth set gitlab`.",
+            response=response)
+    for name in ("fetch_pull_requests", "fetch_releases", "fetch_issues"):
+        monkeypatch.setattr(index_platform.platforms, name, hidden)
+    monkeypatch.setattr(index_platform.common, "credential_hint", lambda env_var: "HINT-LINE")
+
+    rc = index_platform.main(["--path", gitlab_run["path"]])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "griot auth set gitlab" in captured.out
+    # The error already says what to do; the generic hint would repeat it.
+    assert "HINT-LINE" not in captured.out
+    (run,) = gitlab_run["runs"]
+    assert {f["reason"] for f in run["failures"]} == {f"HTTP {status}"}
+    assert "refused" in run["error"]
+    assert run["refused_repos"]
+
+
+def test_a_platform_item_url_is_stored_when_the_platform_gives_one(gitlab_run, monkeypatch):
+    monkeypatch.setattr(index_platform.platforms, "fetch_pull_requests", lambda platform, project_id, host=None: [
+        {"iid": 1, "title": "with", "url": "https://gitlab.com/group/project/-/merge_requests/1"},
+        {"iid": 2, "title": "without", "url": None},
+    ])
+    monkeypatch.setattr(index_platform.platforms, "fetch_issues", lambda platform, project_id, host=None: [
+        {"iid": 3, "title": "issue", "url": "https://gitlab.com/group/project/-/work_items/3"}])
+    monkeypatch.setattr(index_platform.platforms, "fetch_releases", lambda platform, project_id, host=None: [
+        {"tag_name": "v1", "name": "v1", "url": "https://gitlab.com/group/project/-/releases/v1"}])
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    by_title = {d["content"].split("\n")[0]: d["metadata"] for d in gitlab_run["documents"]}
+    assert by_title["with"]["url"] == "https://gitlab.com/group/project/-/merge_requests/1"
+    # Absent, not null: the other platforms' points stay as they were.
+    assert "url" not in by_title["without"]
+    assert by_title["issue"]["url"].endswith("/work_items/3")
+    assert by_title["v1"]["url"].endswith("/releases/v1")

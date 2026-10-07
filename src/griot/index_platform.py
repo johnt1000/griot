@@ -45,6 +45,13 @@ def build_chunks(content: str, id_prefix: str, base_metadata: dict) -> list[dict
     return documents
 
 
+def _url_field(item: dict) -> dict:
+    """The item's web page, for an adapter that gives one (GitLab). Left out
+    rather than stored as null otherwise, so the points of the platforms that
+    give none keep the payload they always had."""
+    return {"url": item["url"]} if item.get("url") else {}
+
+
 def build_mr_documents(repo_name: str, platform: str, project_id: str, host: str | None, id_prefix: str | None = None) -> list[dict]:
     key = id_prefix or repo_name
     mrs = platforms.fetch_pull_requests(platform, project_id, host)
@@ -62,6 +69,7 @@ def build_mr_documents(repo_name: str, platform: str, project_id: str, host: str
             "created_at": mr.get("created_at"),
             "source_branch": mr.get("source_branch"),
             "target_branch": mr.get("target_branch"),
+            **_url_field(mr),
         }))
     return documents
 
@@ -79,6 +87,7 @@ def build_release_documents(repo_name: str, platform: str, project_id: str, host
             "repo": repo_name,
             "tag_name": release.get("tag_name"),
             "released_at": release.get("released_at"),
+            **_url_field(release),
         }))
     return documents
 
@@ -98,6 +107,7 @@ def build_issue_documents(repo_name: str, platform: str, project_id: str, host: 
             "state": issue.get("state"),
             "author": issue.get("author"),
             "created_at": issue.get("created_at"),
+            **_url_field(issue),
         }))
     return documents
 
@@ -123,6 +133,9 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
         print(f"WARNING: {shown_name}'s remote isn't from any recognized platform ({common.printable(shown)}).")
         return []
     platform, project_id, host = detected
+    note = platforms.anonymous_read_note(platform)
+    if note:
+        print(f"  {shown_name}: {note}")
 
     documents = []
     hinted = False
@@ -146,7 +159,8 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
                 reason = f"HTTP {status}" if status else type(e).__name__
                 fetches.append({"id": f"{key}:platform:{label}", "ok": False, "reason": reason})
             env_var = platforms.TOKEN_ENV.get(platform)
-            if status in (401, 403) and env_var and not hinted:
+            # A TokenNeeded already says which variable to set and how.
+            if status in (401, 403) and env_var and not hinted and not isinstance(e, platforms.TokenNeeded):
                 # Which token the platform refused: the one exported in the
                 # shell can hide the one griot stores, and nothing said so.
                 print(f"    {common.credential_hint(env_var)}")

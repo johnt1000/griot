@@ -32,7 +32,7 @@ to a Gitea instance isn't recognized by any platform (the same "no known
 remote" behavior that already existed for any non-GitLab host before this
 change).
 
-**Only GitHub has been exercised against a real account and token** (2026-08-25: pull requests and releases indexed from four private repositories). The other four adapters are covered by tests that mock `requests.get`/`requests.post` with responses shaped after each provider's publicly documented API — useful, but not the same confidence as a live smoke test, which needs an account, a token and a repository on each platform.
+**Only GitHub has been exercised against a real account and token** (2026-08-25: pull requests and releases indexed from four private repositories). GitLab reads a public project without a token, verified against gitlab.com on 2026-10-07 (merge requests, releases and issues of a public project); its authenticated path has not run for real yet. The other adapters are covered by tests that mock `requests.get`/`requests.post` with responses shaped after each provider's publicly documented API — useful, but not the same confidence as a live smoke test, which needs an account, a token and a repository on each platform.
 """
 
 from __future__ import annotations
@@ -109,19 +109,44 @@ def _require_same_host(next_url: str, base_url: str) -> None:
         )
 
 
-def _get_with_retry(url: str, headers: dict, params: dict | None = None, auth: tuple | None = None) -> requests.Response:
+RETRY_ATTEMPTS = 5
+
+
+def _retry_after_seconds(resp: requests.Response) -> int | None:
+    """The delay a 429 asks for, when it gives one in seconds (what GitLab
+    sends); None for an absent value or the HTTP-date form."""
+    value = (resp.headers or {}).get("Retry-After")
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _get_with_retry(url: str, headers: dict, params: dict | None = None, auth: tuple | None = None,
+                    retry_after_cap: int | None = None) -> requests.Response:
     """GET with retry on 429 (exponential backoff, 5 attempts) — same
     philosophy as `common._gemini_post_with_retry()`/`_openai_compatible_post_with_retry()`,
     generalized here across the 5 platforms instead of duplicating per adapter.
+
+    `retry_after_cap`, when given, waits what the server's Retry-After asks
+    (bounded by the cap) instead of the fixed backoff, and does not wait
+    after the last attempt. Only GitLab passes it: its unauthenticated limit
+    is per minute, so the fixed 1-16s backoff can spend every attempt inside
+    one throttled window. The other adapters keep their behaviour.
 
     [finding M5] allow_redirects=False: requests only strips the
     Authorization header on a cross-host redirect — PRIVATE-TOKEN (GitLab)
     and similar headers would travel to the new host. A redirect becomes an
     explicit error, never followed with a credential."""
-    for attempt in range(5):
+    for attempt in range(RETRY_ATTEMPTS):
         resp = requests.get(url, headers=headers, params=params, auth=auth, timeout=30, allow_redirects=False)
         if resp.status_code == 429:
             wait = 2 ** attempt
+            if retry_after_cap is not None:
+                if attempt == RETRY_ATTEMPTS - 1:
+                    break
+                wait = min(_retry_after_seconds(resp) or wait, retry_after_cap)
             common.log_and_print(f"429 on {url}, waiting {wait}s...")
             time.sleep(wait)
             continue
@@ -265,17 +290,54 @@ def _gitlab_project_id(url: str) -> str:
     return _path_after_host(url)
 
 
+class TokenNeeded(requests.HTTPError):
+    """GitLab refused a request made without a token in a way a token could
+    change (401, or the 404 it gives an anonymous caller for a private
+    project). Still an HTTPError carrying the response, so a run records it
+    by its status like any other platform refusal."""
+
+
+# GitLab.com's unauthenticated API limit is counted per minute: a longer
+# Retry-After is not waited in full, so a throttled run ends in minutes as a
+# recorded refusal instead of holding the terminal.
+GITLAB_RETRY_AFTER_CAP = 60
+
+
+def _gitlab_token() -> str | None:
+    # An empty value is no token: sent as an empty PRIVATE-TOKEN header,
+    # GitLab answers 401 even for a public project.
+    return os.getenv(TOKEN_ENV["gitlab"]) or None
+
+
+def anonymous_read_note(platform: str) -> str | None:
+    """What a run says when it reads a platform without a token, or None.
+    Only GitLab reads without one; the other adapters require their token."""
+    if platform == "gitlab" and not _gitlab_token():
+        return f"{TOKEN_ENV['gitlab']} is not set: reading GitLab without a token, public data only."
+    return None
+
+
 def _gitlab_request(project_id: str, endpoint: str, params: dict | None = None) -> list[dict]:
-    token = _require_token("GITLAB_PERSONAL_ACCESS_TOKEN")
+    token = _gitlab_token()
     encoded_path = quote(project_id, safe="")
     url = f"{_gitlab_api_base()}/projects/{encoded_path}/{endpoint}"
-    headers = {"PRIVATE-TOKEN": token}
+    # Without a token, no header at all: public projects answer anonymously.
+    # The token, when there is one, still goes only to the configured API host.
+    headers = {"PRIVATE-TOKEN": token} if token else {}
 
     all_items: list[dict] = []
     page = 1
     while True:
         request_params = {**(params or {}), "per_page": 100, "page": page}
-        resp = _get_with_retry(url, headers, request_params)
+        resp = _get_with_retry(url, headers, request_params, retry_after_cap=GITLAB_RETRY_AFTER_CAP)
+        if not token and resp.status_code in (401, 404):
+            # Not the URL: the message is printed and could be logged.
+            raise TokenNeeded(
+                f"GitLab answered HTTP {resp.status_code} to a request made without a token: the project is "
+                f"private, or does not exist. To read a private project, set {TOKEN_ENV['gitlab']} with "
+                f"`griot auth set gitlab`.",
+                response=resp,
+            )
         resp.raise_for_status()
         items = resp.json()
         if not items:
@@ -308,6 +370,7 @@ def gitlab_fetch_pull_requests(project_id: str) -> list[dict]:
             "created_at": mr.get("created_at"),
             "source_branch": mr.get("source_branch"),
             "target_branch": mr.get("target_branch"),
+            "url": mr.get("web_url"),
         }
         for mr in mrs
     ]
@@ -321,6 +384,8 @@ def gitlab_fetch_releases(project_id: str) -> list[dict]:
             "tag_name": r.get("tag_name"),
             "description": r.get("description"),
             "released_at": r.get("released_at"),
+            # A release has no web_url; its page is _links.self.
+            "url": (r.get("_links") or {}).get("self"),
         }
         for r in releases
     ]
@@ -336,6 +401,7 @@ def gitlab_fetch_issues(project_id: str) -> list[dict]:
             "state": i.get("state"),
             "author": (i.get("author") or {}).get("username"),
             "created_at": i.get("created_at"),
+            "url": i.get("web_url"),
         }
         for i in issues
     ]

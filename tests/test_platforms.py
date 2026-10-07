@@ -5,6 +5,7 @@ mocked) — see the warning at the top of platforms.py: these 5 platforms
 have never been tested against a real account with a token in this session.
 """
 
+import pytest
 import requests
 
 from griot import platforms
@@ -184,17 +185,173 @@ def test_gitlab_fetch_pull_requests_maps_fields(monkeypatch):
     assert result == [{
         "iid": 5, "title": "test MR", "description": "desc", "state": "opened",
         "author": "mary", "created_at": "2025-01-01",
-        "source_branch": "feature", "target_branch": "main",
+        "source_branch": "feature", "target_branch": "main", "url": None,
     }]
 
 
-def test_gitlab_fetch_requires_token(monkeypatch):
+def _gitlab_recorder(monkeypatch, responses):
+    """requests.get replaced by a script of responses (the last one repeats);
+    returns the list of (url, headers, params) the adapter sent."""
+    calls = []
+
+    def fake_get(url, headers=None, params=None, auth=None, timeout=None, allow_redirects=True):
+        calls.append((url, dict(headers or {}), dict(params or {})))
+        return responses[min(len(calls), len(responses)) - 1]
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    return calls
+
+
+def test_gitlab_without_a_token_sends_no_token_header(monkeypatch):
+    """A public project reads without a token: no PRIVATE-TOKEN header at
+    all, never an empty one (GitLab answers 401 to an empty token)."""
     monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
-    try:
-        platforms.gitlab_fetch_pull_requests("group/project")
-        assert False, "should raise ValueError"
-    except ValueError as e:
-        assert "GITLAB_PERSONAL_ACCESS_TOKEN" in str(e)
+    calls = _gitlab_recorder(monkeypatch, [FakeResponse(200, [{"iid": 1, "title": "t"}], headers={"x-total-pages": "1"})])
+
+    result = platforms.gitlab_fetch_pull_requests("group/project")
+
+    assert [r["iid"] for r in result] == [1]
+    assert calls and all("PRIVATE-TOKEN" not in headers for _, headers, _ in calls)
+
+
+def test_gitlab_an_empty_token_counts_as_no_token(monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "")
+    calls = _gitlab_recorder(monkeypatch, [FakeResponse(200, [], headers={})])
+
+    platforms.gitlab_fetch_issues("group/project")
+
+    assert all("PRIVATE-TOKEN" not in headers for _, headers, _ in calls)
+
+
+def test_gitlab_with_a_token_sends_it(monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    calls = _gitlab_recorder(monkeypatch, [FakeResponse(200, [], headers={})])
+
+    platforms.gitlab_fetch_releases("group/project")
+
+    assert calls and all(headers.get("PRIVATE-TOKEN") == "fake-token" for _, headers, _ in calls)
+
+
+@pytest.mark.parametrize("status", [401, 404])
+def test_gitlab_without_a_token_a_refusal_names_the_token_and_how_to_set_it(monkeypatch, status):
+    """404 too: GitLab hides a private project from an anonymous caller."""
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    _gitlab_recorder(monkeypatch, [FakeResponse(status, {"message": "404 Project Not Found"})])
+
+    with pytest.raises(platforms.TokenNeeded) as caught:
+        platforms.gitlab_fetch_issues("group/private")
+
+    message = str(caught.value)
+    assert "GITLAB_PERSONAL_ACCESS_TOKEN" in message and "griot auth set gitlab" in message
+    assert f"HTTP {status}" in message
+    # Still an HTTP error with its response: index_platform records the
+    # status the way it records every other platform refusal.
+    assert isinstance(caught.value, requests.HTTPError)
+    assert caught.value.response.status_code == status
+
+
+def test_gitlab_without_a_token_a_403_is_not_blamed_on_the_token(monkeypatch):
+    """A public project with a feature turned off answers 403 to everyone:
+    no token would change that, so the error does not ask for one."""
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    _gitlab_recorder(monkeypatch, [FakeResponse(403)])
+
+    with pytest.raises(requests.HTTPError) as caught:
+        platforms.gitlab_fetch_issues("group/project")
+    assert not isinstance(caught.value, platforms.TokenNeeded)
+
+
+@pytest.mark.parametrize("status", [401, 404])
+def test_gitlab_with_a_token_a_refusal_is_unchanged(monkeypatch, status):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _gitlab_recorder(monkeypatch, [FakeResponse(status)])
+
+    with pytest.raises(requests.HTTPError) as caught:
+        platforms.gitlab_fetch_issues("group/project")
+    assert not isinstance(caught.value, platforms.TokenNeeded)
+    assert caught.value.response.status_code == status
+
+
+def test_gitlab_429_waits_what_retry_after_says_and_then_succeeds(monkeypatch):
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    sleeps = []
+    monkeypatch.setattr(platforms.time, "sleep", sleeps.append)
+    calls = _gitlab_recorder(monkeypatch, [
+        FakeResponse(429, headers={"Retry-After": "7"}),
+        FakeResponse(200, [{"iid": 3}], headers={"x-total-pages": "1"}),
+    ])
+
+    result = platforms.gitlab_fetch_issues("group/project")
+
+    assert [r["iid"] for r in result] == [3]
+    assert sleeps == [7]
+    assert len(calls) == 2
+
+
+def test_gitlab_429_retry_is_bounded_in_attempts_and_in_each_wait(monkeypatch):
+    """GitLab's unauthenticated limit is per minute: a Retry-After past that
+    is not waited in full, and a server that keeps answering 429 ends the
+    fetch as a refusal instead of holding the run forever."""
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    sleeps = []
+    monkeypatch.setattr(platforms.time, "sleep", sleeps.append)
+    calls = _gitlab_recorder(monkeypatch, [FakeResponse(429, headers={"Retry-After": "3600"})])
+
+    with pytest.raises(requests.HTTPError) as caught:
+        platforms.gitlab_fetch_issues("group/project")
+
+    assert caught.value.response.status_code == 429
+    assert len(calls) == platforms.RETRY_ATTEMPTS
+    # No wait after the last attempt: nothing would follow it.
+    assert len(sleeps) == platforms.RETRY_ATTEMPTS - 1
+    assert all(0 < s <= platforms.GITLAB_RETRY_AFTER_CAP for s in sleeps)
+
+
+def test_gitlab_429_without_a_usable_retry_after_backs_off(monkeypatch):
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    sleeps = []
+    monkeypatch.setattr(platforms.time, "sleep", sleeps.append)
+    _gitlab_recorder(monkeypatch, [
+        FakeResponse(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+        FakeResponse(429, headers={}),
+        # A negative delay would make time.sleep raise.
+        FakeResponse(429, headers={"Retry-After": "-5"}),
+        FakeResponse(200, [], headers={}),
+    ])
+
+    platforms.gitlab_fetch_issues("group/project")
+
+    assert sleeps == [1, 2, 4]
+
+
+def test_gitlab_items_carry_their_web_url(monkeypatch):
+    """The real API (gitlab.com, 2026-10-07) gives each merge request and
+    issue a `web_url` and each release a `_links.self`: the place to open."""
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    body = {
+        "merge_requests": [{"iid": 9, "title": "mr", "web_url": "https://gitlab.com/g/p/-/merge_requests/9"}],
+        "issues": [{"iid": 4, "title": "i", "web_url": "https://gitlab.com/g/p/-/work_items/4"}],
+        "releases": [{"tag_name": "v1", "name": "v1", "_links": {"self": "https://gitlab.com/g/p/-/releases/v1"}}],
+    }
+
+    def fake_get(url, headers=None, params=None, auth=None, timeout=None, allow_redirects=True):
+        return FakeResponse(200, body[url.rsplit("/", 1)[-1]], headers={"x-total-pages": "1"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert platforms.gitlab_fetch_pull_requests("g/p")[0]["url"] == "https://gitlab.com/g/p/-/merge_requests/9"
+    assert platforms.gitlab_fetch_issues("g/p")[0]["url"] == "https://gitlab.com/g/p/-/work_items/4"
+    assert platforms.gitlab_fetch_releases("g/p")[0]["url"] == "https://gitlab.com/g/p/-/releases/v1"
+
+
+def test_anonymous_note_only_for_gitlab_without_a_token(monkeypatch):
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    note = platforms.anonymous_read_note("gitlab")
+    assert note and "without a token" in note and "public" in note
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert platforms.anonymous_read_note("github") is None
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    assert platforms.anonymous_read_note("gitlab") is None
 
 
 # --- Bitbucket ------------------------------------------------------------
