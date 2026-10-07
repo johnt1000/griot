@@ -2649,7 +2649,7 @@ def _assist_install_question(harness: str, scope: str) -> str:
     targets_desc = "every detected harness" if harness == "all" else harness
     # The directories, not only "global": where a global install writes
     # depends on the environment this server was started with
-    # (CLAUDE_CONFIG_DIR), and that comes from whoever configured the
+    # (CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME), and that comes from whoever configured the
     # server, which can be a project's own file. The person asked has to see
     # the place to be able to say no to it.
     targets = harnesses.detect_harnesses() if harness == "all" else [h for h in harnesses.HARNESSES if h.id == harness]
@@ -2706,8 +2706,9 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
                                ) -> AssistInstallOutput:
     """Installs griot's bundled Claude Code/opencode Skill and Agent files
     into a harness's own config dir (.claude/, .opencode/, or their global
-    equivalents; for Claude Code the global one is where CLAUDE_CONFIG_DIR
-    points when this server was started with it, and the question names the
+    equivalents: for Claude Code the global one is where CLAUDE_CONFIG_DIR
+    points when this server was started with it, for opencode
+    $XDG_CONFIG_HOME/opencode when that is set, and the question names the
     resolved directories) — the same files `griot assist install` writes from a
     terminal. "all" (the default) installs into every harness found present
     on this machine; an explicit harness id ("claude-code"/"opencode")
