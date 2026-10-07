@@ -263,3 +263,61 @@ async def test_no_mcp_tool_switches_the_profile():
     async with Client(mcp_server.mcp) as client:
         names = [t.name for t in (await client.list_tools()).tools]
     assert not [name for name in names if "use" in name.split("_") or "switch" in name]
+
+
+
+# --- a profile griot no longer has ---------------------------------------------------------
+
+
+def _naming_bge_m3(tmp_path):
+    _fresh(tmp_path, "profiles", "use", "bge-small")
+    env_path = tmp_path / "config" / "griot" / ".env"
+    lines = env_path.read_text().splitlines()
+    lines = [line.replace("bge-small", "bge-m3") if line.startswith("GRIOT_EMBED_PROFILE=") else line for line in lines]
+    env_path.write_text("\n".join(lines) + "\n")
+    assert dotenv_values(env_path)["GRIOT_EMBED_PROFILE"] == "bge-m3"
+
+
+def test_a_file_that_names_bge_m3_says_it_was_removed_and_which_profiles_there_are(tmp_path):
+    """bge-m3 was listed but fastembed could never load it. A config that
+    names it gets one line that says so, with the profiles to pick from,
+    and no traceback."""
+    _naming_bge_m3(tmp_path)
+
+    broken = _fresh(tmp_path, "stats")
+    err = " ".join(broken.stderr.split())
+    assert broken.returncode == 2 and "Traceback" not in broken.stderr
+    assert "bge-m3" in err and "removed" in err and "fastembed" in err
+    assert all(name in err for name in common.EMBED_PROFILES), "it names the profiles there are"
+    assert "griot profiles use" in err
+
+    assert _fresh(tmp_path, "profiles", "use", "bge-small").returncode == 0
+    assert _fresh(tmp_path, "stats").returncode == 0
+
+
+def test_doctor_says_bge_m3_was_removed(tmp_path):
+    _naming_bge_m3(tmp_path)
+    done = _fresh(tmp_path, "doctor")
+    out = " ".join((done.stdout + done.stderr).split())
+    assert "Traceback" not in out and "bge-m3" in out and "removed" in out
+
+
+def test_choosing_bge_m3_is_refused_with_the_reason(tmp_path):
+    done = _fresh(tmp_path, "profiles", "use", "bge-m3")
+    err = " ".join(done.stderr.split())
+    assert done.returncode == 2 and "Traceback" not in done.stderr
+    assert "removed" in err and "bge-small" in err
+    env_path = tmp_path / "config" / "griot" / ".env"
+    assert not env_path.exists() or "GRIOT_EMBED_PROFILE=bge-m3" not in env_path.read_text()
+
+
+def test_choosing_bge_m3_in_a_loaded_process_is_refused_with_the_reason(no_question, capsys):
+    """cli.main with the configuration already loaded takes the command's
+    own check, not the start-up one."""
+    assert cli.main(["profiles", "use", "bge-m3"]) == 2
+    err = " ".join(capsys.readouterr().err.split())
+    assert "removed" in err and "fastembed" in err
+
+
+def test_bge_m3_is_not_listed(tmp_path):
+    assert "bge-m3" not in _fresh(tmp_path, "profiles", "list").stdout

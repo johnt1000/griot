@@ -39,6 +39,9 @@ class UnknownEmbedProfile(ConfigurationError):
     name and the valid ones, for the one command that takes a profile name
     as an argument and puts it in force before the configuration loads."""
 
-    def __init__(self, message: str, name: str, options: list[str]):
+    def __init__(self, message: str, name: str, options: list[str], reason: str = ""):
         super().__init__(message)
-        self.name, self.options = name, options
+        # reason: why the name is gone, for a profile griot used to list
+        # (common.RETIRED_EMBED_PROFILES), so the callers that word this
+        # error themselves (`profiles use`, doctor) say it too.
+        self.name, self.options, self.reason = name, options, reason
