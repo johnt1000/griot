@@ -947,7 +947,8 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             mode=mode,
             # Grouped, `limit` counts documents and each result is the best
             # chunk of one: `griot golden-set review` must not make a case
-            # from it, since a case is checked by a search not grouped by document.
+            # from it, since a case is checked by a search not grouped by
+            # document.
             group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
@@ -2574,11 +2575,11 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
     Each case is searched in its own `mode` (the one it was made in), as
-    griot_search returns results (`diverse`), and has
-    `passed`, what was `missing`, `met_by_copy` (an expected document that
-    came back only as a copy of the same text, named in a result's
-    `also_in`: met, and said which result carried it), and a `reason` when
-    it could not pass at all (its repository has nothing indexed). A keyword or hybrid case on a
+    griot_search returns results (`diverse`), and has `passed`, what was
+    `missing`, `met_by_copy` (an expected document that came back only as a
+    copy of the same text, named in a result's `also_in`: met, and said
+    which result carried it), and a `reason` when it could not pass at all
+    (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
     failed, with `reason` naming the command that builds them; `ran_by_mode`
     counts the cases searched per mode. A case that asks for more results

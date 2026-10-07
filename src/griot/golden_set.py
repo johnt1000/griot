@@ -556,12 +556,13 @@ def _unlike_the_check(row: dict) -> list[str]:
     quality_check.run_golden_set() checks every case in the case's own mode
     (the one recorded here: the mode that RAN), over every repository,
     searched as readers search (at most a few chunks per document, copies of
-    the same text folded), never grouped by document. A search narrowed to some repositories or source types, or a
-    grouped one (where the limit counts documents, not chunks), asserts what
-    THAT search returned, so it can fail on every check without retrieval
-    getting any worse: a permanently red case in the very ruler the golden
-    set is. So can a mode the check does not know. Empty when the check
-    would repeat this search."""
+    the same text folded), never grouped by document. A search narrowed to
+    some repositories or source types, or a grouped one (where the limit
+    counts documents, not chunks), asserts what THAT search returned, so it
+    can fail on every check without retrieval getting any worse: a
+    permanently red case in the very ruler the golden set is. So can a mode
+    the check does not know. Empty when the check would repeat this
+    search."""
     unlike = []
     if _mode(row) not in common.SEARCH_MODES:
         unlike.append(f"a {common.printable(str(_mode(row)))[:20]} search")
