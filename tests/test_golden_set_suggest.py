@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from griot import common, golden_set
+from griot import cli, common, golden_set
 
 
 def _commit_files(repo, message: str, files: dict[str, str]) -> None:
@@ -236,3 +236,59 @@ def test_a_directory_that_is_not_a_git_work_tree_is_an_error(tmp_path, capsys):
     assert golden_set.cmd_suggest(str(plain)) == 1
     out = capsys.readouterr()
     assert "not a git work tree" in out.err and "No candidates" not in out.out and "--no-pager" not in out.out
+
+
+# --- a candidate add_case refuses ----------------------------------------------------------------
+
+
+def _refuse_one(monkeypatch, refused_query: str) -> None:
+    """add_case refuses the case of `refused_query` (it is given a mode that
+    is not a search mode, the way a mode refusal reaches it); every other
+    candidate gets the mode suggest gives it."""
+    real = golden_set.case_mode_for
+    monkeypatch.setattr(golden_set, "case_mode_for",
+                        lambda query, mode: ("bogus", None) if query == refused_query else real(query, mode))
+
+
+def test_a_candidate_add_case_refuses_is_reported_and_the_run_goes_on(git_repo, monkeypatch, capsys):
+    """add_case raises ValueError on a case it refuses; uncaught, the
+    traceback ended the run, and the candidates after it were never offered."""
+    _commit_files(git_repo, "Fix the login bug", {"auth.py": "x = 2"})
+    _commit_files(git_repo, "Fix the search bug", {"search.py": "x = 2"})
+    _commit_files(git_repo, "Fix the cache bug", {"cache.py": "x = 2"})
+    _refuse_one(monkeypatch, "Fix the search bug")
+    asked = _approve_everything(monkeypatch)
+
+    assert cli.main(["golden-set", "suggest", str(git_repo.path)]) == 0
+
+    assert len(asked) == 3, "the candidates after the refused one are still offered"
+    assert sorted(case["query"] for case in _cases()) == ["Fix the cache bug", "Fix the login bug"]
+    out = capsys.readouterr().out
+    refused = out.split("Candidate query: Fix the search bug", 1)[1].split("Candidate query:", 1)[0]
+    assert "Not added: `mode` must be one of" in refused, "said under the candidate it is about, with the reason"
+    summary = " ".join(out.rsplit("Candidate query:", 1)[1].split())
+    assert "2 case(s) added" in summary and "1 approved candidate(s) not added" in summary
+
+
+def test_a_run_where_every_approved_case_was_written_says_nothing_was_left_out(git_repo, monkeypatch, capsys):
+    _commit_files(git_repo, "Fix the login bug", {"auth.py": "x = 2"})
+    _approve_everything(monkeypatch)
+    assert cli.main(["golden-set", "suggest", str(git_repo.path)]) == 0
+    assert "not added" not in capsys.readouterr().out.lower()
+
+
+def test_a_golden_set_that_is_not_json_stops_the_run_at_the_first_write(git_repo, monkeypatch, capsys):
+    """Every candidate would fail the same way, so it is said once and no
+    one is asked about the rest; the file is left as it was."""
+    _commit_files(git_repo, "Fix the login bug", {"auth.py": "x = 2"})
+    _commit_files(git_repo, "Fix the search bug", {"search.py": "x = 2"})
+    common.GOLDEN_SET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    common.GOLDEN_SET_PATH.write_text("{ not json")
+    asked = _approve_everything(monkeypatch)
+
+    assert cli.main(["golden-set", "suggest", str(git_repo.path)]) == 1
+
+    assert len(asked) == 1
+    assert common.GOLDEN_SET_PATH.read_text() == "{ not json"
+    err = capsys.readouterr().err
+    assert err.count("Error:") == 1 and str(common.GOLDEN_SET_PATH) in err and "not valid JSON" in err
