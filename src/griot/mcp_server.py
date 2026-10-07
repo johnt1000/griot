@@ -957,6 +957,10 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             # case: a label is cut and redacted, so it cannot say which
             # document must come back.
             results=common.logged_results(results),
+            # A hybrid search's rank of each result in the vector and the
+            # keyword ranking: the review offers the searches where the two
+            # disagreed. Nothing for the other modes.
+            **common.logged_ranks(results),
             # The most direct "did retrieval find anything relevant?"
             # signal: a run of searches whose BEST score is low says the
             # index isn't answering, which no query count would reveal.

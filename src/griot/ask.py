@@ -92,6 +92,9 @@ def main(argv=None):
         # What `griot golden-set review` needs to turn this question into a
         # case: the labels above are for reading only.
         results=common.logged_results(results),
+        # Where each result stood in the two rankings of a hybrid search
+        # (see mcp_server._log_search).
+        **common.logged_ranks(results),
         # [real finding] without this, griot stats never saw chat spend —
         # only indexing wrote spend_today_usd, but it's the SAME circuit
         # breaker for both (shared .spend_state.json).

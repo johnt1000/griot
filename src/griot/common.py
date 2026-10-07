@@ -4212,6 +4212,25 @@ def logged_results(results) -> list[dict | None]:
     return logged
 
 
+def logged_ranks(results) -> dict:
+    """What the query log keeps of a hybrid search's two rankings, as fields
+    of its row: `ranks`, one {"vector": n, "keyword": n} per result in
+    result order (beside `results` and `sources`), and `rank_window`, how
+    many points each ranking was asked for (a null rank means "not among
+    them"). Empty for a search of another mode, whose results carry no
+    ranks, so its row stays as it was.
+
+    Only numbers: a rank says where a result stood, nothing of its name or
+    text, so the result whose `results` entry is withheld (logged_results)
+    gives nothing away by its rank either."""
+    window = getattr(results[0], "rank_window", None) if results else None
+    if window is None:
+        return {}
+    return {"ranks": [{"vector": getattr(r, "vector_rank", None), "keyword": getattr(r, "keyword_rank", None)}
+                      for r in results],
+            "rank_window": window}
+
+
 def source_label(meta: dict) -> str:
     """How a stored point is named to a person or an agent. The parts come
     from the repository (a path, a branch, a tag), and a name can hold a
@@ -4256,12 +4275,17 @@ class SearchHit:
     set needs the stored fields to tell whether a case's document came back
     as one of them. Not for a reader: it carries each copy's text again."""
 
-    __slots__ = ("id", "score", "payload", "also_in", "copies")
+    __slots__ = ("id", "score", "payload", "also_in", "copies", "vector_rank", "keyword_rank", "rank_window")
 
     def __init__(self, hit):
         self.id, self.score, self.payload = hit.id, hit.score, hit.payload or {}
         self.also_in: list[str] = []
         self.copies: list[dict] = []
+        # Where a hybrid result stood in each ranking (see FusedHit); None
+        # for the other modes.
+        self.vector_rank = getattr(hit, "vector_rank", None)
+        self.keyword_rank = getattr(hit, "keyword_rank", None)
+        self.rank_window = getattr(hit, "rank_window", None)
 
 
 def _diversified(hits: list, limit: int, per_document: int) -> list:
@@ -4428,6 +4452,54 @@ SEARCH_MODES = ("vector", "keyword", "hybrid")
 _HYBRID_RRF_K = 60
 
 
+class FusedHit:
+    """One result of a hybrid search: what a stored point offers a reader
+    (`id`, `score`, `payload`), plus where it stood in each of the two
+    rankings that were fused: `vector_rank` and `keyword_rank`, 1 for the
+    first, None when that ranking did not place it among the
+    `rank_window` points it was asked for (for keyword, also when the point
+    holds no word of the query). The query log keeps the two ranks so that
+    `griot golden-set review` can offer the searches whose rankings
+    disagreed (golden_set._disagreement)."""
+
+    __slots__ = ("id", "score", "payload", "vector_rank", "keyword_rank", "rank_window")
+
+    def __init__(self, hit):
+        self.id, self.score, self.payload = hit.id, 0.0, hit.payload or {}
+        self.vector_rank: int | None = None
+        self.keyword_rank: int | None = None
+        self.rank_window: int | None = None
+
+
+def _fused(by_meaning: list, by_words: list, limit: int) -> list[FusedHit]:
+    """Reciprocal rank fusion of the two rankings, each the first `limit`
+    points of its kind, best first, at most `limit`.
+
+    Done here rather than by the store (a Fusion.Rrf query over two
+    prefetches, as before) because the store returns only the fused list,
+    and the rank of each result in each ranking is what tells a search whose
+    rankings agreed from one where they did not. The cost is the same: the
+    store ran the same two searches as prefetches, and the query is embedded
+    once either way. The score is the store's own (checked against it in
+    tests/test_hybrid_rankings_logged.py): 1 / (k + position) summed over
+    the rankings, the position counted from 0. Points that tie (each first
+    in one ranking, say) keep the vector ranking's first ahead: the store
+    left their order to chance, and a fixed order keeps a golden-set case
+    from passing or failing by it."""
+    fused: dict = {}
+    for ranking, field in ((by_meaning, "vector_rank"), (by_words, "keyword_rank")):
+        for position, hit in enumerate(ranking):
+            entry = fused.get(hit.id)
+            if entry is None:
+                entry = fused[hit.id] = FusedHit(hit)
+                entry.rank_window = limit
+            entry.score += 1.0 / (_HYBRID_RRF_K + position)
+            setattr(entry, field, position + 1)
+    # sorted() is stable: equal scores keep the order points were first met
+    # in, the vector ranking's before the keyword ranking's.
+    return sorted(fused.values(), key=lambda entry: entry.score, reverse=True)[:limit]
+
+
 class SearchModeUnavailable(SearchFilterError):
     """A keyword or hybrid search on a collection made before keyword
     search: an error rather than an empty result, which would read as
@@ -4578,12 +4650,13 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             request = qe.QueryRequest(query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR), limit=points,
                                       with_payload=True, filter=only)
         else:
-            # The engine's own fusion over two prefetches; the filter of the
-            # request applies to both of them.
-            request = qe.QueryRequest(
-                prefetches=[qe.Prefetch(limit=points, query=qe.Query.Nearest(query_vector, using="dense")),
-                            qe.Prefetch(limit=points, query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR))],
-                query=qe.Fusion.Rrf(k=_HYBRID_RRF_K), limit=points, with_payload=True, filter=only)
+            # Both rankings, fused here so that each result keeps its rank
+            # in each (see _fused); the filter applies to both of them.
+            by_meaning = client.query(qe.QueryRequest(query=qe.Query.Nearest(query_vector, using="dense"),
+                                                      limit=points, with_payload=True, filter=only))
+            by_words = client.query(qe.QueryRequest(query=qe.Query.Nearest(keyword_query, using=KEYWORD_VECTOR),
+                                                    limit=points, with_payload=True, filter=only))
+            return _fused(by_meaning, by_words, points)
         return client.query(request)
 
     fetch = limit * _GROUPING_OVERFETCH if (group_by_document or diverse) else limit
