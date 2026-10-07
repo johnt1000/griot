@@ -232,9 +232,9 @@ def test_delete_profile_removes_the_collection_and_returns_its_name(monkeypatch)
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     non_active = next(n for n in common.EMBED_PROFILES if n != "jina-code")
     collection = common.collection_name_for(non_active)
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
 
     result = cli.delete_profile(non_active)
 
@@ -268,9 +268,9 @@ def test_cmd_profiles_delete_happy_path(monkeypatch, capsys):
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     non_active = next(n for n in common.EMBED_PROFILES if n != "jina-code")
     collection = common.collection_name_for(non_active)
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     # Answered at a terminal (there is no --yes); see tests/test_cli_confirm.py.
     monkeypatch.setattr(common, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
@@ -296,9 +296,9 @@ def test_delete_profile_active_override_lets_a_no_longer_active_profile_be_delet
     directly: it must WIN over the frozen constant in both directions."""
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     other = next(n for n in common.EMBED_PROFILES if n != "jina-code")
-    path = common._collection_path(common.collection_name_for("jina-code"))
+    path = common.collection_path(common.collection_name_for("jina-code"))
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
 
     # frozen constant says jina-code is active, but the override says
     # `other` is — jina-code (no longer really active per the override)

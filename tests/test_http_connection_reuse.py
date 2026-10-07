@@ -321,50 +321,7 @@ def test_the_kept_session_is_public_and_kept_once_per_process():
     assert common.http_session() is session, "one session for the process, not one per call"
 
 
-def _private_http_names_of_common() -> set:
-    """Every private module-level name common.py defines for its HTTP session
-    machinery, read from common.py itself so a name added later (a new
-    helper, a renamed lock) is covered without editing this test."""
-    import ast
-    import pathlib
 
-    tree = ast.parse(pathlib.Path(common.__file__).read_text(encoding="utf-8"))
-    names = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names.update(t.id for t in targets if isinstance(t, ast.Name))
-    return {n for n in names if n.startswith("_") and "http" in n.lower()}
-
-
-def test_the_private_http_names_are_read_from_common():
-    """The guard below is only as wide as this set: if reading common.py
-    stopped finding the session's private names, it would pass on nothing."""
-    assert {"_new_http_session", "_drop_http_session", "_http_post",
-            "_http_lock", "_http_session_kept"} <= _private_http_names_of_common()
-
-
-def test_no_module_outside_common_reaches_a_private_session_name():
-    """A private name of common.py used across a module boundary breaks
-    silently when common.py renames it; the shared session has a public one.
-    The rule covers the whole private HTTP machinery, not only the name that
-    was once crossed (_http_session), so a later helper such as
-    _new_http_session cannot be reached from outside either."""
-    import ast
-    import pathlib
-
-    private = _private_http_names_of_common()
-    package = pathlib.Path(common.__file__).parent
-    offenders = []
-    for path in sorted(package.rglob("*.py")):
-        if path.name == "common.py":
-            continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Attribute) and node.attr in private:
-                offenders.append(f"{path.relative_to(package)}:{node.lineno} {node.attr}")
-            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("common"):
-                offenders.extend(f"{path.relative_to(package)}:{node.lineno} {a.name}"
-                                 for a in node.names if a.name in private)
-    assert offenders == []
+# That no other module reaches the session's private machinery (_http_post,
+# _new_http_session, ...) is checked with every other private name of common.py
+# in test_common_private_names.py.

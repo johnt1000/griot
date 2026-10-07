@@ -764,10 +764,10 @@ def _release_if_idle(now: float | None = None) -> None:
     if common.CONCURRENCY_MODE != "multi":
         return
     with _inflight_lock:
-        if _inflight or common._client is None or common._client_last_used_at is None:
+        if _inflight:
             return
-        now = time.time() if now is None else now
-        if now - common._client_last_used_at > common.IDLE_RELEASE_SECONDS:
+        idle = common.client_idle_seconds(now)
+        if idle is not None and idle > common.IDLE_RELEASE_SECONDS:
             common.release_client()
 
 
@@ -1258,6 +1258,10 @@ class GoldenCheckCase(TypedDict):
 
 class GoldenCheck(TypedDict):
     note: str
+    # True: each case was searched as griot_search returns results (at most
+    # a few chunks per document, copies folded), so `top_results` read like
+    # a griot_search list. Runs recorded before this field searched raw.
+    diverse: bool
     total: int
     passed: int
     failed: int
@@ -1931,7 +1935,10 @@ def _golden_set_add_question(query: str) -> str:
     return f"Add a test case for {_shown(query)} to the golden set. You can undo this by removing the case."
 
 
-def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, mode: str = "vector", confirm: bool = False):
+def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, mode: str | None = None, confirm: bool = False):
+    # Resolved as the tool body resolves it: a default left as None here
+    # would read as a mode that cannot run, and no one would be asked.
+    mode, _ = golden_set.case_mode_for(query, mode)
     if limit < 1 or golden_set.mode_refusal(query, mode):
         return _NO_CHANNEL
     return _resolve_ask(ctx, _golden_set_add_question(query), confirm=confirm, human_required=False)
@@ -1940,7 +1947,7 @@ def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, mode: str = "v
 @_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 @_records_call
 async def griot_golden_set_add(query: str, must_include: list[dict], limit: int = 5,
-                               mode: Literal["vector", "keyword", "hybrid"] = "vector",
+                               mode: Literal["vector", "keyword", "hybrid"] | None = None,
                                confirm: bool = False, ctx: Context = None,
                                answer: Annotated[ElicitationResult[_Ask], Resolve(_ask_golden_set_add)] = None,
                                ) -> ManagementOutput:
@@ -1950,11 +1957,12 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     griot_search first, then pass the ones that should always be retrieved.
 
     `mode` is the search the case is checked with, every time: pass the
-    `mode` griot_search reported for the results you picked (its default is
-    hybrid), or the case is held to a ranking those results never came
-    from. Default "vector". A keyword or hybrid case needs a query with a
-    word keyword search can match, and is skipped by the check on a
-    collection without keyword vectors.
+    `mode` griot_search reported for the results you picked, or the case is
+    held to a ranking those results never came from. Left out, it is
+    hybrid, as griot_search's default; on a collection without keyword
+    vectors it is vector, and the message says so and names
+    `griot index keywords`. A keyword or hybrid case needs a query with a
+    word keyword search can match.
 
     Confirmed like every state change, but with the confirm= fallback
     intact: curating widens no security boundary and destroys no indexed
@@ -1970,6 +1978,10 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
         return {"changed": False,
                 "message": f"limit must be at least 1 (got {limit}) — a case that retrieves "
                            f"nothing reports every expected result as missing, forever."}
+    # The default (None) becomes hybrid, or vector where hybrid cannot run
+    # (golden_set.case_mode_for), before anything is checked or asked.
+    given = mode
+    mode, fallback_note = golden_set.case_mode_for(query, mode)
     # Same reason: a mode the case could never be checked in is known
     # before anyone is asked (and keeps an unchecked value out of the hint).
     unrunnable = golden_set.mode_refusal(query, mode)
@@ -1977,7 +1989,10 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
         return {"changed": False, "message": unrunnable}
     # The hint repeats the search in the case's mode, so a person at the
     # terminal approves results from the ranking the case will be held to.
-    mode_words = ("--mode", mode) if mode != "vector" else ()
+    # A mode the agent gave is passed on as given: the command's default is
+    # hybrid, so an explicit vector has to be spelled out. The default is
+    # left to the command, which resolves it the same way.
+    mode_words = ("--mode", given) if given is not None else ()
     ok, refusal = await _confirmed(ctx, _golden_set_add_question(query),
                                    confirm=confirm,
                                    cli_hint=_cli_command("golden-set", "add", *mode_words, positional=[query]),
@@ -1991,8 +2006,11 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
         return {"changed": False, "message": str(e)}
-    return {"changed": True, "message": f"Curated {case['query']!r} with "
-                                        f"{len(case['must_include'])} required result(s)"}
+    message = (f"Curated {case['query']!r} with {len(case['must_include'])} required result(s), "
+               f"checked by a {mode} search")
+    if fallback_note:
+        message += ". " + fallback_note
+    return {"changed": True, "message": message}
 
 
 def _golden_set_remove_question(index: int) -> str:
@@ -2483,6 +2501,7 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
     asked = [case.get("limit", 5) for case in as_written]
     return {
         "note": GOLDEN_SET_NOTE,
+        "diverse": golden_check["diverse"],
         "total": golden_check["total"], "passed": golden_check["passed"], "failed": golden_check["failed"],
         "skipped": golden_check["skipped"], "ran_by_mode": golden_check["ran_by_mode"],
         "cases": [{
@@ -2510,7 +2529,8 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     itself: mechanical, it says the pipeline is intact. The curated golden
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
-    Each case is searched in its own `mode` (the one it was made in) and has
+    Each case is searched in its own `mode` (the one it was made in), as
+    griot_search returns results (`diverse`), and has
     `passed`, what was `missing`, and a `reason` when it could not pass at
     all (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
@@ -2974,7 +2994,7 @@ def _keep_stdout_for_the_protocol() -> None:
     a terminal run echoes (a collection held by another process, an embedding
     call being retried) would land in the middle of it as lines that are not
     messages. They go to stderr, where a client shows or logs them."""
-    common._echo_stream = sys.stderr
+    common.set_echo_stream(sys.stderr)
 
 
 def main(argv=None) -> None:
