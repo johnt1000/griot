@@ -3,7 +3,9 @@ reaches PyPI.
 
 - A release runs the whole CI on the tagged commit before it builds, and
   refuses a tag on a commit that is not on main: the tag alone used to be
-  enough to publish whatever it pointed at.
+  enough to publish whatever it pointed at. The tag is checked first, in a
+  job of its own that every other job waits for: a wrong tag fails in
+  seconds instead of after the whole CI.
 - The runners are named by version: `ubuntu-latest` changes the operating
   system under every job on a date someone else picks.
 - The secret scan runs gitleaks itself, pinned by version and checksum, and
@@ -187,15 +189,42 @@ def test_ci_can_be_called_by_another_workflow():
     assert "workflow_call" in _triggers(CI)
 
 
+def _needs(job):
+    needs = RELEASE["jobs"][job].get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _waits_for(job, other):
+    """Whether `job` starts only after `other`, directly or through the
+    jobs it needs."""
+    return any(need == other or _waits_for(need, other) for need in _needs(job))
+
+
 def test_a_release_runs_the_whole_ci_before_it_builds():
     jobs = RELEASE["jobs"]
     assert jobs["ci"]["uses"] == "./.github/workflows/ci.yml"
-    assert jobs["build"]["needs"] == "ci"
-    assert jobs["publish"]["needs"] == "build"
+    assert _needs("build") == ["ci"]
+    assert _needs("publish") == ["build"]
 
 
-def test_the_release_build_has_the_history_to_tell_whether_the_tag_is_on_main():
-    checkout = next(step for step in RELEASE["jobs"]["build"]["steps"] if "actions/checkout@" in str(step.get("uses", "")))
+def test_a_release_checks_the_tag_before_anything_else_runs():
+    """The tag check is cheap and the CI takes minutes (macOS included):
+    a tag that is not the version, or not on main, has to fail before the
+    CI starts, not after it. So the check is a job of its own, first, that
+    waits for nothing, and every other job waits for it."""
+    jobs = RELEASE["jobs"]
+    checking = [name for name, job in jobs.items()
+                if "scripts/release-check.py" in "\n".join(step.get("run", "") for step in job.get("steps", []))]
+    assert checking == ["tag"], "one job checks the tag"
+    assert _needs("tag") == [], "the tag check waits for nothing"
+    assert _needs("ci") == ["tag"], "the CI starts only once the tag is right"
+    for name in jobs:
+        if name != "tag":
+            assert _waits_for(name, "tag"), f"job {name} runs without waiting for the tag check"
+
+
+def test_the_tag_check_has_the_history_to_tell_whether_the_tag_is_on_main():
+    checkout = next(step for step in RELEASE["jobs"]["tag"]["steps"] if "actions/checkout@" in str(step.get("uses", "")))
     assert checkout["with"]["fetch-depth"] == 0
 
 
