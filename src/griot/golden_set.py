@@ -113,6 +113,14 @@ VECTOR_FALLBACK_NOTE = (
     "the default, hybrid, cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing); "
     "to check this question in hybrid after that, remove this case and add it again.")
 
+# Said when a case made without a mode is a vector case because the
+# collection's config cannot be read: whether it can run hybrid is unknown,
+# and a hybrid case it cannot run would only ever be skipped.
+UNREADABLE_CONFIG_NOTE = (
+    "This case is checked by meaning only (mode vector): this collection's config could not be read, so whether "
+    "the default, hybrid, can run on it is unknown (griot's log says why). To check this question in hybrid once "
+    "it reads, remove this case and add it again.")
+
 
 def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     """The mode a new case of `query` is made in, and a note to show or None.
@@ -122,12 +130,35 @@ def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     griot_search give a reader, or vector where hybrid cannot run. A hybrid
     case on a collection without keyword vectors would only ever be skipped
     by the check, so there the case is made in vector, and the note says so.
-    Cases already in the file are untouched: absent still reads as vector
-    (case_mode)."""
+
+    Two places differ from a search's default. With nothing indexed yet the
+    case is hybrid, with no note: it is checked once something is indexed,
+    and an index run makes every new collection with keyword vectors
+    (common._collection_config), so hybrid is what a reader will get then.
+    With a collection whose config cannot be read the case is vector and the
+    note says why: a search falls back the same way without a word, but a
+    case is written for good.
+
+    Every writer of a new case resolves a missing mode here (add, suggest,
+    griot_golden_set_add), so a case's mode does not depend on the command
+    that made it. Cases already in the file are untouched: absent still
+    reads as vector (case_mode)."""
     if mode is not None:
         return mode, None
+    if not common.keyword_query_matches(query):
+        # Hybrid refuses this query on every collection: vector, and there
+        # is nothing anyone could build to change that.
+        return "vector", None
+    if not common.collection_exists(common.COLLECTION_NAME):
+        return common.SEARCH_DEFAULT_MODE, None
     resolved, search_note = common.search_mode_for(query, None)
-    return resolved, (VECTOR_FALLBACK_NOTE if search_note else None)
+    if search_note:
+        return resolved, VECTOR_FALLBACK_NOTE
+    if resolved == "vector":
+        # The collection exists, the query can be matched and there is no
+        # note: what is left is a config search_mode_for could not read.
+        return resolved, UNREADABLE_CONFIG_NOTE
+    return resolved, None
 
 
 def check_cases(cases) -> None:
@@ -356,8 +387,7 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
             print(note)
         return 0
 
-    cases = _load()
-    added = 0
+    added, mode_notes = 0, []
     for candidate in found["candidates"]:
         display_query = candidate["query"].splitlines()[0]
         files = [entry["file_path"] for entry in candidate["must_include"]]
@@ -368,13 +398,21 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
             break
         if answer != "y":
             continue
-        cases.append({"query": candidate["query"], "limit": candidate["limit"],
-                      "must_include": candidate["must_include"]})
+        # The mode every command gives a case made without one
+        # (case_mode_for): the files come from the git log, not from a
+        # search, so nothing ties this case to vector. Written through
+        # add_case like every other new case, so each is saved as approved.
+        mode, mode_note = case_mode_for(candidate["query"], None)
+        add_case(candidate["query"], candidate["must_include"], limit=candidate["limit"], mode=mode)
         added += 1
+        if mode_note and mode_note not in mode_notes:
+            mode_notes.append(mode_note)
 
-    if added:
-        _save(cases)
     print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    # Once for the run, not once per case: every case of it was resolved
+    # against the same collection.
+    for mode_note in mode_notes:
+        print(mode_note)
     if note:
         print(note)
     return 0
@@ -796,7 +834,13 @@ def main(argv=None) -> int:
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
-    p_suggest = sub.add_parser("suggest", help="Suggests candidates for free from the git log, with case-by-case human approval")
+    p_suggest = sub.add_parser(
+        "suggest", help="Suggests candidates for free from the git log, with case-by-case human approval",
+        description="Suggests candidates for free from the git log, with case-by-case human approval. An approved "
+                    "case is checked in the same mode `golden-set add` gives one by default: hybrid, as griot "
+                    "search (also with nothing indexed yet: an index run builds keyword vectors); vector on a "
+                    "collection without keyword vectors, which `griot index keywords` builds, or whose config "
+                    "cannot be read.")
     p_suggest.add_argument("repo_path", help="Local git repository directory")
     p_suggest.add_argument("--max-commits", type=int, default=None, help="Limit of commits to consider (default: all)")
     p_suggest.add_argument("--limit", type=int, default=10, help="How many candidates to offer for approval (default: %(default)s)")
