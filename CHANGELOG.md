@@ -10,6 +10,33 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Added
 
+- **Golden-set cases keep the search mode they were made in**, and `griot
+  quality-check` and `griot_quality_check` search each case in its own
+  mode. `griot golden-set add --mode` and `griot_golden_set_add`'s `mode`
+  choose it, `golden-set list` shows it, and `griot golden-set review` keeps
+  the mode of the search a pick came from. A case without a mode, as every
+  case written before this was, is a vector case. A keyword or hybrid case
+  on a collection without keyword vectors is reported as skipped, naming
+  `griot index keywords`: it is not run by meaning and not counted as
+  failed. The report says how many cases were searched in each mode, and
+  `griot stats` (`last_skipped` in `griot_stats`) how many the last run
+  skipped. A mode that is not a search mode, or a keyword or hybrid case
+  whose query has no word keyword search can match, is refused when the
+  case is written and when the file is read.
+- `scripts/measure-search-modes.py` runs again the measurement that made
+  hybrid the default: MRR@10 and recall@10 per search mode and per kind of
+  query (descriptive questions, function and class names, commit hashes).
+  It is meant to be run before keeping the default when the default profile
+  or the fusion changes. It indexes the repositories it is given into a
+  throwaway directory (the model download, its Hugging Face cache and logs
+  included), deletes it afterwards, and refuses to run anywhere near the
+  real griot directories. The query set for this repository ships in
+  `scripts/search-mode-queries/griot.json`, and `docs/indexing-model.md`
+  gives the command. A name query is judged by the file that defines the
+  name, in any language griot indexes and only among the files griot would
+  index. An indexing step that crashes at exit after recording a complete
+  run is reported and the measurement goes on. The scoring is tested on a
+  tiny real index whose ranks are known in advance, with no model download.
 - `griot update` upgrades griot itself (CLI only, deliberately not an MCP
   tool). It asks PyPI for the newest `griot-rag` (always: `update-check`
   governs only the doctor's automatic check) and works out whether griot was
@@ -32,11 +59,12 @@ between minor versions. Breaking changes are called out explicitly.
   project), then vector searches whose best result scored in the bottom
   quarter of their collection (once it has at least 20). For each one, a
   person at a terminal picks the logged result that should come back, and
-  the pick becomes a case through the same path as `golden-set add`. Only a
-  plain vector search over every repository, ungrouped, can become a case,
-  because that is the search `griot quality-check` runs. A keyword or hybrid
-  search, a narrowed search, a grouped search, or one logged before this
-  change is shown with the reason but cannot be picked. Questions already in
+  the pick becomes a case through the same path as `golden-set add`, in the
+  mode of the search it came from. Only a search over every repository, not
+  grouped by document, can become a case, because a case is checked by a
+  search like that. A search narrowed to some repositories or kinds of
+  source, a grouped search, or one logged before this change is shown with
+  the reason but cannot be picked. Questions already in
   the golden set, and ones rejected earlier, are not offered again;
   rejections are kept as digests in `golden_set_rejected.json`. Nothing is
   ever written to the index. Each logged search now records, per result, the
@@ -54,11 +82,12 @@ between minor versions. Breaking changes are called out explicitly.
   progress file.
 - **Keyword search beside vector search.** `griot search --mode
   keyword|hybrid`, `griot ask --mode` and `griot_search`'s `mode` find what
-  embeddings rank poorly: an exact identifier, an error code, a file name, a
-  commit hash (whole or abbreviated). `keyword` ranks by BM25 over the text
-  plus the file path, commit hash and ref names, embeds nothing and so is
-  free on every profile; `hybrid` fuses both rankings by rank (RRF).
-  `vector` stays the default and is unchanged. Points indexed from now on
+  embeddings rank poorly: an error code, a file name, a commit hash (whole
+  or abbreviated), where a name is used. `keyword` ranks by BM25 over the
+  text plus the file path, commit hash and ref names, embeds nothing and so
+  is free on every profile; `hybrid` fuses both rankings by rank (RRF).
+  `vector` is unchanged; `hybrid` became the default later in this release
+  (under Changed). Points indexed from now on
   get the keyword vector as they are written; an index made before this
   needs `griot index keywords` once. That command runs locally, embeds
   nothing, is safe to run again and needs about as much free disk as the
@@ -68,7 +97,9 @@ between minor versions. Breaking changes are called out explicitly.
   stats` counts searches by mode and keeps its median score over vector
   searches only. Measured on this repository with the default model
   (MRR@10): identifiers 0.54 vector / 0.89 keyword / 0.84 hybrid; commit
-  hashes 0.00 / 1.00 / 0.80; descriptive queries 0.58 / 0.48 / 0.58.
+  hashes 0.00 / 1.00 / 0.80; descriptive queries 0.58 / 0.48 / 0.58. A
+  later measurement, which judged a name by the file that defines it, found
+  keyword behind vector there (under Changed).
 - The MCP server also offers the registered repositories, the usage report
   and the index status as read-only resources (`griot://repos`,
   `griot://stats`, `griot://index-status`, JSON), for clients that read
@@ -120,6 +151,32 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Changed
 
+- A new golden-set case is a `hybrid` case by default, like `griot search`,
+  `griot ask` and `griot_search`, so it measures what a reader gets. This
+  holds for `griot golden-set add`, `griot golden-set suggest` and
+  `griot_golden_set_add`, which write `mode: hybrid` into the case; add's
+  `--mode`/`mode` still picks any mode. On a collection without keyword
+  vectors the default makes a `vector` case and says so, naming `griot index
+  keywords` (a hybrid case there would only ever be skipped). With nothing
+  indexed yet the case is `hybrid`, because an index run builds keyword
+  vectors. On a collection whose config cannot be read it is `vector`, and
+  the command says why. Before, `suggest` wrote every case without a mode,
+  which made it a vector case. Cases already in the file without a mode
+  stay vector cases.
+- What griot says keyword search is for now matches what was measured:
+  a commit hash, an error code, or where a name is used. `hybrid`, the
+  default, covers the rest, including finding the file that defines a
+  function or class (MRR@10, keyword against vector: 1.00 against 0.01 on
+  commit hashes, 0.61 against 0.72 at putting a name's defining file
+  first). This applies to the README, the `--mode` help of `griot search`
+  and `griot ask`, `griot_search`'s description, the MCP server
+  instructions, the `history` prompt, the bundled skills and
+  `docs/indexing-model.md`, which all recommended keyword for "an
+  identifier" before.
+- The golden-set pass counts in `griot stats`, `griot_stats` and the quality
+  trend are on a new ruler from this release. Cases met by a folded copy now
+  pass, and only the cases that ran are counted (both under Fixed). A step
+  in the trend right after upgrading need not mean retrieval changed.
 - `hybrid` is now the default search mode of `griot search`, `griot ask` and
   `griot_search`. It ranks by meaning and by the exact words, and fuses the
   two rankings. It was measured on a throwaway index of this repository and
@@ -133,8 +190,9 @@ between minor versions. Breaking changes are called out explicitly.
   `--mode`/`mode` is still refused where it cannot run. Every result says
   which mode ran: `mode` on `griot_search`, a `Mode:` line from `griot
   search`, and the same line under `griot ask --show-sources`. The query log
-  and `griot stats` count the mode that ran. The quality check, the golden
-  set and the retrieval evaluation keep measuring vector search explicitly.
+  and `griot stats` count the mode that ran. The quality check's self-check
+  and the retrieval evaluation keep measuring vector search explicitly; each
+  golden-set case is searched in its own mode (under Added).
 - A release reads and writes no GitHub Actions cache: the build's `setup-uv`
   has `enable-cache: false` (it caches by itself on hosted runners when left
   out), so a poisoned cache entry cannot reach what is published to PyPI.
@@ -263,6 +321,57 @@ between minor versions. Breaking changes are called out explicitly.
 
 ### Fixed
 
+- The golden set is searched the way readers search: at most three chunks
+  of one document, and the same text found in several places comes back
+  once, the other places named in the result's `also_in`. A case made from
+  a `griot_search` or `griot golden-set review` list was failed when another
+  document's extra chunks pushed out the one it names; now it is held to
+  the list it was made from, and `griot golden-set add` shows that same
+  list. A case whose document comes back only as such a copy passes, since
+  the reader got that text, and says so in `met_by_copy` (which result
+  carried it, under which name) in `griot quality-check`, its `--json` and
+  `griot_quality_check`. The run says it searched this way (`diverse` in
+  `--json`, in `griot_quality_check`'s `golden_check` and in the recorded
+  run, and a line in the terminal report); a recorded run without it
+  searched raw. The self-check still searches raw. The README and
+  `docs/indexing-model.md` describe the check this way; they had called it
+  an ungrouped search and said the golden set does not get the arrangement
+  readers get. A test keeps the folded copies a result carries, each with
+  its whole stored payload, from reaching any reader.
+- The golden-set pass rate counts only the cases that ran. Cases skipped
+  because their mode needs keyword vectors the collection lacks are
+  reported apart ("8 of 8 passed, 2 skipped"), so the trend no longer dips
+  for a reason that is not search quality. `griot quality-check`, `griot
+  stats`, `griot_quality_check`, `griot_stats` and the health prompt report
+  it the same way. Trend records an unreleased checkout wrote between case
+  modes and this fix, which counted skipped cases in `total`, are read by
+  what ran (passed plus failed). The quality check still exits non-zero
+  only when a case fails.
+- On an index built before keyword search, `griot_search` no longer repeats
+  the whole `griot index keywords` note on every default search that falls
+  back to vector (debt 40). The MCP server gives the note on the first such
+  search of the process for each collection, and later results say only
+  `mode: vector`. A refused search does not count as having given it. Two
+  searches that start at the same moment do not both give it. A collection
+  that gains keyword vectors and later loses them again, say after a rebuild
+  by an older griot, is told again. `griot search` and `griot ask` still
+  give the note with every command.
+- MCP tools and prompts now send agents only the part of their docstring
+  written for them, up to a line reading `Maintainer notes:` (CONTRIBUTING
+  says so). Notes for maintainers (why a prompt is a prompt, review tags,
+  internal function names) had been reaching every client. Each prompt and
+  prompt argument now has a description for whoever picks it, and
+  `griot_repos_add` no longer suggests that `confirm=true` registers a
+  path: that tool always needs a person (debt 37).
+- An indexing job's progress file is now made in a private `index_progress`
+  directory of the data directory, not in the system temporary directory,
+  where about 1,200 empty `griot-index-progress-*.json` files had piled up
+  (mostly from the test suite). The first read of the job registry in a new
+  process removes the files there that no job names and that are older
+  than ten minutes, and the scratch file a progress write killed halfway
+  leaves. Jobs recorded by earlier versions are still followed, and their
+  files in the temporary directory removed when they end. Files earlier
+  versions left there are not touched; they can be deleted by hand.
 - While a platform run refused entirely is the newest run of all, `griot
   doctor` and `griot stats` (and `griot_stats`'s `attention`) report it
   once, by the line naming the refused repositories, instead of also saying
