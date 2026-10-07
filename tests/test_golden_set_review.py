@@ -117,7 +117,7 @@ def test_a_result_whose_name_looks_like_a_credential_is_recorded_as_null(monkeyp
 
 
 def test_cli_ask_records_the_results_too(monkeypatch):
-    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5, mode="vector": ("answer", [_Hit(0.9, dict(CODE))]))
+    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5, mode="vector", **filters: ("answer", [_Hit(0.9, dict(CODE))]))
     monkeypatch.setattr(common, "get_spend_today", lambda: 0.0)
 
     ask.main(["some question"])

@@ -260,7 +260,8 @@ ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
     ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (`griot update`, run to upgrade, always asks)", False),
-    ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs and quality checks are kept)", False),
+    ("GRIOT_LOG_RETENTION_DAYS", "365", "days of searches and MCP tool calls kept in logs.db; older ones are deleted (indexing runs have run-retention; quality checks are kept)", False),
+    ("GRIOT_RUN_RETENTION", "100", "indexing runs kept in logs.db per repository and source, the newest ones; the last run of each, and the last that changed the index, always stay (quality checks are kept)", False),
     # Per project, not global: put it in the `env` of a project's .mcp.json. Set in this file
     # it would name EVERY project the same, so it stays commented out here.
     ("GRIOT_PROJECT", "", "name recorded with each search and tool call in the usage logs; defaults to the folder griot runs in", True),
@@ -602,6 +603,9 @@ def log_run_summary(**fields) -> None:
         record["refs"] = {name: snapshot["refs"] for name, snapshot in snapshots.items()}
     secure_mkdir(LOG_DIR)
     logdb.write_run(LOG_DIR, record)
+    # Here too, and not only after a search: an index that is indexed on a
+    # schedule and never searched would otherwise keep every run.
+    prune_logs_if_due()
 
 
 def log_questions_enabled() -> bool:
@@ -700,8 +704,8 @@ _log_prune_lock = threading.Lock()
 
 
 def prune_logs_if_due() -> None:
-    """Applies LOG_RETENTION_DAYS to logs.db, when this process has not done
-    so in the last day. Called after a write of the tables it prunes, never
+    """Applies LOG_RETENTION_DAYS and RUN_RETENTION to logs.db, when this
+    process has not done so in the last day. Called after a write of the tables it prunes, never
     from a read: looking at a report must not change what it reads.
 
     Never raises. A prune that fails is logged and the write that called it
@@ -720,6 +724,10 @@ def prune_logs_if_due() -> None:
         if searches or calls:
             log_and_print(f"Log retention: removed {searches} search(es) and {calls} tool call(s) older than "
                           f"{LOG_RETENTION_DAYS} days from logs.db", echo=False)
+        runs = logdb.prune_runs_beyond(LOG_DIR, RUN_RETENTION)
+        if runs:
+            log_and_print(f"Log retention: removed {runs} indexing run(s) beyond the last {RUN_RETENTION} of "
+                          f"each repository and source from logs.db", echo=False)
     except Exception as e:  # noqa: BLE001 — housekeeping must not fail the command that logged
         try:
             log_and_print(f"Warning: could not prune logs.db: {e}", level="warning", echo=False)
@@ -1631,6 +1639,16 @@ MAX_CONSECUTIVE_FAILED_BATCHES = _count_env("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHE
 # use is a few thousand rows. At least 1: under a day a prune would delete
 # what was just written.
 LOG_RETENTION_DAYS = _count_env("GRIOT_LOG_RETENTION_DAYS", "365", minimum=1)
+
+# How many indexing runs logs.db keeps of each repository and source, the
+# newest (see prune_logs_if_due() and logdb.prune_runs_beyond()). A count,
+# never a day window: the freshness report, doctor and griot_index_status
+# read the LAST run of every source and repository, however old, and a day
+# window would delete it for a repository indexed once a year. 100 is months
+# of a daily `griot index all`, and far above what `griot stats`' recent
+# figures look at. At least 1: the last run is never deleted. Quality checks
+# (the pass-rate trend) are not pruned at all.
+RUN_RETENTION = _count_env("GRIOT_RUN_RETENTION", "100", minimum=1)
 
 # Single-process lock — besides Qdrant's native lock (which only blocks
 # access to the same collection), this one fails fast with a clear message

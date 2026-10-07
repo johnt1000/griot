@@ -560,7 +560,8 @@ def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: flo
 # The tables pruned by age: the two that grow with use, one row per search or
 # question and one per MCP tool call. Not `runs`: the freshness report and
 # doctor read the last run of every source and repository, and a repository
-# indexed once a year would lose its only run. Not `quality_checks`: it is
+# indexed once a year would lose its only run (it keeps the last N of each
+# repository and source instead: prune_runs_beyond()). Not `quality_checks`: it is
 # the pass-rate trend, a few rows a week at most. Not `spend_events`: it
 # prunes itself on every write (write_spend).
 _PRUNED_BY_AGE = ("queries", "tool_calls")
@@ -634,6 +635,120 @@ def prune_older_than(log_dir: Path, days: int, now: datetime | None = None) -> d
     finally:
         conn.close()
     return removed
+
+
+# --- `runs`: the last N of each repository and source ------------------------------------------
+#
+# Not a day window (see _PRUNED_BY_AGE): what reads `runs` reads the LAST run
+# of something, however old. A run is in the group (collection, script, repo)
+# and the newest `keep` of each group stay. A second profile's collection is
+# a group of its own, so indexing one index a hundred times never takes the
+# other's last run. A run older than its group's `keep` still stays when it is
+# the newest run that says one of these facts, which every reader gets from
+# the newest run that says it, not from the newest run:
+#
+# - the last run that changed the index (indexed or pruned something):
+#   `griot stats`' "index last changed" (stats.load_state());
+# - per repository whose head the run recorded, and per script, the last run
+#   that did not die and the last one whose head is known: what
+#   freshness.assess() reads, skipping dead runs, for "last indexed" and for
+#   how far behind each source is. `griot index all` records every
+#   repository in one run of the group "all", so a later run of one
+#   repository alone is not the last run of the others;
+# - per repository, the last platform run that refused it: the freshness
+#   report's "the platform refused it" is read from the newest platform run
+#   that concerned the repository, refused or indexed: the newest of either
+#   kind stays (the indexed one as the last run that covered it, above), so
+#   the newest of both does.
+#
+# The newest run of each collection (griot_index_status, doctor) is the
+# newest of its group, so the count alone keeps it.
+
+
+def _run_facts(collection: str | None, record: dict) -> list[tuple]:
+    """The facts `record` would say if nothing newer said them (see above)."""
+    script = record.get("script")
+    facts = []
+    if record.get("indexed") or record.get("pruned"):
+        facts.append(("changed", collection, script, record.get("repo")))
+    heads = record.get("heads")
+    died = bool(record.get("error"))
+    if isinstance(heads, dict) and not died:
+        for name, head in heads.items():
+            facts.append(("covered", collection, script, name))
+            if head is not None:
+                facts.append(("head", collection, script, name))
+    refused = record.get("refused_repos")
+    if script == "index_platform.py" and isinstance(refused, list):
+        facts.extend(("refused", collection, name) for name in refused if isinstance(name, str))
+    return facts
+
+
+def _check_keep(keep: int) -> None:
+    if keep < 1:
+        raise ValueError(f"keeping fewer than one run of each source would delete the last one (got {keep})")
+
+
+def _runs_beyond(conn: sqlite3.Connection, keep: int) -> list[int]:
+    """The ids of the runs a prune to `keep` per group deletes. Read whole:
+    `runs` grows with indexing, a few rows a day, and only a reading of each
+    record can say which group and facts it belongs to."""
+    seen_in_group: dict[tuple, int] = {}
+    said: set[tuple] = set()
+    beyond = []
+    for row in conn.execute("SELECT id, collection, data FROM runs ORDER BY id DESC"):
+        try:
+            record = json.loads(row[2])
+        except (TypeError, ValueError):
+            continue  # not readable is not known to be old: it stays
+        if not isinstance(record, dict):
+            continue
+        group = (row[1], record.get("script"), record.get("repo"))
+        seen_in_group[group] = seen_in_group.get(group, 0) + 1
+        new_facts = [fact for fact in _run_facts(row[1], record) if fact not in said]
+        said.update(new_facts)
+        if seen_in_group[group] > keep and not new_facts:
+            beyond.append(row[0])
+    return beyond
+
+
+def count_runs_beyond(log_dir: Path, keep: int) -> int:
+    """How many runs prune_runs_beyond() would delete with the same `keep`,
+    without deleting them. Read-only, like count_older_than(), and for the
+    same reason: `griot config set run-retention` asks before deciding."""
+    _check_keep(keep)
+    db_path = log_dir / DB_FILENAME
+    if not db_path.is_file():
+        return 0
+    conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        return len(_runs_beyond(conn, keep)) if "runs" in present else 0
+    finally:
+        conn.close()
+
+
+def prune_runs_beyond(log_dir: Path, keep: int) -> int:
+    """Deletes the runs beyond the newest `keep` of each repository and
+    source (see the comment above _run_facts), and returns how many.
+
+    Read and deleted in one transaction, taken for writing before the read
+    (BEGIN IMMEDIATE): a griot process that records a run meanwhile waits
+    on SQLite's lock, so the ids chosen are the ones deleted. A run written
+    after is newer than all of them anyway."""
+    _check_keep(keep)
+    if _nothing_logged_yet(log_dir):
+        return 0
+    conn = _connect(log_dir)
+    try:
+        conn.execute("PRAGMA secure_delete = ON")  # as prune_older_than(): deleted means gone from the file
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            beyond = _runs_beyond(conn, keep)
+            conn.executemany("DELETE FROM runs WHERE id = ?", [(run_id,) for run_id in beyond])
+    finally:
+        conn.close()
+    return len(beyond)
 
 
 def _tool_call_rows(conn: sqlite3.Connection, cutoff: datetime) -> list[sqlite3.Row]:

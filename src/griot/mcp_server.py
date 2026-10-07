@@ -2143,7 +2143,10 @@ def griot_stats(days: int = stats.DEFAULT_DAYS, all_profiles: bool = False) -> S
     the window. `last_indexed_at`, `last_query_at`, `last_quality_check_at`
     and `golden_set` are likewise about now, not about the last `days` days.
     Searches and tool calls are kept `log_retention_days` days: a longer
-    `days` counts only those.
+    `days` counts only those. Indexing runs are kept up to a count per
+    repository and source (`griot config get run-retention`): a source
+    indexed more often than that within `days` has only its newest runs
+    counted.
 
     Reuse deserves attention: `reuse_rate` averages the whole window, so a
     window spanning a fix holds two eras whose average describes neither.
