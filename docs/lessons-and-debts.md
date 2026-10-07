@@ -223,6 +223,62 @@ Each job's progress file was made there and nothing removed what a dead host or 
 
 It judged name queries by `.py` files only, a child crashing at exit after a complete run ended the measurement, and the model download wrote logs under the home directory. Resolved: definitions in any language griot indexes, the crash reported and passed over, caches and logs in the throwaway directory (#93).
 
+### 53. ~~`griot ask` calls the chat model over an empty context~~ — resolved
+
+Filters that each exist but match nothing together, or an empty index, still sent the question to the chat model, and `--limit` took 0 and crashed on a negative number. Resolved: `ask` prints `No results.`, names the filters, calls no model, and its `--limit` takes what `griot search` takes (#105).
+
+### 54. ~~`golden-set suggest` ends with a traceback on a refused case~~ — resolved
+
+A candidate `add_case` refused stopped the run with a traceback. Resolved: the reason is printed under the candidate and the run goes on; an unreadable golden-set file stops it with one error (#102).
+
+### 55. ~~The measurement script misses Java, C# and C++ methods~~ — resolved
+
+A method declared as `<type> name(...)` with a body was not found as a definition. Resolved: it is, and calls, returns, conditions and prototypes are not (#102).
+
+### 56. ~~The progress-file sweep test hard-codes the writer's scratch name~~ — resolved
+
+The sweep and its test spelled the atomic writer's scratch name themselves, so a change to the writer could slip past both. Resolved: the writer and the sweep share `common.atomic_scratch_path`, and the test takes the name from a real write stopped before its rename (#102).
+
+### 57. ~~The vector-fallback notes speak of one case~~ — resolved
+
+`suggest` says them once for a run that can add several cases. Resolved: they are worded for one case or several (#102).
+
+### 58. ~~The `bge-m3` profile is listed but cannot load~~ — resolved
+
+fastembed has no BAAI/bge-m3, so the profile failed at its first embedding. Resolved: removed, a configuration naming it is told why, and every listed local profile is checked against fastembed's model list (#104).
+
+### 59. ~~A server on a removed installation fails with a misleading TLS error~~ — resolved
+
+A long-running server whose virtual environment was deleted answered with the error of whatever file a call read, such as a missing CA bundle. Resolved: a failed call checks whether the installation is gone and, if so, says so and asks for a restart (#103).
+
+### 60. A question that found nothing is logged with a chat model
+
+When `griot ask` finds nothing it calls no chat model (#105), but the query
+log still records the active chat profile and model for that question, so
+the log reads as if a chat call was made. The tests of the log assert those
+fields, which is why it was kept.
+
+### 61. `griot search` does not say which filters left it empty
+
+`griot ask` follows `No results.` with the filters that narrowed the search
+(#105); `griot search` with the same filters says only `No results.`, which
+reads as "nothing about this anywhere".
+
+### 62. The disagreement offer is blind to a narrow rank window
+
+`griot golden-set review` treats a result one ranking did not place as past
+the depth only when that ranking was asked for at least `DISAGREE_DEPTH`
+(10) points. A hybrid search logged with a smaller window, such as `griot
+search --limit 5` without grouping, is therefore never offered as a
+disagreement. The depth itself is argued, not measured on real logs.
+
+### 63. opencode shows each griot skill twice when both harnesses are installed globally
+
+opencode also reads `~/.claude/skills` (unless
+`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` is set), so griot installed globally
+for both Claude Code and opencode gives opencode two copies of each skill:
+it logs a "duplicate skill name" warning and the last one loaded wins.
+
 ---
 
 ## Lessons

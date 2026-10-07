@@ -8,6 +8,105 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Added
+
+- **`griot ask` takes `--repo` and `--source-type`** (each repeatable), the
+  filters `griot search` has, so the context of a question can be kept to
+  some repositories and kinds of source. A repository with nothing indexed,
+  or a kind that does not exist, is an error before anything is embedded or
+  the chat model is called, so it costs nothing. A narrowed question is
+  logged as narrowed, so `griot golden-set review` does not offer it as a
+  case. When the search finds nothing (filters that each exist but match
+  nothing together, such as the commits of a repository with none indexed,
+  or an empty index), `ask` no longer calls the chat model, which can be
+  paid, over an empty context: it prints `No results.` as `griot search`
+  does, names the filters that narrowed the search, exits 0 and still logs
+  the question. `ask --limit` takes what `griot search --limit` takes, a
+  whole number from 1, and refuses 0 and negative numbers with the same
+  message; before, 0 was accepted and a negative limit crashed with an
+  overflow.
+- **Indexing runs no longer pile up in `logs.db` forever.** The newest
+  `GRIOT_RUN_RETENTION` runs (100 by default, at least 1) of each
+  repository and source are kept, pruned in the same daily pass that prunes
+  old searches and tool calls, which now also runs after an index run. It
+  is a count, not a day window. The last run of every repository and
+  source, the last one that did not fail, and the last one that changed the
+  index always stay, so the freshness report, `griot doctor`,
+  `griot_index_status` and "index last changed" give the same answers after
+  a prune. `griot stats` counts only the runs still kept. Lowering it with
+  `griot config set run-retention` asks first at an interactive terminal,
+  says how many runs the next prune would delete, and deletes nothing
+  itself; an MCP server's environment cannot lower it. Quality checks are
+  still kept forever.
+- **`griot golden-set review` offers the hybrid searches whose two rankings
+  disagreed**, after the questions asked more than once and the vector
+  searches that scored low, newest first: the first result by meaning is
+  not in the keyword ranking's first 10, and the first by the words is not
+  in the vector ranking's first 10. For this a hybrid search logs, beside
+  each result, its rank in the vector ranking and in the keyword ranking
+  (`ranks`, plus `rank_window`, how many points each ranking was asked
+  for): numbers only, nothing more is embedded or searched. The review
+  shows both ranks beside each result of a hybrid search. A search logged
+  before this, or one whose keyword ranking matched nothing, is never
+  offered as a disagreement.
+
+### Changed
+
+- A hybrid search now makes two store queries, one by meaning (dense) and
+  one by the words (keyword), and fuses them in griot with the same
+  reciprocal-rank score the store used (k=60), instead of one query that
+  the store fused itself; that is what keeps each result's rank in each
+  ranking (under Added). The query is still embedded once. Results that
+  tie exactly are now ordered with the vector ranking's first ahead, where
+  the store's order was arbitrary, so a result list can differ from before
+  where scores tie exactly.
+- A release checks its tag first, in a job of its own that every other job
+  waits for: a tag that is not the declared version, has no changelog
+  section or is not on `main` now fails in seconds, before the CI runs,
+  instead of after it.
+
+### Removed
+
+- **The `bge-m3` embedding profile.** fastembed, the library griot embeds
+  locally with, cannot load BAAI/bge-m3, so picking the profile failed at
+  the first embedding ("Model BAAI/bge-m3 is not supported in
+  TextEmbedding") and the profile never worked. A configuration that still
+  names it now stops with one line that says why and lists the profiles
+  there are; `griot doctor` and `griot profiles use` say the same, and
+  `griot profiles delete bge-m3` still removes a collection a failed run
+  left behind. Every local profile griot lists is now checked against
+  fastembed's own model list in the test suite.
+
+### Fixed
+
+- `griot assist install --scope global` (and `griot_assist_install`) puts
+  opencode's skills and agent where opencode reads them:
+  `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when that variable is
+  unset or empty, the rule opencode itself follows on every platform.
+  Before, they always went to `~/.config/opencode`, which opencode does not
+  read when `XDG_CONFIG_HOME` points elsewhere, and the install still
+  reported success. A relative `XDG_CONFIG_HOME` is now refused before
+  anything is written or asked, where it used to be ignored. The command
+  and the MCP question say when the variable chose the place.
+  `OPENCODE_CONFIG_DIR` does not move the install, because opencode reads
+  that directory in addition to the XDG one.
+- A long-running `griot mcp` whose own installation was removed or replaced
+  (a pipx virtual environment deleted by a reinstall under another name,
+  say) now answers a failing tool call or resource read by saying so: it
+  names the path that is gone, keeps the original error, and asks for the
+  server to be restarted. Before, the agent got the error of whatever file
+  the call happened to read, such as "Could not find a suitable TLS CA
+  certificate bundle". The check runs only after a call has already failed,
+  and an error while the installation is in place reaches the agent
+  unchanged.
+- `griot golden-set suggest` no longer ends with a traceback when a case it
+  was told to add is refused. It prints the reason under that candidate,
+  keeps the cases already approved and goes on to the next one, and its
+  summary says how many approved candidates were not added. A golden-set
+  file that is not valid JSON stops the run with one error and leaves the
+  file untouched. The notes that a new case is checked by meaning only
+  (vector) now read true whether one case or several were added.
+
 ## [0.3.0] — 2026-10-07
 
 ### Added
