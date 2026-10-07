@@ -1,8 +1,9 @@
 """Retention for logs.db: the tables that grow with use (`queries`, one row
 per search or question, and `tool_calls`, one row per MCP tool call) are
-pruned by age, on a write, at most once a day per process. `runs` and
-`quality_checks` are never pruned: the freshness report and doctor need the
-last run of every source, and the quality trend needs its history."""
+pruned by age, on a write, at most once a day per process. `runs` is never
+pruned by age (tests/test_runs_retention.py keeps the last N of each
+repository and source), and `quality_checks` never: the quality trend needs
+its history."""
 
 import os
 import subprocess

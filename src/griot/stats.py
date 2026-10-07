@@ -1109,7 +1109,15 @@ def load_window(days: int, now: datetime | None = None) -> tuple[list[dict], lis
     opens at local midnight, which can be up to 25 hours a day before `now`
     (a day the clock falls back), and a stored timestamp written with
     another offset compares there as text, not as a moment. The extra day
-    covers both; the Python pass cuts at the exact moment."""
+    covers both; the Python pass cuts at the exact moment.
+
+    `runs` holds only the runs logdb.prune_runs_beyond() kept (the last
+    RUN_RETENTION of each repository and source): a window over more runs
+    than that of one source counts the newest only. The order and the null
+    counts of dead runs are what they were before a prune, so every figure
+    is computed the same way over fewer runs, and the facts read from older
+    runs (the last change, the last run of each source) are runs the prune
+    never takes."""
     now_iso = now.isoformat() if now else None
     runs = _filter_by_days(logdb.read_since(common.LOG_DIR, "runs", days + 1, now), days, now_iso)
     queries = _filter_by_days(logdb.read_since(common.LOG_DIR, "queries", days + 1, now), days, now_iso)
