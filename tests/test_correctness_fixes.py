@@ -172,7 +172,7 @@ def _damage_the_collection():
     client = common.get_client()
     assert client is not None
     common.release_client()
-    marker = common._collection_path(common.COLLECTION_NAME) / common._EDGE_CONFIG_MARKER
+    marker = common.collection_path(common.COLLECTION_NAME) / common.EDGE_CONFIG_MARKER
     marker.write_text(marker.read_text()[:20])
 
 

@@ -60,7 +60,7 @@ def test_every_setting_of_the_env_template_is_one_the_command_knows():
     """A variable added to the template and not here would be a setting the
     command silently does not show."""
     known = {setting.variable for setting in config.SETTINGS}
-    template = {entry[0] for entry in common._ENV_TEMPLATE_SETTINGS}
+    template = {entry[0] for entry in common.ENV_TEMPLATE_SETTINGS}
     assert template <= known, template - known
     assert len({setting.name for setting in config.SETTINGS}) == len(config.SETTINGS), "names are unique"
 
@@ -77,7 +77,7 @@ def test_the_module_does_not_load_the_configuration_when_imported():
 
 
 def test_the_defaults_shown_are_the_ones_the_template_writes():
-    template = {entry[0]: entry[1] for entry in common._ENV_TEMPLATE_SETTINGS}
+    template = {entry[0]: entry[1] for entry in common.ENV_TEMPLATE_SETTINGS}
     for setting in config.SETTINGS:
         if setting.variable in template:
             assert config.default_of(setting) == (template[setting.variable] or None), setting.name

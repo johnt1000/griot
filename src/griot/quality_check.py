@@ -89,10 +89,9 @@ def _open_shard_for_sampling(collection: str) -> "qe.EdgeShard | None":
     to treat 'no shard' as 'no sample'."""
     if collection == common.COLLECTION_NAME:
         return common.get_client()
-    path = common._collection_path(collection)
-    if not (path / common._EDGE_CONFIG_MARKER).exists():
+    if not common.collection_exists(collection):
         return None
-    return qe.EdgeShard.load(str(path))
+    return qe.EdgeShard.load(str(common.collection_path(collection)))
 
 
 def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, min_score: float = SELF_CHECK_MIN_SCORE) -> dict:
@@ -201,7 +200,7 @@ def run_golden_set(golden_set: list) -> dict:
         # Read once per run, and only when a case needs it. Unreadable is
         # None and skips the case like "not built": no run would be sound.
         if not built:
-            built.append(common._keyword_search_status(common.COLLECTION_NAME))
+            built.append(common.keyword_search_status(common.COLLECTION_NAME))
         return built[0]
 
     for case in golden_set:
@@ -352,7 +351,7 @@ def main(argv=None):
     # 'collection' is the active one and doesn't exist yet,
     # common.get_client() would CREATE it from scratch — wrong here,
     # quality_check should only inspect what already exists.
-    if not (common._collection_path(collection) / common._EDGE_CONFIG_MARKER).exists():
+    if not common.collection_exists(collection):
         # [--json stdout contract] --json's stdout contract is "JSON or nothing" — an
         # error this early (no result to report) belongs on stderr in that
         # mode, never stdout, or a caller parsing stdout as JSON would choke.

@@ -2137,6 +2137,19 @@ def _multi_mode(monkeypatch, idle=30.0):
     monkeypatch.setattr(common, "IDLE_RELEASE_SECONDS", idle)
 
 
+def test_client_idle_seconds_is_none_without_a_handle_and_counts_from_last_use(monkeypatch):
+    """The reaper reads idleness through this public call, not through
+    common.py's private handle and timestamp."""
+    _multi_mode(monkeypatch)
+    assert common.client_idle_seconds(now=_FAR_FUTURE) is None
+
+    common.get_client()
+    assert common.client_idle_seconds(now=common._client_last_used_at + 12.5) == 12.5
+
+    common.release_client()
+    assert common.client_idle_seconds(now=_FAR_FUTURE) is None
+
+
 def test_idle_reaper_releases_a_handle_idle_past_the_window(monkeypatch):
     _multi_mode(monkeypatch)
     common.get_client()

@@ -764,10 +764,10 @@ def _release_if_idle(now: float | None = None) -> None:
     if common.CONCURRENCY_MODE != "multi":
         return
     with _inflight_lock:
-        if _inflight or common._client is None or common._client_last_used_at is None:
+        if _inflight:
             return
-        now = time.time() if now is None else now
-        if now - common._client_last_used_at > common.IDLE_RELEASE_SECONDS:
+        idle = common.client_idle_seconds(now)
+        if idle is not None and idle > common.IDLE_RELEASE_SECONDS:
             common.release_client()
 
 
@@ -2994,7 +2994,7 @@ def _keep_stdout_for_the_protocol() -> None:
     a terminal run echoes (a collection held by another process, an embedding
     call being retried) would land in the middle of it as lines that are not
     messages. They go to stderr, where a client shows or logs them."""
-    common._echo_stream = sys.stderr
+    common.set_echo_stream(sys.stderr)
 
 
 def main(argv=None) -> None:

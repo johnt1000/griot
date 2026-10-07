@@ -244,7 +244,7 @@ _ENV_TEMPLATE_PROVIDER_NOTES = {
 # configured" for these. The credential vars in _providers() don't have
 # this problem — they're all checked with `if not token`, where "" and
 # None behave identically — so they're written empty, not commented.
-_ENV_TEMPLATE_SETTINGS = [
+ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_EMBED_PROFILE", "jina-code", "active embedding profile — see `griot profiles list`", False),
     ("GRIOT_CHAT_PROFILE", "gemini", "active chat profile for `griot ask` — gemini/openai/deepseek/groq", False),
     ("GRIOT_CHAT_MODEL", "gemini-2.5-flash", "model override within the gemini chat profile", False),
@@ -319,7 +319,7 @@ def ensure_env_template() -> None:
         lines.append(f"{env_var}=")
     lines.append("")
     lines.append("# --- Profiles, pricing, spend limits, logging, MCP server, platforms ---")
-    for var, default, comment, leave_commented in _ENV_TEMPLATE_SETTINGS:
+    for var, default, comment, leave_commented in ENV_TEMPLATE_SETTINGS:
         lines.append(f"# {comment}")
         prefix = "#" if leave_commented else ""
         lines.append(f"{prefix}{var}={default}")
@@ -554,6 +554,13 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
 # points it at stderr for its whole life: there, stdout IS the JSON-RPC
 # stream, and one stray line in it corrupts what the client is reading.
 _echo_stream = None
+
+
+def set_echo_stream(stream) -> None:
+    """Where log_and_print() echoes from now on: a writable text stream, or
+    None for stdout."""
+    global _echo_stream
+    _echo_stream = stream
 
 
 def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
@@ -822,7 +829,7 @@ QDRANT_PATH = DATA_DIR / "qdrant_data"
 _COLLECTION_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 
 
-def _collection_path(collection: str) -> Path:
+def collection_path(collection: str) -> Path:
     """Where a collection lives. `collection` is a NAME, and it is checked
     here because this is where a name becomes a path: joined as it came, an
     absolute path replaces the data directory and `..` walks out of it, and
@@ -839,7 +846,7 @@ def _collection_path(collection: str) -> Path:
 # written on create(), so its presence distinguishes "create from scratch"
 # from "load existing" without trial-and-error (EdgeShard.create() fails
 # explicitly if the path already has segment data).
-_EDGE_CONFIG_MARKER = "edge_config.json"
+EDGE_CONFIG_MARKER = "edge_config.json"
 
 # Same HnswIndexConfig validated in docs/benchmarks/bench_edge.py and
 # replicated in the migration prototype (m=16, ef_construct=100) — a
@@ -1255,7 +1262,7 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 _KEYCHAIN_SERVICE = "griot"
 
 
-def _keychain_get(env_var: str) -> str | None:
+def keychain_get(env_var: str) -> str | None:
     try:
         import keyring
         return keyring.get_password(_KEYCHAIN_SERVICE, env_var)
@@ -1263,7 +1270,7 @@ def _keychain_get(env_var: str) -> str | None:
         return None
 
 
-def _keychain_set(env_var: str, value: str) -> bool:
+def keychain_set(env_var: str, value: str) -> bool:
     try:
         import keyring
         keyring.set_password(_KEYCHAIN_SERVICE, env_var, value)
@@ -1272,7 +1279,7 @@ def _keychain_set(env_var: str, value: str) -> bool:
         return False
 
 
-# What _keychain_delete() found. "not installed" is apart from "unreachable"
+# What keychain_delete() found. "not installed" is apart from "unreachable"
 # because without the `keyring` package griot never stored anything in a
 # keychain, so there is nothing to warn about; an installed package whose
 # backend fails may be hiding a stored credential that is still there.
@@ -1282,7 +1289,7 @@ KEYCHAIN_UNREACHABLE = "unreachable"
 KEYCHAIN_NOT_INSTALLED = "not installed"
 
 
-def _keychain_delete(env_var: str) -> str:
+def keychain_delete(env_var: str) -> str:
     """One of the KEYCHAIN_* results above; never raises.
 
     Existence is asked with get_password() first instead of read off the
@@ -1458,7 +1465,7 @@ def credential_origin(env_var: str) -> dict:
         in_file = (dotenv_values(ENV_PATH).get(env_var) or None) if ENV_PATH.exists() else None
     except (OSError, ValueError):  # unreadable, or not text: nothing griot stores can be read there
         in_file = None
-    in_keychain = None if in_file else _keychain_get(env_var)
+    in_keychain = None if in_file else keychain_get(env_var)
     stored_value = in_file or in_keychain
     stored = "file" if in_file else ("keychain" if in_keychain else None)
     # Not exported: what griot stores is what is in force (load_dotenv and
@@ -1572,7 +1579,7 @@ def _inject_keychain_credentials() -> None:
     for env_var in credential_env_vars().values():
         if os.environ.get(env_var):
             continue
-        value = _keychain_get(env_var)
+        value = keychain_get(env_var)
         if value:
             os.environ[env_var] = value
             if env_var == "GEMINI_TOKEN":
@@ -2117,18 +2124,18 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     either."""
     global _client, _client_last_used_at
     if not _client_lock.acquire(timeout=-1 if wait else _STATUS_READ_PATIENCE):
-        path = _collection_path(COLLECTION_NAME)
+        path = collection_path(COLLECTION_NAME)
         raise CollectionBusyError(COLLECTION_NAME, path,
                                   f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
                                   in_this_process=True)
     try:
         if _client is None:
-            path = _collection_path(COLLECTION_NAME)
+            path = collection_path(COLLECTION_NAME)
             # Before deciding between load and create: a keyword build that
             # died between its two renames left the collection beside its
             # place, and creating an empty one there would hide it.
             _restore_interrupted_keyword_swap(path)
-            if (path / _EDGE_CONFIG_MARKER).exists():
+            if (path / EDGE_CONFIG_MARKER).exists():
                 opened = _load_shard(path, retry=CONCURRENCY_MODE == "multi" and wait)
             else:
                 secure_mkdir(path)  # and whatever is made on the way to it
@@ -2156,6 +2163,17 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
         return _client
     finally:
         _client_lock.release()
+
+
+def client_idle_seconds(now: float | None = None) -> float | None:
+    """How long the memoized handle has gone unused at `now`, or None when
+    none is open or its use is not timed (single mode times nothing: there
+    the handle is kept for the life of the process). The handle and its
+    timestamp stay private to this module; mcp_server's idle reaper reads
+    idleness through here."""
+    if _client is None or _client_last_used_at is None:
+        return None
+    return (time.time() if now is None else now) - _client_last_used_at
 
 
 def release_client() -> None:
@@ -3186,7 +3204,7 @@ def _secure_collection_dir(collection: str, *, full: bool = False) -> None:
     (see _repair_mode) and its directory left unremembered, so the next
     open tries again; it never fails the indexing run or search that
     called it. `griot doctor` reports whatever is still open."""
-    path = _collection_path(collection)
+    path = collection_path(collection)
     if not path.exists():
         return
     key = str(path)
@@ -3342,7 +3360,7 @@ def _restore_interrupted_keyword_swap(path: Path) -> None:
     after moving it aside and before its copy took the place. Nothing else
     is touched: the copy is resumed by the next build."""
     _staging, previous = _keyword_rebuild_paths(path)
-    if (path / _EDGE_CONFIG_MARKER).exists() or not (previous / _EDGE_CONFIG_MARKER).exists():
+    if (path / EDGE_CONFIG_MARKER).exists() or not (previous / EDGE_CONFIG_MARKER).exists():
         return
     if path.exists():
         path.rmdir()  # only ever empty here; anything in it is not ours to delete, and rmdir refuses
@@ -3357,7 +3375,7 @@ def _config_has_keyword_vector(path: Path) -> bool | None:
     config file the engine writes beside its segments; None when there is no
     such file."""
     try:
-        config = json.loads((path / _EDGE_CONFIG_MARKER).read_text())
+        config = json.loads((path / EDGE_CONFIG_MARKER).read_text())
     except FileNotFoundError:
         return None
     return KEYWORD_VECTOR in (config.get("sparse_vectors") or {})
@@ -3527,7 +3545,7 @@ def build_keyword_index() -> dict:
     it is copied, in either concurrency mode)."""
     acquire_lock(label="keyword vectors")
     try:
-        path = _collection_path(COLLECTION_NAME)
+        path = collection_path(COLLECTION_NAME)
         staging, previous = _keyword_rebuild_paths(path)
         with _client_lock:
             _restore_interrupted_keyword_swap(path)
@@ -3925,7 +3943,7 @@ def collection_exists(collection: str) -> bool:
     already do inline to avoid opening/materializing a shard that isn't
     there, factored out for delete_collection() and its callers (`griot
     profiles delete`, griot_profiles_delete)."""
-    return (_collection_path(collection) / _EDGE_CONFIG_MARKER).exists()
+    return (collection_path(collection) / EDGE_CONFIG_MARKER).exists()
 
 
 def delete_collection(collection: str) -> None:
@@ -3951,7 +3969,7 @@ def delete_collection(collection: str) -> None:
         raise ValueError(f"collection '{collection}' does not exist.")
     if index_lock_status()["running"]:
         raise ValueError("an indexing run is currently in progress — wait for it to finish, then try again.")
-    shutil.rmtree(_collection_path(collection))
+    shutil.rmtree(collection_path(collection))
 
 
 def has_keyword_vectors(collection: str) -> bool | None:
@@ -3961,10 +3979,10 @@ def has_keyword_vectors(collection: str) -> bool | None:
     for), which needs no handle on the shard: the engine has no call that
     returns a loaded shard's config, and opening one another process holds
     would wait for it."""
-    return _config_has_keyword_vector(_collection_path(collection))
+    return _config_has_keyword_vector(collection_path(collection))
 
 
-def _keyword_search_status(collection: str) -> bool | None:
+def keyword_search_status(collection: str) -> bool | None:
     """has_keyword_vectors() for a status read, which must answer whatever
     the file holds: unreadable is "cannot say", logged."""
     try:
@@ -4026,7 +4044,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
     # [review] day 1 (collection doesn't exist yet): 0 points, not an
     # error — same handling griot_search gives to a fresh install. With
     # Edge, each collection is a shard in its own directory
-    # (_collection_path): the active one uses get_client()'s memoized
+    # (collection_path): the active one uses get_client()'s memoized
     # handle; another collection is opened separately, read-only, and NEVER
     # created here — checking status must not have the side effect of
     # materializing an empty collection out of nowhere.
@@ -4043,7 +4061,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
             points_count = get_client(wait=False).info().points_count
         except Exception as e:
             points_count, points_error = None, _points_error(collection, e)
-    elif (_collection_path(collection) / _EDGE_CONFIG_MARKER).exists():
+    elif (collection_path(collection) / EDGE_CONFIG_MARKER).exists():
         # [review] EdgeShard.load() on a collection that another process
         # has open at this exact moment (e.g. a running indexer) raises a
         # generic runtime exception ("failed to open WAL... WouldBlock",
@@ -4055,7 +4073,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # returning a dict. Best-effort: points_count comes back as None
         # when it can't be checked, instead of propagating.
         try:
-            other_shard = qe.EdgeShard.load(str(_collection_path(collection)))
+            other_shard = qe.EdgeShard.load(str(collection_path(collection)))
             try:
                 points_count = other_shard.info().points_count
             finally:
@@ -4119,7 +4137,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # builds it), None when there is no collection. Read from the
         # collection's own config file, so it is known even while another
         # process holds the collection.
-        "keyword_search": _keyword_search_status(collection),
+        "keyword_search": keyword_search_status(collection),
         "collection": collection,
         "embed_profile": ACTIVE_PROFILE_NAME,
         "running": running,
@@ -4349,7 +4367,7 @@ def repository_is_indexed(client, repo: str) -> bool:
     return bool(client.count(qe.CountRequest(exact=True, filter=one)))
 
 
-def _checked_filters(repos, source_types) -> tuple[list[str], list[str]]:
+def checked_search_filters(repos, source_types) -> tuple[list[str], list[str]]:
     """Both filters as lists, after everything that can be checked without
     the index: opening a collection another process holds waits for it, and
     a filter that is wrong on its face should not wait for anything."""
@@ -4361,7 +4379,7 @@ def _checked_filters(repos, source_types) -> tuple[list[str], list[str]]:
     return repos, source_types
 
 
-def _search_filter(client, repos: list[str], source_types: list[str]):
+def search_filter(client, repos: list[str], source_types: list[str]):
     """The store filter for a search, or None. A filter that matches nothing
     gives an empty result, and an empty result reads as "nothing was found":
     so a value that CANNOT match (a kind griot does not have, a repository
@@ -4475,7 +4493,7 @@ def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     cannot be read, there is nothing to tell anyone to build."""
     if mode is not None:
         return mode, None
-    built = _keyword_search_status(COLLECTION_NAME)
+    built = keyword_search_status(COLLECTION_NAME)
     if built is False:
         return "vector", KEYWORD_SEARCH_NOT_BUILT_NOTE
     if built is None or not keyword_query_matches(query):
@@ -4504,7 +4522,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
 
     repos / source_types narrow the search to those repositories (the
     `repo` of a point: its directory name) and those kinds of source
-    (SOURCE_TYPES); see _search_filter for what is an error and what is an
+    (SOURCE_TYPES); see search_filter for what is an error and what is an
     empty result.
 
     diverse is for whoever READS the results (an agent, a person, the chat
@@ -4520,7 +4538,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     "hybrid" embeds the query once. Scores are on each mode's own scale: a
     cosine similarity, a BM25 score, a fused rank score."""
     mode = _checked_mode(mode)
-    repos, source_types = _checked_filters(repos, source_types)
+    repos, source_types = checked_search_filters(repos, source_types)
     keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
     if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
@@ -4531,7 +4549,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             f"use mode 'vector'.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
-    only = _search_filter(client, repos, source_types)
+    only = search_filter(client, repos, source_types)
     query_vector = None
     if mode != "keyword":
         query_vector = embed_texts([query])[0]

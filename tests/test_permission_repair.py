@@ -40,7 +40,7 @@ def no_racy_window(monkeypatch):
 
 
 def _collection(name="codebase__perm-repair", files=3):
-    path = common._collection_path(name)
+    path = common.collection_path(name)
     common.secure_mkdir(path / "segments" / "a")
     for i in range(files):
         (path / "segments" / "a" / f"f{i}.dat").write_text("x")
@@ -251,7 +251,7 @@ def test_an_index_run_checks_the_whole_collection(monkeypatch, no_racy_window):
     monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
     common.get_client()
     common.release_client()
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     extra = path / "kept"
     common.secure_mkdir(extra)
     (extra / "k.dat").write_text("k")
@@ -280,7 +280,7 @@ def test_a_prune_run_checks_the_whole_collection(monkeypatch, no_racy_window, tm
                  "metadata": {"source_type": "code", "repo": "proj", "file_path": n, "chunk_index": 0}} for n in names]
 
     common.index_documents(docs(["a.py", "b.py", "c.py"]))
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     common.secure_mkdir(path / "kept")
     (path / "kept" / "k.dat").write_text("k")
     common._secure_collection_dir(common.COLLECTION_NAME)
@@ -334,7 +334,7 @@ def test_a_release_leaves_nothing_the_engine_wrote_on_close_open(monkeypatch, lo
 
     common.release_client()
 
-    assert _open_to_others(common._collection_path(common.COLLECTION_NAME)) == []
+    assert _open_to_others(common.collection_path(common.COLLECTION_NAME)) == []
 
 
 def test_a_process_that_exits_holding_the_collection_leaves_nothing_open(tmp_path):
@@ -363,7 +363,7 @@ def _legacy_collection_with_one_point(monkeypatch):
     import qdrant_edge as qe
 
     monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     common.secure_mkdir(path)
     qe.EdgeShard.create(str(path), qe.EdgeConfig(
         vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})).close()
@@ -397,7 +397,7 @@ def test_a_keyword_build_that_fills_in_place_leaves_nothing_open(monkeypatch, lo
     assert common.build_keyword_index()["written"] == 1
 
     assert common._client is None
-    assert _open_to_others(common._collection_path(common.COLLECTION_NAME)) == []
+    assert _open_to_others(common.collection_path(common.COLLECTION_NAME)) == []
 
 
 def test_a_keyword_build_that_fails_with_the_collection_open_leaves_nothing_open(monkeypatch, loose_umask):

@@ -103,7 +103,7 @@ def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
     an unknown provider or an empty key — never on a missing .env (that
     case is just "nothing replaced").
 
-    [security review] Prefers the OS keychain (common._keychain_set()) —
+    [security review] Prefers the OS keychain (common.keychain_set()) —
     when that succeeds, the value is deliberately NOT ALSO written to the
     plaintext .env file (storing it in two places would defeat the point).
     Falls back to the existing common.env_file_set() path (same one
@@ -132,7 +132,7 @@ def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
 
     env_var = providers[provider]
     existing_in_file = dotenv_values(common.ENV_PATH).get(env_var) if common.ENV_PATH.exists() else None
-    if common._keychain_set(env_var, key):
+    if common.keychain_set(env_var, key):
         if existing_in_file:
             common.env_file_unset(env_var)
         return bool(existing_in_file), "keychain"
@@ -168,7 +168,7 @@ def remove_provider_key(provider: str) -> KeyRemoval:
         raise ValueError(f"Unknown provider {provider!r}. Options: {', '.join(sorted(providers))}")
 
     env_var = providers[provider]
-    keychain = common._keychain_delete(env_var)
+    keychain = common.keychain_delete(env_var)
     removed_from_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
     if removed_from_file:
         common.env_file_unset(env_var)
@@ -289,7 +289,7 @@ def _has_stored_key(provider: str) -> bool:
     is stored in the keychain or in the file, the two places it removes from."""
     env_var = _providers()[provider]
     in_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
-    return bool(in_file or common._keychain_get(env_var))
+    return bool(in_file or common.keychain_get(env_var))
 
 
 def cmd_remove(provider: str) -> int:
@@ -340,7 +340,7 @@ def cmd_migrate() -> int:
         file_value = file_values.get(env_var) or None
         if not file_value:
             continue
-        if common._keychain_set(env_var, file_value):
+        if common.keychain_set(env_var, file_value):
             common.env_file_unset(env_var)
             migrated.append(provider)
         else:
