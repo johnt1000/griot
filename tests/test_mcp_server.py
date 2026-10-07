@@ -1052,7 +1052,7 @@ def test_griot_search_marks_the_call_as_coming_from_mcp(monkeypatch):
 
 def test_cli_ask_is_marked_as_cli(monkeypatch):
     from griot import ask
-    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5, mode="vector": ("answer", []))
+    monkeypatch.setattr(ask, "ask", lambda q, model=None, limit=5, mode="vector", **filters: ("answer", []))
     monkeypatch.setattr(common, "get_spend_today", lambda: 0.0)
 
     ask.main(["some question"])
