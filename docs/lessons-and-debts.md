@@ -159,49 +159,69 @@ Resolved: removed, with the equivalent re-checks beside them (#65).
 
 Resolved: every heading's value starts at the same column (#64).
 
-### 37. MCP prompt descriptions carry notes meant for maintainers
+### 37. ~~MCP prompt descriptions carry notes meant for maintainers~~ — resolved
 
-Each prompt's description is its whole docstring, so engineering notes such
-as "[user-requested] A PROMPT, not a tool..." reach every client. Tools and
-resources may hold the same kind of note.
+Resolved: a tool's or prompt's description stops at a `Maintainer notes:` line, every prompt and argument has a description for agents, and a test reads what a client receives (#77).
 
-### 38. The pre-approval test still reads a private SDK attribute
+### 38. ~~The pre-approval test still reads a private SDK attribute~~ — resolved
 
-The production code reads the public tool list (#66), but its test keeps
-the old private-manager logic as a reference, so an SDK that drops it would
-break the test with production fine.
+Resolved: the test reads what a client is offered (#76), and then what each tool does when called, not its markers (#84, debt 45).
 
-### 39. `griot update` reaches into `griot doctor`'s private helpers
+### 39. ~~`griot update` reaches into `griot doctor`'s private helpers~~ — resolved
 
-update.py calls `_latest_release`, `_release_numbers` and
-`_upgrade_commands` of doctor.py: deliberate reuse, across a module
-boundary that names them private.
+Resolved: the three helpers are public and update.py calls them by those names (#75).
 
-### 40. The note that keyword search is not built repeats on every search
+### 40. ~~The note that keyword search is not built repeats on every search~~ — resolved
 
-On a collection without keyword vectors, every default search falls back to
-vector and repeats the full `griot index keywords` note, in the MCP result
-and the CLI output; the code comment says "once".
+Resolved: the MCP server gives it once per process and collection; the CLI, read by a person one command at a time, keeps it (#79). How it is remembered: debt 46 (#88).
 
-### 41. The measurement that made hybrid the default cannot be re-run
+### 41. ~~The measurement that made hybrid the default cannot be re-run~~ — resolved
 
-The script and the queries that gated #72 (MRR@10 and recall@10 per mode and
-kind of query) are not in the repository, so the gate cannot be run again
-when the profile or the fusion changes.
+Resolved: `scripts/measure-search-modes.py` and this repository's queries are committed (#81); its scoring is tested (#89, debt 48) and it runs on repositories in any language (#93, debt 52).
 
-### 42. The documentation still says keyword is better for identifiers
+### 42. ~~The documentation still says keyword is better for identifiers~~ — resolved
 
-README and the help say keyword search is for "an identifier, an error code
-or a commit hash". #72 measured keyword worse than vector at finding the
-defining file of a name (0.61 against 0.72 MRR@10), and far better on commit
-hashes (1.00 against 0.01).
+Resolved: every text that recommends a mode says keyword is for a commit hash, an error code or where a name is used, and a test holds them to it (#80).
 
-### 43. Readers' searches are diversified, the golden set's are not
+### 43. ~~Readers' searches are diversified, the golden set's are not~~ — resolved
 
-A reader's search keeps at most three chunks per document and folds copies;
-the quality check's golden set does not. A case made from a reader's list
-(`griot golden-set review`) can pass or fail there only because another
-document's chunks moved it.
+Resolved: the golden set is searched as readers search (#82), and a case met by a folded copy passes and says so (#90).
+
+### 44. ~~The kept HTTP session has a private name other modules use~~ — resolved
+
+`griot doctor` reached `common._http_session` across a module boundary. Resolved: it is public as `common.http_session`, and a test fails if another module names the private one (#83).
+
+### 45. ~~The pre-approval test reads the markers it checks~~ — resolved
+
+Its expected set was filtered by the same read-only hint, human-only marker and exception list the server uses, so a misreading both shared would pass. Resolved: every tool is called through an in-memory client in a throwaway world, and is safe when the call changes no file, asks no one, embeds at most one text and reads only part of the index (#84).
+
+### 46. ~~The fallback note's memory is unlocked and never reset~~ — resolved
+
+Two first searches at once could both give the note, and a collection told once was never told again after losing keyword vectors a second time. Resolved: it is checked and recorded under a lock, and forgotten once a default search finds keyword vectors (#88).
+
+### 47. ~~Other modules reach common.py's private names~~ — resolved
+
+auth, config, mcp_server, quality_check and redaction read private names of common.py. Resolved: those are public, and a guard fails on any private name of common.py used outside it, in tests too unless listed with a reason (#87).
+
+### 48. ~~`measure()` of the measurement script is untested~~ — resolved
+
+The loop that produces MRR@10 and recall@10 had no test. Resolved: it runs on a tiny real index with a stand-in embedding whose ranks are known (#89).
+
+### 49. ~~Cases from `golden-set suggest` have no mode~~ — resolved
+
+`suggest` wrote cases without a mode, so they were vector cases while `add` made hybrid ones, and the default on an empty collection was untested. Resolved: suggest goes through the same default and write path as add, and an empty collection gets hybrid (#92).
+
+### 50. ~~The README calls the golden-set check ungrouped~~ — resolved
+
+The README and the indexing model still described the check as an ungrouped search, and only a docstring kept the folded copies' whole payload away from readers. Resolved: both describe the check as it runs, and a test checks every reader for a copy's fields (#91).
+
+### 51. ~~Index progress files pile up in the system temporary directory~~ — resolved
+
+Each job's progress file was made there and nothing removed what a dead host or the test suite left (about 1,200 files). Resolved: they live in the data directory, and a new process removes old ones no job names, scratch files of an interrupted write included (#94).
+
+### 52. ~~The measurement script finds only Python definitions~~ — resolved
+
+It judged name queries by `.py` files only, a child crashing at exit after a complete run ended the measurement, and the model download wrote logs under the home directory. Resolved: definitions in any language griot indexes, the crash reported and passed over, caches and logs in the throwaway directory (#93).
 
 ---
 
@@ -367,6 +387,15 @@ This is why `griot_index_repo` spawns `griot index` rather than calling it
 in-process, and why `jobs.py` exists as a module importable without the MCP
 SDK. It has already been violated once in practice, by a poll that opened the
 active collection once per second.
+
+### A test that derives its answer from the markers it checks agrees with them
+
+The test of which tools may be pre-approved filtered a client's view with
+the server's own reading of each tool: its read-only hint, its human-only
+marker and its list of exceptions. A tool marked read-only by mistake would
+have been both offered and expected. The answer now comes from what each
+tool does when called. A test whose expected value is computed from the
+thing under test cannot catch a mistake the two share.
 
 
 ---
