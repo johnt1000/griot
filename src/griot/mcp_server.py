@@ -269,8 +269,33 @@ SEARCH_RESULT_NOTE = (
 # collection because the note is about one: a profile switch that lands on
 # another collection without keyword vectors has not been told about yet.
 # The CLI keeps the note with every command (one process each, read by a
-# person who may not have seen it before).
+# person who may not have seen it before). A collection stays here only while
+# it lacks keyword vectors: a default search that finds it with them (or finds
+# no collection) forgets it, so one rebuilt without them again, by an older
+# griot say, is told again. Tested and changed only under the lock: the SDK
+# runs sync tools in worker threads, and two first searches at once must not
+# both carry the note.
 _KEYWORD_NOTE_GIVEN_FOR: set[str] = set()
+_KEYWORD_NOTE_LOCK = threading.Lock()
+
+
+def _keyword_note_for(collection: str, asked_mode: str | None, mode_note: str | None) -> str | None:
+    """The fallback note this griot_search result carries: `mode_note` the
+    first time it is given for `collection` while it lacks keyword vectors,
+    None otherwise. Called only once a search returned (a refused one told
+    nobody)."""
+    with _KEYWORD_NOTE_LOCK:
+        if mode_note:
+            if collection in _KEYWORD_NOTE_GIVEN_FOR:
+                return None
+            _KEYWORD_NOTE_GIVEN_FOR.add(collection)
+            return mode_note
+        # A default search without the note read the collection's state and
+        # found keyword vectors, or no collection to read: what the note was
+        # given for is gone. An explicit mode read nothing and says nothing.
+        if asked_mode is None:
+            _KEYWORD_NOTE_GIVEN_FOR.discard(collection)
+        return None
 
 # [review finding] Same reasoning as SEARCH_RESULT_NOTE, one step further
 # removed: golden-set cases are the only tool output an AGENT can author, via
@@ -1376,6 +1401,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     started_at = time.time()
     # None is the default (hybrid where it can run, vector where it cannot,
     # never an error); an explicit mode runs as asked or is refused.
+    asked_mode = mode
     mode, mode_note = common.search_mode_for(query, mode)
     results = common.search(query, limit, group_by_document=group_by_document,
                             repos=repos, source_types=source_types, diverse=True, mode=mode)
@@ -1390,11 +1416,9 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                           else f"{_printable(repo)} (the indexed commit is not in this history)" for repo, count in behind.items())
         note += (f" The index of these repositories is behind their HEAD: {named}; what changed since is not in "
                  f"these results (see `behind`, and griot_index_status).")
-    # Counted as given only here, once the search returned: a refused search
-    # carried the note to nobody.
-    if mode_note and common.COLLECTION_NAME not in _KEYWORD_NOTE_GIVEN_FOR:
-        _KEYWORD_NOTE_GIVEN_FOR.add(common.COLLECTION_NAME)
-        note += " " + mode_note
+    keyword_note = _keyword_note_for(common.COLLECTION_NAME, asked_mode, mode_note)
+    if keyword_note:
+        note += " " + keyword_note
     return {
         "note": note,
         "results": [

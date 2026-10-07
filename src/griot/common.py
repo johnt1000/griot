@@ -4480,7 +4480,8 @@ SEARCH_DEFAULT_MODE = "hybrid"
 # is said; how often it is said is up to each surface: the CLI (`griot
 # search`, `griot ask`) says it with every command, one process each, while
 # the MCP server says it on the first default search of the process for each
-# collection and afterwards only reports `mode: vector`
+# collection and afterwards only reports `mode: vector`, until a default
+# search finds that collection with keyword vectors again
 # (mcp_server._KEYWORD_NOTE_GIVEN_FOR).
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
