@@ -50,7 +50,10 @@ GRIOT_EMBED_PROFILE=gemini) propagates uncaught here — the conversion to
 isError is automatic when the call goes through mcp.client.client.Client
 (empirically confirmed, see the design notes); catching the exception
 here would only hide the actionable message common.py already writes with
-its reader (human OR agent) in mind."""
+its reader (human OR agent) in mind. One exception, in _records_call: a
+failure while the installation this server runs from is gone is reworded to
+say so and to ask for a restart, with the original error kept in the text
+(see _installation_removed())."""
 
 import functools
 import inspect
@@ -731,8 +734,13 @@ def _records_call(fn, name: str | None = None):
             try:
                 result = await fn(*args, **kwargs)
             except Exception as e:
+                explained = _explained_if_installation_removed(e)
+                # Recorded as the agent sees it: griot_stats then shows the cause too.
+                shown = explained or e
                 _record_call(label, ok=False, elapsed=time.time() - started_at,
-                             error=f"{type(e).__name__}: {e}")
+                             error=f"{type(shown).__name__}: {shown}")
+                if explained is not None:
+                    raise explained from e
                 raise
             finally:
                 _tool_finished()
@@ -747,14 +755,65 @@ def _records_call(fn, name: str | None = None):
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
+            explained = _explained_if_installation_removed(e)
+            # Recorded as the agent sees it: griot_stats then shows the cause too.
+            shown = explained or e
             _record_call(label, ok=False, elapsed=time.time() - started_at,
-                         error=f"{type(e).__name__}: {e}")
+                         error=f"{type(shown).__name__}: {shown}")
+            if explained is not None:
+                raise explained from e
             raise
         finally:
             _tool_finished()
         _record_call(label, ok=True, elapsed=time.time() - started_at)
         return result
     return wrapper
+
+
+def _installation_removed() -> str | None:
+    """The path of this server's own installation that no longer exists on
+    disk, or None while it is all in place.
+
+    [real failure, 2026-10-07] A long-running server keeps serving from what
+    it already loaded after its virtual environment is removed (a pipx
+    uninstall, a reinstall under another name). Whatever it reads from disk
+    afterwards fails, each time with an error about that one file: the
+    certifi CA bundle gave "Could not find a suitable TLS CA certificate
+    bundle", a lazy import gives ModuleNotFoundError. The check is on what
+    all of those have in common, not on any one message: the directory the
+    griot package was loaded from, and the interpreter's prefix (the venv
+    the dependencies live in). Read live, never captured at import, so a
+    test or a move sees the current value.
+
+    At most two stats, and only called once a call has already failed."""
+    for path in (os.path.dirname(os.path.abspath(griot.__file__)), sys.prefix):
+        if not os.path.isdir(path):
+            return path
+    return None
+
+
+def _explained_if_installation_removed(error: Exception) -> Exception | None:
+    """The error to raise in place of `error` when the installation this
+    server runs from is gone, or None to let `error` through unchanged: any
+    failure while the installation is in place (another OSError included) is
+    not ours to reinterpret.
+
+    The original error stays in the text, so the explanation adds the cause
+    without erasing the evidence. A resource raises MCPError on purpose (the
+    SDK would otherwise replace its text with a bare "Error reading
+    resource"), so that type is kept."""
+    gone = _installation_removed()
+    if gone is None:
+        return None
+    message = (
+        f"The griot installation this MCP server runs from was removed or replaced "
+        f"({gone} no longer exists), so this call failed: {type(error).__name__}: {error}. "
+        "Restart the griot MCP server so it starts from the griot installed now: reconnect it "
+        "from the client (in Claude Code, /mcp) or restart the client."
+    )
+    if isinstance(error, MCPError):
+        return MCPError(code=error.error.code, message=message)
+    return RuntimeError(message)
 
 
 # The idle reaper below must never close the shard under a tool that is using
@@ -957,6 +1016,10 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             # case: a label is cut and redacted, so it cannot say which
             # document must come back.
             results=common.logged_results(results),
+            # A hybrid search's rank of each result in the vector and the
+            # keyword ranking: the review offers the searches where the two
+            # disagreed. Nothing for the other modes.
+            **common.logged_ranks(results),
             # The most direct "did retrieval find anything relevant?"
             # signal: a run of searches whose BEST score is low says the
             # index isn't answering, which no query count would reveal.
@@ -2645,7 +2708,7 @@ def _assist_install_question(harness: str, scope: str) -> str:
     targets_desc = "every detected harness" if harness == "all" else harness
     # The directories, not only "global": where a global install writes
     # depends on the environment this server was started with
-    # (CLAUDE_CONFIG_DIR), and that comes from whoever configured the
+    # (CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME), and that comes from whoever configured the
     # server, which can be a project's own file. The person asked has to see
     # the place to be able to say no to it.
     targets = harnesses.detect_harnesses() if harness == "all" else [h for h in harnesses.HARNESSES if h.id == harness]
@@ -2702,8 +2765,9 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
                                ) -> AssistInstallOutput:
     """Installs griot's bundled Claude Code/opencode Skill and Agent files
     into a harness's own config dir (.claude/, .opencode/, or their global
-    equivalents; for Claude Code the global one is where CLAUDE_CONFIG_DIR
-    points when this server was started with it, and the question names the
+    equivalents: for Claude Code the global one is where CLAUDE_CONFIG_DIR
+    points when this server was started with it, for opencode
+    $XDG_CONFIG_HOME/opencode when that is set, and the question names the
     resolved directories) — the same files `griot assist install` writes from a
     terminal. "all" (the default) installs into every harness found present
     on this machine; an explicit harness id ("claude-code"/"opencode")
