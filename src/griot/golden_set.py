@@ -105,6 +105,31 @@ def mode_refusal(query: str, mode) -> str | None:
     return None
 
 
+# Said when a case made without a mode is a vector case because the
+# collection has no keyword vectors: the case is written that way for good,
+# so the person (or agent) hears what it measures and how to get the default.
+VECTOR_FALLBACK_NOTE = (
+    "This case is checked by meaning only (mode vector): this collection was indexed before keyword search, so "
+    "the default, hybrid, cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing); "
+    "to check this question in hybrid after that, remove this case and add it again.")
+
+
+def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
+    """The mode a new case of `query` is made in, and a note to show or None.
+    An explicit `mode` is kept as given (add_case refuses one that cannot
+    run). None is the default, resolved the way a search's default is
+    (common.search_mode_for): hybrid, which is what griot search, ask and
+    griot_search give a reader, or vector where hybrid cannot run. A hybrid
+    case on a collection without keyword vectors would only ever be skipped
+    by the check, so there the case is made in vector, and the note says so.
+    Cases already in the file are untouched: absent still reads as vector
+    (case_mode)."""
+    if mode is not None:
+        return mode, None
+    resolved, search_note = common.search_mode_for(query, None)
+    return resolved, (VECTOR_FALLBACK_NOTE if search_note else None)
+
+
 def check_cases(cases) -> None:
     """Raises ValueError when what the file holds cannot be run as cases.
 
@@ -355,9 +380,13 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
     return 0
 
 
-def cmd_add(query: str, limit: int = 5, mode: str = "vector") -> int:
+def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     from griot import ask  # lazy — same pattern as cli.py, avoids pulling in qdrant/fastembed before needed
 
+    # None is the default: hybrid, or vector where hybrid cannot run
+    # (case_mode_for). Resolved once, before the search, so the results shown
+    # come from the mode the case is written in.
+    mode, note = case_mode_for(query, mode)
     # The search the golden-set check will repeat for this case (in its
     # mode, shaped for a reader: see quality_check.run_golden_set), so the results a person
     # approves are the ones the case is later held to.
@@ -401,7 +430,9 @@ def cmd_add(query: str, limit: int = 5, mode: str = "vector") -> int:
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    print(f"Case added to {common.GOLDEN_SET_PATH}.")
+    print(f"Case added to {common.GOLDEN_SET_PATH} ({mode} search).")
+    if note:
+        print(note)
     return 0
 
 
@@ -770,10 +801,11 @@ def main(argv=None) -> int:
     p_add = sub.add_parser("add", help="Runs a real search and lets you approve which results are the must_include")
     p_add.add_argument("query", help="Natural language question/term")
     p_add.add_argument("--limit", type=int, default=5, help="How many results to show to choose from (default: %(default)s)")
-    p_add.add_argument("--mode", choices=common.SEARCH_MODES, default="vector",
+    p_add.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
                        help="How to search, now and every time the case is checked: vector (by meaning), keyword "
                             "(the exact words) or hybrid (both). Keyword and hybrid need `griot index keywords` on "
-                            "an older collection (default: %(default)s)")
+                            "an older collection (default: hybrid, as griot search; vector on a collection without "
+                            "keyword vectors, and the command says so)")
 
     p_review = sub.add_parser("review", help="Offers questions from the query log (asked more than once, or scoring "
                                              "low) as cases; at a terminal, you pick the right result")
