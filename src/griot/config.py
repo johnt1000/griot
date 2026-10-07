@@ -70,6 +70,7 @@ SETTINGS = [
     Setting("log-questions", "GRIOT_LOG_QUESTIONS", "flag"),
     Setting("update-check", "GRIOT_UPDATE_CHECK", "flag"),
     Setting("log-retention-days", "GRIOT_LOG_RETENTION_DAYS", "count"),
+    Setting("run-retention", "GRIOT_RUN_RETENTION", "count"),
     Setting("project", "GRIOT_PROJECT", "text",
             elsewhere="It is per project: set GRIOT_PROJECT in the `env` of that project's MCP server entry. In this "
                       "file it would give every project the same name."),
@@ -316,6 +317,14 @@ def _amount(text: str | None) -> float | None:
 # --- a change that widens something ---------------------------------------------------------
 
 
+# Counts whose smaller value deletes history (the prune that follows takes
+# what no longer fits), mapped to why a server's environment may not lower it.
+_SMALLER_DELETES = {
+    "GRIOT_LOG_RETENTION_DAYS": "it deletes usage history your configuration keeps",
+    "GRIOT_RUN_RETENTION": "it deletes indexing runs your configuration keeps",
+}
+
+
 # Flags on by default that a person turns off to keep something from leaving
 # their hands (question text into the log, a request to PyPI): a server's
 # environment may turn one off, never back on over the file. Each maps to why
@@ -385,10 +394,11 @@ def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, 
         return (_OFF_STAYS_OFF[setting.variable] if turned_off and new == "true" else None), new
     if setting.kind == "count":
         before = old if old and old.isascii() and old.isdigit() else default_of(setting)
-        if setting.variable == "GRIOT_LOG_RETENTION_DAYS":
-            # The other way round: a shorter window deletes history, of every
-            # project, and a project's .mcp.json is not the person's own file.
-            return ("it deletes usage history your configuration keeps" if int(new) < int(before or 0) else None), new
+        if setting.variable in _SMALLER_DELETES:
+            # The other way round: a shorter window or a smaller count deletes
+            # history, of every project, and a project's .mcp.json is not the
+            # person's own file.
+            return (_SMALLER_DELETES[setting.variable] if int(new) < int(before or 0) else None), new
         return ("it lets an index run go on failing for longer" if int(new) > int(before or 0) else None), new
     if setting.kind == "url":
         # Any host but the one in force: back to the default is another host
@@ -445,6 +455,8 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
                 f"in there embedded, which on a paid profile sends it to the embedding API.") if added else None
     if setting.variable == "GRIOT_LOG_RETENTION_DAYS":
         return _shorter_retention_question(setting, old, new)
+    if setting.variable == "GRIOT_RUN_RETENTION":
+        return _smaller_run_retention_question(setting, old, new)
     if setting.kind == "url":
         if new == default_of(setting):
             return None
@@ -481,6 +493,28 @@ def _shorter_retention_question(setting: Setting, old: str | None, new: str) -> 
                 f"{'call' if calls == 1 else 'calls'} older than {new} days")
     return (f"Shorten {setting.name} from {before} to {new} days? The next search or MCP tool call, from any "
             f"project, deletes {what} from logs.db, and they cannot be recovered.")
+
+
+def _smaller_run_retention_question(setting: Setting, old: str | None, new: str) -> str | None:
+    """A smaller run retention, asked about like a shorter log retention and
+    for the same reason: the next prune deletes runs for good. Counted now,
+    read-only; the set itself deletes nothing."""
+    from griot import common, logdb
+
+    before = old if old and old.isascii() and old.isdigit() else default_of(setting)
+    if int(new) >= int(before or 0):
+        return None
+    try:
+        counted = logdb.count_runs_beyond(common.LOG_DIR, int(new))
+    except (OSError, sqlite3.Error) as e:
+        what = (f"every indexing run beyond the last {new} of each repository and source (griot could not count "
+                f"them: {e})")
+    else:
+        what = (f"{counted} indexing {'run' if counted == 1 else 'runs'} beyond the last {new} of each repository "
+                f"and source")
+    return (f"Lower {setting.name} from {before} to {new}? The next search, MCP tool call or index run, from any "
+            f"project, deletes {what} from logs.db, and they cannot be recovered. The last run of each, and the "
+            f"last that changed the index, stay.")
 
 
 # --- commands -------------------------------------------------------------------------------
@@ -611,8 +645,8 @@ def main(argv=None) -> int:
         prog="griot config",
         description="Shows and changes griot's settings (the variables in <config>/.env). A change that widens "
                     "what griot may spend, what an agent may index, or where a platform token is sent, or that "
-                    "shortens how long usage history is kept, is asked about at an interactive terminal; there is "
-                    "no flag that answers.",
+                    "shortens how long usage history or indexing runs are kept, is asked about at an interactive "
+                    "terminal; there is no flag that answers.",
         # Here, and not only in `list`: with a file griot cannot start with,
         # `list` cannot run, and the names are what the repair needs.
         epilog="settings: " + ", ".join(setting.name for setting in SETTINGS)
@@ -627,9 +661,9 @@ def main(argv=None) -> int:
         "set", help="Checks a value and writes it to the config .env",
         description="Checks a value and writes it to the config .env. A change that raises a spend ceiling, turns "
                     "on indexing through MCP, adds a directory an agent may index, points a platform token at "
-                    "another host, or shortens log-retention-days (saying how many searches and tool calls the "
-                    "next prune deletes) is asked about at an interactive terminal, and there is no flag that "
-                    "answers: "
+                    "another host, shortens log-retention-days (saying how many searches and tool calls the "
+                    "next prune deletes) or lowers run-retention (saying how many indexing runs) is asked about "
+                    "at an interactive terminal, and there is no flag that answers: "
                     "run from a script or an agent's shell, with no terminal, it changes nothing.")
     p_set.add_argument("name")
     p_set.add_argument("value")
