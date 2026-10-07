@@ -4,8 +4,10 @@ committed so that the gate can be run again when the default profile or the
 fusion changes. These tests cover what decides its numbers (the metrics, what
 counts as one document, which queries it builds) and what keeps it from
 touching the person's real index (it refuses to run on anything but
-throwaway directories). The measurement itself indexes real repositories
-with a real model and is run by hand."""
+throwaway directories). The loop that scores every query in every mode,
+measure(), runs here on a tiny real index with a stand-in embedding whose
+ranks are known in advance; the measurement proper indexes real
+repositories with a real model and is run by hand."""
 
 import importlib.util
 import json
@@ -43,6 +45,8 @@ def test_reciprocal_rank_is_one_over_the_rank_of_the_first_relevant_document(m):
     docs = [("code", "r", "a.py"), ("code", "r", "b.py"), ("code", "r", "c.py")]
     assert m.reciprocal_rank(docs, {("code", "r", "c.py"), ("code", "r", "z.py")}) == pytest.approx(1 / 3)
     assert m.reciprocal_rank(docs, {("code", "r", "a.py")}) == 1.0
+    # Several relevant documents found: the FIRST of them decides.
+    assert m.reciprocal_rank(docs, {("code", "r", "b.py"), ("code", "r", "c.py")}) == 0.5
 
 
 def test_reciprocal_rank_is_zero_when_nothing_relevant_was_found(m):
@@ -274,3 +278,144 @@ def test_the_shipped_query_set_still_matches_this_repository(m):
     kinds = [kind for kind, _, _ in cases]
     assert kinds.count("descriptive") >= 20 and kinds.count("identifier") >= 20
     assert spec["commit_hash"]["count"] >= 10
+
+
+# --- the measurement itself, on a tiny real index ------------------------------
+#
+# A real Qdrant Edge index in the test's own directories, with a stand-in
+# embedding whose vectors are written down below, so that every rank in every
+# mode is known before the search runs: vector search ranks by the cosines of
+# these vectors, keyword search by which texts hold the query's words, and
+# hybrid by reciprocal rank fusion of the two (1 / (60 + rank) per ranking).
+# Free and fast: nothing is downloaded and nothing is paid for.
+
+TOY_HASH = "0c1d2e3f4a5b6c7d8e9f00112233445566778899"
+
+# text -> {axis: weight}, for queries and documents alike. An unknown text
+# raises: a test that embeds something it did not plan for says so.
+_TOY_AXES = {
+    # documents
+    "open the configuration file from disk, then give back its values": {0: 1.0},
+    "settings settings: the settings object with its defaults": {0: 1.0, 1: 1.0, 2: 0.1},
+    "def zorblax_quux(x):\n    return x * 2": {2: 0.5, 3: 1.0},
+    "print a greeting to the console": {2: 1.0},
+    "draw a chart of monthly revenue": {5: 1.0},
+    "fix: round revenue to cents": {5: 0.5, 6: 1.0},
+    # queries
+    "how settings are loaded": {0: 1.0},
+    "zorblax_quux": {2: 1.0},
+    TOY_HASH[:7]: {5: 1.0},
+    "of the": {0: 1.0},
+}
+
+
+def _toy_doc(path, text):
+    return {"id": f"toy:code:{path}:0", "content": text,
+            "metadata": {"source_type": "code", "repo": "toy", "file_path": path, "chunk_index": 0}}
+
+
+TOY_DOCS = [
+    _toy_doc("src/a.py", "open the configuration file from disk, then give back its values"),
+    _toy_doc("src/b.py", "settings settings: the settings object with its defaults"),
+    _toy_doc("src/c.py", "def zorblax_quux(x):\n    return x * 2"),
+    _toy_doc("src/d.py", "print a greeting to the console"),
+    _toy_doc("src/e.py", "draw a chart of monthly revenue"),
+    {"id": f"toy:commit:{TOY_HASH}", "content": "fix: round revenue to cents",
+     "metadata": {"source_type": "commit", "repo": "toy", "commit_hash": TOY_HASH,
+                  "author": "someone", "date": "2026-10-01"}},
+]
+
+
+def _toy_file(path):
+    return ("code", "toy", path)
+
+
+# (kind, query, relevant documents). The comments give the rank of the first
+# relevant document in each mode, at limit 3.
+TOY_CASES = [
+    # Vector: a.py is the query's own direction (1), b.py next. Keyword: only
+    # b.py holds a word of the query (a.py not found). Hybrid: b.py is in both
+    # rankings and a.py in one, so a.py comes second.
+    ("descriptive", "how settings are loaded", {_toy_file("src/a.py")}),
+    # Only stopwords: keyword (and so hybrid) search cannot run it at all,
+    # which measure() scores as finding nothing. One of the two relevant files
+    # is not in the index, so vector search recalls half.
+    ("descriptive", "of the", {_toy_file("src/a.py"), _toy_file("src/missing.py")}),
+    # Vector: d.py is closer than c.py (2). Keyword: c.py alone (1). Hybrid:
+    # c.py in both rankings beats d.py in one (1).
+    ("identifier", "zorblax_quux", {_toy_file("src/c.py")}),
+    # Vector: e.py is closer than the commit (2). Keyword: the hash is stored
+    # with the commit (1). Hybrid: the commit is in both (1).
+    ("commit hash", TOY_HASH[:7], {("commit", "toy", TOY_HASH)}),
+]
+
+TOY_RANKS = {  # (query, mode) -> the rank measure() reports for it
+    ("how settings are loaded", "vector"): 1, ("how settings are loaded", "keyword"): None,
+    ("how settings are loaded", "hybrid"): 2,
+    ("of the", "vector"): 1, ("of the", "keyword"): None, ("of the", "hybrid"): None,
+    ("zorblax_quux", "vector"): 2, ("zorblax_quux", "keyword"): 1, ("zorblax_quux", "hybrid"): 1,
+    (TOY_HASH[:7], "vector"): 2, (TOY_HASH[:7], "keyword"): 1, (TOY_HASH[:7], "hybrid"): 1,
+}
+
+
+def _toy_vector(text, dim):
+    vector = [0.0] * dim
+    for axis, weight in _TOY_AXES[text].items():
+        vector[axis] = weight
+    return vector
+
+
+@pytest.fixture
+def toy_index(monkeypatch):
+    from griot import common
+
+    monkeypatch.setattr(common, "embed_texts",
+                        lambda texts, **kw: [_toy_vector(t, common.EMBED_DIM) for t in texts])
+    common.index_documents(TOY_DOCS)
+    common.release_lock()
+
+
+def test_measure_reports_each_querys_rank_in_every_mode(m, toy_index):
+    _, per_query, modes = m.measure(TOY_CASES, limit=3)
+    assert tuple(modes) == ("vector", "keyword", "hybrid")
+    assert {(row["query"], row["mode"]): row["rank"] for row in per_query} == TOY_RANKS
+    # One row per query and mode, each carrying the kind of its query.
+    assert len(per_query) == len(TOY_CASES) * 3
+    kinds = {query: kind for kind, query, _ in TOY_CASES}
+    assert all(row["kind"] == kinds[row["query"]] for row in per_query)
+
+
+def test_measure_sums_reciprocal_ranks_and_recall_per_kind_and_mode(m, toy_index):
+    totals, _, _ = m.measure(TOY_CASES, limit=3)
+    expected = {  # (sum of reciprocal ranks, sum of recalls, number of queries)
+        # vector 1 + 1, recall 1 + 1/2; keyword nothing; hybrid 1/2 + 0,
+        # recall 1 + 0.
+        ("descriptive", "vector"): (2.0, 1.5, 2),
+        ("descriptive", "keyword"): (0.0, 0.0, 2),
+        ("descriptive", "hybrid"): (0.5, 1.0, 2),
+        ("identifier", "vector"): (0.5, 1.0, 1),
+        ("identifier", "keyword"): (1.0, 1.0, 1),
+        ("identifier", "hybrid"): (1.0, 1.0, 1),
+        ("commit hash", "vector"): (0.5, 1.0, 1),
+        ("commit hash", "keyword"): (1.0, 1.0, 1),
+        ("commit hash", "hybrid"): (1.0, 1.0, 1),
+    }
+    assert set(totals) == set(expected)
+    for key, (sum_rr, sum_recall, n) in expected.items():
+        assert totals[key][0] == pytest.approx(sum_rr), key
+        assert totals[key][1] == pytest.approx(sum_recall), key
+        assert totals[key][2] == n, key
+
+
+def test_measure_counts_only_the_top_limit(m, toy_index):
+    """The @k is the limit asked: at limit 1, a relevant document second in
+    a ranking is not found at all."""
+    totals, per_query, _ = m.measure([TOY_CASES[2]], limit=1)
+    assert {row["mode"]: row["rank"] for row in per_query} == {"vector": None, "keyword": 1, "hybrid": 1}
+    assert totals[("identifier", "vector")] == [0.0, 0.0, 1]
+
+
+def test_measure_refuses_to_run_outside_throwaway_directories(m, toy_index, monkeypatch):
+    monkeypatch.delenv("GRIOT_DATA_DIR")
+    with pytest.raises(SystemExit, match="GRIOT_DATA_DIR"):
+        m.measure(TOY_CASES, limit=3)
