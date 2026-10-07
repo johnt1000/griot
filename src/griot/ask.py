@@ -20,10 +20,16 @@ def build_context(results: list) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def ask(question: str, model: str | None, limit: int, mode: str = "vector") -> tuple[str, list]:
+def ask(question: str, model: str | None, limit: int, mode: str = "vector", *,
+        repos: list[str] | None = None, source_types: list[str] | None = None) -> tuple[str, list]:
     """`mode` is the one that runs: main() resolves the default first
-    (common.search_mode_for), because it logs and shows the mode that ran."""
-    results = common.search(question, limit, diverse=True, mode=mode)
+    (common.search_mode_for), because it logs and shows the mode that ran.
+
+    repos / source_types narrow the search as they narrow `griot search`:
+    the search refuses a value that cannot match (common.search_filter)
+    before anything is embedded or the chat model is called, so a wrong name
+    costs nothing."""
+    results = common.search(question, limit, diverse=True, mode=mode, repos=repos, source_types=source_types)
     context = build_context(results)
 
     prompt = (
@@ -45,6 +51,13 @@ def main(argv=None):
     parser.add_argument("--model", default=None, help=f"Model to use within the active chat profile (profile default: {common.ACTIVE_CHAT_PROFILE['model']})")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="How many chunks to search for (default: %(default)s)")
     parser.add_argument("--show-sources", action="store_true", help="List the sources used as context")
+    # The same flags as `griot search` (cli.py), so a question can be asked
+    # of exactly the context a search showed.
+    parser.add_argument("--repo", action="append", metavar="NAME",
+                        help="Only this repository, by its directory name (repeat for several). "
+                             "One with nothing indexed is an error, not an empty result.")
+    parser.add_argument("--source-type", action="append", metavar="KIND",
+                        help=f"Only this kind of source (repeat for several): {', '.join(common.SOURCE_TYPES)}")
     # None, not "hybrid": see the same flag of `griot search` (cli.py).
     parser.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
                         help="How the context is searched: hybrid (by meaning and by the exact words, the default; "
@@ -55,7 +68,8 @@ def main(argv=None):
     start_time = time.time()
     mode, note = common.search_mode_for(args.question, args.mode)
     try:
-        answer, results = ask(args.question, model=args.model, limit=args.limit, mode=mode)
+        answer, results = ask(args.question, model=args.model, limit=args.limit, mode=mode,
+                              repos=args.repo, source_types=args.source_type)
     except common.SearchFilterError as e:
         # Raised before the chat model is called: nothing was paid for.
         print(f"Error: {e}", file=sys.stderr)
@@ -84,6 +98,10 @@ def main(argv=None):
         via="cli",
         model=args.model or common.ACTIVE_CHAT_PROFILE["model"],
         chat_profile=common.ACTIVE_CHAT_PROFILE_NAME, limit=args.limit,
+        # What the search was narrowed to, or None, as griot_search logs it:
+        # `griot golden-set review` must not make a case (checked over every
+        # repository) from a question asked of some of them.
+        repos=args.repo, source_types=args.source_type,
         # Scores and results of the modes are not comparable: griot stats
         # tells them apart by this: the mode that ran, not the one asked for.
         mode=mode,
