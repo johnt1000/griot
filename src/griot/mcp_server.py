@@ -124,7 +124,7 @@ griot searches what the user has indexed from their repositories: code, docs, co
 
 Use griot_search first when the answer may already exist in the user's own work: how another project solved the same thing, what a shared infrastructure or conventions repository decided, why and when something changed (commit messages and pull requests are indexed, with dates), or when you write instructions, CI or docs for a project from existing ones, or port a feature that lives in another repository.
 
-Do not use it for an exact string or value, or for a file whose path you know: read or grep those. Search finds WHICH file holds something; read the file for what it says exactly. For an exact identifier or commit hash in a repository you cannot grep, pass `mode=keyword`.
+Do not use it for an exact string or value, or for a file whose path you know: read or grep those. Search finds WHICH file holds something; read the file for what it says exactly. Where you cannot grep, pass `mode=keyword` for a commit hash, error code or where a name is used.
 
 Write one idea per query, as a short phrase; a few focused queries find more than one broad one. Pass `group_by_document=true` to see where something lives rather than everything one file says. Narrow a search with `repos` and `source_types`: only commits and pull requests for a why, say.
 
@@ -1258,6 +1258,10 @@ class GoldenCheckCase(TypedDict):
 
 class GoldenCheck(TypedDict):
     note: str
+    # True: each case was searched as griot_search returns results (at most
+    # a few chunks per document, copies folded), so `top_results` read like
+    # a griot_search list. Runs recorded before this field searched raw.
+    diverse: bool
     total: int
     passed: int
     failed: int
@@ -1321,8 +1325,9 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     not use it for an exact string or value, or a path you already know: read
     or grep those. One idea per query, as a short phrase.
 
-    `mode`: `hybrid` (default) ranks by meaning and exact words; `vector`
-    by meaning; `keyword` only by exact words (identifier, commit hash).
+    `mode`: `hybrid` (default) by meaning and exact words; `vector` by
+    meaning; `keyword` exact words only: commit hash, error code, where a
+    name is used.
     The output's `mode` says which ran; scores compare within one.
 
     `group_by_document=true` returns the best chunk of each document, so
@@ -2322,9 +2327,10 @@ def griot_history_report(question: Annotated[str, Field(description=(
         "source_types (one call for [\"code\"], one for [\"commit\", \"merge_request\"], one "
         "for [\"issue\"], one for [\"tag\", \"release\", \"branch\"]), so that a kind with "
         "many matches does not crowd the others out. "
-        "When the question names something exactly (a function, an error code, a commit "
-        "hash), search that name with mode=\"keyword\" too: it ranks by the words "
-        "alone, so a match the default's ranking by meaning pushes down comes first. "
+        "When the question names a commit hash or an error code, search it with "
+        "mode=\"keyword\" too: it ranks by the words alone, so a match the default's "
+        "ranking pushes down comes first. For a function or class name, the default "
+        "finds where it is defined; mode=\"keyword\" finds where it is used. "
         "Each kind knows something the others do not:\n"
         "- code — what the implementation does NOW;\n"
         "- commit — when it changed and what the author said about it;\n"
@@ -2495,6 +2501,7 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
     asked = [case.get("limit", 5) for case in as_written]
     return {
         "note": GOLDEN_SET_NOTE,
+        "diverse": golden_check["diverse"],
         "total": golden_check["total"], "passed": golden_check["passed"], "failed": golden_check["failed"],
         "skipped": golden_check["skipped"], "ran_by_mode": golden_check["ran_by_mode"],
         "cases": [{
@@ -2522,7 +2529,8 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     itself: mechanical, it says the pipeline is intact. The curated golden
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
-    Each case is searched in its own `mode` (the one it was made in) and has
+    Each case is searched in its own `mode` (the one it was made in), as
+    griot_search returns results (`diverse`), and has
     `passed`, what was `missing`, and a `reason` when it could not pass at
     all (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor

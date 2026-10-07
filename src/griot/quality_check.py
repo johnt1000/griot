@@ -157,6 +157,18 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
     }
 
 
+# The golden set searches the way readers get results (common.search's
+# `diverse`: at most SEARCH_MAX_CHUNKS_PER_DOCUMENT chunks of one document,
+# copies of the same text folded into the best-placed one). Chosen over
+# recording per case how it was searched because every way a case is made
+# shows a reader's list: griot_golden_set_add is told to pick from
+# griot_search, `golden-set review` builds from the logged results of
+# reader searches, and `golden-set add` searches with this same setting.
+# What a case asserts is "a reader asking this gets that document"; the
+# self-check, which asks whether one exact point comes back, stays raw.
+GOLDEN_SET_DIVERSE = True
+
+
 def _matches(payload: dict, expected: dict) -> bool:
     return all(payload.get(k) == v for k, v in expected.items())
 
@@ -171,7 +183,10 @@ def run_golden_set(golden_set: list) -> dict:
     Each case is searched in its own mode (golden_set.case_mode). A keyword
     or hybrid case on a collection without keyword vectors is `skipped`:
     counted apart from `passed` and `failed`, so it neither closes the gate
-    nor passes it. `ran_by_mode` counts the cases searched in each mode."""
+    nor passes it. `ran_by_mode` counts the cases searched in each mode.
+
+    Searched the way readers search (GOLDEN_SET_DIVERSE), and the result
+    says so in `diverse`."""
     results = []
     ran_by_mode: dict[str, int] = {}
     indexed: dict[str, bool] = {}
@@ -258,8 +273,13 @@ def run_golden_set(golden_set: list) -> dict:
                 "top_results": [],
             })
             continue
+        # Diverse, as every surface a reader gets results from searches (see
+        # GOLDEN_SET_DIVERSE): a case is curated from such a list, and a raw
+        # search let one long document's extra chunks push out the document
+        # the case names.
         try:
-            hits = common.search(case["query"], limit=case.get("limit", 5), mode=mode)
+            hits = common.search(case["query"], limit=case.get("limit", 5), mode=mode,
+                                 diverse=GOLDEN_SET_DIVERSE)
         except common.SearchFilterError as e:
             # A case this search refuses (a hand-written keyword case of only
             # common words, a mode no search knows): FAILED by name, for the
@@ -281,6 +301,10 @@ def run_golden_set(golden_set: list) -> dict:
         })
     skipped = sum(1 for r in results if r.get("skipped"))
     return {
+        # Recorded with the run (logs.db keeps golden_check whole): a run
+        # recorded without it searched raw, so its pass count is not on the
+        # same ruler as one that has it.
+        "diverse": GOLDEN_SET_DIVERSE,
         "total": len(results),
         "passed": sum(1 for r in results if r["passed"]),
         "failed": sum(1 for r in results if not r["passed"] and not r.get("skipped")),
@@ -366,6 +390,11 @@ def main(argv=None):
         else:
             if not args.json:
                 print(f"\n=== Golden set: {len(golden_set)} curated questions ===")
+                # Said because it changed (runs before it searched raw) and
+                # because a case's top results read differently from a raw
+                # search's: one document fills at most this many of them.
+                print(f"Searched as readers get results: at most {common.SEARCH_MAX_CHUNKS_PER_DOCUMENT} "
+                      f"chunks per document, copies of the same text folded into one.")
             try:
                 golden_check = run_golden_set(golden_set)
             except Exception:

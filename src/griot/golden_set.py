@@ -388,10 +388,11 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     # come from the mode the case is written in.
     mode, note = case_mode_for(query, mode)
     # The search the golden-set check will repeat for this case (in its
-    # mode: see quality_check.run_golden_set), so the results a person
+    # mode, shaped for a reader: see quality_check.run_golden_set), so the results a person
     # approves are the ones the case is later held to.
+    from griot import quality_check  # lazy: quality_check imports this module
     try:
-        results = common.search(query, limit=limit, mode=mode)
+        results = common.search(query, limit=limit, mode=mode, diverse=quality_check.GOLDEN_SET_DIVERSE)
     except common.SearchFilterError as e:
         # A mode this collection cannot run yet, or a query it cannot match:
         # what to do instead, not a traceback.
