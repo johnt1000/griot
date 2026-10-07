@@ -322,9 +322,12 @@ def test_the_chat_model_gets_the_same_arrangement_and_no_more_than_the_limit(fak
     assert seen["prompt"].count("\n\n---\n\n") == 5, "five chunks and the question, nothing from the wider fetch"
 
 
-@pytest.mark.parametrize("module", ["quality_check", "retrieval_eval", "golden_set"])
-def test_what_measures_retrieval_is_not(module):
-    source = (Path(common.__file__).parent / f"{module}.py").read_text()
+def test_what_measures_retrieval_is_not():
+    """The retrieval evaluation (recall@k) needs every point in the store's
+    order. The golden set is no longer here: its cases assert what a reader
+    gets, so it searches as readers do, and the self-check's raw search is
+    held by behaviour in test_golden_set_searches_like_readers.py."""
+    source = (Path(common.__file__).parent / "retrieval_eval.py").read_text()
     assert "common.search(" in source and "diverse" not in source
 
 
