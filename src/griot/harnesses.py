@@ -112,6 +112,42 @@ def _claude_user_dir_problem() -> str | None:
     return None
 
 
+def _opencode_user_dir(home: Path) -> Path:
+    """Where opencode keeps its user files: `$XDG_CONFIG_HOME/opencode`, and
+    `~/.config/opencode` when the variable is unset or empty, on every
+    platform. That is opencode's own rule (packages/core/src/global.ts joins
+    "opencode" to xdg-basedir's `xdgConfig`, which is
+    `env.XDG_CONFIG_HOME || join(homedir(), ".config")`), and skills and
+    agents are read from there whatever else is set.
+
+    OPENCODE_CONFIG_DIR does not move it: opencode reads that directory IN
+    ADDITION to this one (config/paths.ts, directories()), so following it
+    would leave two copies of each skill for anyone who installed before
+    setting it, the older one shadowed only by load order."""
+    configured = os.environ.get("XDG_CONFIG_HOME", "")
+    if not configured or _opencode_user_dir_problem():
+        # With a value that cannot be used nothing global is written at all
+        # (install_refusal says why); this path only keeps detection working.
+        return home / ".config" / "opencode"
+    return Path(configured) / "opencode"
+
+
+def _opencode_user_dir_problem() -> str | None:
+    """Why the value of XDG_CONFIG_HOME does not name one place, or None.
+    opencode uses a relative value (`~` included: xdg-basedir does not
+    expand it) against the directory it happens to be started in, which
+    griot cannot know; and for the MCP server the value can come from a
+    project's own file."""
+    # Not stripped: `||` in xdg-basedir treats only the empty string as
+    # unset, so a blank value is one opencode uses, as a relative path.
+    configured = os.environ.get("XDG_CONFIG_HOME", "")
+    if not configured or Path(configured).is_absolute():
+        return None
+    return (f"XDG_CONFIG_HOME is {repr(configured)[:120]}, which is not an absolute path: opencode would read it "
+            f"against whatever directory it is started in, so griot does not guess where that is. Set it to an "
+            f"absolute path.")
+
+
 HARNESSES = [
     Harness(
         id="claude-code",
@@ -141,10 +177,12 @@ HARNESSES = [
         display_name="opencode",
         local_skills_dir=lambda cwd: cwd / ".opencode" / "skills",
         local_agents_dir=lambda cwd: cwd / ".opencode" / "agents",
-        global_skills_dir=lambda home: home / ".config" / "opencode" / "skills",
-        global_agents_dir=lambda home: home / ".config" / "opencode" / "agents",
+        global_skills_dir=lambda home: _opencode_user_dir(home) / "skills",
+        global_agents_dir=lambda home: _opencode_user_dir(home) / "agents",
         agent_content_subdir="opencode",
-        detect=lambda: shutil.which("opencode") is not None or (Path.home() / ".config" / "opencode").is_dir(),
+        detect=lambda: shutil.which("opencode") is not None or _opencode_user_dir(Path.home()).is_dir(),
+        user_dir_variable="XDG_CONFIG_HOME",
+        user_dir_problem=_opencode_user_dir_problem,
     ),
 ]
 

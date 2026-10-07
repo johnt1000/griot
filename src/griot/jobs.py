@@ -297,12 +297,15 @@ def _remove_progress_file(path: str) -> None:
 
 
 def _is_progress_scratch_file(name: str) -> bool:
-    """Named as common.secure_write_text_atomic names its scratch file for
-    one of ours, `<progress file>.<pid>.tmp`, which the run writes before
-    renaming it into place; a child killed between the two leaves it."""
+    """Named as common.atomic_scratch_path names the scratch file of one of
+    ours, which the run writes before renaming it into place; a child killed
+    between the two leaves it. The pid is read from the name and the name
+    rebuilt through that function, so a change to how the writer names its
+    scratch file cannot leave the sweep matching a name nobody writes."""
     stem, dot, pid = name.removesuffix(".tmp").rpartition(".")
-    return (name.endswith(".tmp") and bool(dot) and pid.isdigit()
-            and stem.startswith(_PROGRESS_PREFIX) and stem.endswith(_PROGRESS_SUFFIX))
+    # isascii: str.isdigit() also takes digits int() cannot read (a superscript two).
+    return (bool(dot) and pid.isascii() and pid.isdigit() and stem.startswith(_PROGRESS_PREFIX) and stem.endswith(_PROGRESS_SUFFIX)
+            and common.atomic_scratch_path(Path(stem), int(pid)).name == name)
 
 
 def _sweep_orphan_progress_files() -> None:

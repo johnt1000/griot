@@ -111,6 +111,16 @@ def test_suggest_on_a_collection_without_keyword_vectors_makes_a_vector_case_and
     assert len(cases) == 2 and all("mode" not in case for case in cases)
     out = capsys.readouterr().out
     assert out.count("griot index keywords") == 1, "said once for the run, not once per case"
+    assert "this case" not in out.lower(), "said once for two cases: it may not speak of one"
+
+
+@pytest.mark.parametrize("note", [golden_set.VECTOR_FALLBACK_NOTE, golden_set.UNREADABLE_CONFIG_NOTE],
+                         ids=["no keyword vectors", "unreadable config"])
+def test_a_fallback_note_is_true_of_one_case_or_of_several(note):
+    """Said once for a whole suggest run, which can add several cases, and
+    after one case by add: worded for either."""
+    assert "this case" not in note.lower()
+    assert "case(s)" in note
 
 
 def test_suggest_with_nothing_indexed_makes_a_hybrid_case_with_no_note(repo_with_a_commit, monkeypatch, capsys):

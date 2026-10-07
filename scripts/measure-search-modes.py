@@ -265,6 +265,16 @@ _MODIFIERS = (r"(?:(?:export|default|declare|abstract|async|public|private|prote
 # griot indexes (Python, TS/JS, Go, Rust, Ruby, Scala, PHP, C#, shell).
 _DECLARATION_KEYWORDS = (r"(?:def|class|function|const|let|var|interface|type|enum|func|fn|struct|trait"
                          r"|module|namespace|object|record|mod)")
+# Words that begin a statement, not a declaration: a call after one of them
+# (return f(x), if f(x) {, match f(x) {, new f() {) is a use, so none of them
+# may be read as the return type of a `<type> name(` declaration.
+_STATEMENT_KEYWORDS = (r"(?:return|if|else|elif|unless|until|while|for|foreach|do|switch|match|case|select|loop"
+                       r"|catch|try|finally|new|delete|throw|throws|await|yield|go|defer|goto|not|and|or|in|is"
+                       r"|typeof|sizeof|echo|print|puts)")
+# One word of a return type: Map<String, List<T>>, String[], string?, std::string.
+# A generic method's type parameters (<T>) stand alone, before its type.
+_TYPE_WORD = (rf"(?:(?!{_STATEMENT_KEYWORDS}(?![\w$]))[\w$.:]+(?:<[^;{{}}()=\n]*>)?(?:\[\])*\??"
+              rf"|<[^;{{}}()=\n]*>)")
 
 
 def definition_pattern(name: str) -> re.Pattern:
@@ -278,6 +288,10 @@ def definition_pattern(name: str) -> re.Pattern:
       f = ..., f: int, a shell f=..., export f=..., a top-level YAML key;
     - as a signature followed by its body: a shell f() {, a JS/TS method
       f(a): T {, the brace on the same line or the next;
+    - after a return type, as a signature followed by its body: a Java or C#
+      method public void f(int a) {, a C++ function static int f(void) or
+      void Server::f() const, the brace on the same line or the next (no
+      statement keyword reads as the type: return f(x), if f(x) {, new f() {);
     - bound to an arrow function, at any depth: f = () =>, a class field;
     - as the last label of a Terraform/HCL block: resource "type" "f" {,
       variable "f" {;
@@ -287,6 +301,8 @@ def definition_pattern(name: str) -> re.Pattern:
         rf"^[ \t]*{_MODIFIERS}{_DECLARATION_KEYWORDS}(?:[ \t]*\*[ \t]*|[ \t]+)(?:\([^)\n]*\)[ \t]*|\w+\.)?{n}",
         rf"^(?:(?:export|readonly|declare)[ \t]+)?{n}[ \t]*(?::|=(?!=))",
         rf"^[ \t]*{_MODIFIERS}{n}[ \t]*\([^)\n]*\)[ \t]*(?::[^{{;\n]*)?(?:\{{|\n[ \t]*\{{)",
+        rf"^[ \t]*(?:@[\w.]+(?:\([^)\n]*\))?[ \t]+)*(?:{_TYPE_WORD}(?:[ \t]+|[ \t]*[*&]+[ \t]*))+"
+        rf"(?:\w+::)*{n}[ \t]*\([^();{{}}]*\)[^;{{}}()=\n]*(?:\{{|\n[ \t]*\{{)",
         rf"^[ \t]*{_MODIFIERS}{n}[ \t]*(?::[^=\n]*)?=[ \t]*(?:async[ \t]*)?(?:\([^)\n]*\)|[\w$]+)[ \t]*"
         rf"(?::[^=\n]*)?=>",
         rf'^[ \t]*(?:resource|data|module|variable|output|provider)(?:[ \t]+"[^"\n]*")*[ \t]+"{n}"[ \t]*\{{',

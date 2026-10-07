@@ -298,11 +298,14 @@ def _no_test_runs_a_harness_command(monkeypatch):
 @pytest.fixture(autouse=True)
 def _the_harness_config_dir_of_whoever_runs_the_suite_is_not_used(monkeypatch):
     """`griot assist install --scope global` writes where the harness keeps
-    its user files, and CLAUDE_CONFIG_DIR says where that is. Left set, a
-    test that passes its own `home=` would still install into the REAL
-    directory of whoever runs the suite. Tests that are about the variable
-    set it themselves, to a temporary directory."""
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    its user files: CLAUDE_CONFIG_DIR says where that is for Claude Code,
+    XDG_CONFIG_HOME for opencode. Left set, a test that passes its own
+    `home=` would still install into the REAL directory of whoever runs the
+    suite. Tests that are about a variable set it themselves, to a temporary
+    directory. OPENCODE_CONFIG_DIR does not move the install, but a test
+    that says so must not depend on the runner's value either."""
+    for variable in ("CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR"):
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture(autouse=True)
