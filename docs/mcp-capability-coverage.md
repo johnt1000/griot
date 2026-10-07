@@ -51,7 +51,7 @@ anyio.run(m)"
 | Progress (`ctx.report_progress`) | yes | **yes** (`griot_index_wait`) | Covered |
 | Client-side logging (`ctx.log`) | yes | no | Minor |
 | Elicitation — form (via `Resolve`/`Elicit`) | yes | **yes** (`_confirmed`) | Covered |
-| Elicitation — URL (`ctx.elicit_url`) | yes | no | Registered; not the right fit today |
+| Elicitation — URL (`ctx.elicit_url`) | yes | no | Investigated 2026-10-07; not the right fit today |
 | Change notifications (`ctx.notify_*_changed`) | yes | no | Does not apply |
 | Argument completion (`@mcp.completion`) | yes | no | Marginal |
 | HTTP / SSE transports, custom routes | yes | no | Does not apply |
@@ -300,10 +300,19 @@ when one is reachable (else in `<config>/.env` at 0600).
 Routing the same secret through a browser and a local socket adds moving
 parts without removing an exposure.
 
-**When to revisit**: if griot ever supports a provider that authenticates
-by OAuth rather than by a pasted key. Then the redirect *is* the flow,
-`elicit_url` is exactly the right mechanism, and the local listener earns
-its place instead of merely duplicating `getpass`.
+**Investigated on 2026-10-07.** The pinned SDK (mcp 2.0.0) has
+`ctx.elicit_url`, but on the 2026-07-28 protocol revision a URL elicitation
+has to be built as an `InputRequiredResult`. On the client side, Claude
+Code advertises form elicitation only, and opencode advertises no
+elicitation at all, so no client griot is used with would show the URL. Nothing on griot's side changes the picture: its
+credentials are still static keys that `griot auth set` reads.
+
+**When to revisit**: only if griot adds an OAuth device-flow login (a
+provider that authenticates by OAuth rather than by a pasted key) **and** a
+client griot is used with advertises URL elicitation. Then the provider's
+verification page *is* the flow, and `elicit_url` is exactly the right
+mechanism to send the person there, instead of merely duplicating
+`getpass`.
 
 Until then the policy stands: **secrets are set from the CLI, and the MCP
 side guides the user there with the concrete command — it never collects
