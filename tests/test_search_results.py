@@ -447,4 +447,9 @@ def test_a_keyword_or_hybrid_search_fills_its_list_from_a_wider_window_too(ranke
 
     assert len(hits) == 8
     assert sum(1 for h in hits if h.payload["file_path"].startswith("long")) == 6, "the cap still holds"
-    assert len(store_queries) == 2 and store_queries[1] > store_queries[0]
+    # A hybrid window asks the store once per ranking, both for the same
+    # number of points (the two searches the store's fusion ran as prefetches).
+    per_window = 2 if mode == "hybrid" else 1
+    windows = store_queries[::per_window]
+    assert store_queries == [limit for limit in windows for _ in range(per_window)]
+    assert len(windows) == 2 and windows[1] > windows[0]
