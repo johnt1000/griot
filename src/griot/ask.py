@@ -3,6 +3,7 @@ import sys
 import time
 
 from griot import common
+from griot.cli import at_least_one
 
 DEFAULT_LIMIT = 5
 
@@ -21,15 +22,22 @@ def build_context(results: list) -> str:
 
 
 def ask(question: str, model: str | None, limit: int, mode: str = "vector", *,
-        repos: list[str] | None = None, source_types: list[str] | None = None) -> tuple[str, list]:
+        repos: list[str] | None = None, source_types: list[str] | None = None) -> tuple[str | None, list]:
     """`mode` is the one that runs: main() resolves the default first
     (common.search_mode_for), because it logs and shows the mode that ran.
 
     repos / source_types narrow the search as they narrow `griot search`:
     the search refuses a value that cannot match (common.search_filter)
     before anything is embedded or the chat model is called, so a wrong name
-    costs nothing."""
+    costs nothing.
+
+    The answer is None when the search found nothing: the chat model, which
+    can be paid, is not called over an empty context. Values that each exist
+    can still match nothing together (a repository with no commits indexed,
+    asked about commits), and an empty index matches nothing at all."""
     results = common.search(question, limit, diverse=True, mode=mode, repos=repos, source_types=source_types)
+    if not results:
+        return None, results
     context = build_context(results)
 
     prompt = (
@@ -38,6 +46,19 @@ def ask(question: str, model: str | None, limit: int, mode: str = "vector", *,
     )
     answer = common.chat_completion(prompt, model=model)
     return answer, results
+
+
+def _narrowed_to(repos: list[str] | None, source_types: list[str] | None) -> str:
+    """The filters of a search in words, or "" when nothing narrowed it.
+    The names come from the person's flags: shown as search shows names."""
+    parts = []
+    if repos:
+        parts.append(f"{'repository' if len(repos) == 1 else 'repositories'} "
+                     f"{', '.join(common.shown(r) for r in repos)}")
+    if source_types:
+        parts.append(f"{'source type' if len(source_types) == 1 else 'source types'} "
+                     f"{', '.join(common.shown(k) for k in source_types)}")
+    return " and ".join(parts)
 
 
 def main(argv=None):
@@ -49,7 +70,9 @@ def main(argv=None):
     )
     parser.add_argument("question", help="Natural language question")
     parser.add_argument("--model", default=None, help=f"Model to use within the active chat profile (profile default: {common.ACTIVE_CHAT_PROFILE['model']})")
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="How many chunks to search for (default: %(default)s)")
+    # The type `griot search` takes: 0 or a negative limit is refused the
+    # same way, with the same message.
+    parser.add_argument("--limit", type=at_least_one, default=DEFAULT_LIMIT, help="How many chunks to search for (default: %(default)s)")
     parser.add_argument("--show-sources", action="store_true", help="List the sources used as context")
     # The same flags as `griot search` (cli.py), so a question can be asked
     # of exactly the context a search showed.
@@ -75,7 +98,19 @@ def main(argv=None):
         print(f"Error: {e}", file=sys.stderr)
         return 2
     elapsed = time.time() - start_time
-    print(answer)
+    if answer is None:
+        # What `griot search` prints for the same search, and its status (0):
+        # nothing found is a result, not an error.
+        print("No results.")
+        narrowed = _narrowed_to(args.repo, args.source_type)
+        if narrowed:
+            # Each filter value matched something indexed (search_filter
+            # refuses one that cannot), so without this line "No results."
+            # would read as "nothing about this anywhere".
+            print(f"The search was narrowed to {narrowed}: nothing indexed there matches the question. "
+                  f"Without these filters it covers every repository and kind of source.")
+    else:
+        print(answer)
     if note:
         # stderr: the answer on stdout stays the answer alone.
         print(note, file=sys.stderr)
