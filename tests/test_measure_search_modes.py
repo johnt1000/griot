@@ -474,6 +474,21 @@ DEFINITIONS = [
     ("sql table", "a.sql", "CREATE TABLE IF NOT EXISTS public.target (\n  id int\n);\n"),
     ("sql function", "a.sql", "create or replace function target() returns int as $$ select 1 $$;\n"),
     ("yaml top-level key", "a.yml", "target:\n  image: x\n"),
+    # A method or function declared as `<type> name(`: no keyword names it,
+    # the return type stands before it.
+    ("java method", "A.java", "class A {\n    public void target(int a) {\n    }\n}\n"),
+    ("java generic static method", "A.java",
+     "class A {\n  public static <T> Map<String, List<T>> target(List<T> xs) {\n  }\n}\n"),
+    ("java method with an annotation and throws", "A.java",
+     "class A {\n  @Override protected String[] target() throws IOException {\n  }\n}\n"),
+    ("java method with its parameters on several lines", "A.java",
+     "class A {\n  int target(int a,\n             int b) {\n  }\n}\n"),
+    ("c# method", "A.cs", "class A {\n    public async Task<int> target(string a)\n    {\n    }\n}\n"),
+    ("c# nullable return", "A.cs", "class A {\n    internal string? target() {\n    }\n}\n"),
+    ("c++ static function", "a.cpp", "static int target(void) {\n  return 0;\n}\n"),
+    ("c++ brace on the next line", "a.cpp", "int target(void)\n{\n  return 0;\n}\n"),
+    ("c++ pointer return", "a.cpp", "const char *target(int n) {\n  return 0;\n}\n"),
+    ("c++ method defined outside its class", "a.cpp", "void Server::target(int a) const {\n}\n"),
 ]
 
 
@@ -500,6 +515,19 @@ USES = [
     ("sql query", "a.sql", "select * from target;\n"),
     ("a longer name", "a.ts", "function target_two() {}\nconst targetThree = 1;\n"),
     ("a comment", "a.py", "# def target is elsewhere\n"),
+    ("java call statement", "A.java", "class A {\n  void f() {\n    target(x);\n  }\n}\n"),
+    ("java return of a call", "A.java", "class A {\n  int f() {\n    return target(x);\n  }\n}\n"),
+    ("java call assigned", "A.java", "class A {\n  void f() {\n    int n = target(a);\n  }\n}\n"),
+    ("java condition", "A.java", "class A {\n  void f() {\n    if (target(x)) {\n    } else if (target(y)) {\n"
+                                 "    }\n    while (target(z)) {\n    }\n  }\n}\n"),
+    ("java anonymous class", "A.java", "class A {\n  Object f() {\n    return new target() {\n    };\n  }\n}\n"),
+    ("java anonymous class on its own line", "A.java", "class A {\n  Object o =\n    new target() {\n    };\n}\n"),
+    ("java abstract method, no body", "A.java", "interface A {\n  void target(int a);\n}\n"),
+    ("c++ declaration, no body", "a.cpp", "int target(void);\nint main(void) {\n  return target();\n}\n"),
+    ("c++ delete of a call", "a.cpp", "void f() {\n  delete target(p);\n}\n"),
+    ("go condition on a call", "a.go", "func f() {\n\tif target(x) {\n\t}\n\tswitch target(y) {\n\t}\n}\n"),
+    ("rust match on a call", "a.rs", "fn f() {\n    match target(x) {\n    }\n}\n"),
+    ("ruby unless on a call", "a.rb", "unless target(x) {\n}\n"),
 ]
 
 

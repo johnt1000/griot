@@ -94,6 +94,21 @@ def test_secure_write_text_atomic_uses_a_private_tmp_name_per_writer(tmp_path, m
     assert target.read_text() == "b"
 
 
+def test_the_scratch_file_the_writer_uses_is_the_one_atomic_scratch_path_names(tmp_path, monkeypatch):
+    """The progress sweep (jobs._is_progress_scratch_file) recognises a
+    scratch file a killed writer left by this name: writer and sweep read it
+    from one function, so they cannot drift apart."""
+    captured = []
+    real_secure_write_text = common.secure_write_text
+    monkeypatch.setattr(common, "secure_write_text",
+                        lambda p, t: (captured.append(p), real_secure_write_text(p, t))[1])
+    monkeypatch.setattr(common.os, "getpid", lambda: 3131)
+    target = tmp_path / "state.json"
+    common.secure_write_text_atomic(target, "a")
+    assert captured == [common.atomic_scratch_path(target, 3131)]
+    assert common.atomic_scratch_path(target) == captured[0], "this process's, when no pid is given"
+
+
 def test_griot_log_file_created_0600(monkeypatch):
     import logging
     # brand-new handler in this test (conftest already isolates LOG_DIR)
