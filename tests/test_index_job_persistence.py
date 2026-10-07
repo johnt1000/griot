@@ -468,6 +468,36 @@ def test_progress_files_are_swept_even_without_a_jobs_file():
     assert not orphan.exists()
 
 
+def test_scratch_files_a_killed_progress_writer_left_are_swept_too():
+    """The run writes its progress through common.secure_write_text_atomic,
+    which writes a `<file>.<pid>.tmp` sibling first; a child killed between
+    the write and the rename leaves it, and its unique name means nothing
+    else ever reclaims it. Swept like an orphan, also beside a file a job
+    still names (a scratch file lives for one write, not for minutes)."""
+    me = psutil.Process(os.getpid())
+    progress_dir = common.DATA_DIR / jobs.PROGRESS_DIR_NAME
+    followed = _temp_progress_file()
+    _write_jobs_file([_record(me.pid, me.create_time(), followed)])
+    old_scratch = Path(f"{followed}.4242.tmp")
+    old_scratch.write_text("{")
+    _aged(old_scratch, jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+    fresh_scratch = Path(f"{followed}.4343.tmp")  # a write in flight right now
+    fresh_scratch.write_text("{")
+    # Shaped almost like one, but not what the writer names: kept.
+    not_scratches = [progress_dir / name for name in (
+        "griot-index-progress-x.json.notapid.tmp", "notes.json.4242.tmp",
+        "griot-index-progress-x.txt.4242.tmp", "griot-index-progress-x.json.4242")]
+    for path in not_scratches:
+        path.write_text("not ours")
+        _aged(path, jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+
+    assert jobs.index_job_report()["running"]["pid"] == me.pid
+
+    assert not old_scratch.exists()
+    assert fresh_scratch.exists() and followed.exists()
+    assert [path.name for path in not_scratches if not path.exists()] == []
+
+
 def test_a_record_from_before_the_move_still_has_its_temp_dir_file_removed():
     """Earlier versions made the progress file in the system temporary
     directory: a job recorded by one of them is still followed, and its file

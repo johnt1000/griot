@@ -296,13 +296,23 @@ def _remove_progress_file(path: str) -> None:
         pass
 
 
+def _is_progress_scratch_file(name: str) -> bool:
+    """Named as common.secure_write_text_atomic names its scratch file for
+    one of ours, `<progress file>.<pid>.tmp`, which the run writes before
+    renaming it into place; a child killed between the two leaves it."""
+    stem, dot, pid = name.removesuffix(".tmp").rpartition(".")
+    return (name.endswith(".tmp") and bool(dot) and pid.isdigit()
+            and stem.startswith(_PROGRESS_PREFIX) and stem.endswith(_PROGRESS_SUFFIX))
+
+
 def _sweep_orphan_progress_files() -> None:
     """Removes the progress files no job in the registry names and that are
     old enough (ORPHAN_PROGRESS_GRACE_SECONDS) for no server to be starting
     their job: nothing else would ever remove them. What leaves one: a host
     killed between making the file and recording the job, or a record that
-    could not be written. Only files named as ours, in the directory this
-    data directory owns; never fails the caller. Called with _registry_lock
+    could not be written; and a scratch file of a child killed mid-write
+    (_is_progress_scratch_file()). Only files named as ours, in the
+    directory this data directory owns; never fails the caller. Called with _registry_lock
     held, after the registry is loaded."""
     named = {os.path.realpath(info["progress_path"]) for info in _registry.values()}
     try:
@@ -311,7 +321,11 @@ def _sweep_orphan_progress_files() -> None:
         return  # no directory yet: nothing was ever left
     now = time.time()
     for candidate in candidates:
-        if not _is_our_progress_file(str(candidate)) or os.path.realpath(candidate) in named:
+        # A writer's scratch file is removed even beside a file a job names:
+        # it lives for one write, so one past the grace period is a child
+        # killed mid-write, and nothing else would ever reclaim it.
+        if not _is_progress_scratch_file(candidate.name) and (
+                not _is_our_progress_file(str(candidate)) or os.path.realpath(candidate) in named):
             continue
         try:
             if now - candidate.stat().st_mtime < ORPHAN_PROGRESS_GRACE_SECONDS:
