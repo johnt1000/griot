@@ -1891,7 +1891,8 @@ def griot_golden_set_suggest(path: str, limit: int = 10,
     can require, or has no message, is left out (`left_out` counts them).
     Each candidate has the `query`, `must_include` and `limit` that
     griot_golden_set_add takes; that tool is how one becomes a case, and a
-    person confirms it there. Pick the ones whose message reads like a
+    person confirms it there. Added without a `mode`, it is a hybrid case,
+    as the terminal command makes it. Pick the ones whose message reads like a
     question someone would ask; skip "fix typo".
 
     `path` must be registered (`griot repos add`) or under
@@ -1995,9 +1996,11 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     `mode` is the search the case is checked with, every time: pass the
     `mode` griot_search reported for the results you picked, or the case is
     held to a ranking those results never came from. Left out, it is
-    hybrid, as griot_search's default; on a collection without keyword
+    hybrid, as griot_search's default, also with nothing indexed yet (an
+    index run builds keyword vectors); on a collection without keyword
     vectors it is vector, and the message says so and names
-    `griot index keywords`. A keyword or hybrid case needs a query with a
+    `griot index keywords`, and on one whose config cannot be read it is
+    vector, and the message says that. A keyword or hybrid case needs a query with a
     word keyword search can match.
 
     Confirmed like every state change, but with the confirm= fallback
