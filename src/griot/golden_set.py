@@ -108,18 +108,20 @@ def mode_refusal(query: str, mode) -> str | None:
 # Said when a case made without a mode is a vector case because the
 # collection has no keyword vectors: the case is written that way for good,
 # so the person (or agent) hears what it measures and how to get the default.
+# Worded for one case or several: add says it after its one case, suggest
+# once for every case of its run.
 VECTOR_FALLBACK_NOTE = (
-    "This case is checked by meaning only (mode vector): this collection was indexed before keyword search, so "
-    "the default, hybrid, cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing); "
-    "to check this question in hybrid after that, remove this case and add it again.")
+    "The case(s) just added are checked by meaning only (mode vector): this collection was indexed before keyword "
+    "search, so the default, hybrid, cannot run on it yet. `griot index keywords` builds it once (local, embeds "
+    "nothing); to check a question in hybrid after that, remove its case and add it again.")
 
 # Said when a case made without a mode is a vector case because the
 # collection's config cannot be read: whether it can run hybrid is unknown,
 # and a hybrid case it cannot run would only ever be skipped.
 UNREADABLE_CONFIG_NOTE = (
-    "This case is checked by meaning only (mode vector): this collection's config could not be read, so whether "
-    "the default, hybrid, can run on it is unknown (griot's log says why). To check this question in hybrid once "
-    "it reads, remove this case and add it again.")
+    "The case(s) just added are checked by meaning only (mode vector): this collection's config could not be read, "
+    "so whether the default, hybrid, can run on it is unknown (griot's log says why). To check a question in hybrid "
+    "once it reads, remove its case and add it again.")
 
 
 def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
@@ -387,7 +389,7 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
             print(note)
         return 0
 
-    added, mode_notes = 0, []
+    added, refused, mode_notes = 0, 0, []
     for candidate in found["candidates"]:
         display_query = candidate["query"].splitlines()[0]
         files = [entry["file_path"] for entry in candidate["must_include"]]
@@ -403,12 +405,30 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         # search, so nothing ties this case to vector. Written through
         # add_case like every other new case, so each is saved as approved.
         mode, mode_note = case_mode_for(candidate["query"], None)
-        add_case(candidate["query"], candidate["must_include"], limit=candidate["limit"], mode=mode)
+        try:
+            add_case(candidate["query"], candidate["must_include"], limit=candidate["limit"], mode=mode)
+        except json.JSONDecodeError as e:
+            # The file every candidate is written to cannot be read: each
+            # would fail the same way, so the run stops here instead of
+            # asking about candidates that cannot be saved.
+            print(f"Error: {common.GOLDEN_SET_PATH} is not valid JSON ({e}); fix or remove it, then run suggest "
+                  f"again. {added} case(s) were added before this.", file=sys.stderr)
+            return 1
+        except ValueError as e:
+            # A case add_case refuses: said with the reason, under the
+            # candidate, and the run goes on (as review does), so one refused
+            # candidate costs neither the cases already approved (each is
+            # written when approved) nor the ones after it.
+            print(f"  Not added: {e}")
+            refused += 1
+            continue
         added += 1
         if mode_note and mode_note not in mode_notes:
             mode_notes.append(mode_note)
 
     print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    if refused:
+        print(f"{refused} approved candidate(s) not added (the reason is above).")
     # Once for the run, not once per case: every case of it was resolved
     # against the same collection.
     for mode_note in mode_notes:

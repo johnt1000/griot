@@ -468,24 +468,48 @@ def test_progress_files_are_swept_even_without_a_jobs_file():
     assert not orphan.exists()
 
 
-def test_scratch_files_a_killed_progress_writer_left_are_swept_too():
+def _scratch_a_writer_leaves(target: Path, pid: int, monkeypatch) -> Path:
+    """The scratch file a real common.secure_write_text_atomic(target) of
+    process `pid` writes before its rename. The write is stopped right
+    there, as a killed child stops, so the name comes from the writer itself
+    and a change to the writer's naming cannot leave this test behind."""
+    scratch = []
+    real_write = common.secure_write_text
+
+    def write_then_die(path, text):
+        real_write(path, text)
+        scratch.append(Path(path))
+        raise KeyboardInterrupt  # killed between the write and the rename
+
+    with monkeypatch.context() as patch:
+        patch.setattr(common.os, "getpid", lambda: pid)
+        patch.setattr(common, "secure_write_text", write_then_die)
+        with pytest.raises(KeyboardInterrupt):
+            common.secure_write_text_atomic(target, "{")
+    (path,) = scratch
+    path.write_text("{")  # a killed process never reaches the cleanup this one ran
+    return path
+
+
+def test_scratch_files_a_killed_progress_writer_left_are_swept_too(monkeypatch):
     """The run writes its progress through common.secure_write_text_atomic,
-    which writes a `<file>.<pid>.tmp` sibling first; a child killed between
-    the write and the rename leaves it, and its unique name means nothing
-    else ever reclaims it. Swept like an orphan, also beside a file a job
-    still names (a scratch file lives for one write, not for minutes)."""
+    which writes a per-process scratch sibling first
+    (common.atomic_scratch_path); a child killed between the write and the
+    rename leaves it, and its unique name means nothing else ever reclaims
+    it. Swept like an orphan, also beside a file a job still names (a
+    scratch file lives for one write, not for minutes)."""
     me = psutil.Process(os.getpid())
     progress_dir = common.DATA_DIR / jobs.PROGRESS_DIR_NAME
     followed = _temp_progress_file()
     _write_jobs_file([_record(me.pid, me.create_time(), followed)])
-    old_scratch = Path(f"{followed}.4242.tmp")
-    old_scratch.write_text("{")
+    old_scratch = _scratch_a_writer_leaves(followed, 4242, monkeypatch)
+    assert old_scratch == common.atomic_scratch_path(followed, 4242)
     _aged(old_scratch, jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
-    fresh_scratch = Path(f"{followed}.4343.tmp")  # a write in flight right now
-    fresh_scratch.write_text("{")
+    fresh_scratch = _scratch_a_writer_leaves(followed, 4343, monkeypatch)  # a write in flight right now
     # Shaped almost like one, but not what the writer names: kept.
     not_scratches = [progress_dir / name for name in (
-        "griot-index-progress-x.json.notapid.tmp", "notes.json.4242.tmp",
+        # A superscript two is a digit to str.isdigit() and not a number to int().
+        "griot-index-progress-x.json.notapid.tmp", "griot-index-progress-x.json.².tmp", "notes.json.4242.tmp",
         "griot-index-progress-x.txt.4242.tmp", "griot-index-progress-x.json.4242")]
     for path in not_scratches:
         path.write_text("not ours")

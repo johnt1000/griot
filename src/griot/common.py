@@ -179,6 +179,16 @@ def secure_write_text(path: Path, text: str) -> None:
             os.close(fd)
 
 
+def atomic_scratch_path(path: Path, pid: int | None = None) -> Path:
+    """The scratch file secure_write_text_atomic() of process `pid` (this
+    one by default) writes before renaming it onto `path`:
+    `<path>.<pid>.tmp`. One function, because the progress sweep
+    (jobs._is_progress_scratch_file) recognises the scratch file a killed
+    writer left by this same name; two copies of the rule could drift
+    apart, and the sweep would then silently keep every leftover."""
+    return path.with_suffix(f"{path.suffix}.{os.getpid() if pid is None else pid}.tmp")
+
+
 def secure_write_text_atomic(path: Path, text: str) -> None:
     """Same 0600 contract as secure_write_text(), but crash-safe: writes to
     a sibling .tmp file first and os.replace()s it into place, so a crash
@@ -198,7 +208,7 @@ def secure_write_text_atomic(path: Path, text: str) -> None:
     loser died with FileNotFoundError mid-write, crashing a real griot
     process during a paid indexing run. os.replace() is still atomic, so
     the last writer wins cleanly instead of both corrupting each other."""
-    tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    tmp_path = atomic_scratch_path(path)
     try:
         secure_write_text(tmp_path, text)  # already 0600 on the tmp file — the rename preserves it
         os.replace(tmp_path, path)
