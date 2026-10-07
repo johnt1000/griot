@@ -105,7 +105,9 @@ found". Two values that both exist and match nothing together (a repository
 with no pull requests indexed, say) do return an empty list. On the CLI the
 same filters are `--repo NAME` and `--source-type KIND`, each repeatable,
 on `griot search` and on `griot ask` alike; `ask` refuses a filter that
-cannot match before it calls the chat model, so that costs nothing.
+cannot match before it calls the chat model, so that costs nothing, and
+when the search finds nothing it prints `No results.` (naming the filters
+that narrowed it) without calling the chat model at all.
 
 ## Reading `source_type`
 

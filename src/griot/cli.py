@@ -266,9 +266,11 @@ SEARCH_SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "rele
 SEARCH_MODES = ("vector", "keyword", "hybrid")
 
 
-def _at_least_one(text: str) -> int:
+def at_least_one(text: str) -> int:
     """An argparse type: a whole number from 1 up. Zero finds nothing and a
-    negative one reached the vector store as an overflow."""
+    negative one reached the vector store as an overflow. Public because
+    `griot ask` (ask.py, its own parser) takes it for its --limit too, so the
+    two refuse the same values with the same message."""
     try:
         value = int(text)
     except ValueError:
@@ -620,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Searches the vector store and prints sources + score. Never calls any chat model.",
     )
     p_search.add_argument("query", help="Natural-language query")
-    p_search.add_argument("--limit", type=_at_least_one, default=5, help="How many results (default: %(default)s)")
+    p_search.add_argument("--limit", type=at_least_one, default=5, help="How many results (default: %(default)s)")
     p_search.add_argument("--repo", action="append", metavar="NAME",
                           help="Only this repository, by its directory name (repeat for several). "
                                "One with nothing indexed is an error, not an empty result.")
