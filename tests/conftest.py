@@ -103,7 +103,7 @@ def _reset_common_globals(monkeypatch, tmp_path):
     # directory on its first read, as a new process would.
     monkeypatch.setattr(jobs, "_loaded", False)
 
-    # [security, real finding] common._keychain_get/_set/_delete lazily
+    # [security, real finding] common.keychain_get/_set/_delete lazily
     # `import keyring` inside each call — forcing sys.modules["keyring"] =
     # None makes that import raise ImportError deterministically (a
     # documented Python import-system behavior), so every test sees the

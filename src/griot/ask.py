@@ -49,7 +49,7 @@ def main(argv=None):
     parser.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
                         help="How the context is searched: hybrid (by meaning and by the exact words, the default; "
                              "vector on an index built before keyword search), vector (by meaning) or keyword (by "
-                             "the exact words: an identifier, an error code, a hash)")
+                             "the exact words: a commit hash, an error code, where a name is used)")
     args = parser.parse_args(argv)
 
     start_time = time.time()
