@@ -89,10 +89,9 @@ def _open_shard_for_sampling(collection: str) -> "qe.EdgeShard | None":
     to treat 'no shard' as 'no sample'."""
     if collection == common.COLLECTION_NAME:
         return common.get_client()
-    path = common._collection_path(collection)
-    if not (path / common._EDGE_CONFIG_MARKER).exists():
+    if not common.collection_exists(collection):
         return None
-    return qe.EdgeShard.load(str(path))
+    return qe.EdgeShard.load(str(common.collection_path(collection)))
 
 
 def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, min_score: float = SELF_CHECK_MIN_SCORE) -> dict:
@@ -157,6 +156,18 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
     }
 
 
+# The golden set searches the way readers get results (common.search's
+# `diverse`: at most SEARCH_MAX_CHUNKS_PER_DOCUMENT chunks of one document,
+# copies of the same text folded into the best-placed one). Chosen over
+# recording per case how it was searched because every way a case is made
+# shows a reader's list: griot_golden_set_add is told to pick from
+# griot_search, `golden-set review` builds from the logged results of
+# reader searches, and `golden-set add` searches with this same setting.
+# What a case asserts is "a reader asking this gets that document"; the
+# self-check, which asks whether one exact point comes back, stays raw.
+GOLDEN_SET_DIVERSE = True
+
+
 def _matches(payload: dict, expected: dict) -> bool:
     return all(payload.get(k) == v for k, v in expected.items())
 
@@ -172,7 +183,10 @@ def run_golden_set(golden_set: list) -> dict:
     or hybrid case on a collection without keyword vectors is `skipped`:
     counted apart from `passed` and `failed`, and outside `total` (the cases
     that ran), so it neither closes the gate nor moves the pass rate.
-    `ran_by_mode` counts the cases searched in each mode."""
+    `ran_by_mode` counts the cases searched in each mode.
+
+    Searched the way readers search (GOLDEN_SET_DIVERSE), and the result
+    says so in `diverse`."""
     results = []
     ran_by_mode: dict[str, int] = {}
     indexed: dict[str, bool] = {}
@@ -187,7 +201,7 @@ def run_golden_set(golden_set: list) -> dict:
         # Read once per run, and only when a case needs it. Unreadable is
         # None and skips the case like "not built": no run would be sound.
         if not built:
-            built.append(common._keyword_search_status(common.COLLECTION_NAME))
+            built.append(common.keyword_search_status(common.COLLECTION_NAME))
         return built[0]
 
     for case in golden_set:
@@ -259,8 +273,13 @@ def run_golden_set(golden_set: list) -> dict:
                 "top_results": [],
             })
             continue
+        # Diverse, as every surface a reader gets results from searches (see
+        # GOLDEN_SET_DIVERSE): a case is curated from such a list, and a raw
+        # search let one long document's extra chunks push out the document
+        # the case names.
         try:
-            hits = common.search(case["query"], limit=case.get("limit", 5), mode=mode)
+            hits = common.search(case["query"], limit=case.get("limit", 5), mode=mode,
+                                 diverse=GOLDEN_SET_DIVERSE)
         except common.SearchFilterError as e:
             # A case this search refuses (a hand-written keyword case of only
             # common words, a mode no search knows): FAILED by name, for the
@@ -284,6 +303,10 @@ def run_golden_set(golden_set: list) -> dict:
     passed = sum(1 for r in results if r["passed"])
     failed = sum(1 for r in results if not r["passed"] and not r.get("skipped"))
     return {
+        # Recorded with the run (logs.db keeps golden_check whole): a run
+        # recorded without it searched raw, so its pass count is not on the
+        # same ruler as one that has it.
+        "diverse": GOLDEN_SET_DIVERSE,
         # The cases that RAN, not every case: a skipped one measured nothing
         # about search, and counted in the total it read as a dip in the pass
         # rate ("8 of 10") for a reason that is not quality. It is reported
@@ -336,7 +359,7 @@ def main(argv=None):
     # 'collection' is the active one and doesn't exist yet,
     # common.get_client() would CREATE it from scratch — wrong here,
     # quality_check should only inspect what already exists.
-    if not (common._collection_path(collection) / common._EDGE_CONFIG_MARKER).exists():
+    if not common.collection_exists(collection):
         # [--json stdout contract] --json's stdout contract is "JSON or nothing" — an
         # error this early (no result to report) belongs on stderr in that
         # mode, never stdout, or a caller parsing stdout as JSON would choke.
@@ -374,6 +397,11 @@ def main(argv=None):
         else:
             if not args.json:
                 print(f"\n=== Golden set: {len(golden_set)} curated questions ===")
+                # Said because it changed (runs before it searched raw) and
+                # because a case's top results read differently from a raw
+                # search's: one document fills at most this many of them.
+                print(f"Searched as readers get results: at most {common.SEARCH_MAX_CHUNKS_PER_DOCUMENT} "
+                      f"chunks per document, copies of the same text folded into one.")
             try:
                 golden_check = run_golden_set(golden_set)
             except Exception:

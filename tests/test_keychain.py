@@ -50,22 +50,22 @@ class _FakeKeyring:
         del self.store[key]
 
 
-# --- _keychain_get/_set/_delete (wiring against the `keyring` API) --------
+# --- keychain_get/_set/_delete (wiring against the `keyring` API) --------
 
 
 def test_keychain_unavailable_by_default_in_tests():
     """Sanity check on the autouse fixture itself: without any per-test
     override, the wrapper functions must already report 'unavailable'."""
-    assert common._keychain_get("GRIOT_TEST_KEY") is None
-    assert common._keychain_set("GRIOT_TEST_KEY", "value") is False
-    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_NOT_INSTALLED
+    assert common.keychain_get("GRIOT_TEST_KEY") is None
+    assert common.keychain_set("GRIOT_TEST_KEY", "value") is False
+    assert common.keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_NOT_INSTALLED
 
 
 def test_keychain_set_and_get_round_trip(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
 
-    assert common._keychain_set("GRIOT_TEST_KEY", "sk-fake-1234") is True
-    assert common._keychain_get("GRIOT_TEST_KEY") == "sk-fake-1234"
+    assert common.keychain_set("GRIOT_TEST_KEY", "sk-fake-1234") is True
+    assert common.keychain_get("GRIOT_TEST_KEY") == "sk-fake-1234"
 
 
 def test_keychain_get_returns_none_when_backend_raises(monkeypatch):
@@ -73,7 +73,7 @@ def test_keychain_get_returns_none_when_backend_raises(monkeypatch):
         def get_password(self, *a, **kw):
             raise Exception("no backend available (e.g. headless Linux, no Secret Service)")
     monkeypatch.setitem(sys.modules, "keyring", _BrokenKeyring())
-    assert common._keychain_get("GRIOT_TEST_KEY") is None
+    assert common.keychain_get("GRIOT_TEST_KEY") is None
 
 
 def test_keychain_set_returns_false_when_backend_raises(monkeypatch):
@@ -81,7 +81,7 @@ def test_keychain_set_returns_false_when_backend_raises(monkeypatch):
         def set_password(self, *a, **kw):
             raise Exception("no backend available")
     monkeypatch.setitem(sys.modules, "keyring", _BrokenKeyring())
-    assert common._keychain_set("GRIOT_TEST_KEY", "value") is False
+    assert common.keychain_set("GRIOT_TEST_KEY", "value") is False
 
 
 class _PasswordDeleteError(Exception):
@@ -90,7 +90,7 @@ class _PasswordDeleteError(Exception):
     Windows, macOS item-not-found) AND for real failures (macOS wraps an
     access denial in the same class; KWallet raises it when the user
     cancels the unlock prompt) — so the class alone cannot tell the two
-    cases apart, and _keychain_delete() must not try to."""
+    cases apart, and keychain_delete() must not try to."""
 
 
 class _DeniedOnDeleteKeyring(_FakeKeyring):
@@ -124,24 +124,24 @@ class _SilentOnMissingKeyring(_FakeKeyring):
 
 def test_keychain_delete_says_nothing_stored(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
-    assert common._keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
+    assert common.keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
 
 
 def test_keychain_delete_says_nothing_stored_on_a_backend_that_does_not_raise(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _SilentOnMissingKeyring())
-    assert common._keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
+    assert common.keychain_delete("GRIOT_NEVER_STORED") == common.KEYCHAIN_NOTHING_STORED
 
 
 def test_keychain_delete_says_deleted_after_removing(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
-    common._keychain_set("GRIOT_TEST_KEY", "value")
-    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_DELETED
-    assert common._keychain_get("GRIOT_TEST_KEY") is None
+    common.keychain_set("GRIOT_TEST_KEY", "value")
+    assert common.keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_DELETED
+    assert common.keychain_get("GRIOT_TEST_KEY") is None
 
 
 def test_keychain_delete_says_unreachable_when_no_backend_answers(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", _UnreachableKeyring())
-    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
+    assert common.keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
 
 
 def test_keychain_delete_says_unreachable_when_the_delete_itself_is_refused(monkeypatch):
@@ -151,7 +151,7 @@ def test_keychain_delete_says_unreachable_when_the_delete_itself_is_refused(monk
     fake = _DeniedOnDeleteKeyring()
     fake.store[(common._KEYCHAIN_SERVICE, "GRIOT_TEST_KEY")] = "value"
     monkeypatch.setitem(sys.modules, "keyring", fake)
-    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
+    assert common.keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
 
 
 def test_keychain_delete_says_unreachable_when_keyring_is_installed_but_breaks_on_import(monkeypatch):
@@ -168,7 +168,7 @@ def test_keychain_delete_says_unreachable_when_keyring_is_installed_but_breaks_o
 
     monkeypatch.delitem(sys.modules, "keyring", raising=False)
     monkeypatch.setattr(builtins, "__import__", failing_import)
-    assert common._keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
+    assert common.keychain_delete("GRIOT_TEST_KEY") == common.KEYCHAIN_UNREACHABLE
 
 
 # --- credential_env_vars() (moved from auth._providers(), single source) --
@@ -188,7 +188,7 @@ def test_credential_env_vars_matches_auth_providers():
 
 
 def test_set_provider_key_prefers_keychain_when_available(monkeypatch):
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: True)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: True)
 
     replaced = auth.set_provider_key("openai", "sk-fake-1234")
 
@@ -199,7 +199,7 @@ def test_set_provider_key_prefers_keychain_when_available(monkeypatch):
 
 
 def test_set_provider_key_falls_back_to_file_when_keychain_unavailable(monkeypatch):
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: False)
 
     auth.set_provider_key("openai", "sk-fake-1234")
 
@@ -215,11 +215,11 @@ def test_set_provider_key_removes_stale_env_file_entry_when_moved_to_keychain(mo
     sense of improved security while the old plaintext copy sits there
     untouched at 0600, fully readable, right next to the new keychain
     entry."""
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: False)
     auth.set_provider_key("openai", "sk-old-plaintext-value")
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == "sk-old-plaintext-value"
 
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: True)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: True)
     auth.set_provider_key("openai", "sk-new-keychain-value")
 
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
@@ -227,7 +227,7 @@ def test_set_provider_key_removes_stale_env_file_entry_when_moved_to_keychain(mo
 
 def test_remove_provider_key_removes_from_keychain_too(monkeypatch):
     deleted = []
-    monkeypatch.setattr(common, "_keychain_delete",
+    monkeypatch.setattr(common, "keychain_delete",
                         lambda env_var: deleted.append(env_var) or common.KEYCHAIN_DELETED)
 
     result = auth.remove_provider_key("openai")
@@ -240,16 +240,16 @@ def test_remove_provider_key_reports_removed_when_only_in_keychain(monkeypatch):
     """The file has nothing to remove (never written there, keychain-only
     credential) — must still report removed, not silently claim 'nothing to
     remove' just because the FILE-based check alone would say so."""
-    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: common.KEYCHAIN_DELETED)
+    monkeypatch.setattr(common, "keychain_delete", lambda env_var: common.KEYCHAIN_DELETED)
     assert not common.ENV_PATH.exists()
 
     assert auth.remove_provider_key("openai").removed is True
 
 
 def test_remove_provider_key_still_removes_from_the_file_when_the_keychain_is_unreachable(monkeypatch):
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: False)
     auth.set_provider_key("openai", "sk-fake-1234")
-    monkeypatch.setattr(common, "_keychain_delete", lambda env_var: common.KEYCHAIN_UNREACHABLE)
+    monkeypatch.setattr(common, "keychain_delete", lambda env_var: common.KEYCHAIN_UNREACHABLE)
 
     result = auth.remove_provider_key("openai")
 
@@ -271,7 +271,7 @@ def test_auth_remove_says_the_keychain_could_not_be_reached(monkeypatch, capsys)
 
 
 def test_auth_remove_removes_the_file_copy_and_still_warns_when_the_keychain_is_unreachable(monkeypatch, capsys):
-    monkeypatch.setattr(common, "_keychain_set", lambda env_var, value: False)
+    monkeypatch.setattr(common, "keychain_set", lambda env_var, value: False)
     auth.set_provider_key("openai", "sk-fake-1234")
     monkeypatch.setitem(sys.modules, "keyring", _UnreachableKeyring())
 
@@ -293,11 +293,11 @@ def test_auth_remove_without_keyring_installed_stays_quiet(capsys):
 
 def test_auth_remove_of_a_keychain_only_key_says_so(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
-    common._keychain_set("GRIOT_OPENAI_API_KEY", "sk-fake-1234")
+    common.keychain_set("GRIOT_OPENAI_API_KEY", "sk-fake-1234")
 
     assert auth.cmd_remove("openai") == 0
 
-    assert common._keychain_get("GRIOT_OPENAI_API_KEY") is None
+    assert common.keychain_get("GRIOT_OPENAI_API_KEY") is None
     assert capsys.readouterr().err == ""
 
 
@@ -317,7 +317,7 @@ def test_inject_keychain_credentials_fills_os_environ_gap(monkeypatch):
     downstream before this fix) — an explicit try/finally is the correct,
     unambiguous cleanup here, not reliance on monkeypatch's own tracking."""
     monkeypatch.delenv("GRIOT_OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(common, "_keychain_get", lambda env_var: "sk-from-keychain" if env_var == "GRIOT_OPENAI_API_KEY" else None)
+    monkeypatch.setattr(common, "keychain_get", lambda env_var: "sk-from-keychain" if env_var == "GRIOT_OPENAI_API_KEY" else None)
 
     try:
         common._inject_keychain_credentials()
@@ -341,7 +341,7 @@ def test_inject_keychain_credentials_never_overrides_existing_env(monkeypatch):
     same pytest session (confirmed: this exact mistake, caught by
     tests/test_auth.py failing three tests downstream, before this fix)."""
     monkeypatch.setenv("GRIOT_OPENAI_API_KEY", "sk-from-shell")
-    monkeypatch.setattr(common, "_keychain_get", lambda env_var: "sk-from-keychain" if env_var == "GRIOT_OPENAI_API_KEY" else None)
+    monkeypatch.setattr(common, "keychain_get", lambda env_var: "sk-from-keychain" if env_var == "GRIOT_OPENAI_API_KEY" else None)
 
     common._inject_keychain_credentials()
 
@@ -360,7 +360,7 @@ def test_inject_keychain_credentials_refreshes_gemini_token_global(monkeypatch):
     for why that doesn't actually guard a var that's absent when patched."""
     monkeypatch.delenv("GEMINI_TOKEN", raising=False)
     monkeypatch.setattr(common, "GEMINI_TOKEN", None)
-    monkeypatch.setattr(common, "_keychain_get", lambda env_var: "gk-from-keychain" if env_var == "GEMINI_TOKEN" else None)
+    monkeypatch.setattr(common, "keychain_get", lambda env_var: "gk-from-keychain" if env_var == "GEMINI_TOKEN" else None)
 
     try:
         common._inject_keychain_credentials()

@@ -172,7 +172,7 @@ def test_status_other_collection_lock_error_returns_points_count_none_without_ra
     swallow this and return points_count=None best-effort, not propagate —
     otherwise it breaks the function's '100% read, zero cost' promise."""
     other_collection = "codebase__ocupada-por-outro-processo"
-    other_path = common._collection_path(other_collection)
+    other_path = common.collection_path(other_collection)
     other_path.mkdir(parents=True, exist_ok=True)
     cfg = qe.EdgeConfig(vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})
     # simulates "another process" with the shard already open at the same path —
@@ -193,7 +193,7 @@ def test_status_active_collection_lock_error_returns_points_count_none_without_r
     no try/except at all and propagated the raw exception. Real scenario:
     griot_index_repo (MCP) spawns an indexing subprocess; if griot_index_status
     is called while that subprocess is still writing, the whole tool would break."""
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     path.mkdir(parents=True, exist_ok=True)
     cfg = qe.EdgeConfig(vectors={"dense": qe.EdgeVectorParams(size=common.EMBED_DIM, distance=qe.Distance.Cosine)})
     holder = qe.EdgeShard.create(str(path), cfg)  # simulates another process with the handle open
@@ -290,9 +290,9 @@ def test_status_accepts_explicit_collection_param(monkeypatch):
 
 def test_collection_exists_true_when_marker_present():
     collection = "codebase__some-profile"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
 
     assert common.collection_exists(collection) is True
 
@@ -303,9 +303,9 @@ def test_collection_exists_false_when_marker_absent():
 
 def test_delete_collection_removes_the_directory():
     collection = "codebase__to-delete"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     (path / "extra_file.bin").write_text("data")  # confirms rmtree of the whole dir, not just the marker
 
     common.delete_collection(collection)
@@ -326,9 +326,9 @@ def test_delete_collection_refuses_while_an_indexing_run_holds_the_lock():
     (an unlinked-while-open file just silently vanishes on close — no
     crash, no clean error, worse than refusing up front)."""
     collection = "codebase__locked-target"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True, exist_ok=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     common.acquire_lock(label="some other source")
     try:
         with pytest.raises(ValueError, match="in progress"):
