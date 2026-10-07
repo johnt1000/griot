@@ -8,6 +8,8 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-07
+
 ### Added
 
 - **Golden-set cases keep the search mode they were made in**, and `griot
@@ -1251,6 +1253,7 @@ PyPI is 0.2.0.
 - Apache-2.0 license, packaging metadata, and an English README.
 - Code, CLI-facing strings and tests are entirely in English (2026-08-20).
 
-[Unreleased]: https://github.com/johnt1000/griot/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/johnt1000/griot/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/johnt1000/griot/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/johnt1000/griot/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/johnt1000/griot/releases/tag/v0.2.0
