@@ -347,7 +347,7 @@ def keyword_vectors_over_time(index, monkeypatch):
     """Whether the active collection has keyword vectors, one answer per
     status read, in order: a collection rebuilt between searches."""
     answers = []
-    monkeypatch.setattr(common, "_keyword_search_status", lambda collection: answers.pop(0))
+    monkeypatch.setattr(common, "keyword_search_status", lambda collection: answers.pop(0))
     return answers
 
 
