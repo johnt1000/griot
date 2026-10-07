@@ -19,8 +19,10 @@ every point griot writes) and holds three kinds of query:
      "commit_hash": {"count": 15, "prefix_lengths": [7, 8, 9, 10, 12, 40]}}
 
 A descriptive query is judged against the files written next to it. An
-identifier is relevant where it is DEFINED (a def, a class or a module-level
-assignment in a tracked .py file), not where it is used. Commit-hash queries
+identifier is relevant where it is DEFINED, not where it is used, in any
+file griot indexes (definition_pattern says what counts: a def or class, a
+TS/JS function, class or const, a shell function, a Terraform block label,
+and so on). Commit-hash queries
 are drawn from the repository's own history, evenly spaced, each cut to the
 next prefix length, so the same history gives the same queries.
 
@@ -31,8 +33,11 @@ reader gets (diverse=True, as the CLI and the MCP tool call it).
 
 Everything is built in a fresh temporary directory, with GRIOT_CONFIG_DIR
 and GRIOT_DATA_DIR pointing inside it, and deleted at the end, model
-download included: the script never reads or writes the real griot
-directories, and refuses to run if it cannot be sure of that. On a paid
+download included (its Hugging Face cache and logs are pointed there too):
+the script never reads or writes the real griot directories, and refuses to
+run if it cannot be sure of that. An indexing step whose process fails ends
+the run, unless the process had recorded a complete run first (a crash at
+exit), which the script says and goes on. On a paid
 profile (--profile), indexing the repositories costs what indexing them
 costs."""
 
@@ -42,9 +47,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 # The order the table prints, and the JSON key each kind is read from.
@@ -167,17 +174,30 @@ def require_throwaway_dirs(environ) -> tuple:
     return config, data
 
 
+# Where the model download keeps its cache and writes its logs, relative to the
+# throwaway directory. griot gives the embedding library its own cache_dir,
+# but huggingface_hub and hf_xet still write beside it: hf_xet put log files
+# in ~/.cache/huggingface/xet/logs during a measurement. hf_xet takes its
+# directory from HF_XET_CACHE, else HF_HOME/xet, else
+# XDG_CACHE_HOME/huggingface/xet; huggingface_hub keeps the rest under
+# HF_HOME. All three are set, so none of them falls back to the home directory.
+_CACHE_VARIABLES = {"HF_HOME": "huggingface", "HF_XET_CACHE": "huggingface/xet", "XDG_CACHE_HOME": "cache"}
+
+
 @contextlib.contextmanager
 def throwaway_dirs():
     """A fresh temporary directory holding the griot config and data
-    directories, set in the environment while the block runs; afterwards the
-    variables are what they were and the directory, index and downloaded
-    model included, is gone, whether the run ended well or not."""
+    directories and the model download's caches and logs, set in the
+    environment while the block runs (indexing children inherit it);
+    afterwards the variables are what they were and the directory, index and
+    downloaded model included, is gone, whether the run ended well or not."""
     base = Path(tempfile.mkdtemp(prefix="griot-measure-")).resolve()
-    saved = {name: os.environ.get(name) for name in ("GRIOT_CONFIG_DIR", "GRIOT_DATA_DIR")}
+    saved = {name: os.environ.get(name) for name in ("GRIOT_CONFIG_DIR", "GRIOT_DATA_DIR", *_CACHE_VARIABLES)}
     try:
         os.environ["GRIOT_CONFIG_DIR"] = str(base / "config")
         os.environ["GRIOT_DATA_DIR"] = str(base / "data")
+        for name, sub in _CACHE_VARIABLES.items():
+            os.environ[name] = str(base / sub)
         yield base
     finally:
         for name, value in saved.items():
@@ -194,16 +214,94 @@ def _git(root: Path, *args) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout
 
 
-def defining_files(root: Path, name: str) -> set:
-    """The tracked .py files that define `name`: a def or class of that name,
-    or a module-level assignment to it."""
-    pattern = re.compile(rf"^\s*(async\s+def|def|class)\s+{re.escape(name)}\b|^{re.escape(name)}\s*[:=]",
-                         re.MULTILINE)
+def indexed_file_rules() -> tuple:
+    """(extensions, ignored directories, ignored file names, size limit) of
+    the files griot indexes, read from griot's own indexer so that the two
+    cannot drift apart. Read from its source, not imported: importing any
+    module that loads griot.common fixes griot's directories, and this runs
+    before the throwaway ones are set. Finding the module imports only the
+    griot package, which loads nothing."""
+    import ast
+    import importlib.util
+
+    source = Path(importlib.util.find_spec("griot.index_code").origin).read_text()
+    wanted = ("SUPPORTED_EXTENSIONS", "IGNORE_DIRS", "IGNORE_FILES", "MAX_FILE_BYTES")
+    values = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and getattr(node.targets[0], "id", None) in wanted:
+            values[node.targets[0].id] = ast.literal_eval(node.value)
+    return tuple(values[name] for name in wanted)
+
+
+def indexed_files(root: Path) -> list:
+    """The files of `root` that `griot index code` reads, by the indexer's
+    own rules (index_code.discover_files): what git does not ignore, with an
+    extension griot indexes, outside the directories and files it skips, a
+    regular file within the size limit. A definition anywhere else can never
+    be found, so it cannot count as relevant."""
+    extensions, ignore_dirs, ignore_files, max_bytes = indexed_file_rules()
     found = set()
-    for path in _git(root, "ls-files", "-z", "--", "*.py").split("\0"):
-        if path and pattern.search((root / path).read_text(errors="replace")):
-            found.add(path)
-    return found
+    for rel in _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0"):
+        if not rel:
+            continue
+        path = Path(rel)
+        if (path.suffix not in extensions or path.name in ignore_files or ".min." in path.name.lower()
+                or any(part in ignore_dirs for part in path.parts[:-1])):
+            continue
+        try:
+            info = os.lstat(root / rel)
+        except OSError:
+            continue  # tracked but deleted from disk
+        if stat.S_ISREG(info.st_mode) and info.st_size <= max_bytes:
+            found.add(rel)
+    return sorted(found)
+
+
+# Words that may stand before a declaration without changing what it declares
+# (export default async function f, pub(crate) fn f, private static f() {}).
+_MODIFIERS = (r"(?:(?:export|default|declare|abstract|async|public|private|protected|internal|static|final"
+              r"|sealed|override|readonly|unsafe|extern|pub(?:\([^)\n]*\))?)[ \t]+)*")
+# Keywords whose next word is the name they declare, across the languages
+# griot indexes (Python, TS/JS, Go, Rust, Ruby, Scala, PHP, C#, shell).
+_DECLARATION_KEYWORDS = (r"(?:def|class|function|const|let|var|interface|type|enum|func|fn|struct|trait"
+                         r"|module|namespace|object|record|mod)")
+
+
+def definition_pattern(name: str) -> re.Pattern:
+    """Where `name` is DEFINED rather than used. The rule: a name is defined
+    where a line binds it, and code binds a name in one of a few shapes
+    whatever the language, none of which a use takes:
+
+    - after a declaration keyword and its modifiers: def f, export const f,
+      function* f, func (r *T) f, def self.f, type f, pub fn f;
+    - at column 0, followed by an assignment or an annotation: a module-level
+      f = ..., f: int, a shell f=..., export f=..., a top-level YAML key;
+    - as a signature followed by its body: a shell f() {, a JS/TS method
+      f(a): T {, the brace on the same line or the next;
+    - bound to an arrow function, at any depth: f = () =>, a class field;
+    - as the last label of a Terraform/HCL block: resource "type" "f" {,
+      variable "f" {;
+    - as what an SQL CREATE creates: CREATE TABLE IF NOT EXISTS s.f."""
+    n = re.escape(name) + r"(?![\w$])"
+    forms = [
+        rf"^[ \t]*{_MODIFIERS}{_DECLARATION_KEYWORDS}(?:[ \t]*\*[ \t]*|[ \t]+)(?:\([^)\n]*\)[ \t]*|\w+\.)?{n}",
+        rf"^(?:(?:export|readonly|declare)[ \t]+)?{n}[ \t]*(?::|=(?!=))",
+        rf"^[ \t]*{_MODIFIERS}{n}[ \t]*\([^)\n]*\)[ \t]*(?::[^{{;\n]*)?(?:\{{|\n[ \t]*\{{)",
+        rf"^[ \t]*{_MODIFIERS}{n}[ \t]*(?::[^=\n]*)?=[ \t]*(?:async[ \t]*)?(?:\([^)\n]*\)|[\w$]+)[ \t]*"
+        rf"(?::[^=\n]*)?=>",
+        rf'^[ \t]*(?:resource|data|module|variable|output|provider)(?:[ \t]+"[^"\n]*")*[ \t]+"{n}"[ \t]*\{{',
+        rf"^[ \t]*(?i:create)(?:[ \t]+(?i:or[ \t]+replace|temp|temporary|unique|materialized))*[ \t]+"
+        rf"(?i:table|view|function|procedure|index|type|trigger|schema|sequence)"
+        rf'(?:[ \t]+(?i:if[ \t]+not[ \t]+exists))?[ \t]+(?:"?[\w$]+"?\.)?"?{n}',
+    ]
+    return re.compile("|".join(f"(?:{form})" for form in forms), re.MULTILINE)
+
+
+def defining_files(root: Path, name: str) -> set:
+    """The files griot indexes (indexed_files) that define `name`
+    (definition_pattern), in whatever language they are written."""
+    pattern = definition_pattern(name)
+    return {path for path in indexed_files(root) if pattern.search((root / path).read_text(errors="replace"))}
 
 
 def commit_hash_queries(root: Path, count: int, prefix_lengths: list) -> list:
@@ -242,7 +340,7 @@ def query_cases(spec: dict, roots: dict, commit_hashes: bool = True) -> list:
     for name in spec.get("identifier", []):
         files = defining_files(root, name)
         if not files:
-            raise SystemExit(f"{repo}: no tracked .py file defines the identifier {name!r}.")
+            raise SystemExit(f"{repo}: no file griot indexes defines the identifier {name!r}.")
         cases.append(("identifier", name, {("code", repo, f) for f in files}))
     hashes = spec.get("commit_hash")
     if commit_hashes and hashes:
@@ -253,12 +351,48 @@ def query_cases(spec: dict, roots: dict, commit_hashes: bool = True) -> list:
 
 # --- the run -----------------------------------------------------------------
 
+def _index_command(source: str, root: Path) -> list:
+    return [sys.executable, "-m", "griot.cli", "index", source, "--path", str(root)]
+
+
+def completed_run(source: str, root: Path, since: datetime) -> dict | None:
+    """The run the indexing child for `source` of `root` recorded, if it is
+    the newest in the run log, was written after `since`, and says the run
+    finished with every document indexed. Each indexer records its run as the
+    last thing it does, and a run that died is recorded with no counts, so
+    such a record is the child's own word that its work is done."""
+    from griot import common, logdb  # the throwaway directories are set by now
+
+    for run in logdb.read_recent(common.LOG_DIR, "runs", limit=1):
+        if (run.get("script") == f"index_{source}.py" and run.get("repo") == str(root)
+                and datetime.fromisoformat(run["timestamp"]) >= since
+                and run.get("indexed") is not None and run.get("failed") == 0):
+            return run
+    return None
+
+
 def _index(root: Path) -> None:
     """Indexes a repository through the CLI, as a person would, in a child
-    process that inherits the throwaway directories."""
+    process that inherits the throwaway directories.
+
+    A child can die AFTER finishing: one aborted at interpreter exit
+    (libc++abi: recursive_mutex lock failed) once it had printed that it
+    indexed everything with 0 failed, and that exit code ended a 45-minute
+    measurement. So a failing exit code ends the run only when the child did
+    not record a complete run of its own; when it did, the index it built is
+    whole, and the measurement goes on, saying so."""
     for source in SOURCES_INDEXED:
-        subprocess.run([sys.executable, "-m", "griot.cli", "index", source, "--path", str(root)],
-                       check=True, env=os.environ.copy(), stdin=subprocess.DEVNULL)
+        started = datetime.now(timezone.utc)
+        code = subprocess.run(_index_command(source, root), env=os.environ.copy(),
+                              stdin=subprocess.DEVNULL).returncode
+        if code == 0:
+            continue
+        run = completed_run(source, root, started)
+        if run is None:
+            raise SystemExit(f"Indexing {source} of {root.name} failed (exit code {code}).")
+        print(f"Note: indexing {source} of {root.name} exited with code {code} after recording a complete run "
+              f"({run['indexed']} indexed, {run.get('skipped') or 0} unchanged, 0 failed); "
+              f"its index is whole, so the measurement goes on.", file=sys.stderr)
 
 
 def measure(cases: list, limit: int) -> tuple:
