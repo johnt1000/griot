@@ -225,7 +225,7 @@ def _template() -> dict[str, tuple[str | None, str]]:
     from griot import common
 
     return {variable: (default or None, description)
-            for variable, default, description, _ in common._ENV_TEMPLATE_SETTINGS}
+            for variable, default, description, _ in common.ENV_TEMPLATE_SETTINGS}
 
 
 def default_of(setting: Setting) -> str | None:

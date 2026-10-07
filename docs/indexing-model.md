@@ -145,7 +145,10 @@ with no word keyword search can match. Every result says which mode ran. The
 quality check and the retrieval evaluation measure vector search
 explicitly, whatever the default; a golden-set case is searched in the mode
 it was made in (vector when it does not say), and a keyword or hybrid case
-is skipped, not failed, on a collection without keyword vectors. A keyword search embeds nothing, so it costs nothing on
+is skipped, not failed, on a collection without keyword vectors. A new case
+(`griot golden-set add`, `griot_golden_set_add`) is made in hybrid unless a
+mode is given, falling back to vector where the default search does, and
+saying so on a collection without keyword vectors. A keyword search embeds nothing, so it costs nothing on
 any profile; scores are on each mode's own scale and are not comparable
 across modes.
 

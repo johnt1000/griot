@@ -18,12 +18,12 @@ NOT_A_NAME = ["/etc", "../outside", "a/b", "..", ".", "", "a\\b", "a\x00b", "~",
 @pytest.mark.parametrize("name", NOT_A_NAME, ids=repr)
 def test_a_collection_name_that_is_not_one_path_component_is_refused(name):
     with pytest.raises(ValueError, match="collection"):
-        common._collection_path(name)
+        common.collection_path(name)
 
 
 @pytest.mark.parametrize("name", ["codebase__jina-code", "codebase__never-indexed"])
 def test_an_ordinary_collection_name_stays_under_the_data_directory(name):
-    assert common._collection_path(name).parent == common.QDRANT_PATH
+    assert common.collection_path(name).parent == common.QDRANT_PATH
 
 
 def test_status_refuses_a_path_instead_of_opening_it(tmp_path):
@@ -31,7 +31,7 @@ def test_status_refuses_a_path_instead_of_opening_it(tmp_path):
     directory: an absolute path replaced it, `..` walked out of it."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (elsewhere / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (elsewhere / common.EDGE_CONFIG_MARKER).write_text("{}")
     with pytest.raises(ValueError, match="collection"):
         common.get_index_status(str(elsewhere))
 

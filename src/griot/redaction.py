@@ -267,11 +267,11 @@ def audit_index(*, repos: list[str] | None = None, max_points: int | None = None
     from griot import ask, common
 
     found = {"indexed": False, "scanned": 0, "complete": True, "total": 0, "places": []}
-    names, _ = common._checked_filters(repos, None)
+    names, _ = common.checked_search_filters(repos, None)
     if not common.collection_exists(common.COLLECTION_NAME):
         return found
     client = common.get_client()
-    scroll_filter = common._search_filter(client, names, [])
+    scroll_filter = common.search_filter(client, names, [])
     found["indexed"] = True
     places: dict[str, dict] = {}
     offset = None

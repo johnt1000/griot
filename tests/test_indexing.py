@@ -248,7 +248,7 @@ def test_release_then_reopen_allows_a_second_process_style_open():
     common.get_client()  # 'server' opens the collection
     common.release_client()  # releases before 'spawning the subprocess'
 
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     other_handle = qe.EdgeShard.load(str(path))  # 'subprocess' opens successfully
     try:
         assert other_handle is not None
@@ -393,9 +393,9 @@ def test_multi_mode_reuses_client_within_idle_window(monkeypatch):
 
 def test_secure_collection_dir_fixes_loose_permissions(tmp_path, monkeypatch):
     collection = "codebase__test-perms"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     subdir = path / "segments"
     subdir.mkdir()
     loose_file = subdir / "page_0.dat"
@@ -420,9 +420,9 @@ def test_secure_collection_dir_skips_chmod_when_mode_already_correct(tmp_path, m
     visiting every entry (a new file from another process must still be
     checked)."""
     collection = "codebase__test-perms-skip"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     subdir = path / "segments"
     subdir.mkdir()
     correct_file = subdir / "correct.dat"
@@ -457,9 +457,9 @@ def test_secure_collection_dir_logs_warning_on_chmod_failure(tmp_path, monkeypat
     in griot.log without touching stdout, since this path also runs from
     the MCP server where stdout is the JSON-RPC transport."""
     collection = "codebase__test-perms-fail"
-    path = common._collection_path(collection)
+    path = common.collection_path(collection)
     path.mkdir(parents=True)
-    (path / common._EDGE_CONFIG_MARKER).write_text("{}")
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
     subdir = path / "segments"
     subdir.mkdir()
     bad_file = subdir / "bad.dat"
@@ -570,7 +570,7 @@ def test_get_client_repairs_permissions_on_creation(monkeypatch):
     just created itself, not just chmod the outer directory."""
     common.get_client()
 
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     for root, dirs, files in os.walk(path):
         assert (os.stat(root).st_mode & 0o777) == 0o700
         for f in files:
@@ -588,7 +588,7 @@ def test_get_client_repairs_permissions_on_reload(monkeypatch):
     common.get_client()
     common.release_client()
 
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     for root, _dirs, files in os.walk(path):
         os.chmod(root, 0o755)
         for f in files:
@@ -609,7 +609,7 @@ def test_index_documents_repairs_permissions_after_writing(monkeypatch):
     _fake_embed(monkeypatch)
     common.index_documents(_docs(3))
 
-    path = common._collection_path(common.COLLECTION_NAME)
+    path = common.collection_path(common.COLLECTION_NAME)
     for root, dirs, files in os.walk(path):
         assert (os.stat(root).st_mode & 0o777) == 0o700
         for f in files:
