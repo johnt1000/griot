@@ -15,7 +15,7 @@ Named after the West African storyteller who keeps a community's history: griot 
 - **MCP server** — expose search/status/quality tools to Claude Code, opencode or any MCP client. Indexing via agent is off by default and path-allowlisted.
 - **Security-hardened** — API keys never in URLs or logs, 0600/0700 file modes on everything it writes, no credential ever follows a redirect. See [SECURITY.md](SECURITY.md).
 
-**Status:** v0.2.1, beta. One maintainer, used daily by its author. The CLI surface and the on-disk layout may still change between 0.x releases.
+**Status:** v0.3.0, beta. One maintainer, used daily by its author. The CLI surface and the on-disk layout may still change between 0.x releases.
 
 ## Installation
 
