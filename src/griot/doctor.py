@@ -95,7 +95,7 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     finds it closed and would say nothing."""
     if isinstance(error, UnknownEmbedProfile):
         return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r} "
-                                        f"(set in the environment, or in {env_path})",
+                                        f"(set in the environment, or in {env_path}).{error.reason}",
                       f"griot profiles use <name>   # one of: {', '.join(error.options)}; or unset the variable")
     broken = _settings_in_file(env_path)
     if broken:

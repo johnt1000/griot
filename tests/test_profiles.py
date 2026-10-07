@@ -38,7 +38,7 @@ def test_profiles_list_8gb_flags_medium_and_heavy_as_might_be_tight(monkeypatch,
     for name in ["bge-small", "nomic-q"]:
         line = next(l for l in lines if l.strip().startswith(name))
         assert "fits comfortably" in line, f"{name} should fit in 8GB: {line!r}"
-    for name in ["jina-code", "mxbai-large", "bge-m3", "bge-large-en"]:
+    for name in ["jina-code", "mxbai-large", "bge-large-en"]:
         line = next(l for l in lines if l.strip().startswith(name))
         assert "might be tight" in line, f"{name} should not fit in 8GB: {line!r}"
 
@@ -49,7 +49,7 @@ def test_profiles_list_32gb_everything_fits_comfortably(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "32.0 GB" in out
-    for name in ["bge-small", "nomic-q", "jina-code", "mxbai-large", "bge-m3", "bge-large-en"]:
+    for name in ["bge-small", "nomic-q", "jina-code", "mxbai-large", "bge-large-en"]:
         line = next(l for l in out.splitlines() if l.strip().startswith(name))
         assert "fits comfortably" in line, f"{name} should fit in 32GB: {line!r}"
 
@@ -64,7 +64,7 @@ def test_profiles_list_16gb_reproduces_section_9_3_mockup(monkeypatch, capsys):
     for name in ["bge-small", "nomic-q", "jina-code", "mxbai-large"]:
         line = next(l for l in lines if l.strip().startswith(name))
         assert "fits comfortably" in line, f"{name} should fit in 16GB: {line!r}"
-    for name in ["bge-m3", "bge-large-en"]:
+    for name in ["bge-large-en"]:
         line = next(l for l in lines if l.strip().startswith(name))
         assert "might be tight" in line, f"{name} should not fit in 16GB: {line!r}"
 
@@ -282,6 +282,19 @@ def test_cmd_profiles_delete_happy_path(monkeypatch, capsys):
     assert not path.exists()
 
 
+def test_a_retired_profile_left_on_disk_can_still_be_deleted(monkeypatch):
+    """An index run on bge-m3 opened its collection before the first
+    embedding failed, so an empty one can be on disk. With the profile
+    gone, `griot profiles delete bge-m3` is the way to remove it."""
+    monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
+    path = common.collection_path(common.collection_name_for("bge-m3"))
+    path.mkdir(parents=True, exist_ok=True)
+    (path / common.EDGE_CONFIG_MARKER).write_text("{}")
+
+    assert cli.delete_profile("bge-m3") == "codebase__bge-m3"
+    assert not path.exists()
+
+
 def test_cmd_profiles_delete_unknown_profile_is_a_clear_cli_error(capsys):
     rc = cli.main(["profiles", "delete", "not-a-real-profile"])
     assert rc == 1
@@ -310,3 +323,48 @@ def test_delete_profile_active_override_lets_a_no_longer_active_profile_be_delet
     # ...and `other` (the one the override says IS active) must be refused.
     with pytest.raises(ValueError, match="active"):
         cli.delete_profile(other, active_profile_name=other)
+
+
+
+# --- every listed local profile can load -------------------------------------
+# griot listed a `bge-m3` profile that fastembed has never been able to load
+# ("Model BAAI/bge-m3 is not supported in TextEmbedding"): whoever picked it,
+# from the list that offered it, got an error at the first embedding. The
+# check below is the rule fastembed's own loader applies, read off its own
+# list of models, so no weights are downloaded.
+
+
+def _loadable_models() -> dict[str, dict]:
+    """fastembed's model list, keyed the way its loader matches a name:
+    case-insensitively (TextEmbedding.__init__)."""
+    return {m["model"].lower(): m for m in common._text_embedding_class().list_supported_models()}
+
+
+@pytest.mark.parametrize("name", [n for n, p in common.EMBED_PROFILES.items() if p["backend"] == "local"])
+def test_every_local_profile_names_a_model_its_class_can_load(name):
+    profile = common.EMBED_PROFILES[name]
+    supported = _loadable_models().get(profile["model"].lower())
+    assert supported is not None, (
+        f"profile {name!r} names {profile['model']!r}, which {common._text_embedding_class().__name__} "
+        f"does not support: picking it fails at the first embedding")
+    # The collection is made with the profile's dim: a model that returns
+    # another size is refused by the store at the first write.
+    assert supported["dim"] == profile["dim"], f"{name}: fastembed says {supported['dim']}d"
+
+
+@pytest.mark.anyio
+async def test_griot_profiles_list_offers_no_local_profile_that_cannot_load():
+    """Through the protocol: what an agent is offered to switch to."""
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_profiles_list", {})
+
+    assert not result.is_error
+    listed = {p["profile"] for p in result.structured_content["profiles"]}
+    assert listed == set(common.EMBED_PROFILES)
+    local = {n for n in listed if common.EMBED_PROFILES[n]["backend"] == "local"}
+    assert local and all(common.EMBED_PROFILES[n]["model"].lower() in _loadable_models() for n in local)
+    assert "bge-m3" not in listed

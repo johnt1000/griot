@@ -222,7 +222,7 @@ def tools_safe_to_preapprove() -> list[str]:
 
 
 # Cap on limit ([review], the design notes): without it, a large value
-# doesn't cost more in the local profile (jina-code/bge-m3) but bloats the
+# doesn't cost more in the local profile (jina-code/bge-small) but bloats the
 # agent's context with low-relevance snippets for no good reason.
 SEARCH_LIMIT_MAX = 50
 

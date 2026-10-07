@@ -820,7 +820,7 @@ def load_repos() -> list[str]:
 # goes straight to Google's API (GEMINI_TOKEN), no proxy in between.
 # GEMINI_TOKEN is only required at the moment of use (the "gemini" embedding
 # profile, or the chat answer) — it doesn't fail here at import time, so as
-# not to break users of local-only profiles (jina-code/bge-m3), which need
+# not to break users of local-only profiles (jina-code/bge-small), which need
 # no credential at all.
 GEMINI_TOKEN = os.getenv("GEMINI_TOKEN")
 
@@ -939,15 +939,30 @@ EMBED_PROFILES = {
         "backend": "local", "model": "mixedbread-ai/mxbai-embed-large-v1", "dim": 1024,
         "ram_tier": "medium", "onnx_size_mb": 640, "rss_estimate_mb": (830, 1150),
     },
-    "bge-m3": {   # unchanged, only ram_tier/onnx_size_mb corrected (was ~1GB, is 2.27GB confirmed in fastembed#602)
-        "backend": "local", "model": "BAAI/bge-m3", "dim": 1024,
-        "ram_tier": "heavy", "onnx_size_mb": 2270, "rss_estimate_mb": (2950, 4100),
-    },
     "bge-large-en": {
         "backend": "local", "model": "BAAI/bge-large-en-v1.5", "dim": 1024,
         "ram_tier": "heavy", "onnx_size_mb": 1200, "rss_estimate_mb": (1560, 2160),
     },
 }
+
+
+# Profiles griot listed once and no longer has, with why: a config that still
+# names one is told that, not just "unknown". bge-m3 was listed and could
+# never load: fastembed (0.8.0, the version pinned) has BAAI/bge-m3 in none of its
+# model classes, so the first embedding raised "Model BAAI/bge-m3 is not
+# supported in TextEmbedding". Every local profile is now checked against
+# fastembed's own model list (tests/test_profiles.py).
+RETIRED_EMBED_PROFILES = {
+    "bge-m3": "griot removed it because fastembed, the library griot embeds locally with, cannot load BAAI/bge-m3, "
+              "so it never worked",
+}
+
+
+def unknown_profile_reason(name: str) -> str:
+    """What to say about a profile name griot does not have: why it is gone,
+    for one it used to list, or nothing."""
+    retired = RETIRED_EMBED_PROFILES.get(name)
+    return f" '{name}' is no longer a profile: {retired}." if retired else ""
 
 
 def _resolve_profile(name: str) -> dict:
@@ -1016,10 +1031,11 @@ if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
     # A setting griot cannot start with, like a ceiling that is not a number:
     # one line that names it and says how to fix it, not a traceback.
     raise UnknownEmbedProfile(
-        f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}. Options: {', '.join(EMBED_PROFILES)}. "
+        f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}.{unknown_profile_reason(ACTIVE_PROFILE_NAME)} "
+        f"Options: {', '.join(EMBED_PROFILES)}. "
         f"If the variable is exported in this environment, unset it or fix it there (the environment wins "
         f"over the file); otherwise pick one with `griot profiles use <name>`, which writes {ENV_PATH}.",
-        ACTIVE_PROFILE_NAME, list(EMBED_PROFILES),
+        ACTIVE_PROFILE_NAME, list(EMBED_PROFILES), unknown_profile_reason(ACTIVE_PROFILE_NAME),
     )
 ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
 
