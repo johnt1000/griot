@@ -99,8 +99,11 @@ same message stay two results. `group_by_document=true` goes further and keeps o
 best-scoring chunk of each document, which makes a given number of results
 reach more distinct files, commits and PRs: repeated hits on one file are
 *different* chunks, not redundancy, so grouping trades depth for breadth.
-The quality check and the golden set do not get this arrangement: they
-measure retrieval itself, point by point.
+The self-check of `griot quality-check` does not get this arrangement: it
+asks whether one exact point finds itself. The golden set does, because a
+case asserts what a reader asking that question gets: a case whose
+document came back only as a copy, named in a result's `also_in`, passes,
+and says so in `met_by_copy` (which result carried it).
 
 ## Two vectors per point
 
@@ -142,10 +145,11 @@ default runs vector instead of failing: on a collection without keyword
 vectors (and then it says so, naming `griot index keywords`: with every CLI
 command, and on the first default search of an MCP server process), or for a query
 with no word keyword search can match. Every result says which mode ran. The
-quality check and the retrieval evaluation measure vector search
-explicitly, whatever the default; a golden-set case is searched in the mode
-it was made in (vector when it does not say), and a keyword or hybrid case
-is skipped, not failed, on a collection without keyword vectors. A new case
+quality check's self-check and the retrieval evaluation measure vector
+search explicitly, whatever the default; a golden-set case is searched in
+the mode it was made in (vector when it does not say), the way readers
+search, and a keyword or hybrid case is skipped, not failed, on a
+collection without keyword vectors. A new case
 (`griot golden-set add`, `griot_golden_set_add`) is made in hybrid unless a
 mode is given, falling back to vector where the default search does, and
 saying so on a collection without keyword vectors. A keyword search embeds nothing, so it costs nothing on
