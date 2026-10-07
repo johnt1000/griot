@@ -269,8 +269,33 @@ SEARCH_RESULT_NOTE = (
 # collection because the note is about one: a profile switch that lands on
 # another collection without keyword vectors has not been told about yet.
 # The CLI keeps the note with every command (one process each, read by a
-# person who may not have seen it before).
+# person who may not have seen it before). A collection stays here only while
+# it lacks keyword vectors: a default search that finds it with them (or finds
+# no collection) forgets it, so one rebuilt without them again, by an older
+# griot say, is told again. Tested and changed only under the lock: the SDK
+# runs sync tools in worker threads, and two first searches at once must not
+# both carry the note.
 _KEYWORD_NOTE_GIVEN_FOR: set[str] = set()
+_KEYWORD_NOTE_LOCK = threading.Lock()
+
+
+def _keyword_note_for(collection: str, asked_mode: str | None, mode_note: str | None) -> str | None:
+    """The fallback note this griot_search result carries: `mode_note` the
+    first time it is given for `collection` while it lacks keyword vectors,
+    None otherwise. Called only once a search returned (a refused one told
+    nobody)."""
+    with _KEYWORD_NOTE_LOCK:
+        if mode_note:
+            if collection in _KEYWORD_NOTE_GIVEN_FOR:
+                return None
+            _KEYWORD_NOTE_GIVEN_FOR.add(collection)
+            return mode_note
+        # A default search without the note read the collection's state and
+        # found keyword vectors, or no collection to read: what the note was
+        # given for is gone. An explicit mode read nothing and says nothing.
+        if asked_mode is None:
+            _KEYWORD_NOTE_GIVEN_FOR.discard(collection)
+        return None
 
 # [review finding] Same reasoning as SEARCH_RESULT_NOTE, one step further
 # removed: golden-set cases are the only tool output an AGENT can author, via
@@ -922,7 +947,7 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             mode=mode,
             # Grouped, `limit` counts documents and each result is the best
             # chunk of one: `griot golden-set review` must not make a case
-            # from it, since a case is checked by an ungrouped search.
+            # from it, since a case is checked by a search not grouped by document.
             group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
@@ -1237,6 +1262,13 @@ class QualityCheckFailure(TypedDict):
     reason: str
 
 
+class MetByCopy(TypedDict):
+    expected: dict
+    result: int
+    result_source: str
+    copy: str
+
+
 class GoldenCheckCase(TypedDict):
     query: str
     # The search the case was made in and is checked with: vector, keyword
@@ -1248,6 +1280,11 @@ class GoldenCheckCase(TypedDict):
     skipped: bool
     # The expected entries no result matched.
     missing: list[dict]
+    # The expected entries met only as a copy: the same text, found in the
+    # place the case names, folded into result number `result` (1-based,
+    # named `result_source`) and listed in its `also_in` as `copy`. The case
+    # passes on them: a reader got that text, under another name.
+    met_by_copy: list[MetByCopy]
     # Set when the case could not pass whatever the search returned (its
     # repository has nothing indexed, or it constrains nothing).
     reason: str | None
@@ -1366,6 +1403,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     started_at = time.time()
     # None is the default (hybrid where it can run, vector where it cannot,
     # never an error); an explicit mode runs as asked or is refused.
+    asked_mode = mode
     mode, mode_note = common.search_mode_for(query, mode)
     results = common.search(query, limit, group_by_document=group_by_document,
                             repos=repos, source_types=source_types, diverse=True, mode=mode)
@@ -1380,11 +1418,9 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                           else f"{_printable(repo)} (the indexed commit is not in this history)" for repo, count in behind.items())
         note += (f" The index of these repositories is behind their HEAD: {named}; what changed since is not in "
                  f"these results (see `behind`, and griot_index_status).")
-    # Counted as given only here, once the search returned: a refused search
-    # carried the note to nobody.
-    if mode_note and common.COLLECTION_NAME not in _KEYWORD_NOTE_GIVEN_FOR:
-        _KEYWORD_NOTE_GIVEN_FOR.add(common.COLLECTION_NAME)
-        note += " " + mode_note
+    keyword_note = _keyword_note_for(common.COLLECTION_NAME, asked_mode, mode_note)
+    if keyword_note:
+        note += " " + keyword_note
     return {
         "note": note,
         "results": [
@@ -2408,7 +2444,9 @@ def griot_health_report() -> str:
         "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
         "(`griot index keywords` builds them); report it as not measured, never as passing "
         "or failing: `total` counts only the cases that ran, so report \"8 of 8 passed, 2 "
-        "skipped\", never \"8 of 10\". A failed case with `limit_reduced_from` set "
+        "skipped\", never \"8 of 10\". A passed case with `met_by_copy` got the text it names "
+        "from a copy in another place (the result it names carried it): report it as met by "
+        "a copy. A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "
@@ -2511,6 +2549,8 @@ def _golden_check_shown(golden_check: dict, as_written: list[dict]) -> GoldenChe
         "cases": [{
             "query": case["query"], "mode": case["mode"], "passed": case["passed"], "skipped": case["skipped"],
             "missing": case["missing"],
+            "met_by_copy": [{**met, "result_source": common.shown(met["result_source"]),
+                             "copy": common.shown(met["copy"])} for met in case["met_by_copy"]],
             "reason": case.get("reason"),
             "top_results": [{"score": hit["score"], "source_type": hit["source_type"],
                              "repo": common.shown(str(hit["repo"])) if hit["repo"] is not None else None}
@@ -2535,8 +2575,10 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     results that must come back: the only one that says search is useful.
     Each case is searched in its own `mode` (the one it was made in), as
     griot_search returns results (`diverse`), and has
-    `passed`, what was `missing`, and a `reason` when it could not pass at
-    all (its repository has nothing indexed). A keyword or hybrid case on a
+    `passed`, what was `missing`, `met_by_copy` (an expected document that
+    came back only as a copy of the same text, named in a result's
+    `also_in`: met, and said which result carried it), and a `reason` when
+    it could not pass at all (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
     failed, with `reason` naming the command that builds them; `ran_by_mode`
     counts the cases searched per mode. A case that asks for more results

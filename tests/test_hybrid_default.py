@@ -11,6 +11,7 @@ tests/test_golden_set_modes.py).
 """
 
 import json
+import threading
 
 import pytest
 from mcp.client.client import Client
@@ -290,3 +291,91 @@ def test_the_cli_gives_the_fallback_note_with_every_command(legacy_index, capsys
         captured = capsys.readouterr()
         assert "Mode: vector" in captured.out
         assert (captured.out + captured.err).count("griot index keywords") == 1
+
+
+# --- the fallback note's memory: atomic, and forgotten once the collection changes -------------
+
+
+class _SetWhoseLookupWaitsForASecondCaller(set):
+    """A set whose membership test answers, then waits (briefly) for a second
+    thread to reach the same test before returning. Unguarded, two first
+    searches both read "absent" before either adds, and both carry the note;
+    under a lock the second cannot test until the first has added, so the
+    wait times out and the second reads "present"."""
+
+    def __init__(self, barrier):
+        super().__init__()
+        self.barrier = barrier
+
+    def __contains__(self, item):
+        answer = super().__contains__(item)
+        try:
+            self.barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return answer
+
+
+def test_two_concurrent_first_searches_carry_the_fallback_note_once(monkeypatch):
+    """The check and the add are one step: of two first default searches at
+    the same moment, exactly one result carries the note."""
+    monkeypatch.setattr(common, "search_mode_for",
+                        lambda query, mode: ("vector", common.KEYWORD_SEARCH_NOT_BUILT_NOTE))
+    monkeypatch.setattr(common, "search", lambda *a, **kw: [])
+    monkeypatch.setattr(mcp_server, "_log_search", lambda *a, **kw: None)
+    monkeypatch.setattr(mcp_server.freshness, "behind_among", lambda repos: {})
+    monkeypatch.setattr(mcp_server, "_KEYWORD_NOTE_GIVEN_FOR",
+                        _SetWhoseLookupWaitsForASecondCaller(threading.Barrier(2)))
+    start = threading.Barrier(2)
+    notes = []
+
+    def first_search():
+        start.wait(timeout=5)
+        notes.append(mcp_server.griot_search("acquire_lock", limit=3)["note"])
+
+    threads = [threading.Thread(target=first_search) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert len(notes) == 2
+    assert sum("griot index keywords" in note for note in notes) == 1
+
+
+@pytest.fixture
+def keyword_vectors_over_time(index, monkeypatch):
+    """Whether the active collection has keyword vectors, one answer per
+    status read, in order: a collection rebuilt between searches."""
+    answers = []
+    monkeypatch.setattr(common, "keyword_search_status", lambda collection: answers.pop(0))
+    return answers
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("in_between", [True, None], ids=["keyword-vectors-built", "collection-gone"])
+async def test_the_fallback_note_is_said_again_once_the_collection_lost_keyword_vectors_again(
+        keyword_vectors_over_time, in_between):
+    """The note is about a collection WITHOUT keyword vectors. Once a default
+    search finds the collection with them (or finds none), the note given
+    earlier was about a collection that is no longer there: one rebuilt
+    without them again (by an older griot) has to be told again."""
+    keyword_vectors_over_time.extend([False, False, in_between, False, False])
+    async with Client(mcp_server.mcp) as client:
+        notes = [(await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+                  ).structured_content["note"] for _ in range(5)]
+    assert [note.count("griot index keywords") for note in notes] == [1, 0, 0, 1, 0]
+    assert keyword_vectors_over_time == [], "one status read per default search"
+
+
+@pytest.mark.anyio
+async def test_an_explicit_mode_search_does_not_make_the_fallback_note_said_again(keyword_vectors_over_time):
+    """An explicit mode reads nothing about the collection, so it cannot tell
+    that the collection changed: the note is not repeated after one."""
+    keyword_vectors_over_time.extend([False, False])
+    async with Client(mcp_server.mcp) as client:
+        first = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+        explicit = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3, "mode": "vector"})
+        again = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
+    assert explicit.is_error is False
+    assert first.structured_content["note"].count("griot index keywords") == 1
+    assert "griot index keywords" not in again.structured_content["note"]

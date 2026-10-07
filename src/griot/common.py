@@ -4251,13 +4251,17 @@ class SearchHit:
     """One result of a diverse search: what a stored point offers a reader
     (`id`, `score`, `payload`), plus `also_in`, the labels of the other
     places where the same thing was found among the matches the search
-    looked at (every window it fetched)."""
+    looked at (every window it fetched). `copies` are the payloads behind
+    `also_in`, in the same order: a label is cut and redacted, so the golden
+    set needs the stored fields to tell whether a case's document came back
+    as one of them. Not for a reader: it carries each copy's text again."""
 
-    __slots__ = ("id", "score", "payload", "also_in")
+    __slots__ = ("id", "score", "payload", "also_in", "copies")
 
     def __init__(self, hit):
         self.id, self.score, self.payload = hit.id, hit.score, hit.payload or {}
         self.also_in: list[str] = []
+        self.copies: list[dict] = []
 
 
 def _diversified(hits: list, limit: int, per_document: int) -> list:
@@ -4290,6 +4294,7 @@ def _diversified(hits: list, limit: int, per_document: int) -> list:
             label = source_label(payload)
             if label != source_label(twin.payload) and label not in twin.also_in:
                 twin.also_in.append(label)
+                twin.copies.append(payload)
             continue
         if len(kept) >= limit:
             continue  # still reading on: a copy of something kept may come later
@@ -4475,7 +4480,8 @@ SEARCH_DEFAULT_MODE = "hybrid"
 # is said; how often it is said is up to each surface: the CLI (`griot
 # search`, `griot ask`) says it with every command, one process each, while
 # the MCP server says it on the first default search of the process for each
-# collection and afterwards only reports `mode: vector`
+# collection and afterwards only reports `mode: vector`, until a default
+# search finds that collection with keyword vectors again
 # (mcp_server._KEYWORD_NOTE_GIVEN_FOR).
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
