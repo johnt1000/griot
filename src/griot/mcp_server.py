@@ -947,7 +947,8 @@ def _log_search(query: str, limit: int, results: list, elapsed: float, *,
             mode=mode,
             # Grouped, `limit` counts documents and each result is the best
             # chunk of one: `griot golden-set review` must not make a case
-            # from it, since a case is checked by a search not grouped by document.
+            # from it, since a case is checked by a search not grouped by
+            # document.
             group_by_document=bool(group_by_document),
             num_sources=len(results),
             duration_seconds=round(elapsed, 2),
@@ -986,9 +987,10 @@ class GoldenSetState(TypedDict):
     # The last time the golden set was run (griot_quality_check, or `griot
     # quality-check` in a terminal), or nulls. A PAST run: last_run_at says when.
     last_passed: int | None
+    # The cases that ran (passed or failed); skipped ones are not in it.
     last_total: int | None
-    # Of last_total, the cases not run: their mode needs keyword search the
-    # collection did not have. Neither passed nor failed.
+    # Apart from last_total, the cases not run: their mode needs keyword
+    # search the collection did not have. Neither passed nor failed.
     last_skipped: int | None
     last_run_at: str | None
 
@@ -1299,6 +1301,7 @@ class GoldenCheck(TypedDict):
     # a few chunks per document, copies folded), so `top_results` read like
     # a griot_search list. Runs recorded before this field searched raw.
     diverse: bool
+    # The cases that ran: passed + failed. Skipped ones are counted apart.
     total: int
     passed: int
     failed: int
@@ -1891,7 +1894,8 @@ def griot_golden_set_suggest(path: str, limit: int = 10,
     can require, or has no message, is left out (`left_out` counts them).
     Each candidate has the `query`, `must_include` and `limit` that
     griot_golden_set_add takes; that tool is how one becomes a case, and a
-    person confirms it there. Pick the ones whose message reads like a
+    person confirms it there. Added without a `mode`, it is a hybrid case,
+    as the terminal command makes it. Pick the ones whose message reads like a
     question someone would ask; skip "fix typo".
 
     `path` must be registered (`griot repos add`) or under
@@ -1995,9 +1999,11 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     `mode` is the search the case is checked with, every time: pass the
     `mode` griot_search reported for the results you picked, or the case is
     held to a ranking those results never came from. Left out, it is
-    hybrid, as griot_search's default; on a collection without keyword
+    hybrid, as griot_search's default, also with nothing indexed yet (an
+    index run builds keyword vectors); on a collection without keyword
     vectors it is vector, and the message says so and names
-    `griot index keywords`. A keyword or hybrid case needs a query with a
+    `griot index keywords`, and on one whose config cannot be read it is
+    vector, and the message says that. A keyword or hybrid case needs a query with a
     word keyword search can match.
 
     Confirmed like every state change, but with the confirm= fallback
@@ -2441,9 +2447,10 @@ def griot_health_report() -> str:
         "show what it returned instead. A case with `skipped` true was not run: it is a "
         "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
         "(`griot index keywords` builds them); report it as not measured, never as passing "
-        "or failing. A passed case with `met_by_copy` got the text it names from a copy in "
-        "another place (the result it names carried it): report it as met by a copy. "
-        "A failed case with `limit_reduced_from` set "
+        "or failing: `total` counts only the cases that ran, so report \"8 of 8 passed, 2 "
+        "skipped\", never \"8 of 10\". A passed case with `met_by_copy` got the text it names "
+        "from a copy in another place (the result it names carried it): report it as met by "
+        "a copy. A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "
@@ -2456,7 +2463,8 @@ def griot_health_report() -> str:
         "retrieves itself. griot_golden_set_list shows the cases, griot_golden_set_suggest "
         "proposes candidates from a repository's git log (it writes none), and griot_stats has "
         "the result of the last run that did include them (golden_set: last_passed of "
-        "last_total, at last_run_at) — a past run, to be reported with its age.\n\n"
+        "last_total, last_skipped skipped, at last_run_at; last_total counts only the "
+        "cases that ran) — a past run, to be reported with its age.\n\n"
         "Finish with a plain verdict — trust it, trust it for some things, or reindex "
         "— naming the evidence, and say which part of the picture is missing if the "
         "curated half was not run."
@@ -2570,11 +2578,11 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     set (`golden_check`) runs the questions someone wrote down with the
     results that must come back: the only one that says search is useful.
     Each case is searched in its own `mode` (the one it was made in), as
-    griot_search returns results (`diverse`), and has
-    `passed`, what was `missing`, `met_by_copy` (an expected document that
-    came back only as a copy of the same text, named in a result's
-    `also_in`: met, and said which result carried it), and a `reason` when
-    it could not pass at all (its repository has nothing indexed). A keyword or hybrid case on a
+    griot_search returns results (`diverse`), and has `passed`, what was
+    `missing`, `met_by_copy` (an expected document that came back only as a
+    copy of the same text, named in a result's `also_in`: met, and said
+    which result carried it), and a `reason` when it could not pass at all
+    (its repository has nothing indexed). A keyword or hybrid case on a
     collection without keyword vectors is `skipped`, neither passed nor
     failed, with `reason` naming the command that builds them; `ran_by_mode`
     counts the cases searched per mode. A case that asks for more results
