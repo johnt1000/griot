@@ -169,16 +169,19 @@ Cloud, Azure DevOps, and Gitea/Forgejo (recognized hosts configured via
 
 **State this plainly to the user**: these adapters are built against each
 provider's documented API and covered by tests with mocked HTTP, but **only
-the GitHub path has been exercised against a live account**. If you're
-setting up GitLab/Bitbucket/Azure DevOps/Gitea for the first time, expect
-to be the first real-world validation of that path and watch the first run
-closely.
+the GitHub path has been exercised against a live account, plus GitLab
+reading a public project without a token** (against gitlab.com). If you're
+setting up GitLab with a token, or Bitbucket/Azure DevOps/Gitea, for the
+first time, expect to be the first real-world validation of that path and
+watch the first run closely.
 
 Platform tokens (only needed for `griot index platform`):
 `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`,
 `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`. Set via `griot auth set <provider>`
 (hidden input, goes to the OS keychain when available or `<config>/.env` at
-0600 otherwise).
+0600 otherwise). GitLab is the exception: without its token, a public
+project is read anonymously (the run says "public data only"), and a
+private one fails that run with an error naming the token.
 
 ## Reclaiming disk space
 

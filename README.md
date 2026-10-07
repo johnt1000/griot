@@ -11,7 +11,7 @@ Named after the West African storyteller who keeps a community's history: griot 
 - **Fully local storage** — vectors live in an in-process [Qdrant Edge](https://qdrant.tech/edge/) shard under your XDG data dir. No services to run.
 - **Free by default** — the default embedding profile (`jina-code`) runs locally via ONNX. Paid profiles (OpenAI, Gemini) are opt-in.
 - **Spend circuit breaker** — daily ceiling + 5-minute velocity ceiling on every paid call, with atomic on-disk state. The `openai` and `deepseek` chat profiles refuse to run until you set their price (`griot config set openai-chat-price <USD per 1M tokens>`, or `deepseek-chat-price`), so the breaker always tracks real cost.
-- **Five platforms** — GitHub, GitLab (incl. self-hosted), Bitbucket Cloud, Azure DevOps and Gitea/Forgejo adapters for PRs/releases/issues, detected from each repo's `origin` remote. These are built against each provider's documented API and covered by tests with mocked HTTP; only the GitHub path has been exercised against a live account.
+- **Five platforms** — GitHub, GitLab (incl. self-hosted), Bitbucket Cloud, Azure DevOps and Gitea/Forgejo adapters for PRs/releases/issues, detected from each repo's `origin` remote. These are built against each provider's documented API and covered by tests with mocked HTTP; the GitHub path has been exercised against a live account, and GitLab's reading of a public project without a token against gitlab.com (GitLab with a token, and the other three, not yet).
 - **MCP server** — expose search/status/quality tools to Claude Code, opencode or any MCP client. Indexing via agent is off by default and path-allowlisted.
 - **Security-hardened** — API keys never in URLs or logs, 0600/0700 file modes on everything it writes, no credential ever follows a redirect. See [SECURITY.md](SECURITY.md).
 
@@ -110,7 +110,7 @@ griot auth migrate         # moves every credential already in the plaintext fil
 
 Install the optional `keychain` extra (`pip install "griot[keychain]"`) and credentials go to the OS keychain — macOS Keychain, Linux Secret Service, Windows Credential Manager — instead of the plaintext file. Without it, or where no backend is reachable, griot falls back to `<config>/.env` at mode 0600; `griot auth list` and `griot doctor` say which applies and where each credential is. A credential set before the extra was installed stays in the file until you run `griot auth migrate` (or re-run `griot auth set` for that one provider).
 
-Platform tokens (only needed for `griot index platform`): `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`.
+Platform tokens (only needed for `griot index platform`): `GITHUB_TOKEN`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_PAT`, `GITEA_TOKEN`. GitLab is the exception: without `GITLAB_PERSONAL_ACCESS_TOKEN`, griot reads a public project's merge requests, releases and issues anonymously and says so in the run's output; a private project then fails that run with an error naming the token and `griot auth set gitlab`.
 
 A credential exported in your shell (`export GITHUB_TOKEN=...` in `~/.zshrc`, say) wins over the one griot stores. When the two differ, `griot auth set`, `griot auth list`, `griot auth remove`, `griot doctor` and an API that refuses the key say so, naming the shell file and line, or the direnv `.envrc` (never the value): remove the export to use the stored key.
 
