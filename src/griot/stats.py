@@ -141,6 +141,22 @@ def _percentile(sorted_values: list[float], fraction: float) -> float:
 _STATE_LOOKBACK = 200
 
 
+def _golden_cases_run(golden_check: dict) -> int | None:
+    """How many curated cases a recorded run actually searched: the pass
+    rate's denominator.
+
+    passed + failed, not the stored `total`: records written after case
+    modes and before the total excluded skipped cases stored every case in
+    it, and no field tells those records apart. passed + failed is right for
+    every record griot wrote (before modes nothing was skipped, so the two
+    agree). A record without `failed`, which griot never wrote but logs.db
+    is a file, keeps its stored total rather than reading as zero run."""
+    passed, failed = golden_check.get("passed"), golden_check.get("failed")
+    if isinstance(passed, int) and isinstance(failed, int):
+        return passed + failed
+    return golden_check.get("total")
+
+
 def _golden_set_state() -> tuple[dict | None, str | None]:
     """(what the curated file holds, why it could not be read). A file that
     is there and cannot be used is NOT the same as no file: the first is
@@ -205,7 +221,7 @@ def load_state() -> dict:
             # `skipped` is 0 for a record from before cases had modes: none
             # could be skipped then.
             last_golden = {"timestamp": record.get("timestamp"), "passed": golden_check.get("passed"),
-                           "total": golden_check.get("total"), "skipped": golden_check.get("skipped") or 0}
+                           "total": _golden_cases_run(golden_check), "skipped": golden_check.get("skipped") or 0}
         if last_quality and last_golden:
             break
 

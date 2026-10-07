@@ -986,9 +986,10 @@ class GoldenSetState(TypedDict):
     # The last time the golden set was run (griot_quality_check, or `griot
     # quality-check` in a terminal), or nulls. A PAST run: last_run_at says when.
     last_passed: int | None
+    # The cases that ran (passed or failed); skipped ones are not in it.
     last_total: int | None
-    # Of last_total, the cases not run: their mode needs keyword search the
-    # collection did not have. Neither passed nor failed.
+    # Apart from last_total, the cases not run: their mode needs keyword
+    # search the collection did not have. Neither passed nor failed.
     last_skipped: int | None
     last_run_at: str | None
 
@@ -1299,6 +1300,7 @@ class GoldenCheck(TypedDict):
     # a few chunks per document, copies folded), so `top_results` read like
     # a griot_search list. Runs recorded before this field searched raw.
     diverse: bool
+    # The cases that ran: passed + failed. Skipped ones are counted apart.
     total: int
     passed: int
     failed: int
@@ -2441,9 +2443,10 @@ def griot_health_report() -> str:
         "show what it returned instead. A case with `skipped` true was not run: it is a "
         "keyword or hybrid case (its `mode`) and the collection has no keyword vectors yet "
         "(`griot index keywords` builds them); report it as not measured, never as passing "
-        "or failing. A passed case with `met_by_copy` got the text it names from a copy in "
-        "another place (the result it names carried it): report it as met by a copy. "
-        "A failed case with `limit_reduced_from` set "
+        "or failing: `total` counts only the cases that ran, so report \"8 of 8 passed, 2 "
+        "skipped\", never \"8 of 10\". A passed case with `met_by_copy` got the text it names "
+        "from a copy in another place (the result it names carried it): report it as met by "
+        "a copy. A failed case with `limit_reduced_from` set "
         "was searched with fewer results than it asks for: say that, it may pass with "
         "`griot quality-check` in a terminal. A self-check that passes with curated cases "
         "failing is an intact index that is stale or missing content, not a broken "
@@ -2456,7 +2459,8 @@ def griot_health_report() -> str:
         "retrieves itself. griot_golden_set_list shows the cases, griot_golden_set_suggest "
         "proposes candidates from a repository's git log (it writes none), and griot_stats has "
         "the result of the last run that did include them (golden_set: last_passed of "
-        "last_total, at last_run_at) — a past run, to be reported with its age.\n\n"
+        "last_total, last_skipped skipped, at last_run_at; last_total counts only the "
+        "cases that ran) — a past run, to be reported with its age.\n\n"
         "Finish with a plain verdict — trust it, trust it for some things, or reindex "
         "— naming the evidence, and say which part of the picture is missing if the "
         "curated half was not run."
