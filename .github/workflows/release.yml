@@ -1,8 +1,9 @@
 name: Release
 
-# A release is a tag: pushing `vX.Y.Z` builds the distribution from the lock,
-# exactly as CI does, checks that the tag is the version the package declares
-# and that the changelog has a section for it, and publishes it to PyPI as
+# A release is a tag: pushing `vX.Y.Z` first checks that the tag is the
+# version the package declares, that the changelog has a section for it and
+# that the tagged commit is on main, then runs the whole CI, builds the
+# distribution from the lock, exactly as CI does, and publishes it to PyPI as
 # `griot-rag` through trusted publishing: the publishing job is granted an
 # OpenID token for that one step, and no API token lives in this repository.
 # Everything that runs here is pinned, as in ci.yml (tests/test_supply_chain.py
@@ -26,6 +27,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tag:
+    name: the tag is the version
+    # First, and on its own: a tag is a name anyone can type, and checking it
+    # takes seconds where the CI takes minutes (macOS included). Every other
+    # job waits for this one, so a wrong tag stops the release before
+    # anything else runs.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The history of main, to tell whether the tagged commit is on it.
+          fetch-depth: 0
+
+      - name: The tag is the version
+        # The script reads GITHUB_REF_NAME, which is the tag on a tag push.
+        # Standard library only: nothing is installed before it runs.
+        run: python3 scripts/release-check.py .
+
   ci:
     # The whole CI, on the tagged commit, before anything is built: main is
     # protected, but its owner can push past that, and a tag can point at a
@@ -35,6 +55,7 @@ jobs:
     # change what `./` names here (zizmor's self-repository finding is about
     # steps, where it could). Its own jobs keep their uv cache: nothing they
     # produce is published; the build below, which is, uses none.
+    needs: tag
     uses: ./.github/workflows/ci.yml  # zizmor: ignore[self-repository]
 
   build:
@@ -45,13 +66,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The history of main, to tell whether the tagged commit is on it.
-          fetch-depth: 0
-
-      - name: The tag is the version
-        # Before anything is built: a tag is a name anyone can type. The
-        # script reads GITHUB_REF_NAME, which is the tag on a tag push.
-        run: python3 scripts/release-check.py .
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:

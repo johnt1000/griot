@@ -194,12 +194,13 @@ def test_the_publishing_token_says_why_it_is_granted():
     assert lines and all(re.search(r"#\s*\S", line) for line in lines), lines
 
 
-def test_the_build_refuses_a_tag_that_is_not_the_declared_version():
-    build = _commands("build")
+def test_a_tag_that_is_not_the_declared_version_is_refused_before_anything_is_built():
     # The check is a script of its own, so that it can be run here; it reads
-    # pyproject.toml and CHANGELOG.md and compares with the tag.
-    assert "scripts/release-check.py" in build
-    assert build.index("release-check.py") < build.index("uv build"), "before anything is built"
+    # pyproject.toml and CHANGELOG.md and compares with the tag. It runs in
+    # the first job, which the build waits for through the CI
+    # (tests/test_pipeline.py holds that order).
+    assert "python3 scripts/release-check.py ." in _commands("tag")
+    assert "release-check.py" not in _commands("build"), "checked once, in the job everything waits for"
 
 
 def _on_main(root):
