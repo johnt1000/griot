@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -392,6 +393,56 @@ def test_a_job_that_ended_is_reported_once_as_finished_with_its_last_progress(mo
     # Its file is gone: the snapshot is what remains.
     assert not progress_path.exists()
     assert jobs.index_job_report()["finished"] == finished
+
+
+def test_the_progress_file_is_made_in_the_data_directory_not_the_system_temp_dir(monkeypatch, tmp_path):
+    """Made in the system temporary directory, a file nobody came back for
+    stayed there: about 1,200 empty ones had piled up, mostly from the test
+    suite, whose data directory is per test but whose temp dir is not. In a
+    directory of the data directory, it goes with the data it belongs to,
+    and griot itself can find what was left there (jobs._ensure_loaded)."""
+    _, kwargs = _start(monkeypatch, tmp_path, _FakeProc())
+    progress_path = Path(kwargs["env"][common.INDEX_PROGRESS_ENV])
+
+    assert progress_path.parent == common.DATA_DIR / jobs.PROGRESS_DIR_NAME
+    assert progress_path.parent != Path(tempfile.gettempdir())
+    assert stat.S_IMODE(os.stat(progress_path.parent).st_mode) == 0o700
+
+
+@pytest.mark.parametrize("ending", ["success", "failure", "killed", "died_at_once", "launch_raised"])
+def test_no_way_a_job_ends_leaves_its_progress_file(monkeypatch, tmp_path, ending):
+    """Whatever way the job ends, once this host has noticed it its progress
+    file is gone, and nothing else is left where progress files are made."""
+    if ending == "launch_raised":
+        from conftest import GitRepo
+        repo = GitRepo(tmp_path / "repo")
+        repo.commit("c")
+        monkeypatch.setattr(common, "index_lock_status", lambda: {"running": False, "pid": None, "path": None})
+        monkeypatch.setenv("GRIOT_MCP_INDEX_ROOTS", str(tmp_path))
+        real_popen = subprocess.Popen
+
+        def popen(cmd, **kwargs):
+            if cmd[0] == "git":
+                return real_popen(cmd, **kwargs)
+            raise OSError("out of processes")
+
+        monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+        monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+        with pytest.raises(OSError):
+            jobs.start_index_job(str(repo.path), ["code"], release=lambda: None)
+    else:
+        exit_after, returncode = {"success": (1, 0), "failure": (1, 1), "killed": (1, -9),
+                                  "died_at_once": (0, 1)}[ending]
+        _, kwargs = _start(monkeypatch, tmp_path, _FakeProc(exit_after=exit_after, returncode=returncode))
+        if ending != "died_at_once":
+            # The run wrote its progress before it ended.
+            monkeypatch.setenv(common.INDEX_PROGRESS_ENV, kwargs["env"][common.INDEX_PROGRESS_ENV])
+            common.progress_begin(["code"])
+            assert Path(kwargs["env"][common.INDEX_PROGRESS_ENV]).exists()
+
+    assert jobs.running_index_job() is None
+    progress_dir = common.DATA_DIR / jobs.PROGRESS_DIR_NAME
+    assert not progress_dir.exists() or list(progress_dir.iterdir()) == []
 
 
 def test_a_finished_job_frees_the_way_for_the_next(monkeypatch, tmp_path):
