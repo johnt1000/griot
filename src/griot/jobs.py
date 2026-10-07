@@ -170,6 +170,21 @@ _loaded = False
 _PROGRESS_PREFIX = "griot-index-progress-"
 _PROGRESS_SUFFIX = ".json"
 
+# Where progress files are made: a private directory of the data directory.
+# They used to be made in the system temporary directory, on the idea that
+# the system reclaims what a dead host leaves there; it did not (macOS keeps
+# a file for days, and the test suite, whose data directory is per test but
+# whose temp dir is not, left about 1,200). Here they go with the data they
+# belong to, and the first read of a new process removes what no record
+# names (_sweep_orphan_progress_files()).
+PROGRESS_DIR_NAME = "index_progress"
+
+# How old a progress file no record names must be before it is removed: a
+# server makes the file before it records the job (the child must be spawned
+# and seen alive first), and another server loading in between must not take
+# it from under that job.
+ORPHAN_PROGRESS_GRACE_SECONDS = 600
+
 # How far a process's start time may drift between two reads of it (float
 # rounding), as common._lock_owner_is_alive allows for the lock.
 _START_TIME_TOLERANCE_SECONDS = 1.0
@@ -201,10 +216,18 @@ def _is_a_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _progress_dir() -> Path:
+    return common.DATA_DIR / PROGRESS_DIR_NAME
+
+
 def _is_our_progress_file(path: str) -> bool:
+    """Named as start_index_job names one, in the directory it makes them in,
+    or in the system temporary directory, where earlier versions made them:
+    a job one of those recorded is still followed, and its file removed."""
     candidate = Path(path)
+    parent = os.path.realpath(candidate.parent)
     return (candidate.name.startswith(_PROGRESS_PREFIX) and candidate.name.endswith(_PROGRESS_SUFFIX)
-            and os.path.realpath(candidate.parent) == os.path.realpath(tempfile.gettempdir()))
+            and parent in (os.path.realpath(_progress_dir()), os.path.realpath(tempfile.gettempdir())))
 
 
 def _record_from_disk(raw) -> dict | None:
@@ -273,6 +296,31 @@ def _remove_progress_file(path: str) -> None:
         pass
 
 
+def _sweep_orphan_progress_files() -> None:
+    """Removes the progress files no job in the registry names and that are
+    old enough (ORPHAN_PROGRESS_GRACE_SECONDS) for no server to be starting
+    their job: nothing else would ever remove them. What leaves one: a host
+    killed between making the file and recording the job, or a record that
+    could not be written. Only files named as ours, in the directory this
+    data directory owns; never fails the caller. Called with _registry_lock
+    held, after the registry is loaded."""
+    named = {os.path.realpath(info["progress_path"]) for info in _registry.values()}
+    try:
+        candidates = list(_progress_dir().iterdir())
+    except OSError:
+        return  # no directory yet: nothing was ever left
+    now = time.time()
+    for candidate in candidates:
+        if not _is_our_progress_file(str(candidate)) or os.path.realpath(candidate) in named:
+            continue
+        try:
+            if now - candidate.stat().st_mtime < ORPHAN_PROGRESS_GRACE_SECONDS:
+                continue
+            candidate.unlink()
+        except OSError:
+            pass
+
+
 def _save() -> None:
     """Writes the registry to the jobs file, atomically (a reader never sees
     half of it). Keeps a running job another process recorded there and this
@@ -306,6 +354,7 @@ def _ensure_loaded() -> None:
         return
     _loaded = True
     if not _jobs_path().exists():
+        _sweep_orphan_progress_files()
         return
     for record in _records_on_disk():
         pid = record.pop("pid")
@@ -319,6 +368,7 @@ def _ensure_loaded() -> None:
     # Rewritten at once, so that what was dropped (a damaged record, a dead
     # job) is not examined again by every process that starts after this one.
     _save()
+    _sweep_orphan_progress_files()
 
 
 def _keep_only_the_last_finished() -> bool:
@@ -554,9 +604,11 @@ def start_index_job(
     # Where the run records its progress (common.progress_begin() and what
     # follows): a file of its own per job, so that two servers' jobs never
     # share one, created 0600 by mkstemp because it names the repository. In
-    # the temporary directory, like the preview's report: a host that dies
-    # mid-run leaves it where the system reclaims it, not in griot's data.
-    progress_fd, progress_path = tempfile.mkstemp(prefix=_PROGRESS_PREFIX, suffix=_PROGRESS_SUFFIX)
+    # the data directory (see PROGRESS_DIR_NAME), where what a dead host
+    # leaves is found and removed by the next one.
+    common.secure_mkdir(_progress_dir())
+    progress_fd, progress_path = tempfile.mkstemp(prefix=_PROGRESS_PREFIX, suffix=_PROGRESS_SUFFIX,
+                                                  dir=_progress_dir())
     os.close(progress_fd)
     env = {**(env if env is not None else os.environ), common.INDEX_PROGRESS_ENV: progress_path}
 

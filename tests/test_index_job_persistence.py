@@ -115,16 +115,13 @@ class _Children:
 
 @pytest.fixture
 def children(monkeypatch, tmp_path):
-    before = set(Path(tempfile.gettempdir()).glob("griot-index-progress-*.json"))
+    # Progress files are made in the test's own data directory: nothing of
+    # this test's is left in the system's temporary directory.
     kids = _Children(monkeypatch, tmp_path)
     try:
         yield kids
     finally:
         kids.cleanup()
-        # Progress files live in the system's temporary directory: leave
-        # none of this test's behind.
-        for path in set(Path(tempfile.gettempdir()).glob("griot-index-progress-*.json")) - before:
-            path.unlink(missing_ok=True)
 
 
 def _restart(monkeypatch):
@@ -283,7 +280,9 @@ def _record(owner, start_time, progress, **overrides):
 
 
 def _temp_progress_file(content=None) -> Path:
-    fd, name = tempfile.mkstemp(prefix="griot-index-progress-", suffix=".json")
+    progress_dir = common.DATA_DIR / jobs.PROGRESS_DIR_NAME
+    common.secure_mkdir(progress_dir)
+    fd, name = tempfile.mkstemp(prefix="griot-index-progress-", suffix=".json", dir=progress_dir)
     os.close(fd)
     if content is not None:
         Path(name).write_text(json.dumps(content))
@@ -431,6 +430,61 @@ def test_a_progress_path_that_is_not_one_of_ours_is_never_removed(tmp_path, wher
         assert victim.exists()
     finally:
         victim.unlink(missing_ok=True)
+
+
+def _aged(path: Path, seconds: float) -> Path:
+    when = time.time() - seconds
+    os.utime(path, (when, when))
+    return path
+
+
+def test_progress_files_nobody_can_reclaim_are_removed_when_a_server_loads():
+    """A progress file no record names (the record could not be written, or
+    the host died between making the file and recording the job) is never
+    removed by anything else. The first read of a new server removes it,
+    once it is old enough that no server can still be starting its job."""
+    me = psutil.Process(os.getpid())
+    progress_dir = common.DATA_DIR / jobs.PROGRESS_DIR_NAME
+    orphan = _aged(_temp_progress_file(), jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+    just_made = _temp_progress_file()  # a job another server is starting right now
+    followed = _aged(_temp_progress_file(), jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+    foreign = progress_dir / "notes.txt"
+    foreign.write_text("not ours")
+    _aged(foreign, jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+    _write_jobs_file([_record(me.pid, me.create_time(), followed)])
+
+    assert jobs.index_job_report()["running"]["pid"] == me.pid
+
+    assert not orphan.exists()
+    assert just_made.exists() and followed.exists() and foreign.exists()
+
+
+def test_progress_files_are_swept_even_without_a_jobs_file():
+    orphan = _aged(_temp_progress_file(), jobs.ORPHAN_PROGRESS_GRACE_SECONDS + 60)
+    assert not _jobs_file().exists()
+
+    assert jobs.index_job_report() == {"running": None, "finished": None}
+
+    assert not orphan.exists()
+
+
+def test_a_record_from_before_the_move_still_has_its_temp_dir_file_removed():
+    """Earlier versions made the progress file in the system temporary
+    directory: a job recorded by one of them is still followed, and its file
+    removed once it is found ended."""
+    fd, name = tempfile.mkstemp(prefix="griot-index-progress-", suffix=".json")
+    os.close(fd)
+    legacy = Path(name)
+    legacy.write_text(json.dumps({"sources": [{"source": "code", "state": "done"}], "ended": True, "exit_code": 0}))
+    try:
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        _write_jobs_file([_record(dead.pid, time.time() - 60, legacy)])
+
+        assert jobs.index_job_report()["finished"]["exit_code"] == 0
+        assert not legacy.exists()
+    finally:
+        legacy.unlink(missing_ok=True)
 
 
 def test_a_server_that_saves_keeps_another_servers_running_job(children, monkeypatch):
