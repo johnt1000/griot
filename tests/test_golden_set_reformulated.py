@@ -369,3 +369,248 @@ def test_the_empty_review_names_the_fourth_kind(terminal, capsys):
     golden_set.cmd_review()
 
     assert "reworded" in capsys.readouterr().out
+
+
+# --- picking from the follow-up's results too (debt 76) ------------------------
+#
+# The follow-up is the search that DID serve, so the right document may be
+# only in its list. The review shows both lists, each result marked with the
+# search that returned it (once, marked as in both, when both did), and a
+# pick from either becomes a case of the FIRST question, in the first
+# search's mode: the question whose list did not serve is the one worth
+# checking.
+
+FOLLOW = "lock released when the process dies"
+
+
+def _line(out: str, number: int) -> str:
+    return next(line for line in out.splitlines() if line.strip().startswith(f"[{number}]"))
+
+
+def test_the_review_shows_both_lists_each_result_once_and_marked(terminal, capsys):
+    _log("how is the lock released", at=0, results=(CODE, COMMIT))
+    _log(FOLLOW, at=40, results=(DOC, CODE))
+    terminal.append("q")
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "src/lock.py" in _line(out, 1) and "both searches" in _line(out, 1)
+    assert "commit" in _line(out, 2) and "first search only" in _line(out, 2)
+    assert "docs/locking.md" in _line(out, 3) and "follow-up only" in _line(out, 3)
+    assert not any(line.strip().startswith("[4]") for line in out.splitlines())
+    assert out.count("src/lock.py") == 1
+
+
+def test_picking_a_follow_up_only_document_makes_a_case_of_the_first_question(terminal):
+    _log("how is the lock released", at=0, mode="keyword", results=(CODE, COMMIT))
+    _log(FOLLOW, at=40, mode="hybrid", results=(DOC, CODE))
+    terminal.append("3")
+
+    assert golden_set.cmd_review() == 0
+
+    assert _cases() == [{"query": "how is the lock released", "limit": 8, "must_include": [DOC],
+                         "mode": "keyword"}]
+
+
+def test_a_pick_from_both_lists_at_once_keeps_every_document(terminal):
+    _log("how is the lock released", at=0, mode="vector", results=(CODE, COMMIT))
+    _log(FOLLOW, at=40, results=(DOC,))
+    terminal.append("2,3")
+
+    golden_set.cmd_review()
+
+    assert _cases() == [{"query": "how is the lock released", "limit": 8, "must_include": [COMMIT, DOC]}]
+
+
+@pytest.mark.parametrize("unlike,shown", [
+    ({"repos": ["r"]}, "narrowed to repos r"),
+    ({"source_types": ["code"]}, "narrowed to source_types code"),
+    ({"group_by_document": True}, "grouped by document"),
+])
+def test_a_follow_up_unlike_the_check_is_shown_but_its_results_cannot_be_picked(terminal, capsys, unlike, shown):
+    """A case is checked over every repository and not grouped: a narrowed or
+    grouped follow-up chose its best from another pool (or counted
+    documents), so what it returned is not what a person can call the right
+    answer to the check's search."""
+    _log("how is the lock released", at=0, results=(CODE, COMMIT))
+    _log(FOLLOW, at=40, results=(DOC, CODE), **unlike)
+    terminal.extend(["3", "1"])
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    # Said with the list, before the person is asked, not only on a refused pick.
+    assert f"The follow-up's results cannot become a case: it was {shown}" in out.split("Which result")[0]
+    assert "cannot become a case" in _line(out, 3)
+    # In both lists, and the first search is like the check: still pickable.
+    assert "cannot become a case" not in _line(out, 1)
+    assert _cases() == [{"query": "how is the lock released", "limit": 8, "must_include": [CODE],
+                         "mode": "hybrid"}]
+
+
+def test_a_narrowed_first_search_still_offers_a_follow_up_like_the_check(terminal, capsys):
+    """The case asserts nothing about what the first search returned, only
+    which document answers its question; that judgement is sound when it
+    was made among results drawn from the pool the check searches."""
+    _log("how is the lock released", at=0, mode="vector", results=(CODE, COMMIT), repos=["r"])
+    _log(FOLLOW, at=40, results=(DOC, CODE))
+    terminal.extend(["2", "1,3"])
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "narrowed to repos r" in out
+    assert "cannot become a case" in _line(out, 2)
+    assert "cannot become a case" not in _line(out, 1) and "cannot become a case" not in _line(out, 3)
+    assert _cases() == [{"query": "how is the lock released", "limit": 8, "must_include": [CODE, DOC]}]
+
+
+def test_a_document_both_searches_returned_narrowed_cannot_be_picked(terminal, capsys):
+    _log("how is the lock released", at=0, results=(CODE,), repos=["r"])
+    _log(FOLLOW, at=40, results=(DOC, CODE), source_types=["code"])
+    terminal.extend(["1", "q"])
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "both searches" in _line(out, 1) and "cannot become a case" in _line(out, 1)
+    assert "cannot become a case" in _line(out, 2)
+    assert "Which result is the right one?" not in out
+    assert _cases() == []
+
+
+def test_ranks_are_the_first_searchs_and_shown_only_beside_its_results(terminal, capsys):
+    _log("how is the lock released", at=0, results=(CODE, COMMIT),
+         ranks=[{"vector": 1, "keyword": None}, {"vector": 2, "keyword": 1}], rank_window=48)
+    _log(FOLLOW, at=40, results=(DOC, CODE))
+    terminal.append("q")
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "(vector 1, keyword -)" in _line(out, 1) and "(vector 2, keyword 1)" in _line(out, 2)
+    assert "vector" not in _line(out, 3)
+
+
+def test_a_document_the_follow_up_returned_twice_is_shown_once(terminal, capsys):
+    """One document fills up to three results of a search made for a reader."""
+    _log("how is the lock released", at=0, results=(CODE,))
+    _log(FOLLOW, at=40, results=(DOC, DOC, COMMIT))
+    terminal.append("q")
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "docs/locking.md" in _line(out, 2) and "commit" in _line(out, 3)
+    assert out.count("docs/locking.md") == 1
+
+
+def test_a_first_search_of_a_mode_the_check_does_not_know_offers_nothing(terminal, capsys):
+    """The case is checked in the first search's mode; none it can be."""
+    _log("how is the lock released", at=0, mode="semantic", results=(CODE,))
+    _log(FOLLOW, at=40, results=(DOC,))
+    terminal.extend(["2", "q"])
+
+    golden_set.cmd_review()
+
+    assert "cannot become a case" in _line(capsys.readouterr().out, 2)
+    assert _cases() == []
+
+
+def test_a_follow_up_result_that_cannot_be_a_case_cannot_be_picked(terminal, capsys):
+    """A result the log kept only by its label (its name looked like a
+    credential)."""
+    _log("how is the lock released", at=0, results=(CODE,))
+    _log(FOLLOW, at=40, results=(DOC, COMMIT))
+    rows = logdb.read_since(common.LOG_DIR, "queries", days=1)
+    rows[1]["results"][0] = None
+    terminal.extend(["2", "3"])
+
+    found = golden_set.review_candidates(rows)["candidates"]
+    assert len(found) == 1
+    golden_set._show(found[0], 1, 1)
+    answer = golden_set._ask(found[0])
+
+    out = capsys.readouterr().out
+    assert "cannot become a case" in _line(out, 2)
+    assert answer == [COMMIT]
+
+
+def test_a_follow_up_logged_before_results_were_shows_its_labels_only(terminal, capsys):
+    _log("how is the lock released", at=0, results=(CODE,))
+    _log(FOLLOW, at=40, results=(DOC,))
+    rows = logdb.read_since(common.LOG_DIR, "queries", days=1)
+    rows[1]["results"] = None
+    terminal.extend(["2", "1"])
+
+    found = golden_set.review_candidates(rows)["candidates"]
+    golden_set._show(found[0], 1, 1)
+    answer = golden_set._ask(found[0])
+
+    out = capsys.readouterr().out
+    assert "docs/locking.md" in _line(out, 2) and "cannot become a case" in _line(out, 2)
+    assert answer == [CODE]
+
+
+# --- one of each kind until the limit (debt 75) --------------------------------
+
+
+def _repeat(question, at):
+    _log(question, at=at, session="x")
+    _log(question, at=at + 1, session="y")
+
+
+def _reword(question, at):
+    _log(question, at=at)
+    _log(f"{question} again reworded", at=at + 10, results=(DOC,))
+
+
+def test_kinds_take_turns_so_a_kind_with_many_does_not_crowd_out_the_rest():
+    for i in range(5):
+        _repeat(f"repeated question number{i}", at=10_000 + 100 * i)
+    _reword("which lock does the indexer take", at=1000)
+    _reword("where is the spend ceiling read", at=2000)
+
+    found = golden_set.review_candidates(limit=4)["candidates"]
+
+    assert [(c["kind"], c["query"]) for c in found] == [
+        ("repeated", "repeated question number4"),
+        ("reformulated", "where is the spend ceiling read"),
+        ("repeated", "repeated question number3"),
+        ("reformulated", "which lock does the indexer take"),
+    ]
+
+
+def test_once_a_kind_runs_out_the_others_fill_the_limit():
+    for i in range(4):
+        _repeat(f"repeated question number{i}", at=10_000 + 100 * i)
+    _reword("which lock does the indexer take", at=1000)
+
+    found = golden_set.review_candidates(limit=4)["candidates"]
+
+    assert [c["kind"] for c in found] == ["repeated", "reformulated", "repeated", "repeated"]
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3])
+def test_the_limit_still_bounds_the_rotation(limit):
+    for i in range(3):
+        _repeat(f"repeated question number{i}", at=10_000 + 100 * i)
+        _reword(f"which lock does indexer{i} take", at=1000 + 1000 * i)
+
+    found = golden_set.review_candidates(limit=limit)["candidates"]
+
+    assert len(found) == limit
+    assert [c["kind"] for c in found] == ["repeated", "reformulated", "repeated"][:limit]
+
+
+def test_the_review_names_each_candidates_kind(terminal, capsys):
+    _repeat("how is the cache warmed", at=10_000)
+    _reword("which lock does the indexer take", at=1000)
+    terminal.extend(["s", "s"])
+
+    golden_set.cmd_review()
+
+    out = capsys.readouterr().out
+    assert "[1/2] (asked again) how is the cache warmed" in out
+    assert "[2/2] (reworded) which lock does the indexer take" in out

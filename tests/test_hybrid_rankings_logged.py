@@ -381,7 +381,9 @@ def test_older_rows_without_ranks_read_as_before(no_index):
     assert _kinds() == [("repeated", "asked before ranks")]
 
 
-def test_disagreements_come_after_repeated_and_hard_ones_newest_first(no_index):
+def test_disagreements_take_their_turn_after_repeated_and_hard_ones_newest_first(no_index):
+    """The kinds take turns (one each, in kind order), so the hard searches,
+    of which there are many here, do not push the disagreements out."""
     for i in range(20):
         _log(f"filler question number {i}", ranks=None, mode="vector", top_score=round(0.50 + 0.02 * i, 2))
     _log("why does the shard refuse to open", ranks=None, mode="vector", top_score=0.40)
@@ -392,10 +394,10 @@ def test_disagreements_come_after_repeated_and_hard_ones_newest_first(no_index):
 
     kinds = _kinds()
 
-    assert kinds[0] == ("repeated", "how is the lock released")
-    assert kinds[1] == ("hard", "why does the shard refuse to open")
-    assert kinds[-2:] == [("disagree", "newer disagreement"), ("disagree", "older disagreement")]
-    assert [k for k, _ in kinds] == sorted((k for k, _ in kinds), key=["repeated", "hard", "disagree"].index)
+    assert kinds[:5] == [("repeated", "how is the lock released"), ("hard", "why does the shard refuse to open"),
+                         ("disagree", "newer disagreement"), ("hard", "filler question number 0"),
+                         ("disagree", "older disagreement")]
+    assert {k for k, _ in kinds[5:]} == {"hard"}
 
 
 def test_a_disagreement_already_a_case_or_rejected_is_not_offered(no_index, terminal):
