@@ -45,22 +45,29 @@ def multi(monkeypatch):
 @pytest.fixture
 def slow_open(monkeypatch):
     """The collection exists and takes a moment to open. `handles` are the
-    opens that happened; `started` is set when the first one begins."""
+    opens that happened; `started` is set when the first one begins and
+    `finished` when one ends. An open lasts `seconds`, unless the test sets
+    `end` to finish it early: a test can make the open long enough that
+    nothing correct outlasts it on a loaded machine, without every run
+    sitting through it."""
     common.get_client()
     common.release_client()
-    handles, started = [], threading.Event()
+    opened = type("Opened", (), {})()
+    opened.handles, opened.started, opened.finished, opened.end = [], threading.Event(), threading.Event(), threading.Event()
+    opened.seconds = 0.3
 
     def load(path, *, retry):
         handle = _Handle()
-        handles.append(handle)
-        started.set()
-        time.sleep(0.3)
+        opened.handles.append(handle)
+        opened.started.set()
+        opened.end.wait(opened.seconds)
+        opened.finished.set()
         return handle
 
     monkeypatch.setattr(common, "_load_shard", load)
     monkeypatch.setattr(common, "_secure_collection_dir", lambda collection: None)
     monkeypatch.setattr(common, "ensure_collection", lambda client: None)
-    return type("Opened", (), {"handles": handles, "started": started})()
+    return opened
 
 
 def _in_threads(*functions):
@@ -112,16 +119,21 @@ def test_two_calls_that_find_it_closed_open_it_once(multi, slow_open):
 def test_a_status_read_does_not_wait_behind_a_slow_open(multi, slow_open, monkeypatch):
     """`wait=False` is for callers to whom "busy" is an answer."""
     monkeypatch.setattr(common, "_STATUS_READ_PATIENCE", 0.05)
+    # The defect is sitting through the open, so the bound is the open itself:
+    # one long enough that a status read which waits for it returns only after
+    # it has finished, while one that does not wait has the whole of it to
+    # come back in, however loaded the machine. The test then ends it early.
+    slow_open.seconds = 10.0
     opener = threading.Thread(target=common.get_client)
     opener.start()
     try:
         assert slow_open.started.wait(5)
-        began = time.time()
         with pytest.raises(common.CollectionBusyError) as busy:
             common.get_client(wait=False)
+        assert not slow_open.finished.is_set(), "the status read sat through the open"
         assert busy.value.in_this_process is True, "it is a call of this process, not another process"
-        assert time.time() - began < 0.25, "the open takes 0.3 s; the status read did not sit through it"
     finally:
+        slow_open.end.set()
         opener.join(timeout=10)
     assert len(slow_open.handles) == 1
 
@@ -142,7 +154,10 @@ def test_a_release_that_comes_during_an_open_closes_what_was_opened(multi, slow_
     """The subprocess that the release makes room for must find the
     collection free: not held by an open that finished a moment later."""
     def release_a_moment_later():
-        time.sleep(0.05)
+        # Once the open has begun, not after a fixed pause: on a loaded
+        # machine a pause can end before the open starts, and a release that
+        # comes first has nothing to close, which is not this case.
+        assert slow_open.started.wait(5)
         common.release_client()
 
     _in_threads(common.get_client, release_a_moment_later)

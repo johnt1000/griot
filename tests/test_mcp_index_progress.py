@@ -221,17 +221,22 @@ async def test_wait_works_for_a_client_that_asked_for_no_progress(mode, server_w
 
 @pytest.mark.anyio
 async def test_wait_returns_the_running_job_when_the_time_is_up(server_with_index, monkeypatch, tmp_path, lock_idle):
-    monkeypatch.setattr(server_with_index, "_INDEX_WAIT_POLL_SECONDS", 0.01)
+    # A poll long enough that no loaded machine takes as long to answer: a
+    # wait of 0 that slept even one poll before reading its deadline takes
+    # at least that, so the bound is the poll, not a fixed second.
+    poll = 10.0
+    monkeypatch.setattr(server_with_index, "_INDEX_WAIT_POLL_SECONDS", poll)
     _register_job(monkeypatch, tmp_path, _FakeProc())  # never ends
 
-    started = time.monotonic()
     # fail_after: a wait that ignored its deadline would never return here,
     # and a test that hangs does not fail, it stalls the whole suite.
-    with anyio.fail_after(3):
+    with anyio.fail_after(2 * poll):
         async with Client(server_with_index.mcp) as client:
+            started = time.monotonic()
             out = (await client.call_tool("griot_index_wait", {"timeout_seconds": 0})).structured_content
+            took = time.monotonic() - started
 
-    assert time.monotonic() - started < 2
+    assert took < poll, "it waited a poll after the time was up"
     assert out["running"] is True and out["job"]["pid"] == 777 and out["finished"] is None
 
 

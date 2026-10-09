@@ -265,10 +265,34 @@ def test_every_prompt_table_lists_the_prompts_the_server_has(path):
 _COUNTED_TEXTS = sorted((ROOT / "src" / "griot" / "resources").rglob("*.md")) + sorted(
     p for p in (ROOT / "docs").glob("*.md") if p.name != "lessons-and-debts.md")
 
-# A number word, up to two words of description, then the plural noun:
-# "four MCP prompts", "Five tools expose", "two read-only tools".
-_COUNT = re.compile(r"\b(" + "|".join(_NUMBER_WORDS[2:]) + r"|\d+)\s+(?:[\w`-]+\s+){0,2}"
-                    r"(tools|prompts|resources|slash commands)\b", re.I)
+# Words that end a noun phrase rather than describe its noun: a number joined
+# to the noun through one of them quantifies something else ("one of the
+# tools", "one is a read-only tool", "two behaviours a resource has"). They
+# are the closed word classes (determiners, prepositions, conjunctions,
+# pronouns, forms of "be" and "have", modal verbs), so the list can be whole
+# where a list of adjectives could not.
+_NOT_MODIFIERS = (
+    "a an the this that these those each every all any some no another other such both either neither "
+    "of as in on at by for from to into onto with without within about than per via between among "
+    "across through over under after before except like and or but nor so yet if when where while "
+    "because whether which who whom whose what it its they them their there here we us our you your he "
+    "she his her is are was were be been being am has have had do does did can could may might must "
+    "shall should will would not only also then just even").split()
+
+# A number (a word, digits, or "a single"), any words that describe the noun
+# within the same clause, then the noun, singular or plural: "four MCP
+# prompts", "one resource", "seven always-on read-only MCP tools". The
+# number stands alone ("two-step", "3.10" are not counts: no word
+# character, dot, hyphen or slash precedes it, and only emphasis or
+# whitespace follows it), punctuation ends the clause, and the noun is the
+# head being counted, not the modifier of another noun ("one tool call"
+# counts calls).
+_COUNT = re.compile(
+    r"(?<![\w.\-/])(a\s+single|" + "|".join(_NUMBER_WORDS) + r"|\d+)[*_`]*\s+"
+    r"(?:(?!(?:" + "|".join(_NOT_MODIFIERS) + r")\s)[\w`*'/-]+\s+)*?"
+    r"(tools?|prompts?|resources?|slash\s+commands?)\b"
+    r"(?!\s+(?:calls?|names?|descriptions?|schemas?|results?|outputs?|inputs?|annotations?|arguments?)\b)",
+    re.I)
 
 # Counts a test already holds, so they cannot go stale without one failing,
 # each only in the passage of the one file that test reads (the function it
@@ -355,6 +379,54 @@ def test_a_passage_missing_from_the_text_holds_nothing(monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "_HELD_COUNTS",
                         [(COVERAGE, "human-only tools", lambda: "Two human-only tools ask a person, at length.")])
     assert _hand_counts(COVERAGE, "Two human-only tools ask.") == ["Two human-only tools"]
+
+
+# A text no test holds a count in, for the scan's own rule.
+_UNHELD = ROOT / "docs" / "search.md"
+
+
+@pytest.mark.parametrize("text, count", [
+    ("The server has one resource.", "one resource"),
+    ("It offers a single tool for that.", "a single tool"),
+    ("A single prompt does it.", "A single prompt"),
+    ("There are seven read-only MCP tools.", "seven read-only MCP tools"),
+    ("It has six always-on read-only MCP server tools.", "six always-on read-only MCP server tools"),
+    ("Only 12 tools exist.", "12 tools"),
+    ("It ships **four** prompts.", "four** prompts"),
+    ("Use the two `griot_*` slash commands.", "two `griot_*` slash commands"),
+    ("Zero tools ask a person.", "Zero tools"),
+    ("one or two tools", "two tools"),
+])
+def test_a_count_is_a_number_then_its_noun_within_the_clause(text, count):
+    """The harm is a number of the server's tools, prompts, resources or slash
+    commands stated in prose: one and a single count as much as seven, and
+    the noun can sit behind any modifiers in the same clause; a word count
+    between them let "seven read-only MCP tools" pass."""
+    assert _hand_counts(_UNHELD, text) == [count]
+
+
+@pytest.mark.parametrize("text", [
+    "Pick one of the tools.",
+    "Pick one of griot's tools.",
+    "Someone tools around.",
+    "A two-step search runs the tools.",
+    "Each one is a read-only tool.",
+    "Each is exposed, and one as a slash command.",
+    "Two behaviours a resource has.",
+    "Python 3.10 tools work.",
+    "Version 0.4 prompts nothing.",
+    "It makes one tool call per question.",
+    "Ask a tool.",
+    "Seven, as the tools list says.",
+    "Run one command and the tools appear.",
+])
+def test_a_number_that_does_not_quantify_the_noun_is_not_a_count(text):
+    """A number joined to the noun by a determiner, a preposition, a
+    conjunction, a pronoun or a form of "be" quantifies something else
+    ("one of the tools"); a number in a hyphenated word or a version is not
+    a count; a noun that modifies another ("one tool call") is not the head
+    being counted; and punctuation ends the clause."""
+    assert _hand_counts(_UNHELD, text) == []
 
 
 @pytest.mark.parametrize("path, phrase, passage", _HELD_COUNTS, ids=lambda v: v if isinstance(v, str) else None)
