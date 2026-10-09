@@ -1,4 +1,4 @@
-__version__ = "0.3.0"  # the same number as pyproject.toml: tests/test_release.py
+__version__ = "0.4.0"  # the same number as pyproject.toml: tests/test_release.py
 
 
 # The spellings a yes/no setting is read with. Here, in one place, because
