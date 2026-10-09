@@ -1311,9 +1311,11 @@ def test_stats_gives_no_token_advice_to_a_mix_without_a_token_refusal():
     s = stats.compute_stats([], [], status)
 
     [line] = [line for line in s["attention"] if "mixed reasons" in line]
-    assert "releases, merge/pull requests: failed for another reason" in line
+    assert "releases, merge/pull requests: the platform did not answer or failed" in line
     assert "token (`griot auth list`)" not in line and "check the platform's token" not in line
     assert "project path" in line
+    # [debt 72] The fetches that failed get their own advice: not the token.
+    assert "try again later" in line
 
 
 def test_a_mix_of_the_token_and_no_answer_gets_no_project_advice():
@@ -1435,3 +1437,182 @@ async def test_the_status_and_stats_tools_say_which_fetch_of_a_mixed_refusal_got
     assert any("mixed reasons" in line and "issues: refused for the token" in line for line in out["attention"])
     [token] = [line for line in out["attention"] if line.startswith("the platform refused every fetch for old")]
     assert "both" not in token
+
+
+# --- a platform that did not answer, or failed, under a token -----------------------
+#
+# [debt 72] A repository whose every fetch failed for another cause (no
+# answer, a timeout, a 5xx) has the single cause "other", so it was neither
+# not found nor mixed and got the token advice. The readers now say the
+# platform did not answer or failed, name the status or kind of error the
+# run recorded (`other_reasons`, carried as `platform_other_reasons`), and
+# leave the token out of it. A record without causes still reads as before.
+
+_FAILED = {"other": ["merge/pull requests", "releases", "issues"]}
+
+
+def _reported_failed(name, reasons=None, causes=_FAILED):
+    return {**_reported_with(name, causes), "platform_other_reasons": reasons}
+
+
+def test_the_report_carries_the_other_reasons_of_the_newest_refusal(tmp_path):
+    bad, gone = _repo(tmp_path, "bad"), _repo(tmp_path, "gone")
+    record = _causes_run({}, refused=["bad", "gone"], causes={"bad": _FAILED, "gone": {"token": ["issues"]}})
+    record["other_reasons"] = {"bad": ["HTTP 502", "ReadTimeout"]}
+
+    bad_report, gone_report = freshness.assess([record], _now(bad, gone))
+
+    assert bad_report["platform_other_reasons"] == ["HTTP 502", "ReadTimeout"]
+    assert gone_report["platform_other_reasons"] is None
+
+
+def test_other_reasons_of_a_repository_not_refused_are_not_reported(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    record = _causes_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=[], causes={"bad": _FAILED})
+    record["other_reasons"] = {"bad": ["HTTP 500"]}
+
+    [report] = freshness.assess([record], _now(bad))
+
+    assert report["platform_other_reasons"] is None
+
+
+def test_other_reasons_of_an_older_refusal_do_not_outlive_a_newer_one(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    older = _causes_run({}, refused=["bad"], causes={"bad": _FAILED})
+    older["other_reasons"] = {"bad": ["HTTP 500"]}
+    runs = [_platform_run({}, refused=["bad"], at="2026-10-03T10:00:00+00:00"), older]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_other_reasons"] is None
+
+
+@pytest.mark.parametrize("edited", ["bad", None, ["HTTP 500"], {"bad": "HTTP 500"}, {"bad": [500]}, {"bad": []}])
+def test_other_reasons_edited_into_something_else_are_ignored(tmp_path, edited):
+    bad = _repo(tmp_path, "bad")
+    record = _causes_run({}, refused=["bad"], causes={"bad": _FAILED})
+    record["other_reasons"] = edited
+
+    [report] = freshness.assess([record], _now(bad))
+
+    assert report["platform_refused"] is True and report["platform_other_reasons"] is None
+
+
+def test_stats_says_the_platform_failed_and_does_not_blame_the_token():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_failed("down", ["HTTP 502", "ReadTimeout"]), _reported("bad", True, False)]}
+
+    s = stats.compute_stats([], [], status)
+
+    [line] = [line for line in s["attention"] if "down" in line]
+    assert "did not answer or failed every fetch for down (HTTP 502, ReadTimeout)" in line
+    assert "not the token" in line and "try again later" in line and "network" in line
+    assert "check the platform's token" not in line and "project path" not in line
+    [token] = [line for line in s["attention"] if line.startswith("the platform refused every fetch for bad")]
+    assert "down" not in token and "check the platform's token" in token
+
+
+def test_stats_names_a_failure_without_recorded_reasons_all_the_same():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_failed("down\x1b[2J")]}
+
+    [line] = [line for line in stats.compute_stats([], [], status)["attention"] if "down" in line]
+
+    assert "did not answer or failed every fetch for down?[2J in the last platform run" in line
+    assert "check the platform's token" not in line
+
+
+def test_a_mix_names_the_reasons_of_its_failed_fetches():
+    causes = {"token": ["issues"], "other": ["releases"]}
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_failed("both", ["HTTP 500"], causes=causes)]}
+
+    [line] = [line for line in stats.compute_stats([], [], status)["attention"] if "mixed reasons" in line]
+
+    assert "releases: the platform did not answer or failed (HTTP 500)" in line
+    assert "check the platform's token (`griot auth list`) for the fetches it refused" in line
+    assert "for the fetches that failed, not the token" in line and "try again later" in line
+
+
+def test_platform_failures_are_only_refusals_with_the_other_cause_alone():
+    assert stats.platform_failures([_reported_failed("down", ["HTTP 500"])]) == [("down", ["HTTP 500"])]
+    assert stats.platform_failures([_reported_failed("down", None)]) == [("down", None)]
+    assert stats.platform_failures([{**_reported_failed("down"), "platform_refused": False}]) == []
+    assert stats.platform_failures([_reported_with("bad", {"token": ["issues"]})]) == []
+    assert stats.platform_failures([_reported_with("both", {"other": ["issues"], "token": ["releases"]})]) == []
+    # No causes recorded: a refusal from before them, which reads as before.
+    assert stats.platform_failures([_reported("bad", True, False)]) == []
+    # platform_not_found keeps its word over a record edited by hand.
+    assert stats.platform_failures([_reported_with("gone", _FAILED, not_found=True)]) == []
+
+
+def test_doctor_says_the_platform_failed_without_the_token_fix(tmp_path, monkeypatch):
+    from griot import doctor
+
+    down = _repo(tmp_path, "down")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(down)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [_reported_failed("down", ["HTTP 503"])])
+
+    check = doctor.check_repositories(common)
+
+    assert check["status"] == "warn" and "did not answer or failed every fetch for down (HTTP 503)" in check["detail"]
+    assert "griot auth list" not in check["fix"] and "the platform's token" not in check["fix"]
+    assert "not the token" in check["fix"] and "network" in check["fix"] and "later" in check["fix"]
+
+
+def test_doctor_with_a_failure_and_a_token_refusal_gives_both(tmp_path, monkeypatch):
+    from griot import doctor
+
+    down, bad = _repo(tmp_path, "down"), _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(down), str(bad)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        _reported_failed("down", ["HTTP 503"]), _reported("bad", True, False)])
+
+    check = doctor.check_repositories(common)
+
+    assert "refused every fetch for bad" in check["detail"] and "failed every fetch for down" in check["detail"]
+    assert "the platform's token" in check["fix"] and "network" in check["fix"]
+
+
+def test_a_failed_run_is_said_once_by_stats(tmp_path, monkeypatch):
+    down = _repo(tmp_path, "down")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(down)])
+    record = _all_refused_run({"down": _git(down, "rev-parse", "HEAD")}, refused=["down"])
+    record.update(refusal_causes={"down": _FAILED}, other_reasons={"down": ["HTTP 500"]},
+                  error="every fetch to the platform failed (HTTP 500)")
+    _write_runs(record)
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    said = [line for line in s["attention"] if "refused" in line or "failed" in line]
+    [line] = said
+    assert "down (HTTP 500)" in line and "check the platform's token" not in line
+
+
+@pytest.mark.anyio
+async def test_the_status_and_stats_tools_say_the_platform_failed(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    good, down, old = _repo(tmp_path, "good"), _repo(tmp_path, "down"), _repo(tmp_path, "old")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(good), str(down), str(old)])
+    record = _causes_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["down", "old"],
+                         causes={"down": _FAILED})
+    record["other_reasons"] = {"down": ["ReadTimeout"]}
+    _write_runs(record)
+
+    async with Client(mcp_server.mcp) as client:
+        status = await client.call_tool("griot_index_status", {})
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert not status.is_error
+    by_repo = {r["repo"]: r for r in status.structured_content["repositories"]}
+    assert by_repo["down"]["platform_other_reasons"] == ["ReadTimeout"]
+    assert by_repo["down"]["platform_refusal_causes"] == _FAILED
+    assert by_repo["old"]["platform_other_reasons"] is None and by_repo["good"]["platform_other_reasons"] is None
+    [line] = [line for line in out["attention"] if "did not answer" in line]
+    assert "did not answer or failed every fetch for down (ReadTimeout)" in line and "not the token" in line
+    # A refusal recorded without causes still gets the token advice, alone.
+    [token] = [line for line in out["attention"] if line.startswith("the platform refused every fetch for old")]
+    assert "down" not in token and "check the platform's token" in token

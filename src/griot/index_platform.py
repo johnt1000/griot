@@ -232,8 +232,19 @@ def _refusal_lines(refused_fetches: list[dict]) -> list[str]:
                 lines.append(f"  {where}: {labels} refused ({reasons}). "
                              f"Check the token (`griot auth list`) and the warnings above.")
             else:
-                lines.append(f"  {where}: {labels} failed ({reasons}); see the warnings above.")
+                # No answer, a timeout, a 5xx: the platform's side or the
+                # network, which a new token would not fix ([debt 72]).
+                lines.append(f"  {where}: the platform did not answer or failed ({labels}: {reasons}). "
+                             f"This is not the token: check the network or the platform's status, and try "
+                             f"again later; see the warnings above.")
     return lines
+
+
+def _refused_or_failed(refused_fetches: list[dict]) -> str:
+    """The verb of the closing message's first line: "refused" blames the
+    platform's answer to the request, which is wrong when every fetch
+    failed for another cause (no answer, a server error)."""
+    return "failed" if all(f["cause"] == OTHER for f in refused_fetches) else "refused"
 
 
 def main(argv=None):
@@ -293,6 +304,11 @@ def main(argv=None):
     # 401 is not in not_found_repos, and without this the readers could only
     # give it the token advice ([debt 70]).
     refusal_causes: dict[str, dict[str, list[str]]] = {}
+    # Per refused repository, the statuses or kinds of error of its fetches
+    # that failed for another cause (no answer, a server error): the
+    # readers name them instead of blaming the token ([debt 72]). Only the
+    # status or the type, as in `failures`: an error's text can hold a URL.
+    other_reasons: dict[str, list[str]] = {}
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
@@ -311,6 +327,9 @@ def main(argv=None):
             for f in repo_fetches:
                 causes.setdefault(f["cause"], []).append(f["label"])
             refusal_causes[repo_path.name] = causes
+            failed_why = sorted({f["reason"] for f in repo_fetches if f["cause"] == OTHER})
+            if failed_why:
+                other_reasons[repo_path.name] = failed_why
 
     refused =[{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
     # Named in the record, so `griot doctor` and `griot stats` can say which
@@ -324,11 +343,17 @@ def main(argv=None):
         marked["not_found_repos"] = [Path(p).name for p in not_found_repos]
     if refusal_causes:
         marked["refusal_causes"] = refusal_causes
+    if other_reasons:
+        marked["other_reasons"] = other_reasons
+    verb = _refused_or_failed(refused_fetches)
     if refused and not any(f["ok"] for f in fetches):
         # Nothing the platform was asked for came back (an expired token
         # answers 401 to all of it): the run could not do its job, and an
         # exit status of 0 would let `griot index all` call it complete.
-        print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed:", file=sys.stderr)
+        if verb == "failed":
+            print(f"Error: all {len(refused)} fetch(es) to the platform failed; nothing was indexed:", file=sys.stderr)
+        else:
+            print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed:", file=sys.stderr)
         for line in _refusal_lines(refused_fetches):
             print(line, file=sys.stderr)
         # `error` is what makes the record a run that did not do its job: the
@@ -346,7 +371,8 @@ def main(argv=None):
             # PLATFORM run instead. The error still keeps the run from
             # counting as indexing.
             _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused,
-                     error=f"the platform refused every fetch ({reasons})", **marked)
+                     error=(f"every fetch to the platform failed ({reasons})" if verb == "failed"
+                            else f"the platform refused every fetch ({reasons})"), **marked)
         return 1
 
     # Some repository was refused entirely while others answered: theirs are
@@ -359,8 +385,10 @@ def main(argv=None):
     covered = [p for p in repo_paths_str if p not in refused_repos]
     rc = None
     if refused_repos:
-        print(f"Error: the platform refused every fetch for {', '.join(common.printable(n) for n in refused_names)}; "
-              f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed:", file=sys.stderr)
+        names = ", ".join(common.printable(n) for n in refused_names)
+        print((f"Error: every fetch for {names} failed; " if verb == "failed"
+               else f"Error: the platform refused every fetch for {names}; ")
+              + f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed:", file=sys.stderr)
         for line in _refusal_lines(refused_fetches):
             print(line, file=sys.stderr)
         rc = 1

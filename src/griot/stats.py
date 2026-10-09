@@ -406,19 +406,26 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                          + " — a search finds nothing in their files until `griot index code` runs")
     refused, not_found = platform_refused_names(repositories), platform_not_found_names(repositories)
     mixed = platform_mixed_refusals(repositories)
+    failures = platform_failures(repositories)
     # A 404 under a token is fixed in the remote or the token's reach, and
     # pointing at the token sent the user to the wrong place (debt 67); a
     # repository refused for more than one reason gets the fix of each of
-    # its causes, and no other (debt 70).
-    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)]
+    # its causes, and no other (debt 70); one the platform did not answer
+    # for, or failed, is not the token's fault at all (debt 72).
+    token_refused = [name for name in refused
+                     if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
     if token_refused:
         attention.append(platform_refused_phrase(token_refused) + " — " + _TOKEN_CHECK + ", then `griot index platform`")
     if not_found:
         attention.append(platform_not_found_phrase(not_found) + " — " + _PROJECT_CHECK + ", then `griot index platform`")
+    if failures:
+        attention.append(platform_failed_phrase(failures) + " — " + _FAILURE_CHECK + " with `griot index platform`")
+    other_reasons = platform_other_reasons_of(repositories)
     for name, causes in mixed:
         checks = ([_TOKEN_CHECK + " for the fetches it refused"] if "token" in causes else []) + (
-            [_PROJECT_CHECK] if "not_found" in causes else [])
-        attention.append(platform_mixed_phrase(name, causes) + " — " + "; and ".join(checks)
+            [_PROJECT_CHECK] if "not_found" in causes else []) + (
+            ["for the fetches that failed, " + _FAILURE_CHECK] if "other" in causes else [])
+        attention.append(platform_mixed_phrase(name, causes, other_reasons.get(name)) + " — " + "; and ".join(checks)
                          + ", then `griot index platform`")
     if last_indexed.get("error") and not refusal_names_last_run(last_indexed, repositories):
         # A run with no counts died; one with counts finished and could not
@@ -803,22 +810,57 @@ def platform_mixed_refusals(reports: list[dict]) -> list[tuple[str, dict[str, li
             and isinstance(r.get("platform_refusal_causes"), dict) and len(r["platform_refusal_causes"]) > 1]
 
 
+def platform_failures(reports: list[dict]) -> list[tuple[str, list[str] | None]]:
+    """The repositories of platform_refused_names() whose every fetch failed
+    for the "other" cause (no answer, a timeout, a server error), with the
+    statuses or kinds of error recorded for them (None when none were), as
+    they may be printed: the token is not what failed ([debt 72]). Never one
+    of platform_not_found_names(), which keeps its word over a record
+    edited by hand; a report without causes reads as it always did."""
+    return [(common.printable(r["repo"]), _printable_reasons(r.get("platform_other_reasons"))) for r in reports
+            if r.get("platform_refused") and not r.get("platform_not_found")
+            and isinstance(r.get("platform_refusal_causes"), dict) and set(r["platform_refusal_causes"]) == {"other"}]
+
+
+def platform_other_reasons_of(reports: list[dict]) -> dict[str, list[str] | None]:
+    """Each repository's recorded other reasons, by its name as printed,
+    for platform_mixed_phrase()."""
+    return {common.printable(r["repo"]): r.get("platform_other_reasons") for r in reports}
+
+
+def _printable_reasons(reasons) -> list[str] | None:
+    return [common.printable(reason) for reason in reasons] if reasons else None
+
+
 # What each recorded cause of a refused fetch says, in the order the run's
 # closing message gives them (index_platform.py::_refusal_lines).
 _CAUSE_WORDS = {"not_found": "not found, or not visible to the token", "token": "refused for the token",
-                "other": "failed for another reason"}
+                "other": "the platform did not answer or failed"}
 _TOKEN_CHECK = "check the platform's token (`griot auth list`)"
 _PROJECT_CHECK = ("check the project path in its remote and that the token's account can see it "
                   "(`griot auth list` shows which token)")
+# No answer, a timeout, a server error: a new token would not fix it.
+_FAILURE_CHECK = "not the token: check the network or the platform's status, and try again later"
 
 
-def platform_mixed_phrase(name: str, causes: dict[str, list[str]]) -> str:
+def platform_mixed_phrase(name: str, causes: dict[str, list[str]], other_reasons: list[str] | None = None) -> str:
     """Shared by `griot stats` and `griot doctor`, as platform_refused_phrase():
-    which fetches got which answer, so the token is blamed for its own alone."""
+    which fetches got which answer, so the token is blamed for its own alone;
+    the fetches that failed name their recorded statuses or errors."""
+    other = _printable_reasons(other_reasons)
     groups = [", ".join(common.printable(label) for label in causes[cause]) + ": " + words
+              + (f" ({', '.join(other)})" if cause == "other" and other else "")
               for cause, words in _CAUSE_WORDS.items() if causes.get(cause)]
     return (f"the platform refused every fetch for {name} in the last platform run, for mixed reasons ("
             + "; ".join(groups) + "): nothing of it was indexed")
+
+
+def platform_failed_phrase(failures: list[tuple[str, list[str] | None]]) -> str:
+    """Shared by `griot stats` and `griot doctor`, as platform_refused_phrase(),
+    for platform_failures()."""
+    named = ", ".join(name + (f" ({', '.join(reasons)})" if reasons else "") for name, reasons in failures)
+    return ("the platform did not answer or failed every fetch for " + named
+            + " in the last platform run: nothing of " + ("it" if len(failures) == 1 else "them") + " was indexed")
 
 
 def refusal_names_last_run(last_indexed: dict, reports: list[dict]) -> bool:
