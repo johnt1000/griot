@@ -12,8 +12,9 @@ import hashlib
 import random
 
 import pytest
+from mcp.client.client import Client
 
-from griot import cli, common, logdb
+from griot import cli, common, logdb, mcp_server
 
 
 def _vector(text: str, dim: int) -> list[float]:
@@ -103,6 +104,23 @@ def test_search_that_found_something_gives_no_reason(index, capsys):
     assert cli.main(["search", "retries", "--repo", "beta"]) == 0
     out = capsys.readouterr().out
     assert "No results." not in out and "narrowed" not in out
+
+
+@pytest.mark.anyio
+async def test_cli_and_tool_carry_the_same_sentence(index, chat, capsys):
+    """One helper is shared so the three surfaces cannot drift apart. The
+    other tests check each surface for the filter names only, so a wording
+    changed on one surface alone would pass them all."""
+    assert cli.main(["search", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
+    searched = capsys.readouterr().out.splitlines()[1]
+    assert cli.main(["ask", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
+    asked = capsys.readouterr().out.splitlines()[1]
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_search", {"query": "retries", "repos": ["beta"],
+                                                         "source_types": ["commit"]})
+    assert result.structured_content["results"] == []
+    assert searched == asked
+    assert searched in result.structured_content["note"]
 
 
 def test_an_empty_index_stops_before_the_chat_model(fake_embedding, chat, capsys):
