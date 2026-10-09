@@ -259,7 +259,59 @@ def test_an_mcp_search_and_a_cli_ask_of_one_conversation_share_the_session(monke
     assert rows[0]["session"] is not None
 
 
-# --- which searches are offered ---------------------------------------------
+# --- a conversation that changes under a running server ----------------------
+#
+# Observed on Claude Code 2.1.295 (2026-10-09, a stdio server that logged
+# every message it received): `/clear` and an in-session `/resume` keep the
+# MCP servers running with the CLAUDE_CODE_SESSION_ID they were started
+# with, while the shell tool's next command gets the new conversation's id;
+# a tools/call carries only `claudecode/toolUseId` and `progressToken` in
+# its `_meta`, nothing naming the conversation. So there is nothing per call
+# the server could read instead, and the limit is documented, not fixed.
+
+# What Claude Code puts in a tools/call `_meta` (2.1.295).
+CLAUDE_CODE_CALL_META = {"claudecode/toolUseId": "toolu_01AbCdEfGhJkLmNpQrStUvWx", "progressToken": 2}
+
+
+def test_a_call_meta_from_claude_code_neither_changes_nor_leaks_into_the_session(monkeypatch, fresh_session):
+    """The server's session is the one its environment named at start; the
+    per-call tool-use id is not a conversation and is never logged."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **f: [_Hit(0.9, dict(CODE))])
+
+    async def call():
+        from mcp.client.client import Client
+        async with Client(mcp_server.mcp) as client:
+            await client.call_tool("griot_search", {"query": "lock"}, meta=dict(CLAUDE_CODE_CALL_META))
+
+    _parent(monkeypatch, 4242)
+    asyncio.run(call())
+    # What a shell `griot ask` of the same conversation logs: another
+    # process, so another parent and a fresh cache.
+    common.log_session.cache_clear()
+    _parent(monkeypatch, 4343)
+    from_the_shell = common.log_session()
+
+    [row] = logdb.read_since(common.LOG_DIR, "queries", days=1)
+    assert row["session"] == from_the_shell is not None
+    assert CLAUDE_CODE_CALL_META["claudecode/toolUseId"].encode() not in _logged_bytes()
+
+
+def _flat(path: str) -> str:
+    from pathlib import Path
+    return " ".join((Path(__file__).resolve().parent.parent / path).read_text(encoding="utf-8").split())
+
+
+def test_the_server_keeping_its_start_session_is_documented_where_sessions_are():
+    """Whoever reads why a `griot ask` after `/clear` did not pair with the
+    searches before it must find the reason where sessions are explained:
+    the server keeps its start-time id, and no per-call id exists to use."""
+    doc = " ".join(common.log_session.__doc__.split())
+    [paragraph] = [p for p in _flat("docs/quality.md").split("Each logged search records its session")[1:]]
+    paragraph = paragraph.split("A hybrid search logs")[0]
+    for text in (doc, paragraph):
+        assert "/clear" in text and "/resume" in text, text
+        assert "_meta" in text, text# --- which searches are offered ---------------------------------------------
 
 
 def test_a_search_reworded_soon_after_in_the_same_session_is_offered():
