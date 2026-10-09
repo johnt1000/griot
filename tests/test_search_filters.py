@@ -199,6 +199,22 @@ async def test_the_tool_filters(index):
 
 
 @pytest.mark.anyio
+async def test_a_narrowed_search_that_finds_nothing_says_which_filters_narrowed_it(index):
+    """An empty list with the usual note read as "nothing about this
+    anywhere"; the note names the filters, as `griot search` does."""
+    async with Client(mcp_server.mcp) as client:
+        empty = await client.call_tool("griot_search", {"query": "retries", "repos": ["alpha"],
+                                                        "source_types": ["merge_request"]})
+        found = await client.call_tool("griot_search", {"query": "retries", "repos": ["alpha"]})
+    assert empty.is_error is False and empty.structured_content["results"] == []
+    note = empty.structured_content["note"]
+    assert note.startswith(mcp_server.SEARCH_RESULT_NOTE)
+    assert "repository alpha" in note and "source type merge_request" in note
+    assert found.structured_content["results"]
+    assert "narrowed" not in found.structured_content["note"]
+
+
+@pytest.mark.anyio
 async def test_the_name_to_filter_by_is_the_one_the_repository_list_gives(index, tmp_path):
     """The description sends the agent to griot_repos_list for the names, so
     the list has to carry them: it used to give only paths."""

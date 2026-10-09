@@ -61,6 +61,21 @@ def _narrowed_to(repos: list[str] | None, source_types: list[str] | None) -> str
     return " and ".join(parts)
 
 
+def nothing_found_reason(repos: list[str] | None, source_types: list[str] | None) -> str:
+    """Why a search may have found nothing, in one sentence, or "" when
+    no filter narrowed it. Shared by `griot ask`, `griot search` and the
+    griot_search tool, so the three say it the same way.
+
+    Each filter value matched something indexed (search_filter refuses one
+    that cannot), so without this sentence "No results." reads as "nothing
+    about this anywhere" when the filters together are what left it empty."""
+    narrowed = _narrowed_to(repos, source_types)
+    if not narrowed:
+        return ""
+    return (f"The search was narrowed to {narrowed}: nothing indexed there matches it. "
+            f"Without these filters it covers every repository and kind of source.")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="RAG question over the indexed repos (list in <config_dir>/repos.json). "
@@ -102,13 +117,9 @@ def main(argv=None):
         # What `griot search` prints for the same search, and its status (0):
         # nothing found is a result, not an error.
         print("No results.")
-        narrowed = _narrowed_to(args.repo, args.source_type)
-        if narrowed:
-            # Each filter value matched something indexed (search_filter
-            # refuses one that cannot), so without this line "No results."
-            # would read as "nothing about this anywhere".
-            print(f"The search was narrowed to {narrowed}: nothing indexed there matches the question. "
-                  f"Without these filters it covers every repository and kind of source.")
+        reason = nothing_found_reason(args.repo, args.source_type)
+        if reason:
+            print(reason)
     else:
         print(answer)
     if note:
@@ -131,8 +142,12 @@ def main(argv=None):
         # write to the same table, so each has to say which one it was or
         # the two become indistinguishable in analysis.
         via="cli",
-        model=args.model or common.ACTIVE_CHAT_PROFILE["model"],
-        chat_profile=common.ACTIVE_CHAT_PROFILE_NAME, limit=args.limit,
+        # The model that answered, or None when the search found nothing and
+        # no chat call was made: a row naming a model reads as an answer it
+        # gave (and as a call that may have been paid for).
+        model=(args.model or common.ACTIVE_CHAT_PROFILE["model"]) if answer is not None else None,
+        chat_profile=common.ACTIVE_CHAT_PROFILE_NAME if answer is not None else None,
+        limit=args.limit,
         # What the search was narrowed to, or None, as griot_search logs it:
         # `griot golden-set review` must not make a case (checked over every
         # repository) from a question asked of some of them.

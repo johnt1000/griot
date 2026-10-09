@@ -300,6 +300,11 @@ def _cmd_search(args) -> int:
         return 2
     if not results:
         print("No results.")
+        # The line `griot ask` prints for the same search: which filters
+        # narrowed it, when any did.
+        reason = ask.nothing_found_reason(args.repo, args.source_type)
+        if reason:
+            print(reason)
     for r in results:
         payload = r.payload or {}
         print(f"[{r.score:.3f}] {common.shown(ask.source_label(payload))}")
