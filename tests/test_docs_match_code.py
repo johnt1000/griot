@@ -206,3 +206,37 @@ def test_every_text_on_what_ran_against_a_real_platform_names_the_codeberg_check
              "griot-indexing": _flat(SKILLS / "griot-indexing" / "SKILL.md")}
     for name, text in texts.items():
         assert "codeberg.org" in text, name
+
+
+# --- docs/mcp.md: the prompts the server offers ----------------------------------------
+
+MCP_GUIDE = ROOT / "docs" / "mcp.md"
+
+
+def _prompts_paragraph_and_table() -> tuple[str, set[str]]:
+    """The paragraph that introduces the prompt table, and the slash commands
+    the table lists."""
+    blocks = MCP_GUIDE.read_text().split("\n\n")
+    at = next(i for i, b in enumerate(blocks) if "| `/mcp__griot__" in b)
+    intro, table = blocks[at - 1], blocks[at]
+    return " ".join(intro.split()), set(re.findall(r"^\| `/mcp__griot__([a-z_]+)`", table, re.M))
+
+
+def test_the_mcp_guide_does_not_count_the_prompts_by_hand():
+    """A hand-written count goes stale the day a prompt is added (CLAUDE.md:
+    do not keep an inventory in prose); the paragraph names the server's own
+    prompt list as the inventory instead."""
+    intro, _ = _prompts_paragraph_and_table()
+    counted = re.search(rf"\b({'|'.join(_NUMBER_WORDS)}|\d+)\s+(MCP\s+)?prompts\b", intro, re.I)
+    assert counted is None, intro
+    assert "prompt list" in intro, intro
+
+
+def test_the_mcp_guide_lists_the_prompts_the_server_has():
+    """The table lists every prompt the server offers, and no other."""
+    async def listed():
+        async with Client(mcp_server.mcp) as client:
+            return {p.name for p in (await client.list_prompts()).prompts}
+
+    _, tabled = _prompts_paragraph_and_table()
+    assert tabled == anyio.run(listed)

@@ -114,7 +114,8 @@ the index holds credential-looking values (`griot_audit`: it reads every
 stored chunk), and candidate golden-set cases from a repository's git log
 (`griot_golden_set_suggest`).
 
-Four prompts, which clients surface as slash commands:
+The server's prompt list is the inventory of prompts (your client shows each
+one as a slash command); these are the ones it offers:
 
 | Command | What it does |
 |---|---|
