@@ -208,35 +208,100 @@ def test_every_text_on_what_ran_against_a_real_platform_names_the_codeberg_check
         assert "codeberg.org" in text, name
 
 
-# --- docs/mcp.md: the prompts the server offers ----------------------------------------
+# --- the prompts the server offers: docs/mcp.md and the griot-workflows skill ----------
 
 MCP_GUIDE = ROOT / "docs" / "mcp.md"
 
+# The guide for people, and the skill each install copies into the user's
+# agent directory, where a stale table outlives the release that fixed it.
+PROMPT_TABLES = [MCP_GUIDE, SKILLS / "griot-workflows" / "SKILL.md"]
 
-def _prompts_paragraph_and_table() -> tuple[str, set[str]]:
+
+def _prompts_paragraph_and_table(path: Path) -> tuple[str, set[str]]:
     """The paragraph that introduces the prompt table, and the slash commands
     the table lists."""
-    blocks = MCP_GUIDE.read_text().split("\n\n")
+    blocks = path.read_text().split("\n\n")
     at = next(i for i, b in enumerate(blocks) if "| `/mcp__griot__" in b)
     intro, table = blocks[at - 1], blocks[at]
     return " ".join(intro.split()), set(re.findall(r"^\| `/mcp__griot__([a-z_]+)`", table, re.M))
 
 
-def test_the_mcp_guide_does_not_count_the_prompts_by_hand():
+@pytest.mark.parametrize("path", PROMPT_TABLES, ids=lambda p: p.name if p == MCP_GUIDE else p.parent.name)
+def test_no_prompt_table_counts_the_prompts_by_hand(path):
     """A hand-written count goes stale the day a prompt is added (CLAUDE.md:
     do not keep an inventory in prose); the paragraph names the server's own
     prompt list as the inventory instead."""
-    intro, _ = _prompts_paragraph_and_table()
+    intro, _ = _prompts_paragraph_and_table(path)
     counted = re.search(rf"\b({'|'.join(_NUMBER_WORDS)}|\d+)\s+(MCP\s+)?prompts\b", intro, re.I)
     assert counted is None, intro
     assert "prompt list" in intro, intro
 
 
-def test_the_mcp_guide_lists_the_prompts_the_server_has():
+@pytest.mark.parametrize("path", PROMPT_TABLES, ids=lambda p: p.name if p == MCP_GUIDE else p.parent.name)
+def test_every_prompt_table_lists_the_prompts_the_server_has(path):
     """The table lists every prompt the server offers, and no other."""
     async def listed():
         async with Client(mcp_server.mcp) as client:
             return {p.name for p in (await client.list_prompts()).prompts}
 
-    _, tabled = _prompts_paragraph_and_table()
+    _, tabled = _prompts_paragraph_and_table(path)
     assert tabled == anyio.run(listed)
+
+
+# --- no hand-written count of the server's tools, prompts or resources -----------------
+
+# The texts an agent or a user reads about the server: every bundled skill,
+# agent and instructions block, and the guides. lessons-and-debts.md is a
+# dated history, where a count is what was true that day.
+_COUNTED_TEXTS = sorted((ROOT / "src" / "griot" / "resources").rglob("*.md")) + sorted(
+    p for p in (ROOT / "docs").glob("*.md") if p.name != "lessons-and-debts.md")
+
+# A number word, up to two words of description, then the plural noun:
+# "four MCP prompts", "Five tools expose", "two read-only tools".
+_COUNT = re.compile(r"\b(" + "|".join(_NUMBER_WORDS[2:]) + r"|\d+)\s+(?:[\w`-]+\s+){0,2}"
+                    r"(tools|prompts|resources|slash commands)\b", re.I)
+
+# Counts a test already holds, so they cannot go stale without one failing:
+# tests/test_confirmation_policy_docs.py derives the human-only and the
+# not-pre-approved read-only ones from the server's confirmation policy, and
+# the coverage document's "tools expose less" count is held to the bullets
+# under it (test_the_coverage_document_counts_the_tools_that_expose_less).
+_HELD_ELSEWHERE = re.compile(r"\w+ (human-only tools|read-only tools|tools expose less)\b", re.I)
+
+
+@pytest.mark.parametrize("path", _COUNTED_TEXTS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_no_text_counts_the_servers_tools_prompts_or_resources_by_hand(path):
+    """CLAUDE.md: do not keep an inventory in prose; the server's list_tools(),
+    list_prompts() and list_resources() are the inventory. A count written
+    by hand goes stale the day one is added, and nothing fails when it does."""
+    text = _flat(path)
+    counts = [m.group(0) for m in _COUNT.finditer(text) if not _HELD_ELSEWHERE.match(text, m.start())]
+    assert counts == [], counts
+
+
+# --- docs/getting-started.md: when CI runs ----------------------------------------------
+
+
+def _ci_triggers() -> dict:
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    # YAML 1.1 reads a bare `on` key as the boolean true.
+    return ci["on"] if "on" in ci else ci[True]
+
+
+def test_the_getting_started_guide_says_when_ci_runs():
+    """It said CI runs "on every push", but ci.yml runs on pushes to the
+    branches it names, on pull requests, by hand, and when the release
+    workflow calls it."""
+    guide = ROOT / "docs" / "getting-started.md"
+    paragraph = next(" ".join(b.split()) for b in guide.read_text().split("\n\n") if "CI runs the suite on" in b)
+    triggers = _ci_triggers()
+    branches = (triggers.get("push") or {}).get("branches")
+    if branches:
+        assert not re.search(r"\bevery push(?! to `)", _flat(guide)), paragraph
+        for branch in branches:
+            assert f"push to `{branch}`" in paragraph, (branch, paragraph)
+    assert ("pull request" in paragraph) == ("pull_request" in triggers), paragraph
+    assert ("by hand" in paragraph) == ("workflow_dispatch" in triggers), paragraph
+    assert ("release" in paragraph) == ("workflow_call" in triggers), paragraph
+
+
