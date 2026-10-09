@@ -49,7 +49,7 @@ def _ensure_env_file() -> None:
     common.ensure_env_template()
 
 
-def provider_status() -> list[dict]:
+def provider_status(env_vars: set[str] | None = None) -> list[dict]:
     """Per-provider status — the data behind cmd_list(), split out so a
     non-terminal caller can render it without going through print(). Read
     today by griot_auth_guidance and griot_profiles_list. One dict per provider: provider, env_var, configured,
@@ -59,30 +59,38 @@ def provider_status() -> list[dict]:
     correct source of truth for a UI that may have just written a new value
     itself: common.py resolves .env into os.environ ONCE, at import time,
     so a long-lived process's own os.getenv() goes stale right after a
-    write in that same process. env_masked is what os.getenv() sees right
-    now (whatever the process inherited from the shell, if anything).
-    shadowed_by_env is True when both are set and differ — that's the case
-    where editing the file has NO effect on this running process (a shell
-    export always wins) and a UI needs to say so, not silently show a
-    change that isn't real."""
-    providers = _providers()
+    write in that same process. env_masked is the value in force now: the
+    environment, or the OS keychain when neither the shell nor the file at
+    start gave one (common.credential(), which asks the keychain once per
+    process and only when this is called, never at import).
+    shadowed_by_env is True when the environment and the file are both set
+    and differ — that's the case where editing the file has NO effect on
+    this running process (a shell export always wins) and a UI needs to
+    say so, not silently show a change that isn't real.
+
+    env_vars: only the providers whose variable is in it, for a caller that
+    needs a few (each one checked can be a keychain prompt on macOS)."""
+    providers = {provider: env_var for provider, env_var in _providers().items()
+                 if env_vars is None or env_var in env_vars}
     file_values = dotenv_values(common.ENV_PATH) if common.ENV_PATH.exists() else {}
     statuses = []
     for provider in sorted(providers):
         env_var = providers[provider]
         file_value = file_values.get(env_var) or None
-        env_value = os.getenv(env_var) or None
+        in_environment = os.environ.get(env_var) or None
+        # A key kept only in the keychain is configured too.
+        env_value = in_environment or common.credential(env_var)
         statuses.append({
             "provider": provider,
             "env_var": env_var,
             "configured": bool(file_value or env_value),
             "file_masked": _mask(file_value) if file_value else None,
             "env_masked": _mask(env_value) if env_value else None,
-            # The file only, as before: this is read by MCP tools on every
-            # call, and reading the keychain there can ask the person on
-            # macOS. `griot auth list` and `griot doctor` compare with the
-            # keychain too (common.credential_origin).
-            "shadowed_by_env": bool(env_value and file_value and env_value != file_value),
+            # The environment against the file only: a keychain value is
+            # used only when the environment has none, so it shadows
+            # nothing. `griot auth list` and `griot doctor` compare an
+            # export with the keychain too (common.credential_origin).
+            "shadowed_by_env": bool(in_environment and file_value and in_environment != file_value),
         })
     return statuses
 

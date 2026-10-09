@@ -1231,10 +1231,10 @@ def credential_env_vars() -> dict[str, str]:
     profile — same real account/key). 'gemini' is a special case in BOTH
     profile dicts — it has no api_key_env field, it uses the historical
     GEMINI_TOKEN var (no GRIOT_ prefix). Lives here (not in auth.py, which
-    used to own this exact logic as `_providers()`) so common.py's own
-    keychain-injection code below can use it without auth.py importing
-    common.py the other way around and creating a cycle — auth._providers()
-    is now a one-line wrapper around this."""
+    used to own this exact logic as `_providers()`) so platforms.py and
+    auth.py can both read it without auth.py importing common.py the other
+    way around and creating a cycle — auth._providers() is now a one-line
+    wrapper around this."""
     providers: dict[str, str] = {
         "gitlab": "GITLAB_PERSONAL_ACCESS_TOKEN",
         "github": "GITHUB_TOKEN",
@@ -1304,13 +1304,45 @@ def keychain_get(env_var: str) -> str | None:
         return None
 
 
+# What this process has read from the keychain, absences included: {env_var:
+# value or None}. On macOS every read by an interpreter the item does not
+# trust raises a password prompt, so a value is asked for once per process,
+# and a key that is not there is not asked for again either. Writes and
+# deletes made through this process keep it true (keychain_set/_delete).
+_keychain_cache: dict[str, str | None] = {}
+
+
+def _keychain_value(env_var: str) -> str | None:
+    if env_var not in _keychain_cache:
+        _keychain_cache[env_var] = keychain_get(env_var) or None
+    return _keychain_cache[env_var]
+
+
+def credential(env_var: str) -> str | None:
+    """The value in force for one credential variable, or None.
+
+    Precedence is a shell export, then <config_dir>/.env, then the OS
+    keychain: the first two are both in os.environ already (load_dotenv at
+    import, which never overrides an export), so the keychain is asked only
+    when neither has it, and only for this one variable, when the code path
+    that uses it runs. griot used to read every known credential from the
+    keychain at import, and on macOS that was one password prompt per
+    credential per process, for a search that needed none.
+
+    A keychain value is not written into os.environ: every process griot
+    starts inherits that, and a child reads the one credential it needs
+    itself, the same way."""
+    return os.environ.get(env_var) or _keychain_value(env_var)
+
+
 def keychain_set(env_var: str, value: str) -> bool:
     try:
         import keyring
         keyring.set_password(_KEYCHAIN_SERVICE, env_var, value)
-        return True
     except Exception:
         return False
+    _keychain_cache[env_var] = value
+    return True
 
 
 # What keychain_delete() found. "not installed" is apart from "unreachable"
@@ -1344,11 +1376,13 @@ def keychain_delete(env_var: str) -> str:
         return KEYCHAIN_UNREACHABLE
     try:
         if keyring.get_password(_KEYCHAIN_SERVICE, env_var) is None:
+            _keychain_cache[env_var] = None
             return KEYCHAIN_NOTHING_STORED
         keyring.delete_password(_KEYCHAIN_SERVICE, env_var)
-        return KEYCHAIN_DELETED
     except Exception:
         return KEYCHAIN_UNREACHABLE
+    _keychain_cache[env_var] = None
+    return KEYCHAIN_DELETED
 
 
 def keychain_status() -> dict:
@@ -1499,11 +1533,12 @@ def credential_origin(env_var: str) -> dict:
         in_file = (dotenv_values(ENV_PATH).get(env_var) or None) if ENV_PATH.exists() else None
     except (OSError, ValueError):  # unreadable, or not text: nothing griot stores can be read there
         in_file = None
-    in_keychain = None if in_file else keychain_get(env_var)
+    in_keychain = None if in_file else _keychain_value(env_var)
     stored_value = in_file or in_keychain
     stored = "file" if in_file else ("keychain" if in_keychain else None)
-    # Not exported: what griot stores is what is in force (load_dotenv and
-    # the keychain injection put it in the environment at load).
+    # Not exported: what griot stores is what is in force (load_dotenv puts
+    # the file in the environment at load, credential() falls back to the
+    # keychain).
     source = "environment" if exported else stored
     shadows = bool(exported and stored_value
                    and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
@@ -1593,44 +1628,17 @@ def _credential_hint(env_var: str) -> str:
     return f"{env_var} is not set; set it with {set_it}."
 
 
-def _inject_keychain_credentials() -> None:
-    """Best-effort: for every known credential env var NOT already present
-    in os.environ (a shell export or .env value already won — same
-    override=False precedence load_dotenv() above already applies),
-    checks the OS keychain and injects it into os.environ if found. Called
-    once below, at import time, right after this function and
-    credential_env_vars() exist (EMBED_PROFILES/CHAT_PROFILES must already
-    be defined) — keeps every existing os.getenv(...) call site across the
-    whole codebase working unchanged regardless of which backend a given
-    credential is actually stored in, since almost all of them read
-    lazily at call time, well after this has already run.
-
-    GEMINI_TOKEN (common.py's module-level constant above, line ~493) is
-    the ONE exception — it's resolved as a plain module global BEFORE
-    EMBED_PROFILES/CHAT_PROFILES even exist, so os.environ injection alone
-    wouldn't reach it. Patched explicitly via `global` here."""
-    global GEMINI_TOKEN
-    for env_var in credential_env_vars().values():
-        if os.environ.get(env_var):
-            continue
-        value = keychain_get(env_var)
-        if value:
-            os.environ[env_var] = value
-            if env_var == "GEMINI_TOKEN":
-                GEMINI_TOKEN = value
-
-
-_inject_keychain_credentials()
-
-
 def _require_gemini_token() -> str:
-    if not GEMINI_TOKEN:
+    # GEMINI_TOKEN holds what the environment and the file gave at import;
+    # the keychain is asked only here, when a gemini call is about to run.
+    token = GEMINI_TOKEN or _keychain_value("GEMINI_TOKEN")
+    if not token:
         raise ValueError(
             f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
             f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
             f"and for ask.py's chat answer (direct call to Google's API)."
         )
-    return GEMINI_TOKEN
+    return token
 
 # Local spend circuit breaker — direct calls to Gemini (embedding and chat)
 # don't go through any external platform budget, so this is the ONLY
@@ -2579,7 +2587,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     texts are too large for one (see _requests_within_the_limit): then each
     request stands or fails on its own."""
     api_key_env = ACTIVE_PROFILE["api_key_env"]
-    api_key = os.getenv(api_key_env)
+    api_key = credential(api_key_env)
     if not api_key:
         raise ValueError(
             f"{api_key_env} not found in the environment — required for the "
@@ -2685,7 +2693,7 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     adapter (_embed_texts_openai_compatible), reusing
     _openai_compatible_post_with_retry() instead of duplicating retry/backoff logic."""
     profile = ACTIVE_CHAT_PROFILE
-    api_key = os.getenv(profile["api_key_env"])
+    api_key = credential(profile["api_key_env"])
     if not api_key:
         raise ValueError(
             f"{profile['api_key_env']} not found in the environment — required for the "

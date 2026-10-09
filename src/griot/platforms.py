@@ -167,7 +167,7 @@ TOKEN_ENV = {platform: common.credential_env_vars()[platform]
 
 
 def _require_token(env_var: str) -> str:
-    token = os.getenv(env_var)
+    token = common.credential(env_var)
     if not token:
         raise ValueError(f"{env_var} not found in the environment")
     return token
@@ -308,7 +308,7 @@ GITLAB_RETRY_AFTER_CAP = 60
 def _gitlab_token() -> str | None:
     # An empty value is no token: sent as an empty PRIVATE-TOKEN header,
     # GitLab answers 401 even for a public project.
-    return os.getenv(TOKEN_ENV["gitlab"]) or None
+    return common.credential(TOKEN_ENV["gitlab"]) or None
 
 
 def anonymous_read_note(platform: str) -> str | None:

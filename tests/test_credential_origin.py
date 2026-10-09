@@ -187,13 +187,20 @@ def test_auth_list_compares_with_the_keychain_too(shell, monkeypatch, capsys):
     assert "differs" in line
 
 
-def test_the_status_the_mcp_tools_read_does_not_touch_the_keychain(shell, monkeypatch):
+def test_the_status_the_mcp_tools_read_asks_the_keychain_once_per_process(shell, monkeypatch):
     """`griot_profiles_list` and `griot_auth_guidance` call this on every
     call; on macOS a keychain read from a binary the item does not trust
-    asks the person, every time."""
-    monkeypatch.setattr(common, "keychain_get", lambda var: pytest.fail("the keychain was read"))
+    asks the person, every time. A key kept only in the keychain is still
+    configured, so it is asked once, on the first call, and not again."""
+    reads = []
+    monkeypatch.setattr(common, "keychain_get", lambda var: reads.append(var))
 
     auth.provider_status()
+    first = list(reads)
+    auth.provider_status()
+
+    assert first and reads == first
+    assert len(set(reads)) == len(reads)
 
 
 @pytest.mark.parametrize("broken", ["unreadable", "binary"])
