@@ -1,7 +1,7 @@
 """The MCP confirmation policy, as three documents state it, matches the server.
 
-README.md, SECURITY.md and the "management surface" table in
-docs/mcp-capability-coverage.md each restate which tools need a person's
+docs/mcp.md (the MCP guide the README points to), SECURITY.md and the
+"management surface" table in docs/mcp-capability-coverage.md each restate which tools need a person's
 answer, which also accept a `confirm=true` from the agent, and which ask for
 nothing. The three restatements are kept on purpose, one per reader; this is
 the check that they still say what the server does.
@@ -28,6 +28,8 @@ import pytest
 from griot import mcp_server
 
 ROOT = Path(__file__).resolve().parent.parent
+# Where the README's MCP section moved to.
+MCP_GUIDE = "docs/mcp.md"
 MARKER = "anthropic/requiresUserInteraction"
 
 HUMAN, CONFIRM, NONE = "a person's answer only", "confirm=true where nobody can ask", "no confirmation"
@@ -128,7 +130,9 @@ def _paragraph(path, opening):
     hits = [block for block in re.split(r"\n\s*\n|\n(?=- )", (ROOT / path).read_text())
             if block.lstrip("- ").startswith(opening)]
     assert len(hits) == 1, f"{path}: expected one paragraph starting {opening!r}, found {len(hits)}"
-    return hits[0]
+    # Paragraphs are wrapped at a normal line width: a phrase checked below
+    # may run over a line break.
+    return " ".join(hits[0].split())
 
 
 _NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
@@ -163,20 +167,20 @@ def test_reading_the_policy_leaves_this_processs_server_module_alone(tmp_path):
     assert mcp_server.mcp is server and mcp_server.griot_search is search
 
 
-# --- README.md ---------------------------------------------------------------------
+# --- docs/mcp.md --------------------------------------------------------------------
 
 
-def test_readme_names_every_state_changing_tool_and_which_need_a_person(policy):
-    text = _paragraph("README.md", "The tools that change something")
+def test_mcp_guide_names_every_state_changing_tool_and_which_need_a_person(policy):
+    text = _paragraph(MCP_GUIDE, "The tools that change something")
     listing, _, rest = text.partition(". ")
     # The bold claim naming the tools that lack the confirm=true fallback.
     human_sentence = re.findall(r"\*\*[^*]*do not have it\*\*", rest)
-    assert len(human_sentence) == 1, "README: the bold sentence naming the tools without the confirm=true fallback"
+    assert len(human_sentence) == 1, "docs/mcp.md: the bold sentence naming the tools without the confirm=true fallback"
 
     assert _code_names(listing) == _of(policy, HUMAN) | _of(policy, CONFIRM), \
-        "README's first sentence claims to list the tools that change something"
+        "docs/mcp.md's first sentence claims to list the tools that change something"
     assert _code_names(human_sentence[0]) == _of(policy, HUMAN), \
-        "README: the tools that accept only a person's answer"
+        "docs/mcp.md: the tools that accept only a person's answer"
     counts = _counts_stated(text)
     assert counts and {c.lower() for c in counts} == {_NUMBER_WORDS[len(_of(policy, HUMAN))]}, counts
 
@@ -188,19 +192,19 @@ def _sentences(text):
 def _not_preapproved(listing, policy):
     """The read-only tools `griot assist install` leaves out of the allow
     rules it offers, read from the server: a tool added to or dropped from
-    its exceptions changes what the README must say."""
+    its exceptions changes what the MCP guide must say."""
     asked = _of(policy, NONE) - set(listing["preapprove"])
     # An empty set would make the checks below vacuous.
     assert asked, "the server pre-approves every read-only tool"
     return asked
 
 
-def test_readme_says_which_read_only_tools_are_left_to_the_client_to_ask(listing, policy):
+def test_mcp_guide_says_which_read_only_tools_are_left_to_the_client_to_ask(listing, policy):
     """The sentence once said these tools "still ask each time", which read
     as a confirmation of their own; none has one (each is NONE in the
     policy, by construction of the set). What asks is the client, because
     the installer offers no allow rule for them."""
-    text = _paragraph("README.md", "The server's own tool list is the inventory")
+    text = _paragraph(MCP_GUIDE, "The server's own tool list is the inventory")
     hits = [s for s in _sentences(text) if "read without changing anything" in s]
     assert len(hits) == 1, hits
     sentence = hits[0]
@@ -216,10 +220,10 @@ def test_readme_says_which_read_only_tools_are_left_to_the_client_to_ask(listing
     assert not _code_names(text.split(sentence)[0]) & asked
 
 
-def test_readme_install_section_counts_the_tools_it_leaves_out(listing, policy):
+def test_mcp_guide_install_section_counts_the_tools_it_leaves_out(listing, policy):
     """The installer paragraph says which read-only tools get no allow rule;
     it once named the quality check alone while four were left out."""
-    text = _paragraph("README.md", "The installer then **offers**")
+    text = _paragraph(MCP_GUIDE, "The installer then **offers**")
     hits = [s for s in _sentences(text) if s.startswith("griot adds no rule")]
     assert len(hits) == 1, hits
     asked = _not_preapproved(listing, policy)

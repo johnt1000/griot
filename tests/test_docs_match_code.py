@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import anyio
+import pytest
 import yaml
 from mcp.client.client import Client
 
@@ -171,14 +172,19 @@ def _ci_matrix():
     return ci["jobs"]["test"]["strategy"]["matrix"]["include"]
 
 
-def test_contributing_names_every_python_and_system_ci_tests_on():
-    text = _flat(ROOT / "CONTRIBUTING.md")
+# CONTRIBUTING for contributors; the getting-started guide (the README's
+# installation notes before they moved there) for users.
+@pytest.mark.parametrize("path", ["CONTRIBUTING.md", "docs/getting-started.md"])
+def test_every_text_on_what_ci_runs_names_every_python_and_system(path):
+    text = _flat(ROOT / path)
     sentence = [s for s in _sentences(text) if s.startswith("CI runs the suite on")]
     assert len(sentence) == 1, sentence
     for entry in _ci_matrix():
         assert entry["python"] in sentence[0], (entry, sentence[0])
     if any(entry["os"].startswith("macos") for entry in _ci_matrix()):
         assert "macOS" in sentence[0], sentence[0]
+    if any(entry["os"].startswith("ubuntu") for entry in _ci_matrix()):
+        assert "Linux" in sentence[0], sentence[0]
 
 
 def test_the_classifiers_name_every_python_ci_tests_on():
@@ -196,6 +202,41 @@ def test_every_text_on_what_ran_against_a_real_platform_names_the_codeberg_check
     indexing skill still said those adapters had only met mocks."""
     texts = {"ROADMAP.md": _flat(ROOT / "ROADMAP.md"),
              "platforms.py": " ".join((platforms.__doc__ or "").split()),
+             "docs/platforms.md": _flat(ROOT / "docs" / "platforms.md"),
              "griot-indexing": _flat(SKILLS / "griot-indexing" / "SKILL.md")}
     for name, text in texts.items():
         assert "codeberg.org" in text, name
+
+
+# --- docs/mcp.md: the prompts the server offers ----------------------------------------
+
+MCP_GUIDE = ROOT / "docs" / "mcp.md"
+
+
+def _prompts_paragraph_and_table() -> tuple[str, set[str]]:
+    """The paragraph that introduces the prompt table, and the slash commands
+    the table lists."""
+    blocks = MCP_GUIDE.read_text().split("\n\n")
+    at = next(i for i, b in enumerate(blocks) if "| `/mcp__griot__" in b)
+    intro, table = blocks[at - 1], blocks[at]
+    return " ".join(intro.split()), set(re.findall(r"^\| `/mcp__griot__([a-z_]+)`", table, re.M))
+
+
+def test_the_mcp_guide_does_not_count_the_prompts_by_hand():
+    """A hand-written count goes stale the day a prompt is added (CLAUDE.md:
+    do not keep an inventory in prose); the paragraph names the server's own
+    prompt list as the inventory instead."""
+    intro, _ = _prompts_paragraph_and_table()
+    counted = re.search(rf"\b({'|'.join(_NUMBER_WORDS)}|\d+)\s+(MCP\s+)?prompts\b", intro, re.I)
+    assert counted is None, intro
+    assert "prompt list" in intro, intro
+
+
+def test_the_mcp_guide_lists_the_prompts_the_server_has():
+    """The table lists every prompt the server offers, and no other."""
+    async def listed():
+        async with Client(mcp_server.mcp) as client:
+            return {p.name for p in (await client.list_prompts()).prompts}
+
+    _, tabled = _prompts_paragraph_and_table()
+    assert tabled == anyio.run(listed)
