@@ -217,7 +217,7 @@ def test_run_another_way_it_falls_back_to_what_is_on_the_path(monkeypatch):
 
 
 def test_install_offers_the_server_for_each_target(env, monkeypatch, tmp_path):
-    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None: {
+    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None, alongside=(): {
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
@@ -229,7 +229,7 @@ def test_install_offers_the_server_for_each_target(env, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("flag,expected_calls", [("--no-mcp", 0), ("--mcp", 1)])
 def test_the_flags_skip_or_answer_the_question(env, monkeypatch, flag, expected_calls):
-    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None: {
+    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None, alongside=(): {
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
@@ -349,7 +349,7 @@ def test_an_existing_registration_is_not_vouched_for(env, monkeypatch, capsys):
 
 
 def _main(monkeypatch, *argv):
-    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None: {
+    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None, alongside=(): {
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
@@ -386,7 +386,7 @@ def test_without_the_flag_a_failed_registration_does_not_fail_the_install(env, m
 
 
 def test_with_every_harness_the_flag_registers_where_it_can_and_explains_elsewhere(env, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None: {
+    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None, alongside=(): {
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "offer_instructions", lambda *a, **k: "n/a")
