@@ -14,8 +14,11 @@ each repo's `origin` remote.
 
 These are built against each provider's documented API and covered by tests
 with mocked HTTP; the GitHub path has been exercised against a live account,
-and GitLab against gitlab.com, with a token and without one (self-hosted
-GitLab and the other three, not yet).
+and GitLab against gitlab.com, with a token and without one. Self-hosted
+GitLab has not had a real run, and the other three have only ever been
+exercised against mocked HTTP, with one exception: the path that reads a
+Gitea/Forgejo release's author was checked against codeberg.org's public API
+(#111).
 
 ## Tokens
 

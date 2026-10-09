@@ -17,8 +17,8 @@ Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads
 its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and
 caches it under your data directory; `griot profiles list` shows each
 profile's RAM tier against the RAM you actually have. CI runs the suite on
-3.10 and 3.13, scans for committed secrets, and installs the built wheel in a
-clean environment on every push.
+Python 3.10, 3.13 and 3.14 on Linux and on 3.13 on macOS, scans for committed
+secrets, and installs the built wheel in a clean environment on every push.
 
 ## A first index and search
 
