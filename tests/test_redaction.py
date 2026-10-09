@@ -281,6 +281,9 @@ def _runs_away(setup: str, call: str, text: str, cpu_seconds: int) -> str | None
     import signal
     import subprocess
     import sys
+    # RLIMIT_CPU and SIGXCPU are POSIX: CI runs Linux and macOS, and a Windows
+    # runner would skip these checks instead of failing on a missing module.
+    pytest.importorskip("resource", reason="the CPU limit needs POSIX RLIMIT_CPU")
     child = _CPU_LIMITED_CHILD.format(setup=setup, call=call)
     try:
         done = subprocess.run([sys.executable, "-c", child, str(cpu_seconds)], input=text, text=True,
