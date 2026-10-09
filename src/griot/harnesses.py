@@ -84,6 +84,10 @@ class Harness:
     # installed there by another harness, is not copied for this one: the
     # harness would load it twice.
     reads_skills_from: Callable[[str, Path], list[tuple[Path, str]]] | None = None
+    # The variables that decide where reads_skills_from looks. griot can only
+    # read them in its OWN environment, not in the one the harness is started
+    # with, so every note about a skip names them and their values.
+    reads_skills_env: tuple[str, ...] = ()
 
 
 def _claude_user_dir(home: Path) -> Path:
@@ -219,6 +223,8 @@ HARNESSES = [
         user_dir_variable="XDG_CONFIG_HOME",
         user_dir_problem=_opencode_user_dir_problem,
         reads_skills_from=_opencode_external_skill_dirs,
+        reads_skills_env=("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+                          "OPENCODE_DISABLE_EXTERNAL_SKILLS"),
     ),
 ]
 
@@ -409,16 +415,100 @@ def install_refusal(harness_list: list[Harness], scope: str, *, home: Path | Non
     return None
 
 
-def _remove_skipped(skipped: list[tuple[Path, Path, str]], base: Path, scope: str,
-                    skills_target: Path) -> tuple[list[str], list[str]]:
-    """Removes the copies an earlier install left of the skills that are now
-    read from elsewhere: left in place they ARE the duplicate. They sit at
-    griot's own paths, which an install overwrites anyway, so whatever
-    version they are is griot's to remove. Returns (removed, why each one
-    that could not be removed was left).
+def _rerun_command(harness_list, scope: str) -> str:
+    which = harness_list[0].id if len(harness_list) == 1 else "all"
+    return f"griot assist install --scope {scope} --harness {which}"
+
+
+def _env_assumption(harness: Harness) -> str | None:
+    """Which of the harness's variables griot read and what they were. They
+    come from griot's environment: the harness started with other values
+    reads other directories, and griot cannot see that."""
+    if not harness.reads_skills_env:
+        return None
+    seen = [f"{name}={os.environ[name][:40]!r}" if name in os.environ else f"{name} unset"
+            for name in harness.reads_skills_env]
+    listing = ", ".join(seen[:-1]) + f" and {seen[-1]}" if len(seen) > 1 else seen[0]
+    return (f"griot decided this from {listing}, read in griot's own environment, not {harness.display_name}'s: "
+            f"it is right only when {harness.display_name} is started with the same values.")
+
+
+def _copies_note(harness: Harness, skills_target: Path, elsewhere: dict, files: list[str], left: list[str],
+                 rerun: str) -> str:
+    """Why the copies an earlier install left are redundant, that they were
+    kept, and how to remove them or to make them needed again."""
+    names = sorted({Path(rel).parts[0] for rel in files})
+    parts = []
+    if files:
+        by_place: dict[tuple, list[str]] = {}
+        for name in names:
+            by_place.setdefault(elsewhere[name][:2], []).append(name)
+        places = "; and ".join(f"from {directory}, {why} ({', '.join(group)})"
+                               for (directory, why), group in by_place.items())
+        parts.append(f"Kept {len(files)} file(s) an earlier install left in {skills_target}, since they may hold "
+                     f"edits of yours. {harness.display_name} also loads those skills {places}, so it shows each "
+                     f"one twice until the copies are removed. To remove them, run `{rerun}` in a terminal and "
+                     f"answer yes, or delete the files listed.")
+    parts += [f"Left in place: {problem} {harness.display_name} shows that skill twice until it is removed."
+              for problem in left]
+    stops = sorted({place[2] for place in elsewhere.values()})
+    parts.append(f"To give {harness.display_name} its own copy instead, start it with {' or '.join(stops)} and run "
+                 f"this again with it set too.")
+    assumption = _env_assumption(harness)
+    if assumption:
+        parts.append(assumption)
+    return " ".join(parts)
+
+
+def redundant_copies(harness_list: list[Harness], scope: str, *, home: Path | None = None,
+                     cwd: Path | None = None, rerun: str | None = None) -> list[dict]:
+    """The copies an earlier install left of griot's skills in the directory
+    of a harness that now loads them from elsewhere, for EVERY known harness,
+    not only those in `harness_list`: `--harness claude-code` alone puts the
+    skills where opencode reads them too, and opencode's old copies become
+    duplicates without opencode being installed. Reads only: an install
+    never deletes them (a hand edit there would be lost); the CLI asks at a
+    terminal (remove_redundant_copies), everyone else reports them.
+
+    Each entry: harness, skills_target, files (relative), paths (absolute,
+    the ones that can be removed), note (why, and how to remove them)."""
+    found = []
+    for harness in HARNESSES:
+        if harness.reads_skills_from is None or _user_dir_problem(harness, scope):
+            continue
+        base, skills_target, _, _, skipped, elsewhere = _plan(harness, scope, home, cwd, alongside=harness_list)
+        files, paths, left = [], [], []
+        for _, dest, rel in skipped:
+            if not os.path.lexists(dest):
+                continue
+            problem = _destination_problem(dest, base, contained=scope == "local")
+            if problem:
+                left.append(problem)
+                continue
+            files.append(rel)
+            paths.append(str(dest))
+        if files or left:
+            found.append({
+                "harness": harness.id,
+                "skills_target": str(skills_target),
+                "files": files,
+                "paths": paths,
+                "note": _copies_note(harness, skills_target, elsewhere, files, left,
+                                     rerun or _rerun_command(harness_list, scope)),
+            })
+    return found
+
+
+def remove_redundant_copies(harness: Harness, harness_list: list[Harness], scope: str, *,
+                            home: Path | None = None, cwd: Path | None = None) -> tuple[list[str], list[str]]:
+    """Deletes what redundant_copies() lists for `harness`, once a person
+    said yes. Planned again rather than taken from the listing, so that only
+    what is redundant NOW goes. Returns (removed, why each one that could not
+    be removed was left).
 
     Never through a link, by the rule writes follow: the file itself must
     not be one, and in a project no directory on the way may lead outside."""
+    base, skills_target, _, _, skipped, _ = _plan(harness, scope, home, cwd, alongside=harness_list)
     removed, left = [], []
     for _, dest, rel in skipped:
         if not os.path.lexists(dest):
@@ -445,10 +535,14 @@ def _remove_skipped(skipped: list[tuple[Path, Path, str]], base: Path, scope: st
     return sorted(removed), left
 
 
-def _skills_note(harness: Harness, elsewhere: dict, left: list[str]) -> str | None:
+def _skills_note(harness: Harness, elsewhere: dict) -> str | None:
     """Why some skills were not copied for this harness, and how to get a
-    copy anyway; None when all of them were."""
+    copy anyway, with the environment that decided it; None when all of them
+    were and none of its variables is set."""
+    assumption = _env_assumption(harness)
     if not elsewhere:
+        if any(name in os.environ for name in harness.reads_skills_env):
+            return f"{harness.display_name} gets its own copy of griot's skills: {assumption}"
         return None
     by_place: dict[tuple, list[str]] = {}
     for name, place in elsewhere.items():
@@ -457,8 +551,8 @@ def _skills_note(harness: Harness, elsewhere: dict, left: list[str]) -> str | No
              f"one twice: not copied for it ({', '.join(sorted(names))}). To give it its own copy, start "
              f"{harness.display_name} with {how_to_stop} and run this again with it set too."
              for (directory, why, how_to_stop), names in by_place.items()]
-    parts += [f"Left in place: {problem} {harness.display_name} shows that skill twice until it is removed."
-              for problem in left]
+    if assumption:
+        parts.append(assumption)
     return " ".join(parts)
 
 
@@ -475,7 +569,9 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
     buckets = {"created": created, "updated": updated, "unchanged": unchanged}
     for src, dest, rel in files:
         buckets[_write_file(dest, src.read_bytes())].append(rel)
-    removed, left = _remove_skipped(skipped, base, scope, skills_target)
+    # The copies an earlier install left of the skipped skills are NOT
+    # removed here: they may hold a hand edit, and this also runs for the MCP
+    # tool, where nobody is asked. redundant_copies() reports them.
 
     return {
         "harness": harness.id,
@@ -487,8 +583,7 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
         "unchanged": sorted(unchanged),
         "skills_skipped": sorted(rel for _, _, rel in skipped),
         "skills_read_from": sorted({str(place[0]) for place in elsewhere.values()}),
-        "skills_note": _skills_note(harness, elsewhere, left),
-        "removed": removed,
+        "skills_note": _skills_note(harness, elsewhere),
     }
 
 
@@ -1205,17 +1300,11 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
 
 def _print_result(result: dict) -> None:
     created, updated, unchanged = result["created"], result["updated"], result["unchanged"]
-    removed = result.get("removed", [])
     print(f"{result['harness']}: skills -> {result['skills_target']}, agents -> {result['agents_target']}")
     if result.get("skills_note"):
         print(f"  {result['skills_note']}")
-    if removed:
-        print(f"  removed ({len(removed)}), the copies an earlier install left there:")
-        for rel in removed:
-            print(f"    {rel}")
     if not created and not updated and not unchanged:
-        if not removed:
-            print("  nothing to install")
+        print("  nothing to install")
         return
     if created:
         print(f"  created ({len(created)}):")
@@ -1229,7 +1318,43 @@ def _print_result(result: dict) -> None:
         print(f"  unchanged: {len(unchanged)}")
 
 
-def _summary(done: list[dict], scope: str) -> None:
+def offer_copies_removal(entry: dict, harness_list: list[Harness], scope: str, *, ask: bool = True,
+                         home: Path | None = None) -> str:
+    """Shows one entry of redundant_copies() and, at a terminal, asks whether
+    to delete those files. Returns removed | declined | not-interactive |
+    skipped (--skills-only asks nothing) | none (only copies griot cannot
+    remove). Nothing is deleted without a typed "y" or "yes", and there is no
+    flag that answers: the files sit at griot's paths but may hold edits of
+    the person's own, which is what deleting them without asking lost (#110).
+    Anyone without a terminal gets the paths and deletes them by hand."""
+    harness = next(h for h in HARNESSES if h.id == entry["harness"])
+    print(f"\n{harness.id}: {entry['note']}")
+    for path in entry["paths"]:
+        print(f"    {path}")
+    if not entry["paths"]:
+        return "none"
+    if not ask:
+        return "skipped"
+    if not _is_interactive():
+        return "not-interactive"
+    try:
+        answer = input(f"  Remove these {len(entry['paths'])} file(s)? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("  copies: kept, nothing removed")
+        return "declined"
+    removed, left = remove_redundant_copies(harness, harness_list, scope, home=home)
+    print(f"  removed ({len(removed)}):")
+    for rel in removed:
+        print(f"    {rel}")
+    for problem in left:
+        print(f"  Left in place: {problem}")
+    return "removed"
+
+
+def _summary(done: list[dict], scope: str, copies: list[tuple[str, str]] = ()) -> None:
     """What the install did, what it left out, and what comes next. The
     command used to end on the answer to its last question."""
     reach = "every project" if scope == "global" else "this project"
@@ -1262,8 +1387,7 @@ def _summary(done: list[dict], scope: str) -> None:
     for entry in done:
         result = entry["files"]
         changed = len(result["created"]) + len(result["updated"])
-        removed = f", {len(result['removed'])} removed" if result.get("removed") else ""
-        counts = f"({changed} written, {len(result['unchanged'])} unchanged{removed})"
+        counts = f"({changed} written, {len(result['unchanged'])} unchanged)"
         own_dir = Path(result["skills_target"]).parent
         read_from = " and ".join(result.get("skills_read_from", []))
         skipped = {Path(rel).parts[0] for rel in result.get("skills_skipped", [])}
@@ -1281,6 +1405,14 @@ def _summary(done: list[dict], scope: str) -> None:
             print(f"    read-only tools: {tools_words.get(entry['tools'], entry['tools'])}")
         if entry["instructions"] != "n/a":
             print(f"    instructions: {instructions_words.get(entry['instructions'], entry['instructions'])}")
+    copies_words = {
+        "removed": "removed (see above)", "declined": "kept (declined)",
+        "not-interactive": "kept (no terminal to ask on; see above for the files)",
+        "skipped": "kept (--skills-only asks nothing; see above for the files)",
+        "none": "kept (griot cannot remove them; see above)",
+    }
+    for harness_id, outcome in copies:
+        print(f"  {harness_id}: copies left by an earlier install: {copies_words.get(outcome, outcome)}")
 
     there = [entry for entry in done if entry.get("server") in SERVER_IS_THERE]
     if not there:
@@ -1362,7 +1494,12 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
             entry["tools"] = entry["instructions"] = "not offered"
             print("  tool approval and instructions: not offered, because griot's MCP server is not registered. "
                   "Run this again once it is.")
-    _summary(done, scope)
+    # Last, for every harness and not only the ones installed: the skills
+    # just written can make an earlier copy elsewhere a duplicate.
+    copies = [(entry["harness"], offer_copies_removal(entry, targets, scope, ask=not skills_only, home=home))
+              for entry in redundant_copies(targets, scope, home=home,
+                                            rerun=f"griot assist install --scope {scope} --harness {harness_choice}")]
+    _summary(done, scope, copies)
     # Asked for with --mcp, a registration that did not happen is a failure of
     # the command: a script must not carry on as if the tools were there.
     # Asked interactively it is a courtesy on top of an install that worked.
