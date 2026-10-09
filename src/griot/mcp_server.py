@@ -1220,6 +1220,14 @@ class RepositoryFreshness(TypedDict):
     # the fix is the remote's project path or the token's access, not a new
     # token.
     platform_not_found: bool
+    # For that same refusal, which fetches ("merge/pull requests",
+    # "releases", "issues") were refused for which cause: "not_found" (404
+    # under a token: the project path or the token's reach), "token" (401,
+    # 403, or no token: the token) or "other" (no answer, a server error).
+    # More than one cause means only the "token" fetches are the token's
+    # fault. None when the repository was not refused, or the run that
+    # refused it predates this field.
+    platform_refusal_causes: dict[str, list[str]] | None
     sources: dict[str, SourceFreshness]
 
 

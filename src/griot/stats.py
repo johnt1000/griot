@@ -405,15 +405,21 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
     refused, not_found = platform_refused_names(repositories), platform_not_found_names(repositories)
+    mixed = platform_mixed_refusals(repositories)
     # A 404 under a token is fixed in the remote or the token's reach, and
-    # pointing at the token sent the user to the wrong place (debt 67).
-    if [name for name in refused if name not in not_found]:
-        attention.append(platform_refused_phrase([name for name in refused if name not in not_found])
-                         + " — check the platform's token (`griot auth list`), then `griot index platform`")
+    # pointing at the token sent the user to the wrong place (debt 67); a
+    # repository refused for more than one reason gets the fix of each of
+    # its causes, and no other (debt 70).
+    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)]
+    if token_refused:
+        attention.append(platform_refused_phrase(token_refused) + " — " + _TOKEN_CHECK + ", then `griot index platform`")
     if not_found:
-        attention.append(platform_not_found_phrase(not_found)
-                         + " — check the project path in its remote and that the token's account can see it "
-                           "(`griot auth list` shows which token), then `griot index platform`")
+        attention.append(platform_not_found_phrase(not_found) + " — " + _PROJECT_CHECK + ", then `griot index platform`")
+    for name, causes in mixed:
+        checks = ([_TOKEN_CHECK + " for the fetches it refused"] if "token" in causes else []) + (
+            [_PROJECT_CHECK] if "not_found" in causes else [])
+        attention.append(platform_mixed_phrase(name, causes) + " — " + "; and ".join(checks)
+                         + ", then `griot index platform`")
     if last_indexed.get("error") and not refusal_names_last_run(last_indexed, repositories):
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say). A refusal the
@@ -783,6 +789,36 @@ def platform_not_found_names(reports: list[dict]) -> list[str]:
     """Those of platform_refused_names() whose refusal was a 404 to every
     fetch under a token (freshness.py), as they may be printed."""
     return [common.printable(r["repo"]) for r in reports if r.get("platform_refused") and r.get("platform_not_found")]
+
+
+def platform_mixed_refusals(reports: list[dict]) -> list[tuple[str, dict[str, list[str]]]]:
+    """The repositories of platform_refused_names() whose fetches were
+    refused for more than one cause (freshness.py), with those causes, as
+    they may be printed. Never one of platform_not_found_names(): that field
+    says every fetch was a 404, and it keeps its word when a record edited
+    by hand says both. A report without causes (a run from before they were
+    recorded) is not one either: it reads as it always did."""
+    return [(common.printable(r["repo"]), r["platform_refusal_causes"]) for r in reports
+            if r.get("platform_refused") and not r.get("platform_not_found")
+            and isinstance(r.get("platform_refusal_causes"), dict) and len(r["platform_refusal_causes"]) > 1]
+
+
+# What each recorded cause of a refused fetch says, in the order the run's
+# closing message gives them (index_platform.py::_refusal_lines).
+_CAUSE_WORDS = {"not_found": "not found, or not visible to the token", "token": "refused for the token",
+                "other": "failed for another reason"}
+_TOKEN_CHECK = "check the platform's token (`griot auth list`)"
+_PROJECT_CHECK = ("check the project path in its remote and that the token's account can see it "
+                  "(`griot auth list` shows which token)")
+
+
+def platform_mixed_phrase(name: str, causes: dict[str, list[str]]) -> str:
+    """Shared by `griot stats` and `griot doctor`, as platform_refused_phrase():
+    which fetches got which answer, so the token is blamed for its own alone."""
+    groups = [", ".join(common.printable(label) for label in causes[cause]) + ": " + words
+              for cause, words in _CAUSE_WORDS.items() if causes.get(cause)]
+    return (f"the platform refused every fetch for {name} in the last platform run, for mixed reasons ("
+            + "; ".join(groups) + "): nothing of it was indexed")
 
 
 def refusal_names_last_run(last_indexed: dict, reports: list[dict]) -> bool:

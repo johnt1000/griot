@@ -853,3 +853,65 @@ def test_only_the_repositories_all_404_are_recorded_as_not_found(two_repo_run, m
     assert run["refused_repos"] == ["good", "bad"] and run["not_found_repos"] == ["bad"]
     # A mixed run's error names both causes.
     assert "HTTP 401" in run["error"] and "HTTP 404" in run["error"]
+
+
+# --- what the record keeps of each refusal's causes ------------------------------
+#
+# [debt 70] not_found_repos names a repository only when EVERY fetch got a
+# 404 under a token; one whose fetches got some 404s and some 401/403 was
+# kept with the token refusals alone, and `griot stats`, `griot doctor` and
+# griot_index_status told the person to check the token about all of it.
+# The run now records, per refused repository, which fetches were refused
+# for which cause (the same causes as its closing message).
+
+
+def test_a_mixed_refusal_records_which_fetch_got_which_cause(gitlab_run, monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, by_label={"fetch_pull_requests": 404, "fetch_releases": 404, "fetch_issues": 403})
+
+    assert index_platform.main(["--path", gitlab_run["path"]]) == 1
+
+    (run,) = gitlab_run["runs"]
+    name = Path(gitlab_run["path"]).name
+    assert run["refusal_causes"] == {name: {"not_found": ["merge/pull requests", "releases"], "token": ["issues"]}}
+    assert "not_found_repos" not in run
+
+
+def test_an_all_404_refusal_records_every_fetch_as_not_found(gitlab_run, monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, status=404)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    (run,) = gitlab_run["runs"]
+    name = Path(gitlab_run["path"]).name
+    assert run["refusal_causes"] == {name: {"not_found": ["merge/pull requests", "releases", "issues"]}}
+    assert run["not_found_repos"] == [name]
+
+
+def test_an_all_401_refusal_records_every_fetch_as_the_token_s(gitlab_run, monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, status=401)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    (run,) = gitlab_run["runs"]
+    name = Path(gitlab_run["path"]).name
+    assert run["refusal_causes"] == {name: {"token": ["merge/pull requests", "releases", "issues"]}}
+
+
+def test_causes_are_recorded_only_for_a_repository_refused_entirely(two_repo_run, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _refuse_everything_of(monkeypatch, "/bad", status=404)
+
+    index_platform.main([])
+
+    (run,) = two_repo_run["runs"]
+    assert run["refusal_causes"] == {"bad": {"not_found": ["merge/pull requests", "releases", "issues"]}}
+
+
+def test_a_run_that_refused_nothing_records_no_causes(two_repo_run):
+    index_platform.main([])
+
+    (run,) = two_repo_run["runs"]
+    assert "refusal_causes" not in run
