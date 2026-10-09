@@ -35,6 +35,10 @@ PROFILE_COMMANDS = [
     ["quality-check"],
     ["stats"],
     ["golden-set"],
+    # suggest and add resolve a new case's mode against the active
+    # collection (golden_set.case_mode_for), and add searches it.
+    ["golden-set", "suggest"],
+    ["golden-set", "add"],
     ["audit"],
     ["doctor"],
 ]
@@ -51,6 +55,29 @@ def _help(capsys, argv) -> str:
 def test_help_names_profile_flag(capsys, argv):
     out = _help(capsys, argv)
     assert "--profile NAME" in out
+
+
+# The golden-set actions that never open the collection nor resolve the
+# profile: the golden set is one file for every profile, and review reads the
+# query log of every collection. --profile changes nothing they do, so their
+# help does not offer it.
+PROFILE_BLIND_GOLDEN_SET_ACTIONS = ["list", "remove", "review"]
+
+
+@pytest.mark.parametrize("action", PROFILE_BLIND_GOLDEN_SET_ACTIONS)
+def test_golden_set_actions_the_profile_does_not_change_do_not_offer_it(capsys, action):
+    out = _help(capsys, ["golden-set", action])
+    assert out.startswith(f"usage: griot golden-set {action}")
+    assert "--profile" not in out
+
+
+@pytest.mark.parametrize("argv", [[], ["index"]], ids=["griot", "index"])
+def test_help_names_sources_flag(capsys, argv):
+    assert "--sources LIST" in _help(capsys, argv)
+
+
+def test_top_level_help_names_chat_profile_flag(capsys):
+    assert "--chat-profile NAME" in _help(capsys, [])
 
 
 def test_ask_help_names_chat_profile_flag_and_every_chat_profile(capsys):
