@@ -151,22 +151,24 @@ def test_the_stale_wording_is_gone():
 
 def _paragraphs_about_the_golden_set(path: str) -> list[str]:
     text = (Path(__file__).resolve().parent.parent / path).read_text(encoding="utf-8")
-    return [p for p in text.split("\n\n") if "golden" in p.lower()]
+    # Wrapped paragraphs: a phrase may run over a line break.
+    return [" ".join(p.split()) for p in text.split("\n\n") if "golden" in p.lower()]
 
 
-@pytest.mark.parametrize("path", ["README.md", "docs/indexing-model.md"])
+@pytest.mark.parametrize("path", ["docs/quality.md", "docs/indexing-model.md"])
 def test_the_docs_do_not_describe_the_check_as_a_raw_search(path):
-    """The README and the indexing model still called the check an
-    ungrouped search, or said the golden set does not get the arrangement
-    readers get, after it had started searching the way readers do."""
+    """The README (whose quality section is now docs/quality.md) and the
+    indexing model still called the check an ungrouped search, or said the
+    golden set does not get the arrangement readers get, after it had
+    started searching the way readers do."""
     paragraphs = _paragraphs_about_the_golden_set(path)
     assert paragraphs
     for p in paragraphs:
         assert "ungrouped" not in p and "point by point" not in p, p
 
 
-def test_the_readme_says_a_copy_meets_a_case():
-    """Where the README describes the check, it says copies are folded and a
+def test_the_quality_guide_says_a_copy_meets_a_case():
+    """Where the quality guide describes the check, it says copies are folded and a
     case met by one passes and says so."""
-    [p] = [p for p in _paragraphs_about_the_golden_set("README.md") if p.startswith("`griot quality-check`")]
+    [p] = [p for p in _paragraphs_about_the_golden_set("docs/quality.md") if p.startswith("`griot quality-check`")]
     assert "also_in" in p and "met_by_copy" in p, p

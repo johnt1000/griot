@@ -16,7 +16,7 @@ kind of name (identifier, function, class, symbol) must say it is for where
 the name is USED. The texts are read as they reach their reader: the MCP
 server's instructions, tool, prompt and resource descriptions and rendered
 prompts over the protocol, the CLI help as argparse prints it, and the
-README, the indexing doc and the bundled skills from disk."""
+README, the guides under docs/ and the bundled skills from disk."""
 
 import re
 from pathlib import Path
@@ -78,7 +78,13 @@ def _help(main, argv, capsys) -> str:
 
 
 def _files() -> dict[str, str]:
-    paths = [ROOT / "README.md", ROOT / "docs" / "indexing-model.md", *sorted(RESOURCES.rglob("*.md"))]
+    # The README and the guides it points to (its sections moved there), the
+    # indexing model and the bundled skills: the maintainer documents quote
+    # past claims on purpose.
+    guides = [p for p in sorted((ROOT / "docs").glob("*.md"))
+              if p.name not in ("lessons-and-debts.md", "mcp-capability-coverage.md")]
+    assert ROOT / "docs" / "search.md" in guides, "the guide that says what keyword search is for"
+    paths = [ROOT / "README.md", *guides, *sorted(RESOURCES.rglob("*.md"))]
     return {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8") for p in paths}
 
 

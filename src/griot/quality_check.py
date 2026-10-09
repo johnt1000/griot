@@ -203,7 +203,7 @@ def run_golden_set(golden_set: list) -> dict:
     the top-K — tests actual search quality (not just "the pipeline didn't
     break"). Always against the ACTIVE collection: common.search() has no
     other, whatever --collection the self-check was given. Cases in quality_golden_set.json, manually validated against the
-    full corpus before becoming a golden case (see griot's README.md).
+    full corpus before becoming a golden case (see docs/quality.md).
 
     Each case is searched in its own mode (golden_set.case_mode). A keyword
     or hybrid case on a collection without keyword vectors is `skipped`:
