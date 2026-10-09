@@ -385,7 +385,7 @@ def _cmd_profiles_list(args) -> int:
         # caller still guesses from api_key_env.
         api_key_env = common.credential_env_for_profile(name, profile)
         provider_label = auth._provider_label(api_key_env) if api_key_env.startswith("GRIOT_") else name
-        configured = "configured" if os.getenv(api_key_env) else f"missing {api_key_env} — run: griot auth set {provider_label}"
+        configured = "configured" if common.credential(api_key_env) else f"missing {api_key_env} — run: griot auth set {provider_label}"
         active = "   [ACTIVE]" if name == common.ACTIVE_PROFILE_NAME else ""
         price = f"${profile['price_per_1m_tokens']:.2f}/1M"
         print(f"    {name:<14}{profile['dim']}d   {price}   {configured}{active}")
@@ -434,7 +434,7 @@ def _cmd_profiles_use(args) -> int:
         print(f"Active embedding profile: '{name}'{was}. Written to {common.ENV_PATH}.")
 
     credential = common.credential_env_for_profile(name, profile)
-    if credential and not os.getenv(credential):
+    if credential and not common.credential(credential):
         provider = auth._provider_label(credential) if credential.startswith("GRIOT_") else name
         print(f"  It needs a credential that is not set ({credential}): griot auth set {provider}")
     collection = common.collection_name_for(name)

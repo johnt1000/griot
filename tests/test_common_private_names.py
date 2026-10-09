@@ -35,6 +35,7 @@ _HELPER = "a helper checked on its own, where going through its callers would hi
 # The private names of common.py tests may reach, and why.
 TESTS_MAY_REACH = {
     "_client": _STATE,
+    "_keychain_cache": _STATE,
     "_client_last_used_at": _STATE,
     "_embed_model": _STATE,
     "_echo_stream": _STATE,
@@ -63,7 +64,6 @@ TESTS_MAY_REACH = {
     "_restore_interrupted_keyword_swap": _SEAM,
     "_keyword_rebuild_paths": _SEAM,
     "_secure_collection_dir": _SEAM,
-    "_inject_keychain_credentials": _SEAM,
     "_check_env_file_permissions": _SEAM,
     "_ensure_log_handler": _SEAM,
     "_KEYCHAIN_SERVICE": _SEAM,

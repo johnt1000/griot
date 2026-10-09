@@ -26,12 +26,11 @@ os.environ["GRIOT_DATA_DIR"] = str(_SESSION_TMP / "data")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # [security review, real gap] Must be set BEFORE the import below, not only
-# in the per-test autouse fixture further down: common.py runs
-# _inject_keychain_credentials() at import time (module-level call), which
-# calls the real `keyring` backend, and keyring is a dependency of griot-rag
-# (installed in every venv that runs this suite). Without this guard here,
-# a dev/CI machine would have this single import silently read the REAL OS keychain, before
-# any fixture ever runs. No monkeypatch fixture exists yet at this point —
+# in the per-test autouse fixture further down: common.py used to read every
+# credential from the keychain at import, and any code run before a fixture
+# (a module-level call, a collection-time import) would reach the real
+# `keyring` backend, which is a dependency of griot-rag and so installed in
+# every venv running this suite. No monkeypatch fixture exists yet at this point —
 # this is a plain, permanent module-level override for the whole session.
 sys.modules["keyring"] = None
 # The line above covers this process only. A test that runs the real CLI in a
@@ -114,6 +113,8 @@ def _reset_common_globals(monkeypatch, tmp_path):
     # the real OS keychain. tests/test_keychain.py's own tests override
     # this per-test with a fake module to exercise the "available" path.
     monkeypatch.setitem(sys.modules, "keyring", None)
+    # What a previous test read from its fake keychain is not this test's.
+    monkeypatch.setattr(common, "_keychain_cache", {})
     monkeypatch.setattr(common, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(common, "DATA_DIR", data_dir)
     monkeypatch.setattr(common, "ENV_PATH", config_dir / ".env")

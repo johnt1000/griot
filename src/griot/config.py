@@ -604,7 +604,7 @@ def cmd_set(name: str, raw: str) -> int:
             print(f"  `griot ask` refuses to run with it until its price is set: griot config set {price.name} "
                   f"<USD per 1M tokens>")
         credential = common.CHAT_PROFILES[value].get("api_key_env") or ("GEMINI_TOKEN" if value == "gemini" else None)
-        if credential and not os.getenv(credential):
+        if credential and not common.credential(credential):
             provider = auth._provider_label(credential) if credential.startswith("GRIOT_") else value
             print(f"  It needs a credential that is not set ({credential}): griot auth set {provider}")
     _after_a_change(setting)

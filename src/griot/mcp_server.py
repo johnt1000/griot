@@ -1765,7 +1765,11 @@ def griot_profiles_list() -> ProfilesListOutput:
     # Keyed by env var, not by provider label: the label is derived from the
     # var by a rule 'gemini' does not follow, and matching on the derived name
     # would silently miss it.
-    configured = {s["env_var"]: s["configured"] for s in auth.provider_status()}
+    # Only the embedding profiles' credentials: each one checked can be a
+    # keychain prompt on macOS, and the chat and platform keys say nothing
+    # about these profiles.
+    key_envs = {common.credential_env_for_profile(name, profile) for name, profile in common.EMBED_PROFILES.items()}
+    configured = {s["env_var"]: s["configured"] for s in auth.provider_status(key_envs - {None})}
     active = _active_profile()
     profiles = []
     for name in sorted(common.EMBED_PROFILES):
