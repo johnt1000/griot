@@ -294,19 +294,27 @@ def check_repositories(common) -> dict:
     without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]
     from griot import stats
     refused = stats.platform_refused_names(reports)
+    not_found = stats.platform_not_found_names(reports)
+    # A 404 under a token is fixed in the remote or the token's reach, not
+    # in the token (debt 67): each kind gets its own phrase and fix.
+    token_refused = [name for name in refused if name not in not_found]
     if behind or without_code or refused:
         parts = []
         if behind:
             parts.append("index behind in " + ", ".join(stats._behind_phrase(r) for r in behind))
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
-        if refused:
-            parts.append(stats.platform_refused_phrase(refused))
-        # A refusal is fixed with the token first: indexing again before
-        # that is refused again.
+        if token_refused:
+            parts.append(stats.platform_refused_phrase(token_refused))
+        if not_found:
+            parts.append(stats.platform_not_found_phrase(not_found))
+        # A refusal is fixed first: indexing again before that is refused
+        # again.
         fix = "griot index all   # or one with --repo <name>"
-        if refused:
-            fix = "griot auth list   # check the platform's token, then: " + fix
+        checks = (["the platform's token"] if token_refused else []) + (
+            ["the project path in each remote and that the token can see it"] if not_found else [])
+        if checks:
+            fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
