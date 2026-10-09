@@ -2473,7 +2473,9 @@ async def test_index_repo_never_closes_the_index_under_a_call_that_slipped_in(mc
     monkeypatch.setattr(srv.jobs, "start_index_job", start)
     result = await srv.griot_index_repo("/repos/alpha", confirm=True, ctx=_FakeCtx())
     assert result["started"] is False and "another griot tool call" in result["reason"]
-    assert closed == [] and seen["waited"] < 1.0
+    # Not waiting takes no time and waiting takes the whole 5 s: the bound sits
+    # halfway, so a loaded machine slowing the no-wait path cannot cross it.
+    assert closed == [] and seen["waited"] < srv._WAIT_FOR_OTHER_CALLS_SECONDS / 2
 
 
 async def _index_via_client(srv, mode, path, action, monkeypatch, with_callback=True):
