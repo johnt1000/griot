@@ -299,45 +299,82 @@ A repository whose fetches got some 404s and some 401 or 403 answers stayed amon
 
 `griot auth set` warned about a running server only when it replaced a key in `.env`. Resolved: `set` and `remove` say, whenever they store or remove a key, that running MCP servers keep what they read until restarted and how to restart them, and `griot_auth_guidance` says the same (#121).
 
-### 72. A platform failure under a token that is not the token's fault still gets the token advice
+### 72. ~~A platform failure under a token that is not the token's fault still gets the token advice~~ — resolved
 
-A repository whose every platform fetch failed for another cause (no
-answer, a server error) under a token has a single cause, `other`, so it is
-neither among the 404s nor refused for mixed reasons (#122): `griot stats`,
-`griot doctor` and `griot_index_status` list it among the token refusals
-and say to check the token, which is not what failed.
-`platform_refusal_causes` does say `other`; the advice does not read it.
+A repository whose every fetch failed with no answer or a server error under a token was listed among the token refusals. Resolved: the run records the status or error kind of those fetches (`other_reasons`), and `griot index platform`, `griot stats`, `griot doctor` and `griot_index_status` (`platform_other_reasons`) say the platform did not answer or failed, that it is not the token, and to check the network or the platform's status and try again later, for the failed fetches of a mixed refusal too (#128).
 
-### 73. `griot ask` run through an agent's shell tool never pairs as reworded
+### 73. ~~`griot ask` run through an agent's shell tool never pairs as reworded~~ — resolved
 
-The session a logged search records is a digest of its parent process
-(#123). For `griot mcp` that is the agent session; for `griot ask` it is the
-shell it ran in, and an agent's shell tool starts a new shell for each call,
-so every `griot ask` it runs is a session of its own and a rewording through
-it is never offered as `reformulated`.
+Every shell-tool call started a new shell, so each `griot ask` was a session of its own. Resolved: the session is the agent client's conversation id when the client exports one (Claude Code's `CLAUDE_CODE_SESSION_ID`, stored as a digest, never raw), which also pairs those asks with the same conversation's `griot_search` calls; opencode exports none, and without one the parent process decides as before (#126). Debt 83 is what that left unverified.
 
-### 74. Subagents sharing one MCP server share a session
+### 74. ~~Subagents sharing one MCP server share a session~~ — resolved as a documented limit
 
-Subagents that reach griot through their parent's `griot mcp` process log
-under the parent's session, so a parallel subagent's search on a nearby
-subject can be taken as "the next search" of another's (#123). The rule that
-half of the subject words must be shared limits this but does not exclude
-it; the person reviewing sees the follow-up and can answer `n` or `s`.
+Not changed, documented: a subagent that reaches griot through its parent's `griot mcp` logs under the parent's session, which the quality guide (`docs/quality.md`) and the reworded rule's docstring now say, with the person reviewing as the check (#127). With #126 a subagent's shell `griot ask` may carry the same conversation id too; whether a subagent's id equals its parent's was not checked.
 
-### 75. Reworded candidates can be crowded out of a review
+### 75. ~~Reworded candidates can be crowded out of a review~~ — resolved
 
-`griot golden-set review` offers the `reformulated` kind last, and the four
-kinds share one `--limit` (10 by default), so with enough repeated, low
-scoring or disagreeing searches the reworded ones are never shown unless the
-limit is raised (#123).
+The kinds were joined one after another and cut at `--limit`. Resolved: they take turns up to the limit, each kind in its own order, and each candidate names its kind (#127).
 
-### 76. A reworded candidate offers only the first search's results
+### 76. ~~A reworded candidate offers only the first search's results~~ — resolved
 
-A `reformulated` candidate lets the person pick from the results of the
-first search, the one offered (#123). When the right document came back only
-in the follow-up, the person can only answer `n`, and no case comes of it.
-Letting them pick from the follow-up's results as the right answer for the
-first question is a pending maintainer decision.
+Resolved: a reworded candidate shows the follow-up's results beside the first search's, each marked with the search that returned it, and a pick from either list becomes a case of the first question in the first search's mode, when the search that returned it was neither narrowed nor grouped (#127).
+
+### 77. ~~The documents contradicted the code in places~~ — resolved
+
+A docs audit found statements the code contradicts: that `griot index keywords` starts an interrupted copy over, the MCP capability count, that `griot_index_wait` does not survive a server restart, that credentials live in `.env`, the CI matrix, the release steps, which read-only tools the installer leaves out of pre-approval, and no mention of the codeberg.org check of Gitea/Forgejo release authors. Resolved: each fixed and held to its source by a test (#129).
+
+### 78. ~~Some flags griot reads are missing from `--help`~~ — resolved
+
+`--profile`, `--chat-profile` and `--sources` are taken out of the command line before any parser runs, so no help showed them; `griot index all --help` ran every source's help, `griot mcp --help` started the server, and some usage lines read `griot [-h]`. Resolved: each command's help names the flags that change what it does, `griot mcp --help` prints a usage naming the server's settings, and the usage lines name their command (#130, #131).
+
+### 79. ~~A redaction test's wall-clock limit failed under load~~ — resolved
+
+The check that no input makes a redaction detector run away allowed 3 seconds of wall time, and failed once under full-suite load. Resolved: it limits CPU time in a child process, so waiting for a CPU does not count, and a release-race test takes its bound from the wait it guards instead of a fixed second (#132). Debt 86 is the one timing bound left.
+
+### 80. ~~The README is too long to be the front page~~ — resolved
+
+About 6,800 words mixed the pitch, a guide and the full reference, on GitHub and on PyPI alike. Resolved: a short README with an index of topic guides under `docs/`, linked by absolute URL so they work on PyPI, and a test that every link and anchor between the documents resolves (#133).
+
+### 81. ~~Hand-written counts of the server's tools and prompts, and CI said to run on every push~~ — resolved
+
+The `griot-workflows` skill and the coverage document counted prompts, tools and resources by hand, and the getting-started guide said CI runs on every push. Resolved: they point at the server's lists, a test fails on any such count in a bundled skill, agent or guide that no other test holds, and the guide says when CI runs, read against `ci.yml` (#134). Debt 82 narrowed what it let through; debt 85 is what it does not see.
+
+### 82. ~~The inventory-count test exempts held counts in every file~~ — resolved
+
+The test that refuses hand-written counts let "N human-only tools", "N read-only tools" and "N tools expose less" through in every skill, agent and guide, though a test held them in one passage of one file each. Resolved: a count is let through only inside the passage its holding test reads, taken from the function that test calls (#135).
+
+### 83. A conversation id that changes under a running server would stop pairing
+
+The `griot mcp` environment is fixed when the client starts it, while each
+`griot ask` through the shell tool reads the conversation id afresh (#126).
+If Claude Code changed `CLAUDE_CODE_SESSION_ID` within a conversation
+without restarting its MCP servers (possibly on `/clear` or a resume), the
+asks after the change would no longer pair with the server's searches until
+it restarts. Not verified either way.
+
+### 84. `griot doctor` reads private names of `stats`
+
+`doctor` builds its advice from `stats._FAILURE_CHECK`, the wording added
+for a platform that did not answer or failed (#128), and from
+`stats._behind_phrase`, which it has used since it was written. Debt 47
+resolved the same pattern for `common.py` by making such names public, with
+a guard against new ones; `stats` has no such guard.
+
+### 85. The hand-written count test sees at most two words between the number and the noun
+
+The test that refuses hand-written counts of the server's tools, prompts or
+resources (#134, #135) matches a number word from "two", or digits, then
+at most two words, then the noun: "three of griot's read-only MCP tools" or
+"one resource" would pass it. It catches the counts the documents have
+held so far, not every way to write one.
+
+### 86. One release-race test still bounds a path by a fixed fraction of a second
+
+`test_a_status_read_does_not_wait_behind_a_slow_open` asserts the status
+read takes under 0.25 s against a 0.3 s open (#132). The bound cannot be
+raised toward the open's length without losing the check, and a longer
+open would slow every test that uses the fixture, so it was left; it is
+the one timing bound in that file a loaded machine can still trip.
 
 ---
 
@@ -535,6 +572,20 @@ cannot say how often people and agents actually reword, how fast, or how
 many follow-ups are about another facet of the subject, because those are
 the inputs it was given. Such a number is recorded with its assumptions and
 as pending until real use is read, not as a finding.
+
+### A test's time limit has to bound the defect, not the machine
+
+The check that no input makes a redaction detector run away allowed 3
+seconds of wall time, and failed once when the full suite loaded the
+machine (#132). Wall time counts waiting for a CPU, which is the machine's
+state, not the code's; the defect the check guards against, backtracking
+that never ends, burns CPU. The limit is now on CPU time, enforced by the
+kernel in a child process. The same round's release-race test had a fixed
+1-second bound against a 1.5-second wait; the defect there is sitting
+through the wait, which takes at least the whole wait, so the wait itself
+is the bound that still fails the defect and leaves a busy machine the most
+room. Derive a timing bound from what the defect costs, and measure the
+resource the defect consumes.
 
 
 ---

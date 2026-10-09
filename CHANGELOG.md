@@ -8,6 +8,89 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is the short version, and the reference lives in guides
+  under `docs/`.** README.md had grown to about 6,800 words mixing the
+  pitch, a guide and the full reference, and it is also the PyPI project
+  page. It now says what griot is, its highlights, how to install it, a
+  five-step quickstart and an index of the guides, so the PyPI page is the
+  short README too; its links to the guides are absolute GitHub URLs, so
+  they work there. The reference sections moved into guides: getting
+  started, configuration, credentials, search, quality, the MCP server and
+  platforms, with `docs/README.md` indexing every document. A test checks
+  that every link and anchor between the repository's documents resolves.
+- **`griot golden-set review` lets the kinds of candidate take turns** up to
+  `--limit`: one asked again, one low score, one where the rankings
+  disagree, one reworded, then a second of each, each kind in its own
+  order. Before, the kinds were joined one after another and cut at the
+  limit, so with enough repeated or low-scoring searches the reworded ones
+  never appeared at the default limit. Each candidate now names its kind
+  (`[2/4] (reworded) ...`).
+- **A reworded candidate shows the follow-up's results beside the first
+  search's**, each marked "first search only", "follow-up only" or "both
+  searches" and shown once, and the right document can be picked from
+  either list. The pick becomes a case of the first question, in the first
+  search's mode. A result can be picked when the search that returned it
+  was neither narrowed nor grouped by document. Before, a document only the
+  follow-up found could not be picked, and no case came of it.
+- Subagents that reach griot through their parent's `griot mcp` share its
+  session, so a parallel subagent's search can be taken for the next
+  search of another's. This is now documented as a limit of the reworded
+  candidates; the person reviewing sees the follow-up and can decline it.
+
+### Fixed
+
+- **A logged search's session is the agent client's conversation id when
+  the client exports one**: Claude Code's `CLAUDE_CODE_SESSION_ID`, stored
+  only as a digest, never raw. Each command an agent's shell tool runs
+  starts in a new shell, so the `griot ask` commands it ran were each a
+  session of their own and a rewording through them was never offered;
+  they are now one session, and pair with the `griot_search` calls of the
+  same conversation, since Claude Code passes the same id to the
+  `griot mcp` it starts. opencode exports no conversation id, and without
+  one the parent process decides, as before.
+- **A platform that did not answer or failed for every fetch of a
+  repository under a token no longer gets the token advice.** A timeout or
+  an HTTP 5xx on every fetch was listed among the token refusals, so
+  `griot stats`, `griot doctor` and `griot_index_status` said to check the
+  token. `griot index platform` now says the fetches failed, names the
+  status or the kind of error, says it is not the token, and says to check
+  the network or the platform's status and try again later. The run
+  records those reasons (`other_reasons`: the status or error type only,
+  never the text), and `griot stats`, `griot doctor` and
+  `griot_index_status` (`platform_other_reasons`) say the same, also for
+  the failed fetches of a repository refused for mixed reasons. A run
+  recorded before this reads as it did.
+- **Every command's `--help` names the flags griot reads before its
+  parser**: `--profile` on each command whose result depends on the active
+  embedding profile (`griot golden-set suggest` and `add` among them;
+  `list`, `remove` and `review`, which it does not change, do not name it),
+  `--chat-profile` on `griot ask` and the top level, and `--sources` on
+  `griot index all`, `griot index` and the top level. Parsing is unchanged.
+  `griot index all --help` prints one help instead of running each
+  source's help in turn and then saying the pipeline completed.
+  `griot mcp --help` (and `python -m griot.mcp_server --help`) prints a
+  usage naming the server's settings, with their `griot config set` names,
+  instead of starting the server. `griot ask`, `griot quality-check` and
+  `griot index <source>` name themselves in their usage line instead of
+  `griot [-h]`.
+- **The documents say what the code does.** An audit found statements the
+  code contradicts; each is fixed and now held to its source by a test:
+  `griot index keywords` resumes an interrupted copy; the MCP coverage
+  document and the roadmap count five of eleven capabilities;
+  `griot_index_wait` finds a run again after a server restart; credentials
+  go to the OS keychain first and to `<config_dir>/.env` only without one;
+  the CI matrix (3.10, 3.13 and 3.14 on Linux, 3.13 on macOS; the 3.14
+  classifier added) and the release steps in CONTRIBUTING; the four
+  read-only tools the installer does not offer to pre-approve; and the
+  codeberg.org check of Gitea/Forgejo release authors. No text about the
+  MCP server counts its tools, prompts or resources by hand any more (the
+  MCP guide and the `griot-workflows` skill point at the server's prompt
+  list, and a test holds their prompt tables to what a real client lists),
+  and the getting-started guide says CI runs on pull requests, pushes to
+  `main`, by hand and before a release, not on every push.
+
 ## [0.5.0] — 2026-10-09
 
 ### Added
