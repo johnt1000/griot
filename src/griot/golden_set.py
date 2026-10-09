@@ -1081,6 +1081,11 @@ def main(argv=None) -> int:
         description="Manages quality_golden_set.json (curated level 2, from `griot quality-check`).",
     )
     show_flags_read_by_griot(parser, PROFILE_FLAG)
+    # On each action's help too, but only where the profile changes what the
+    # action does: suggest and add resolve a new case's mode against the
+    # active collection (case_mode_for), and add searches it. list, remove
+    # and review never open it: the golden set is one file for every
+    # profile, and review reads the query log of every collection.
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
     p_suggest = sub.add_parser(
@@ -1090,11 +1095,13 @@ def main(argv=None) -> int:
                     "search (also with nothing indexed yet: an index run builds keyword vectors); vector on a "
                     "collection without keyword vectors, which `griot index keywords` builds, or whose config "
                     "cannot be read.")
+    show_flags_read_by_griot(p_suggest, PROFILE_FLAG)
     p_suggest.add_argument("repo_path", help="Local git repository directory")
     p_suggest.add_argument("--max-commits", type=int, default=None, help="Limit of commits to consider (default: all)")
     p_suggest.add_argument("--limit", type=int, default=10, help="How many candidates to offer for approval (default: %(default)s)")
 
     p_add = sub.add_parser("add", help="Runs a real search and lets you approve which results are the must_include")
+    show_flags_read_by_griot(p_add, PROFILE_FLAG)
     p_add.add_argument("query", help="Natural language question/term")
     p_add.add_argument("--limit", type=int, default=5, help="How many results to show to choose from (default: %(default)s)")
     p_add.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
