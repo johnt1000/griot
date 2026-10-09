@@ -4402,10 +4402,92 @@ _GROUPING_OVERFETCH = 6
 SEARCH_MAX_EXTRA_WINDOWS = 2
 
 
+# What a point of each source type stores besides `repo`, `source_type`,
+# `content` and `content_hash`: the `metadata` of a search result, and what
+# each field means. The ONE list of them: every indexer builds its payload
+# through result_metadata(), which refuses a field missing here, and the
+# griot://result-fields resource serves this dict as it is. griot_search's
+# description has no room to name every field (it is held to 1600
+# characters), so a field added without this list would reach agents with
+# no explanation, or not at all.
+RESULT_FIELDS = {
+    "code": {
+        "file_path": "The file's path, relative to the root of the repository.",
+        "chunk_index": "Which part of the file this is, from 0: a file is indexed in overlapping parts.",
+    },
+    "commit": {
+        "commit_hash": "The full commit hash.",
+        "author": "The commit's author, by the name git records.",
+        "date": "When the commit was authored, ISO 8601 with its offset.",
+        "chunk_index": "Which part of the message this is, from 0: only a long message is split.",
+    },
+    "tag": {
+        "tag_name": "The tag's name.",
+        "commit_hash": "The commit the tag leads to, not the tag object.",
+        "date": "When the tag was created (an annotated tag) or its commit made, ISO 8601.",
+        "chunk_index": "Which part of the tag's message this is, from 0: only a long message is split.",
+    },
+    "branch": {
+        "branch_name": "The remote branch, such as origin/feature-x; the default branch is not indexed.",
+        "last_commit_hash": "The full hash of the commit at the tip of the branch.",
+        "last_commit_date": "When that commit was authored, ISO 8601.",
+    },
+    "merge_request": {
+        "mr_iid": "The merge or pull request's number in its project.",
+        "state": "Its state as the platform gives it, such as opened, merged or closed.",
+        "author": "Who opened it, by the platform's user name.",
+        "created_at": "When it was opened, as the platform gives it.",
+        "source_branch": "The branch it merges from.",
+        "target_branch": "The branch it merges into.",
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its title and description this is, from 0.",
+    },
+    "release": {
+        "tag_name": "The tag the release was made from.",
+        "released_at": "When it was released, as the platform gives it.",
+        "author": ("Who published it, by the platform's user name. GitHub, GitLab and Gitea/Forgejo; "
+                   "absent when the platform gives none, and on a release indexed before griot "
+                   "stored it, until the next platform run."),
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its name and notes this is, from 0.",
+    },
+    "issue": {
+        "issue_iid": "The issue's number in its project.",
+        "state": "Its state as the platform gives it, such as opened or closed.",
+        "author": "Who opened it, by the platform's user name.",
+        "created_at": "When it was opened, as the platform gives it.",
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its title and description this is, from 0.",
+    },
+}
+
+# Beside a result's `metadata` rather than in it, on every kind of source.
+RESULT_TOP_LEVEL_FIELDS = {
+    "repo": "The repository's name, the `name` griot_repos_list gives and the `repos` filter takes.",
+    "source_type": "Which kind of source the result is: one of the keys of `metadata` here.",
+}
+
+
+def result_metadata(metadata: dict) -> dict:
+    """`metadata` itself, once every field it holds is one RESULT_FIELDS
+    lists for its source type: what keeps that list, and the resource
+    built from it, from falling behind what is stored. An unlisted field is
+    a programming error in an indexer, found by its tests, not a value to
+    drop quietly."""
+    source_type = metadata.get("source_type")
+    if source_type not in RESULT_FIELDS:
+        raise ValueError(f"Unknown source_type {source_type!r}: add it to common.RESULT_FIELDS.")
+    unlisted = set(metadata) - set(RESULT_TOP_LEVEL_FIELDS) - set(RESULT_FIELDS[source_type])
+    if unlisted:
+        raise ValueError(f"A {source_type} payload holds {', '.join(sorted(unlisted))}, which "
+                         "common.RESULT_FIELDS does not list: list it there, with what it means.")
+    return metadata
+
+
 # The kinds of source an indexer writes as `source_type`, which is what a
 # search can be narrowed to. tests/test_search_filters.py holds this list to
 # what the five indexers actually write.
-SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "issue")
+SOURCE_TYPES = tuple(RESULT_FIELDS)
 
 # Each repository named in a filter costs one scan of the collection to make
 # sure something is indexed for it (there is no payload index to ask).
