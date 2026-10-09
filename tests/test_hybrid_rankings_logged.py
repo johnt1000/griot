@@ -450,3 +450,79 @@ def test_a_real_hybrid_search_becomes_a_disagreement_candidate(index, monkeypatc
     monkeypatch.setattr(common, "get_client", lambda *a, **k: pytest.fail("the review touched the index"))
 
     assert _kinds() == [("disagree", "zanzibar")]
+
+
+# --- the window every logging surface records reaches the depth ------------------------------------
+#
+# A null rank only says "not among the first rank_window", so the review can
+# count it as past DISAGREE_DEPTH only when the window reached the depth (see
+# golden_set._disagreement). Counting it against a narrower window would
+# offer rankings that agree: a result at rank w+1..DISAGREE_DEPTH of the
+# other ranking is one the depth calls near. The searches that log ranks are
+# the ones made for a reader (griot ask, griot_search), and those fuse
+# rankings wider than the list they return. These pin that every such
+# search that can disagree at all, the smallest limit included, logs a
+# window that reaches the depth, so a narrow window never hides one.
+
+
+def _ask(monkeypatch, *argv):
+    monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
+    monkeypatch.setattr(common, "get_spend_today", lambda: 0.0)
+    ask.main(["zanzibar", *argv])
+
+
+@pytest.mark.parametrize("limit", [2, 3, 5, 20])
+@pytest.mark.parametrize("group_by_document", [False, True])
+def test_griot_search_logs_a_window_that_reaches_the_depth(index, limit, group_by_document):
+    _call(query="zanzibar", limit=limit, group_by_document=group_by_document)
+
+    assert _rows()[0]["rank_window"] >= golden_set.DISAGREE_DEPTH
+
+
+@pytest.mark.parametrize("limit", [2, 3, 5, 20])
+def test_griot_ask_logs_a_window_that_reaches_the_depth(index, monkeypatch, limit):
+    _ask(monkeypatch, "--limit", str(limit))
+
+    assert _rows()[0]["rank_window"] >= golden_set.DISAGREE_DEPTH
+
+
+@pytest.mark.parametrize("limit", [2, 20])
+def test_a_small_or_large_limit_search_through_the_mcp_client_is_offered(index, monkeypatch, limit):
+    """End to end at the two ends: the smallest limit that returns two
+    results to disagree about, and a large one, each logged by a real search
+    to the real logs.db and offered by the review."""
+    _call(query="zanzibar", limit=limit)
+    common.release_client()
+    monkeypatch.setattr(common, "get_client", lambda *a, **k: pytest.fail("the review touched the index"))
+
+    assert _kinds() == [("disagree", "zanzibar")]
+
+
+@pytest.mark.parametrize("limit", [2, 20])
+def test_a_small_or_large_limit_ask_is_offered(index, monkeypatch, limit):
+    _ask(monkeypatch, "--limit", str(limit))
+    common.release_client()
+    monkeypatch.setattr(common, "get_client", lambda *a, **k: pytest.fail("the review touched the index"))
+
+    assert _kinds() == [("disagree", "zanzibar")]
+
+
+def test_a_one_result_search_is_never_a_disagreement(index):
+    """Limit 1 is the one search a reader makes whose window (6) is under
+    the depth, and it cannot disagree whatever the window: two rankings
+    disagree about two results, and it logs one."""
+    _call(query="zanzibar", limit=1)
+
+    row = _rows()[0]
+    assert len(row["results"]) == 1
+    assert _kinds() == []
+
+
+@pytest.mark.parametrize("window", [2, 5, golden_set.DISAGREE_DEPTH - 1])
+def test_a_window_under_the_depth_offers_nothing_even_when_every_other_rank_is_null(no_index, window):
+    """With a window w under the depth a null is only known to be past w;
+    the other ranking may have had it within the depth, where the two agree.
+    So a narrow window is not compared against itself (min(depth, w))."""
+    _log("narrow", ranks=DISAGREE, window=window)
+
+    assert _kinds() == []

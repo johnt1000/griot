@@ -102,12 +102,14 @@ source unless told otherwise:
 A repository with nothing indexed, or a kind that does not exist, is an
 **error**, not an empty result: an empty list would read as "nothing was
 found". Two values that both exist and match nothing together (a repository
-with no pull requests indexed, say) do return an empty list. On the CLI the
+with no pull requests indexed, say) do return an empty list, and its `note`
+names the filters that narrowed it. On the CLI the
 same filters are `--repo NAME` and `--source-type KIND`, each repeatable,
-on `griot search` and on `griot ask` alike; `ask` refuses a filter that
-cannot match before it calls the chat model, so that costs nothing, and
-when the search finds nothing it prints `No results.` (naming the filters
-that narrowed it) without calling the chat model at all.
+on `griot search` and on `griot ask` alike; both print `No results.` and
+the filters that narrowed it when a narrowed search finds nothing. `ask`
+refuses a filter that cannot match before it calls the chat model, so that
+costs nothing, and when the search finds nothing it does not call the chat
+model at all.
 
 ## Reading `source_type`
 

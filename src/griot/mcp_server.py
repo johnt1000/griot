@@ -1490,6 +1490,13 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
                           else f"{_printable(repo)} (the indexed commit is not in this history)" for repo, count in behind.items())
         note += (f" The index of these repositories is behind their HEAD: {named}; what changed since is not in "
                  f"these results (see `behind`, and griot_index_status).")
+    if not results:
+        # An empty list with only the note above reads as "nothing about this
+        # anywhere"; when filters narrowed the search, say so, as `griot
+        # search` and `griot ask` do.
+        reason = ask.nothing_found_reason(repos, source_types)
+        if reason:
+            note += " " + reason
     keyword_note = _keyword_note_for(common.COLLECTION_NAME, asked_mode, mode_note)
     if keyword_note:
         note += " " + keyword_note
