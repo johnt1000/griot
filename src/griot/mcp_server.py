@@ -474,15 +474,27 @@ class AssistInstallResult(TypedDict):
     # own would show each skill twice. `note` says where from and how to get a
     # copy anyway; None when nothing was skipped.
     skills_skipped: list[str]
-    # Copies an earlier install left of those skipped files, now deleted.
-    removed: list[str]
     note: str | None
+
+
+class AssistCopiesKept(TypedDict):
+    # A harness whose own directory still holds copies an earlier install
+    # left of skills it now loads from elsewhere, so it shows them twice.
+    # The tool never deletes them (they may hold the person's edits); `note`
+    # says why they are redundant and how to remove them.
+    harness: str
+    skills_target: str
+    paths: list[str]
+    note: str
 
 
 class AssistInstallOutput(TypedDict):
     changed: bool
     message: str
     results: list[AssistInstallResult]
+    # Also for a harness not installed in this call: Claude Code's skills
+    # make opencode's earlier copies duplicates.
+    copies_kept: list[AssistCopiesKept]
 
 
 class ProviderStatus(TypedDict):
@@ -2741,8 +2753,8 @@ def _assist_install_question(harness: str, scope: str) -> str:
         origin = f" (the place {chosen_by} names in this server's environment)" if chosen_by else ""
         places.append(f"{_shown(skills, 300)} and {_shown(agents, 300)}{origin}")
     # A harness that already loads griot's skills from another directory
-    # gets no copy of its own, and the copies an earlier install left are
-    # deleted: the person is asked about that deletion too.
+    # gets no copy of its own; the copies an earlier install left are kept
+    # (they may hold edits) and reported, and the person is told so.
     elsewhere = []
     for target in targets:
         read_from = {os.path.realpath(place[0])
@@ -2751,8 +2763,9 @@ def _assist_install_question(harness: str, scope: str) -> str:
             elsewhere.append(
                 f" {target.display_name} also loads skills from {', '.join(_shown(p, 300) for p in sorted(read_from))}, "
                 f"so griot's skills found or installed there are not copied for it (it would show each one twice), "
-                f"and any copy of them griot left in {_shown(os.path.realpath(harnesses.destinations(target, scope)[0]), 300)} "
-                f"is deleted.")
+                f"Any copy of them an earlier install left in "
+                f"{_shown(os.path.realpath(harnesses.destinations(target, scope)[0]), 300)} is kept and reported, "
+                f"not removed.")
     into = f", into {'; '.join(places)}" if places else ""
     return (f"Install griot's skills and agents for {targets_desc} at {scope} scope{into}. Files with the same "
             f"names are overwritten, edits included, and a future coding session there will load and follow "
@@ -2811,9 +2824,14 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     or .claude/skills in the project) and from .agents/skills, unless it runs
     with OPENCODE_DISABLE_CLAUDE_CODE_SKILLS or OPENCODE_DISABLE_EXTERNAL_SKILLS.
     A griot skill found or being installed there is not copied for opencode,
-    since it would appear twice, and the copy an earlier install left in
-    opencode's own directory is deleted; each result's `skills_skipped`,
-    `removed` and `note` say so. opencode's agent file is always its own.
+    since it would appear twice; each result's `skills_skipped` and `note`
+    say so, and `note` names the variables read and their values: they come
+    from this server's environment, not opencode's. This tool never deletes
+    the copies an earlier install left in opencode's own directory (they may
+    hold the person's edits), also when only claude-code is installed:
+    `copies_kept` lists them, with why they are redundant and how to remove
+    them (`griot assist install` at a terminal asks). opencode's agent file
+    is always its own.
 
     An invalid `harness` or `scope` is refused at once, before anyone is
     asked.
@@ -2843,19 +2861,19 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
     against mistakes and not at all against a compromised one."""
     targets, impossible = _assist_install_plan(harness, scope)
     if impossible:
-        return {"changed": False, "message": impossible, "results": []}
+        return {"changed": False, "message": impossible, "results": [], "copies_kept": []}
 
     ok, refusal = await _confirmed(
         ctx, _assist_install_question(harness, scope),
         confirm=confirm, cli_hint=_cli_command("assist", "install", "--scope", scope, "--harness", harness),
         human_required=True, answer=answer)
     if not ok:
-        return {"changed": False, "message": refusal, "results": []}
+        return {"changed": False, "message": refusal, "results": [], "copies_kept": []}
 
     try:
         raw_results = harnesses.install_many(targets, scope)
     except harnesses.UnsafeDestination as e:  # it changed while the person was reading the question
-        return {"changed": False, "message": f"Nothing was installed. {e}", "results": []}
+        return {"changed": False, "message": f"Nothing was installed. {e}", "results": [], "copies_kept": []}
     results = [
         {
             "harness": r["harness"],
@@ -2866,13 +2884,20 @@ async def griot_assist_install(harness: str = "all", scope: str = "local",
             "updated": r["updated"],
             "unchanged_count": len(r["unchanged"]),
             "skills_skipped": r["skills_skipped"],
-            "removed": r["removed"],
             "note": r["skills_note"],
         }
         for r in raw_results
     ]
-    changed = any(r["created"] or r["updated"] or r["removed"] for r in results)
-    return {"changed": changed, "message": f"Installed for {len(results)} harness(es).", "results": results}
+    rerun = _cli_command("assist", "install", "--scope", scope, "--harness", harness)
+    copies_kept = [{"harness": c["harness"], "skills_target": c["skills_target"], "paths": c["paths"],
+                    "note": c["note"]}
+                   for c in harnesses.redundant_copies(targets, scope, rerun=rerun)]
+    changed = any(r["created"] or r["updated"] for r in results)
+    message = f"Installed for {len(results)} harness(es)."
+    if copies_kept:
+        message += (f" {sum(len(c['paths']) for c in copies_kept)} file(s) an earlier install left, which a harness "
+                    f"shows twice, were kept: see copies_kept.")
+    return {"changed": changed, "message": message, "results": results, "copies_kept": copies_kept}
 
 
 class IndexPreviewSource(TypedDict):

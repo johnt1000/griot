@@ -32,7 +32,7 @@ to a Gitea instance isn't recognized by any platform (the same "no known
 remote" behavior that already existed for any non-GitLab host before this
 change).
 
-**Only GitHub has been exercised against a real account and token** (2026-08-25: pull requests and releases indexed from four private repositories). GitLab reads a public project without a token, verified against gitlab.com on 2026-10-07 (merge requests, releases and issues of a public project); its authenticated path has not run for real yet. The other adapters are covered by tests that mock `requests.get`/`requests.post` with responses shaped after each provider's publicly documented API — useful, but not the same confidence as a live smoke test, which needs an account, a token and a repository on each platform.
+**Only GitHub has been exercised against a real account and token** (2026-08-25: pull requests and releases indexed from four private repositories). GitLab has run against gitlab.com on both paths: a public project read without a token (2026-10-07: its merge requests, releases and issues), and with a token (2026-10-08: the token accepted, a public project indexed, a missing project refused with HTTP 404); self-hosted instances have not. The other adapters are covered by tests that mock `requests.get`/`requests.post` with responses shaped after each provider's publicly documented API — useful, but not the same confidence as a live smoke test, which needs an account, a token and a repository on each platform.
 """
 
 from __future__ import annotations

@@ -29,13 +29,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # in the per-test autouse fixture further down: common.py used to read every
 # credential from the keychain at import, and any code run before a fixture
 # (a module-level call, a collection-time import) would reach the real
-# `keyring` backend if the package happens to be installed in the venv
-# running this suite. No monkeypatch fixture exists yet at this point —
+# `keyring` backend, which is a dependency of griot-rag and so installed in
+# every venv running this suite. No monkeypatch fixture exists yet at this point —
 # this is a plain, permanent module-level override for the whole session.
 sys.modules["keyring"] = None
 # The line above covers this process only. A test that runs the real CLI in a
-# subprocess imports the real `keyring` there, and on a machine with the
-# keychain extra a fake credential reached the user's login keychain
+# subprocess imports the real `keyring` there, and on a machine with
+# keyring installed a fake credential reached the user's login keychain
 # (2026-10-06). Every subprocess inherits this environment: keyring's `fail`
 # backend makes it degrade to the file, as the test process does.
 # tests/test_suite_keychain_isolation.py holds it.

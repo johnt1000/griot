@@ -1281,12 +1281,13 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # see SECURITY.md's "Encryption at rest" position, deliberately NOT
 # revisited by this change), a credential is NOT redundant with anything
 # else on disk: a leaked API key is a standalone loss. The `keyring`
-# package (pyproject.toml's optional `keychain` extra — NOT a core
-# dependency) is the same pattern real CLI tools use (gh, docker
-# credential helpers, aws-cli, 1Password CLI). `import keyring` happens
-# LAZILY inside each wrapper below (never at module import time) so
-# griot's core CLI/MCP/UI behavior never depends on it being installed —
-# every wrapper catches ANY exception (ImportError when not installed,
+# package (a default dependency since debt 65; it was an opt-in extra, and
+# the documented `pipx install griot-rag` then kept every key in plaintext)
+# is the same pattern real CLI tools use (gh, docker credential helpers,
+# aws-cli, 1Password CLI). `import keyring` still happens LAZILY inside each
+# wrapper below (never at module import time) so griot's core CLI/MCP
+# behavior never depends on it importing — every wrapper catches ANY
+# exception (ImportError on a broken install,
 # keyring.errors.NoKeyringError when no backend is reachable — e.g.
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
@@ -1346,7 +1347,7 @@ def keychain_set(env_var: str, value: str) -> bool:
 
 
 # What keychain_delete() found. "not installed" is apart from "unreachable"
-# because without the `keyring` package griot never stored anything in a
+# because where `keyring` does not import griot never stored anything in a
 # keychain, so there is nothing to warn about; an installed package whose
 # backend fails may be hiding a stored credential that is still there.
 KEYCHAIN_DELETED = "deleted"
@@ -1390,8 +1391,9 @@ def keychain_status() -> dict:
     fallback to the plaintext file can be said instead of happening silently.
 
     {"available": bool, "backend": its name or None, "installed": whether
-    `keyring` imports at all}: "not installed" is fixed by the extra, "no
-    backend" is not (headless Linux, a container), and the advice differs.
+    `keyring` imports at all}: "not installed" is a broken install (keyring
+    is a dependency) fixed by reinstalling griot, "no backend" is not
+    (headless Linux, a container), and the advice differs.
     Asks keyring which backend it chose and reads no credential, so it never
     makes macOS ask the person. keyring falls back to its `fail` backend
     (priority 0) when nothing is reachable, and `null` (priority -1) turns it

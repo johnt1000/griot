@@ -653,10 +653,11 @@ async def test_assist_install_runs_for_explicit_harness_once_confirmed(monkeypat
             "harness": "opencode", "scope": scope,
             "skills_target": "/fake/.opencode/skills", "agents_target": "/fake/.opencode/agents",
             "created": ["skills/griot-onboarding/SKILL.md"], "updated": [], "unchanged": ["agents/griot-setup-assistant.md"],
-            "skills_skipped": [], "skills_read_from": [], "skills_note": None, "removed": [],
+            "skills_skipped": [], "skills_read_from": [], "skills_note": None,
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
+    monkeypatch.setattr(harnesses, "redundant_copies", lambda targets, scope, **kw: [])
     ctx = _FakeCtx()
 
     result = await mcp_server.griot_assist_install(harness="opencode", scope="global", ctx=ctx, answer=_accepted())
@@ -668,8 +669,9 @@ async def test_assist_install_runs_for_explicit_harness_once_confirmed(monkeypat
         "harness": "opencode", "scope": "global",
         "skills_target": "/fake/.opencode/skills", "agents_target": "/fake/.opencode/agents",
         "created": ["skills/griot-onboarding/SKILL.md"], "updated": [], "unchanged_count": 1,
-        "skills_skipped": [], "removed": [], "note": None,
+        "skills_skipped": [], "note": None,
     }]
+    assert result["copies_kept"] == []
 
 
 @pytest.mark.anyio
@@ -684,10 +686,11 @@ async def test_assist_install_all_detects_and_installs_present_harnesses(monkeyp
             "harness": "claude-code", "scope": scope,
             "skills_target": "/fake/.claude/skills", "agents_target": "/fake/.claude/agents",
             "created": [], "updated": [], "unchanged": [],
-            "skills_skipped": [], "skills_read_from": [], "skills_note": None, "removed": [],
+            "skills_skipped": [], "skills_read_from": [], "skills_note": None,
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
+    monkeypatch.setattr(harnesses, "redundant_copies", lambda targets, scope, **kw: [])
     ctx = _FakeCtx()
 
     result = await mcp_server.griot_assist_install(ctx=ctx, answer=_accepted())
