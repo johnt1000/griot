@@ -506,7 +506,7 @@ def test_in_a_project_a_link_is_not_written_through(claude, tmp_path, terminal, 
 
 
 def _quiet_install(monkeypatch):
-    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None: {
+    monkeypatch.setattr(harnesses, "install", lambda harness, scope, home=None, cwd=None, alongside=(): {
         "harness": harness.id, "scope": scope, "skills_target": "s", "agents_target": "a",
         "created": [], "updated": [], "unchanged": []})
     monkeypatch.setattr(harnesses, "install_refusal", lambda *a, **k: None)

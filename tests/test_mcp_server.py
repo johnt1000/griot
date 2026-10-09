@@ -653,6 +653,7 @@ async def test_assist_install_runs_for_explicit_harness_once_confirmed(monkeypat
             "harness": "opencode", "scope": scope,
             "skills_target": "/fake/.opencode/skills", "agents_target": "/fake/.opencode/agents",
             "created": ["skills/griot-onboarding/SKILL.md"], "updated": [], "unchanged": ["agents/griot-setup-assistant.md"],
+            "skills_skipped": [], "skills_read_from": [], "skills_note": None, "removed": [],
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
@@ -667,6 +668,7 @@ async def test_assist_install_runs_for_explicit_harness_once_confirmed(monkeypat
         "harness": "opencode", "scope": "global",
         "skills_target": "/fake/.opencode/skills", "agents_target": "/fake/.opencode/agents",
         "created": ["skills/griot-onboarding/SKILL.md"], "updated": [], "unchanged_count": 1,
+        "skills_skipped": [], "removed": [], "note": None,
     }]
 
 
@@ -682,6 +684,7 @@ async def test_assist_install_all_detects_and_installs_present_harnesses(monkeyp
             "harness": "claude-code", "scope": scope,
             "skills_target": "/fake/.claude/skills", "agents_target": "/fake/.claude/agents",
             "created": [], "updated": [], "unchanged": [],
+            "skills_skipped": [], "skills_read_from": [], "skills_note": None, "removed": [],
         }]
 
     monkeypatch.setattr(harnesses, "install_many", fake_install_many)
