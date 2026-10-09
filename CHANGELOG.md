@@ -13,7 +13,7 @@ between minor versions. Breaking changes are called out explicitly.
 - **`griot golden-set review` offers a fourth kind of candidate,
   `reformulated`**: a search the next search of the same session reworded,
   an implicit sign its list did not serve. The follow-up must come within 5
-  minutes, not be the same question, share at least half of the shorter
+  minutes, search the same collection, not be the same question, share at least half of the shorter
   question's words of four letters or more (normalised as for questions
   asked more than once), and bring back other results. The first search is
   the one offered, newest first and after the other three kinds, with the
