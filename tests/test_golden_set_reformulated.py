@@ -140,6 +140,125 @@ def test_the_session_is_recorded_through_the_real_mcp_client(monkeypatch, fresh_
     assert rows[0]["session"] is not None
 
 
+# --- the agent client's own session id ---------------------------------------
+#
+# An agent's shell tool starts a new shell for every command, so the parent
+# of `griot ask` is a different process each time. Claude Code exports
+# CLAUDE_CODE_SESSION_ID (one value per conversation) both to the commands
+# its shell tool runs and to the MCP servers it starts; when it is there,
+# it is the session.
+
+CLIENT_SESSION = "0b7c2a7e-5d1f-4c38-9a9e-3f1d2b6c8e40"
+
+
+def _logged_bytes() -> bytes:
+    return b"".join(path.read_bytes() for path in common.LOG_DIR.rglob("*") if path.is_file())
+
+
+def _parent(monkeypatch, pid: int) -> None:
+    """A live parent with that pid (a real psutil lookup would fail on a
+    made-up pid and log no session at all)."""
+    monkeypatch.setattr("os.getppid", lambda: pid)
+    monkeypatch.setattr(common.psutil, "Process", lambda p: type("P", (), {"create_time": lambda self: 1.0})())
+
+
+def test_the_client_session_id_is_the_session_whatever_the_parent(monkeypatch, fresh_session):
+    """Two `griot ask` from two different shells of the same conversation
+    are one session: the client's id decides, not the parent process."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+    _parent(monkeypatch, 4242)
+    first = common.log_session()
+    common.log_session.cache_clear()
+    _parent(monkeypatch, 4343)
+    second = common.log_session()
+
+    assert first == second
+    assert isinstance(first, str) and len(first) == 16
+
+
+def test_the_client_session_is_kept_even_without_a_parent(monkeypatch, fresh_session):
+    """A process orphaned under pid 1 has no parent session, but the client
+    still says which conversation it belongs to."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+    monkeypatch.setattr("os.getppid", lambda: 1)
+
+    assert common.log_session() is not None
+
+
+def test_different_conversations_are_different_sessions(monkeypatch, fresh_session):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+    one = common.log_session()
+    common.log_session.cache_clear()
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "another-conversation")
+
+    assert common.log_session() != one
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_an_empty_client_session_id_falls_back_to_the_parent(monkeypatch, fresh_session, value):
+    _parent(monkeypatch, 4242)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    from_parent = common.log_session()
+    common.log_session.cache_clear()
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", value)
+
+    assert common.log_session() == from_parent
+    assert from_parent is not None
+
+
+def test_without_a_client_session_id_the_parent_decides(monkeypatch, fresh_session):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    _parent(monkeypatch, 4242)
+    first = common.log_session()
+    common.log_session.cache_clear()
+    _parent(monkeypatch, 4343)
+
+    assert common.log_session() != first
+
+
+def test_the_raw_client_session_id_is_never_logged(monkeypatch, fresh_session):
+    """The log needs "same or not"; the id itself is the client's, and is
+    kept out of logs.db in every form griot writes it."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+
+    common.log_query(question="a")
+
+    session = logdb.read_since(common.LOG_DIR, "queries", days=1)[0]["session"]
+    assert session is not None and CLIENT_SESSION not in session
+    logged = _logged_bytes()
+    assert CLIENT_SESSION.encode() not in logged
+    assert CLIENT_SESSION.replace("-", "").encode() not in logged
+
+
+def test_an_mcp_search_and_a_cli_ask_of_one_conversation_share_the_session(monkeypatch, fresh_session):
+    """`griot mcp` and the `griot ask` the agent's shell tool runs are two
+    processes with two different parents; the client hands both the same
+    id, so a search through the tool and an ask after it can pair."""
+    from griot import ask
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", CLIENT_SESSION)
+    monkeypatch.setattr(common, "search", lambda q, limit, group_by_document=False, **f: [_Hit(0.9, dict(CODE))])
+
+    async def call():
+        from mcp.client.client import Client
+        async with Client(mcp_server.mcp) as client:
+            await client.call_tool("griot_search", {"query": "how is the lock released"})
+
+    _parent(monkeypatch, 4242)
+    asyncio.run(call())
+
+    # The CLI is another process: another parent, and its own cache.
+    common.log_session.cache_clear()
+    _parent(monkeypatch, 4343)
+    monkeypatch.setattr(ask, "ask", lambda *a, **k: (None, []))
+    ask.main(["lock released when the process dies"])
+
+    rows = sorted(logdb.read_since(common.LOG_DIR, "queries", days=1), key=lambda r: r["timestamp"])
+    assert [row.get("via") for row in rows] == ["mcp", "cli"]
+    assert rows[0]["session"] == rows[1]["session"]
+    assert rows[0]["session"] is not None
+
+
 # --- which searches are offered ---------------------------------------------
 
 
