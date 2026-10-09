@@ -145,9 +145,10 @@ from the CLI.)
 
 ## If you're working through Claude Code with griot's MCP server attached
 
-griot ships four MCP prompts, surfaced as slash commands, that already
-encode multi-step investigation strategies — don't re-derive the same
-reasoning by hand when one of these already does it:
+The server's prompt list is the inventory of griot's MCP prompts (your
+client shows each one as a slash command). They already encode multi-step
+investigation strategies — don't re-derive the same reasoning by hand when
+one of these already does it:
 
 | Command | Use it for |
 |---|---|

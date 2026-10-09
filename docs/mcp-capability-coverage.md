@@ -88,9 +88,9 @@ JSON, without a tool call. Each one is a read-only tool at its default
 arguments — the repositories, the usage report, the index status — and
 `list_resources()` is the inventory (each description names its tool). See
 [Resources](#resources) for why they duplicate the tools rather than replace
-them, and how the two are kept from disagreeing. One resource has no tool:
-`griot://result-fields`, the reference list of a search result's metadata
-fields.
+them, and how the two are kept from disagreeing. `griot://result-fields`,
+the reference list of a search result's metadata fields, has no tool behind
+it.
 
 **Elicitation** is used, but never alone — see `_confirmed()` in
 `mcp_server.py` for the three-layer policy and why no single layer is
@@ -273,8 +273,8 @@ handled:
   calls), and counted as a call in flight, so the idle reaper does not
   close the collection under it.
 
-`griot://result-fields` (2026-10-09, debt 68) is the one resource with no
-tool behind it. The `griot_search` description is held to 1600 characters
+`griot://result-fields` (2026-10-09, debt 68) is a resource with no tool
+behind it. The `griot_search` description is held to 1600 characters
 and cannot name every field a result's `metadata` may hold (GitLab's `url`,
 a release's `author`), and `docs/indexing-model.md` is not where agents
 look; the description points to the resource instead. It is reference text,
@@ -436,8 +436,8 @@ matter enough to state:
 ### MCP only
 
 `griot_index_status` and `griot_spend_status` are slices of `griot stats`,
-split out because an agent usually wants one of them. Two tools have no CLI
-counterpart at all: `griot_auth_guidance` exists to say "not through here"
+split out because an agent usually wants one of them. Some tools have no
+CLI counterpart at all: `griot_auth_guidance` exists to say "not through here"
 and name the command that does work, and `griot_index_wait` follows a run
 this server started, where a run started at a terminal shows its progress
 in that terminal. The resources are the same data as their tools, and
@@ -499,7 +499,7 @@ to the *shape* of functionality that has not yet met a real agent. Most
 of the tools were added on 2026-08-21 and 2026-08-22 and have
 never been called outside tests.
 The same held for resources, which is why they were added as copies of
-three tools rather than in their place: nothing is taken away from the
+tools rather than in their place: nothing is taken away from the
 surface agents use, and `griot stats` now shows which of the two gets
 used: `tool_calls` next to `resource_reads` (a read is logged under its
 URI and counted apart).

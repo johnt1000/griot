@@ -18,7 +18,9 @@ its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and
 caches it under your data directory; `griot profiles list` shows each
 profile's RAM tier against the RAM you actually have. CI runs the suite on
 Python 3.10, 3.13 and 3.14 on Linux and on 3.13 on macOS, scans for committed
-secrets, and installs the built wheel in a clean environment on every push.
+secrets, and installs the built wheel in a clean environment. It runs on
+every pull request and every push to `main`, when started by hand, and on the
+tagged commit before a release builds.
 
 ## A first index and search
 
