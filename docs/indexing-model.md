@@ -171,8 +171,9 @@ vectors back rather than embedding anything, and puts it in the old one's
 place: while it runs it needs about as much free disk as the collection, and
 it holds the index lock and the collection, so nothing else can index or
 search that profile until it finishes. Run again, it writes nothing; run
-after an interruption, it starts the copy over (and a collection left aside
-halfway through the swap is put back the next time anything opens it). Until
+after an interruption, it resumes the copy, writing only the points it is
+missing or that changed since (and a collection left aside halfway through
+the swap is put back the next time anything opens it). Until
 it has run, an explicit `--mode keyword` or `--mode hybrid` is refused with
 that command in the message, and the default searches by meaning as before
 and says so. New points are

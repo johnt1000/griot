@@ -90,20 +90,28 @@ is in [docs/lessons-and-debts.md](docs/lessons-and-debts.md) and
 
 ## Releasing
 
-A release is a tag. The distribution on PyPI is `griot-rag` (the name
-`griot` there is somebody else's); the command and the import stay `griot`.
+A release is a pull request, then a tag. The distribution on PyPI is
+`griot-rag` (the name `griot` there is somebody else's); the command and the
+import stay `griot`. `main` is protected, so the version reaches it like any
+other change:
 
-1. Set the version in `pyproject.toml` and `src/griot/__init__.py` (one
-   number; `tests/test_release.py` holds them together), and turn the
-   changelog's top section into `## [X.Y.Z] — YYYY-MM-DD`.
-2. Run the suite and commit.
-3. `git tag vX.Y.Z` and push the tag.
+1. On a branch `release/vX.Y.Z`, set the version in `pyproject.toml` and
+   `src/griot/__init__.py` (one number; `tests/test_release.py` holds them
+   together), in griot-rag's own entry in `uv.lock` (that line only: the
+   rest of the lock stays as the last uv run wrote it) and in the README's
+   status line, and turn the changelog's `Unreleased` section into
+   `## [X.Y.Z] — YYYY-MM-DD`.
+2. Open a pull request from it; once the required checks pass, it is merged
+   by squash like any other.
+3. On the commit that merge made on `main`, make a lightweight tag,
+   `git tag vX.Y.Z`, and push the tag.
 
 `.github/workflows/release.yml` then first refuses a tag that is not the
-declared version or not a commit of `main` (`scripts/release-check.py`, a
-job of its own that every other job waits for, so a wrong tag fails in
-seconds), runs the whole CI on the tagged commit (every job, macOS and the
-newest Python included: a failure in any of them holds the release back),
+declared version, whose version has no dated changelog section, or that is
+not a commit of `main` (`scripts/release-check.py`, a job of its own that
+every other job waits for, so a wrong tag fails in seconds), runs the
+whole CI on the tagged commit (every job, macOS and the newest Python
+included: a failure in any of them holds the release back),
 builds from `uv.lock` exactly as CI does, checks the metadata, and
 publishes through PyPI's trusted publishing: the `publish` job, in the
 `pypi` environment, is granted an OpenID token for
@@ -126,9 +134,10 @@ credential, and asserts after every test that it did not touch your real
 config or data directories. If a change makes a test need the network or a
 key, that is a design problem with the change.
 
-CI runs the suite on Python 3.10 and 3.13 — the floor the package declares
-and a current release. It also scans for committed secrets and installs the
-built wheel in a clean environment.
+CI runs the suite on Python 3.10, 3.13 and 3.14 on Linux, and on 3.13 on
+macOS — the floor the package declares, a current release and the newest.
+It also scans for committed secrets and installs the built wheel in a clean
+environment.
 
 What CI runs is pinned, and `tests/test_supply_chain.py` holds it so: a
 GitHub Action is referenced by commit (with its version in a comment), and
