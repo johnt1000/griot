@@ -10,7 +10,10 @@ Claude Code and opencode read a `skills/<name>/SKILL.md` layout). Agents use
 a DIFFERENT frontmatter schema per harness (Claude Code: name/description/
 tools/model; opencode: description/mode/permission), so agent content lives
 in a separate resources/agents/<harness.id>/ subdirectory per harness —
-agent_content_subdir picks the right one.
+agent_content_subdir picks the right one. A harness that also loads skills
+from another harness's directory (opencode reads `~/.claude/skills`) gets
+no copy of a griot skill already there: it would load it twice
+(see skills_read_elsewhere).
 
 Deliberately does NOT import griot.common when it is loaded: that module
 pulls in qdrant_edge and reads the configuration (see cli.py's docstring on
@@ -75,6 +78,12 @@ class Harness:
     # it has one, and why its current value cannot be used (or None).
     user_dir_variable: str | None = None
     user_dir_problem: Callable[[], str | None] | None = None
+    # Directories OUTSIDE its own where the harness also loads skills, given
+    # the scope and the home (global) or project (local), each with what
+    # stops it from reading that one. A griot skill found there, or being
+    # installed there by another harness, is not copied for this one: the
+    # harness would load it twice.
+    reads_skills_from: Callable[[str, Path], list[tuple[Path, str]]] | None = None
 
 
 def _claude_user_dir(home: Path) -> Path:
@@ -148,6 +157,32 @@ def _opencode_user_dir_problem() -> str | None:
             f"absolute path.")
 
 
+def _env_flag(name: str) -> bool:
+    """Whether a boolean variable is on as opencode reads it: Effect's
+    Config.boolean (packages/opencode/src/effect/runtime-flags.ts) takes
+    true/yes/on/1/y in any case, and anything else is off."""
+    return os.environ.get(name, "").strip().lower() in ("true", "yes", "on", "1", "y")
+
+
+def _opencode_external_skill_dirs(scope: str, base: Path) -> list[tuple[Path, str]]:
+    """Where opencode loads skills besides its own directories, in the order
+    it reads them (packages/opencode/src/skill/index.ts, discoverSkills()):
+    `.claude/skills` and `.agents/skills` under the home directory, and the
+    same two in the project. The home is os.homedir(), NOT where
+    CLAUDE_CONFIG_DIR points: a Claude Code moved by that variable installs
+    where opencode does not look. Agents are not read from there, so the
+    agent file is still opencode's own. The variables are read in griot's
+    environment, which is right only when opencode is started with the same
+    ones; they are documented as global switches, so that is assumed."""
+    if _env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS"):
+        return []
+    found = []
+    if not (_env_flag("OPENCODE_DISABLE_CLAUDE_CODE") or _env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS")):
+        found.append((base / ".claude" / "skills", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1"))
+    found.append((base / ".agents" / "skills", "OPENCODE_DISABLE_EXTERNAL_SKILLS=1"))
+    return found
+
+
 HARNESSES = [
     Harness(
         id="claude-code",
@@ -183,6 +218,7 @@ HARNESSES = [
         detect=lambda: shutil.which("opencode") is not None or _opencode_user_dir(Path.home()).is_dir(),
         user_dir_variable="XDG_CONFIG_HOME",
         user_dir_problem=_opencode_user_dir_problem,
+        reads_skills_from=_opencode_external_skill_dirs,
     ),
 ]
 
@@ -286,7 +322,48 @@ def _tree(src_root: Path, dest_root: Path) -> list[tuple[Path, Path, str]]:
             for src in sorted(p for p in src_root.rglob("*") if p.is_file())]
 
 
-def _plan(harness: Harness, scope: str, home: Path | None, cwd: Path | None):
+def _skills_target(harness: Harness, scope: str, home: Path | None, cwd: Path | None) -> Path:
+    if scope == "local":
+        return harness.local_skills_dir(cwd or Path.cwd())
+    return harness.global_skills_dir(home or Path.home())
+
+
+def _bundled_skill_names() -> list[str]:
+    skills_root = _resources_root() / "skills"
+    return sorted(p.name for p in skills_root.iterdir() if p.is_dir()) if skills_root.is_dir() else []
+
+
+def skills_read_elsewhere(harness: Harness, scope: str, *, alongside=(), home: Path | None = None,
+                          cwd: Path | None = None) -> dict[str, tuple[Path, str, str]]:
+    """{bundled skill name: (directory, why it is there, how to stop the
+    harness reading it)} for each griot skill this harness already loads
+    from a directory outside its own. A skill is there when its SKILL.md is,
+    or when a harness `alongside` in the same install writes its skills into
+    that very directory (compared resolved: `~/.claude` is often a link)."""
+    if harness.reads_skills_from is None or scope not in ("local", "global"):
+        return {}
+    names = _bundled_skill_names()
+    base = (cwd or Path.cwd()) if scope == "local" else (home or Path.home())
+    own = os.path.realpath(_skills_target(harness, scope, home, cwd))
+    writers = {os.path.realpath(_skills_target(other, scope, home, cwd)): other for other in alongside}
+    found = {}
+    for directory, how_to_stop in harness.reads_skills_from(scope, base):
+        if os.path.realpath(directory) == own:
+            # Its own directory reached through a link: one copy, not two,
+            # and "removing the duplicate" would delete the only one.
+            continue
+        writer = writers.get(os.path.realpath(directory))
+        for name in names:
+            if name in found:
+                continue
+            if writer is not None:
+                found[name] = (directory, f"where they are being installed for {writer.display_name}", how_to_stop)
+            elif (directory / name / "SKILL.md").is_file():
+                found[name] = (directory, "where they already are", how_to_stop)
+    return found
+
+
+def _plan(harness: Harness, scope: str, home: Path | None, cwd: Path | None, alongside=()):
     if scope not in ("local", "global"):
         raise ValueError(f"scope must be 'local' or 'global', got {scope!r}")
     if scope == "local":
@@ -298,16 +375,20 @@ def _plan(harness: Harness, scope: str, home: Path | None, cwd: Path | None):
         skills_target = harness.global_skills_dir(base)
         agents_target = harness.global_agents_dir(base)
     root = _resources_root()
-    files = (_tree(root / "skills", skills_target)
+    elsewhere = skills_read_elsewhere(harness, scope, alongside=alongside, home=home, cwd=cwd)
+    skills = _tree(root / "skills", skills_target)
+    # Not written: the harness loads these from the other directory already.
+    skipped = [entry for entry in skills if Path(entry[2]).parts[0] in elsewhere]
+    files = ([entry for entry in skills if entry not in skipped]
              + _tree(root / "agents" / harness.agent_content_subdir, agents_target))
-    return base, skills_target, agents_target, files
+    return base, skills_target, agents_target, files, skipped, elsewhere
 
 
 def destinations(harness: Harness, scope: str, *, home: Path | None = None,
                  cwd: Path | None = None) -> tuple[Path, Path]:
     """(skills directory, agents directory) an install would write into. For
     whoever has to SHOW the place before anything is written."""
-    _, skills_target, agents_target, _ = _plan(harness, scope, home, cwd)
+    _, skills_target, agents_target, *_ = _plan(harness, scope, home, cwd)
     return skills_target, agents_target
 
 
@@ -320,7 +401,7 @@ def install_refusal(harness_list: list[Harness], scope: str, *, home: Path | Non
         problem = _user_dir_problem(harness, scope)
         if problem:
             return problem
-        base, _, _, files = _plan(harness, scope, home, cwd)
+        base, _, _, files, _, _ = _plan(harness, scope, home, cwd, alongside=harness_list)
         for _, dest, _ in files:
             problem = _destination_problem(dest, base, contained=scope == "local")
             if problem:
@@ -328,9 +409,65 @@ def install_refusal(harness_list: list[Harness], scope: str, *, home: Path | Non
     return None
 
 
-def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path | None = None) -> dict:
-    base, skills_target, agents_target, files = _plan(harness, scope, home, cwd)
-    refusal = install_refusal([harness], scope, home=home, cwd=cwd)
+def _remove_skipped(skipped: list[tuple[Path, Path, str]], base: Path, scope: str,
+                    skills_target: Path) -> tuple[list[str], list[str]]:
+    """Removes the copies an earlier install left of the skills that are now
+    read from elsewhere: left in place they ARE the duplicate. They sit at
+    griot's own paths, which an install overwrites anyway, so whatever
+    version they are is griot's to remove. Returns (removed, why each one
+    that could not be removed was left).
+
+    Never through a link, by the rule writes follow: the file itself must
+    not be one, and in a project no directory on the way may lead outside."""
+    removed, left = [], []
+    for _, dest, rel in skipped:
+        if not os.path.lexists(dest):
+            continue
+        problem = _destination_problem(dest, base, contained=scope == "local")
+        if problem:
+            left.append(problem)
+            continue
+        try:
+            dest.unlink()
+        except OSError as e:
+            left.append(f"{dest} could not be removed ({e}).")
+            continue
+        removed.append(rel)
+        # The skill's directory goes too once it is empty; a file of the
+        # user's beside the copy keeps it.
+        parent = dest.parent
+        while parent != skills_target and not parent.is_symlink():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    return sorted(removed), left
+
+
+def _skills_note(harness: Harness, elsewhere: dict, left: list[str]) -> str | None:
+    """Why some skills were not copied for this harness, and how to get a
+    copy anyway; None when all of them were."""
+    if not elsewhere:
+        return None
+    by_place: dict[tuple, list[str]] = {}
+    for name, place in elsewhere.items():
+        by_place.setdefault(place, []).append(name)
+    parts = [f"{harness.display_name} also loads skills from {directory}, {why}, so a copy of its own would show each "
+             f"one twice: not copied for it ({', '.join(sorted(names))}). To give it its own copy, start "
+             f"{harness.display_name} with {how_to_stop} and run this again with it set too."
+             for (directory, why, how_to_stop), names in by_place.items()]
+    parts += [f"Left in place: {problem} {harness.display_name} shows that skill twice until it is removed."
+              for problem in left]
+    return " ".join(parts)
+
+
+def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path | None = None,
+            alongside=()) -> dict:
+    """`alongside`: every harness installed in the same run (this one
+    included), whose skills directory this one may also read."""
+    base, skills_target, agents_target, files, skipped, elsewhere = _plan(harness, scope, home, cwd, alongside)
+    refusal = install_refusal(list(alongside) or [harness], scope, home=home, cwd=cwd)
     if refusal:
         raise UnsafeDestination(refusal)
 
@@ -338,6 +475,7 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
     buckets = {"created": created, "updated": updated, "unchanged": unchanged}
     for src, dest, rel in files:
         buckets[_write_file(dest, src.read_bytes())].append(rel)
+    removed, left = _remove_skipped(skipped, base, scope, skills_target)
 
     return {
         "harness": harness.id,
@@ -347,6 +485,10 @@ def install(harness: Harness, scope: str, *, home: Path | None = None, cwd: Path
         "created": sorted(created),
         "updated": sorted(updated),
         "unchanged": sorted(unchanged),
+        "skills_skipped": sorted(rel for _, _, rel in skipped),
+        "skills_read_from": sorted({str(place[0]) for place in elsewhere.values()}),
+        "skills_note": _skills_note(harness, elsewhere, left),
+        "removed": removed,
     }
 
 
@@ -356,7 +498,7 @@ def install_many(harness_list: list[Harness], scope: str, *, home: Path | None =
     refusal = install_refusal(harness_list, scope, home=home, cwd=cwd)
     if refusal:
         raise UnsafeDestination(refusal)
-    return [install(h, scope, home=home, cwd=cwd) for h in harness_list]
+    return [install(h, scope, home=home, cwd=cwd, alongside=harness_list) for h in harness_list]
 
 
 # --- the global instructions block ---------------------------------------------------
@@ -1063,9 +1205,17 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
 
 def _print_result(result: dict) -> None:
     created, updated, unchanged = result["created"], result["updated"], result["unchanged"]
+    removed = result.get("removed", [])
     print(f"{result['harness']}: skills -> {result['skills_target']}, agents -> {result['agents_target']}")
+    if result.get("skills_note"):
+        print(f"  {result['skills_note']}")
+    if removed:
+        print(f"  removed ({len(removed)}), the copies an earlier install left there:")
+        for rel in removed:
+            print(f"    {rel}")
     if not created and not updated and not unchanged:
-        print("  nothing to install")
+        if not removed:
+            print("  nothing to install")
         return
     if created:
         print(f"  created ({len(created)}):")
@@ -1112,8 +1262,18 @@ def _summary(done: list[dict], scope: str) -> None:
     for entry in done:
         result = entry["files"]
         changed = len(result["created"]) + len(result["updated"])
-        print(f"  {result['harness']}: skills and agent in {Path(result['skills_target']).parent} "
-              f"({changed} written, {len(result['unchanged'])} unchanged)")
+        removed = f", {len(result['removed'])} removed" if result.get("removed") else ""
+        counts = f"({changed} written, {len(result['unchanged'])} unchanged{removed})"
+        own_dir = Path(result["skills_target"]).parent
+        read_from = " and ".join(result.get("skills_read_from", []))
+        skipped = {Path(rel).parts[0] for rel in result.get("skills_skipped", [])}
+        if not skipped:
+            print(f"  {result['harness']}: skills and agent in {own_dir} {counts}")
+        elif len(skipped) == len(_bundled_skill_names()):
+            print(f"  {result['harness']}: agent in {own_dir}; skills read from {read_from} {counts}")
+        else:
+            print(f"  {result['harness']}: skills and agent in {own_dir}; {len(skipped)} of the skills read from "
+                  f"{read_from} {counts}")
         if "server" not in entry:
             continue  # --skills-only: nothing else was looked at
         print(f"    MCP server: {server_words.get(entry['server'], entry['server'])}")
@@ -1177,7 +1337,7 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
         if variable:
             print(f"{harness.id}: {variable} is set, so its user files go where that points, not to the default place.")
         try:
-            result = install(harness, scope, home=home)
+            result = install(harness, scope, home=home, alongside=targets)
         except UnsafeDestination as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1

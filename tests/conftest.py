@@ -303,8 +303,10 @@ def _the_harness_config_dir_of_whoever_runs_the_suite_is_not_used(monkeypatch):
     `home=` would still install into the REAL directory of whoever runs the
     suite. Tests that are about a variable set it themselves, to a temporary
     directory. OPENCODE_CONFIG_DIR does not move the install, but a test
-    that says so must not depend on the runner's value either."""
-    for variable in ("CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR"):
+    that says so must not depend on the runner's value either, and the
+    OPENCODE_DISABLE_* switches decide whether opencode's skills are copied."""
+    for variable in ("CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_CLAUDE_CODE",
+                     "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS"):
         monkeypatch.delenv(variable, raising=False)
 
 

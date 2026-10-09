@@ -12,8 +12,9 @@ import hashlib
 import random
 
 import pytest
+from mcp.client.client import Client
 
-from griot import cli, common, logdb
+from griot import cli, common, logdb, mcp_server
 
 
 def _vector(text: str, dim: int) -> list[float]:
@@ -69,10 +70,57 @@ def test_filters_that_match_nothing_together_stop_before_the_chat_model(index, c
     assert "repository beta" in why and "source type commit" in why
 
 
-def test_search_says_the_same_for_the_same_filters(index, capsys):
-    """`ask` says nothing found the way `griot search` does."""
+def test_search_says_the_same_for_the_same_filters(index, chat, capsys):
+    """`ask` says nothing found the way `griot search` does, and both say
+    which filters narrowed it: without that line, search's "No results."
+    read as "nothing about this anywhere"."""
     assert cli.main(["search", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
-    assert capsys.readouterr().out.splitlines()[0] == "No results."
+    searched = capsys.readouterr().out.splitlines()
+    assert cli.main(["ask", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
+    asked = capsys.readouterr().out.splitlines()
+    assert searched[0] == "No results."
+    assert "repository beta" in searched[1] and "source type commit" in searched[1]
+    assert searched[:2] == asked[:2]
+
+
+def test_search_names_only_the_filters_it_was_given(index, capsys):
+    """One filter, one name: the line is built from the flags, not fixed.
+    A keyword search for a word nothing holds finds nothing in beta."""
+    assert cli.main(["search", "zanzibar", "--repo", "beta", "--mode", "keyword"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "No results."
+    assert "repository beta" in lines[1] and "source type" not in lines[1]
+
+
+def test_search_on_an_empty_index_gives_no_reason_about_filters(fake_embedding, capsys):
+    """Nothing narrowed it, so there is no filter to name."""
+    assert cli.main(["search", "retries"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "No results."
+    assert lines[1].startswith("Mode: "), "the reason line is printed only for a narrowed search"
+
+
+def test_search_that_found_something_gives_no_reason(index, capsys):
+    assert cli.main(["search", "retries", "--repo", "beta"]) == 0
+    out = capsys.readouterr().out
+    assert "No results." not in out and "narrowed" not in out
+
+
+@pytest.mark.anyio
+async def test_cli_and_tool_carry_the_same_sentence(index, chat, capsys):
+    """One helper is shared so the three surfaces cannot drift apart. The
+    other tests check each surface for the filter names only, so a wording
+    changed on one surface alone would pass them all."""
+    assert cli.main(["search", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
+    searched = capsys.readouterr().out.splitlines()[1]
+    assert cli.main(["ask", "retries", "--repo", "beta", "--source-type", "commit"]) == 0
+    asked = capsys.readouterr().out.splitlines()[1]
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_search", {"query": "retries", "repos": ["beta"],
+                                                         "source_types": ["commit"]})
+    assert result.structured_content["results"] == []
+    assert searched == asked
+    assert searched in result.structured_content["note"]
 
 
 def test_an_empty_index_stops_before_the_chat_model(fake_embedding, chat, capsys):
@@ -95,6 +143,28 @@ def test_a_question_that_found_nothing_is_still_logged(index, chat):
     assert row["via"] == "cli"
     assert row["num_sources"] == 0 and row["results"] == []
     assert row["repos"] == ["beta"] and row["source_types"] == ["commit"]
+
+
+def test_a_question_that_found_nothing_names_no_chat_model(index, chat, monkeypatch):
+    """No chat call was made, so the log names no model and no chat profile:
+    anything that reads `model` as the model that answered would otherwise
+    count an answer nobody gave."""
+    monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE_NAME", "groq")
+    monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE", {"model": "llama-3.3-70b-versatile"})
+    assert cli.main(["ask", "retries", "--repo", "beta", "--source-type", "commit", "--model", "other"]) == 0
+    row = logdb.read_latest(common.LOG_DIR, "queries")
+    assert chat == []
+    assert row["model"] is None and row["chat_profile"] is None
+
+
+@pytest.mark.parametrize("flags,model", [([], "llama-3.3-70b-versatile"), (["--model", "other"], "other")])
+def test_a_question_that_was_answered_names_the_model_that_answered(index, chat, monkeypatch, flags, model):
+    monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE_NAME", "groq")
+    monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE", {"model": "llama-3.3-70b-versatile"})
+    assert cli.main(["ask", "retries", "--repo", "beta", *flags]) == 0
+    row = logdb.read_latest(common.LOG_DIR, "queries")
+    assert len(chat) == 1
+    assert row["model"] == model and row["chat_profile"] == "groq"
 
 
 def test_show_sources_on_nothing_found_lists_no_source(index, chat, capsys):
