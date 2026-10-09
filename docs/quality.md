@@ -81,7 +81,18 @@ a later `griot ask` of the same conversation pair, although each shell command
 runs in a new shell), and otherwise of the process that holds the conversation
 (the agent session that started `griot mcp`, or the shell `griot ask` ran in),
 never the process number. opencode exports no conversation id, so there a
-`griot ask` run through its shell tool is a session of its own. A search
+`griot ask` run through its shell tool is a session of its own. A known limit
+(observed on Claude Code 2.1.295): `griot mcp` gets the id once, when it is
+started, and `/clear` or an in-session `/resume` keeps it running with that id
+while the shell tool's next command gets the new conversation's. From then on
+the server's searches stay in the old session, so a search after `/clear` can
+be paired with one before it, and a `griot ask` after it is not paired with
+the server's searches. griot cannot read the conversation per call instead:
+Claude Code's tool calls carry in `_meta` only the id of that one tool use
+(`claudecode/toolUseId`) and a progress token, and its initialize message
+names the client, not the conversation. A new `claude` process (including
+`claude --resume`) starts `griot mcp` with the right id; a reconnect from
+`/mcp` was not checked. A search
 logged before griot recorded sessions is never paired, and neither is one from
 a process with no parent of its own and no client id.
 
