@@ -692,8 +692,10 @@ def logged_question(question: str) -> str:
 # process it starts for that conversation. Claude Code exports
 # CLAUDE_CODE_SESSION_ID both to the commands its shell tool runs and to the
 # MCP servers it starts (checked on 2.1.x: the same value in both, and across
-# shell calls). opencode exports only OPENCODE=1 and OPENCODE_PID, the pid of
-# its own process, which can hold several conversations, so it is no session.
+# shell calls). The servers get it once, when started: see log_session() for
+# what that means after /clear or /resume. opencode exports only OPENCODE=1
+# and OPENCODE_PID, the pid of its own process, which can hold several
+# conversations, so it is no session.
 CLIENT_SESSION_ENV_VARS = ("CLAUDE_CODE_SESSION_ID",)
 
 
@@ -710,6 +712,19 @@ def log_session() -> str | None:
     process, and only the client's id makes two of them one session. The
     client gives the same id to the `griot mcp` it started, so a
     `griot_search` and a later `griot ask` of one conversation pair too.
+
+    Except when the conversation changes under a running server (a known
+    limit, observed on Claude Code 2.1.295): `/clear` and an in-session `/resume`
+    keep the MCP servers running with the id they were started with, while
+    the shell tool's next command gets the new conversation's id. From then
+    on the server's searches stay in the old session (so a search after
+    `/clear` can pair with one before it) and a later `griot ask` does not
+    pair with them. Nothing per call could replace the start-time
+    environment: a tools/call `_meta` carries only `claudecode/toolUseId`
+    (one tool use) and `progressToken`, and initialize names the client,
+    not the conversation. A new `claude` process (`claude --resume` is one)
+    starts its servers with the conversation's id; whether a reconnect from
+    `/mcp` does too was not checked.
 
     Otherwise, a digest of the PARENT process (its pid and start time, so a
     reused pid is another session): the MCP client that started `griot mcp`,
