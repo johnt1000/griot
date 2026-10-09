@@ -84,6 +84,13 @@ def _reset_common_globals(monkeypatch, tmp_path):
     monkeypatch.delenv("GRIOT_EMBED_PROFILE", raising=False)
     monkeypatch.delenv("GRIOT_CHAT_PROFILE", raising=False)
 
+    # The suite is often run from inside an agent client that names its
+    # conversation in the environment (common.CLIENT_SESSION_ENV_VARS); a
+    # test about the parent-process session would then read the client's
+    # instead, and pass or fail depending on where it ran.
+    for variable in common.CLIENT_SESSION_ENV_VARS:
+        monkeypatch.delenv(variable, raising=False)
+
     # [real finding] jobs.py's in-process job registry
     # (jobs._registry) is a module-level global dict, populated by
     # start_index_job() and only ever cleaned up lazily (running_index_job()

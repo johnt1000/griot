@@ -689,20 +689,44 @@ def logged_question(question: str) -> str:
     return question if log_questions_enabled() else OMITTED_QUESTION
 
 
+# Variables an agent client sets to one value per conversation, in every
+# process it starts for that conversation. Claude Code exports
+# CLAUDE_CODE_SESSION_ID both to the commands its shell tool runs and to the
+# MCP servers it starts (checked on 2.1.x: the same value in both, and across
+# shell calls). opencode exports only OPENCODE=1 and OPENCODE_PID, the pid of
+# its own process, which can hold several conversations, so it is no session.
+CLIENT_SESSION_ENV_VARS = ("CLAUDE_CODE_SESSION_ID",)
+
+
 @functools.cache
 def log_session() -> str | None:
-    """Which conversation a logged search belongs to, as an opaque value: a
-    digest of the PARENT process (its pid and start time, so a reused pid is
-    another session). The parent is what holds the conversation on both
-    surfaces: the MCP client (the agent session) that started `griot mcp`,
-    and the shell `griot ask` was typed in. `griot golden-set review` pairs a
-    search with the next one of the same session (a rewording); without
-    this the log could only guess sessions from timestamps.
+    """Which conversation a logged search belongs to, as an opaque value.
+    `griot golden-set review` pairs a search with the next one of the same
+    session (a rewording); without this the log could only guess sessions
+    from timestamps.
 
-    A digest, not the pid: the log needs "same or not", nothing more. None
-    when the parent is pid 1 or less (an orphan: every orphan shares it, so
-    it is no session) or cannot be read; a row without a session is never
-    paired. Once per process: the parent does not change."""
+    When the agent client names its conversation (CLIENT_SESSION_ENV_VARS),
+    that name decides: an agent's shell tool starts a new shell for every
+    command, so the parent of each `griot ask` it runs is a different
+    process, and only the client's id makes two of them one session. The
+    client gives the same id to the `griot mcp` it started, so a
+    `griot_search` and a later `griot ask` of one conversation pair too.
+
+    Otherwise, a digest of the PARENT process (its pid and start time, so a
+    reused pid is another session): the MCP client that started `griot mcp`,
+    or the shell `griot ask` was typed in.
+
+    Always a 16-hex prefix of a sha256, never the id or the pid: the log
+    needs "same or not", nothing more, and the client's id is the client's.
+    None, without a client id, when the parent is pid 1 or less (an orphan:
+    every orphan shares it, so it is no session) or cannot be read; a row
+    without a session is never paired. Once per process: neither the
+    environment nor the parent changes under it."""
+    for variable in CLIENT_SESSION_ENV_VARS:
+        client_session = os.environ.get(variable, "").strip()
+        if client_session:
+            # Prefixed so a client id can never digest to a parent's value.
+            return hashlib.sha256(f"{variable}:{client_session}".encode()).hexdigest()[:16]
     try:
         parent = os.getppid()
         if parent <= 1:
