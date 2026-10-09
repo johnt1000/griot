@@ -291,7 +291,7 @@ _COUNT = re.compile(
     r"(?<![\w.\-/])(a\s+single|" + "|".join(_NUMBER_WORDS) + r"|\d+)[*_`]*\s+"
     r"(?:(?!(?:" + "|".join(_NOT_MODIFIERS) + r")\s)[\w`*'/-]+\s+)*?"
     r"(tools?|prompts?|resources?|slash\s+commands?)\b"
-    r"(?!\s+(?:calls?|names?|descriptions?|schemas?|results?|outputs?|inputs?|annotations?|arguments?)\b)",
+    r"(?!\s+(?:calls?|names?|descriptions?|schemas?|results?|outputs?|inputs?|annotations?|arguments?|uses?)\b)",
     re.I)
 
 # Counts a test already holds, so they cannot go stale without one failing,
@@ -416,6 +416,7 @@ def test_a_count_is_a_number_then_its_noun_within_the_clause(text, count):
     "Python 3.10 tools work.",
     "Version 0.4 prompts nothing.",
     "It makes one tool call per question.",
+    "The call carries the id of that one tool use.",
     "Ask a tool.",
     "Seven, as the tools list says.",
     "Run one command and the tools appear.",
