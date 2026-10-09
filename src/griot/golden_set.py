@@ -545,6 +545,24 @@ HARD_MIN_SEARCHES = 20
 # so 10 stays.
 DISAGREE_DEPTH = 10
 
+# How soon after a search the next one of the same session must come to be
+# read as a rewording of it (see _reformulations()). Measured on 2026-10-09
+# on constructed logs, no one's real use (scripts/measure-reformulation-
+# window.py: 1,000 pairs each of rewordings by an agent or a person at a
+# terminal, follow-ups on another facet of the same subject, and returns to
+# the subject after other work, at the gaps assumed there). Of the
+# rewordings, 60 s offered 74%, 120 s 88%, 300 s 98%, 600 s all; of the
+# returns, none up to 120 s, 4% at 300 s, 18% at 600 s, 68% at 1800 s.
+# Facets are offered at every window (the word rule cannot tell them apart).
+# 300 s keeps nearly every rewording, a person reading a list included,
+# before returns come in.
+REFORMULATION_WINDOW_SECONDS = 300
+
+# Words shorter than this are not taken as a sign two questions are about
+# the same thing: "how", "is", "the", "of" are shared by unrelated questions
+# in any language. Four keeps short subject words such as "lock" or "spend".
+REFORMULATION_MIN_WORD = 4
+
 
 def query_key(text: str) -> str:
     """When two logged questions are the same question: the same set of
@@ -728,11 +746,88 @@ def _disagreement(row: dict) -> tuple[int, int] | None:
     return by_meaning, by_words
 
 
+def _logged_at(row: dict):
+    """When a row was logged, as an aware datetime, or None: a time that
+    cannot be read, or one without a zone (log_query() always writes UTC
+    with its offset; a naive one cannot be compared with it)."""
+    from datetime import datetime
+
+    try:
+        at = datetime.fromisoformat(row.get("timestamp"))
+    except (TypeError, ValueError):
+        return None
+    return at if at.tzinfo is not None else None
+
+
+def _subject_words(question: str) -> set[str]:
+    return {w for w in query_key(question).split() if len(w) >= REFORMULATION_MIN_WORD}
+
+
+def _rewords(first: dict, then: dict) -> bool:
+    """Whether `then`, the next search of the same session, looks like the
+    person rewording `first` because its list did not serve. All of:
+
+    - the same collection: the same index answered both;
+    - within REFORMULATION_WINDOW_SECONDS after it: a rewording comes once
+      the list is read; much later it is a return to the subject;
+    - not the same question (query_key()): that is "repeated", and
+      review_candidates() offers it as such first, since both askings
+      fall in one group;
+    - about the same thing: the subject words (REFORMULATION_MIN_WORD
+      characters or more, normalised as query_key() does) they share are at
+      least half of the shorter question's; one word in common between two
+      long questions is a different question on a nearby subject;
+    - a different list came back (as a set of results): a rewording that
+      returned what the first did changed nothing the person saw, so it does
+      not single out the first list.
+
+    It cannot tell a rewording from a question about another facet of the
+    same thing ("how is the lock acquired" after "how is the lock
+    released"); the person reviewing can, which is why the follow-up is
+    shown beside the question."""
+    if not all(isinstance(r.get("question"), str) and r["question"] != common.OMITTED_QUESTION
+               for r in (first, then)):
+        return False
+    if first.get("collection") != then.get("collection"):
+        return False
+    start, end = _logged_at(first), _logged_at(then)
+    if start is None or end is None or not 0 < (end - start).total_seconds() <= REFORMULATION_WINDOW_SECONDS:
+        return False
+    words, other = _subject_words(first["question"]), _subject_words(then["question"])
+    if not words or not other or 2 * len(words & other) < min(len(words), len(other)):
+        return False
+    before, after = first.get("sources"), then.get("sources")
+    if not isinstance(before, list) or not isinstance(after, list):
+        return False
+    return set(_sources(first)) != set(_sources(then))
+
+
+def _reformulations(rows: list[dict]) -> dict[int, dict]:
+    """For each search reworded by the next search of its session (see
+    _rewords()), that follow-up, by the search's id(). Only rows that say
+    their session (common.log_session()) and a readable time are placed in
+    one: a session is never guessed from timestamps. A search logged
+    without its question still takes its place in the session (the person
+    did search in between), it is only never paired."""
+    sessions: dict[str, list[tuple]] = {}
+    for row in rows:
+        session, at = row.get("session"), _logged_at(row)
+        if isinstance(session, str) and session and at is not None:
+            sessions.setdefault(session, []).append((at, row))
+    found = {}
+    for searches in sessions.values():
+        searches.sort(key=lambda pair: pair[0])
+        for (_, first), (_, then) in zip(searches, searches[1:]):
+            if _rewords(first, then):
+                found[id(first)] = then
+    return found
+
+
 def _has_pickable_results(row: dict) -> bool:
     return any(isinstance(e, dict) for e in row.get("results") or [])
 
 
-def _candidate(kind: str, key: str, group: list[dict], thresholds: dict) -> dict:
+def _candidate(kind: str, key: str, group: list[dict], thresholds: dict, followup: dict | None = None) -> dict:
     # The newest asking a case can be made from (results recorded, and a
     # search the check repeats); failing that, the newest with results;
     # failing that, the newest.
@@ -756,6 +851,10 @@ def _candidate(kind: str, key: str, group: list[dict], thresholds: dict) -> dict
         # Shown beside each result when the search logged them; for a
         # "disagree" candidate, which results were each ranking's first.
         "ranks": _ranks(row), "firsts": _disagreement(row) if kind == "disagree" else None,
+        # For a "reformulated" candidate, the search that reworded it and how
+        # many seconds later: what tells the person why it is offered.
+        "followup": followup["question"] if followup else None,
+        "followup_after": round((_logged_at(followup) - _logged_at(row)).total_seconds()) if followup else None,
     }
 
 
@@ -763,12 +862,14 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
     """Data half of `golden-set review`: questions from the query log worth
     making into cases, none written.
 
-    Three kinds, in this order: a question asked more than once (by
+    Four kinds, in this order: a question asked more than once (by
     query_key(), across sessions and projects), most asked first; a
     vector search whose best result scored in the bottom quarter of its
     collection's (see _hard_thresholds()), lowest first; a hybrid search
     whose vector and keyword rankings disagreed about what comes first
-    (see _disagreement()), newest first. A question already
+    (see _disagreement()), newest first; a search the next search of its
+    session reworded soon after (see _rewords()), newest first: the first
+    of the two, whose list apparently did not serve. A question already
     in the golden set, or rejected in an earlier review, is not offered.
     A search logged without its question (GRIOT_LOG_QUESTIONS off) cannot
     be: it is counted in `omitted`.
@@ -796,7 +897,8 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
     # Over every search, not only the candidates: the threshold describes
     # how this collection usually scores.
     thresholds = _hard_thresholds(rows)
-    repeated, hard, disagree = [], [], []
+    reworded = _reformulations(rows)
+    repeated, hard, disagree, reformulated = [], [], [], []
     for key, group in groups.items():
         if len(group) > 1:
             repeated.append(_candidate("repeated", key, group, thresholds))
@@ -808,12 +910,16 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
             hard.append(_candidate("hard", key, group, thresholds))
         elif _disagreement(row):
             disagree.append(_candidate("disagree", key, group, thresholds))
+        elif id(row) in reworded:
+            reformulated.append(_candidate("reformulated", key, group, thresholds, followup=reworded[id(row)]))
     repeated.sort(key=lambda c: (c["times"], c["timestamp"] or ""), reverse=True)
     hard.sort(key=lambda c: c["top_score"])
     # Newest first: how far apart two rankings are has no scale to sort on
     # that means more than "past the depth".
     disagree.sort(key=lambda c: str(c["timestamp"] or ""), reverse=True)
-    return {"candidates": (repeated + hard + disagree)[:limit], "searches": len(rows), "omitted": omitted}
+    reformulated.sort(key=lambda c: str(c["timestamp"] or ""), reverse=True)
+    return {"candidates": (repeated + hard + disagree + reformulated)[:limit], "searches": len(rows),
+            "omitted": omitted}
 
 
 def _not_logged_note(omitted: int) -> str | None:
@@ -848,6 +954,10 @@ def _show(candidate: dict, number: int, total: int) -> None:
               f"the keyword ranking's first {DISAGREE_DEPTH}, and the keyword ranking's first ([{by_words}]) is "
               f"not in the vector ranking's first {DISAGREE_DEPTH}: which one was right is what a case from it "
               f"keeps.")
+    elif candidate["kind"] == "reformulated":
+        print(f"  Why: reworded {candidate['followup_after']} s later in the same session, as "
+              f"\"{common.shown(candidate['followup'].splitlines()[0])}\", which brought back other results: "
+              f"this list apparently did not serve.")
     else:
         print(f"  Why: low score. Its best result scored {candidate['top_score']:.2f}, at or under "
               f"{candidate['threshold']:.2f}: the bottom quarter of the vector searches in this collection.")
@@ -929,7 +1039,8 @@ def cmd_review(limit: int = 10) -> int:
         print(f"No candidates among {found['searches']} logged search(es): none asked more than once, scoring "
               f"in the bottom quarter of its collection's vector searches (of at least {HARD_MIN_SEARCHES}), "
               f"or a hybrid search whose vector and keyword rankings each put first a result the other did not "
-              f"place in its first {DISAGREE_DEPTH}, that is not already a case or rejected.")
+              f"place in its first {DISAGREE_DEPTH}, or reworded by the next search of its session within "
+              f"{REFORMULATION_WINDOW_SECONDS} s, that is not already a case or rejected.")
         if note:
             print(note)
         return 0
@@ -991,8 +1102,9 @@ def main(argv=None) -> int:
                             "keyword vectors, and the command says so)")
 
     p_review = sub.add_parser("review", help="Offers questions from the query log (asked more than once, scoring "
-                                             "low, or ranked very differently by meaning and by the words) as "
-                                             "cases; at a terminal, you pick the right result")
+                                             "low, ranked very differently by meaning and by the words, or "
+                                             "reworded soon after) as cases; at a terminal, you pick the right "
+                                             "result")
     p_review.add_argument("--limit", type=int, default=10, help="How many candidates to offer (default: %(default)s)")
 
     sub.add_parser("list", help="Lists the already-curated cases")

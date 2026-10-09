@@ -1,4 +1,5 @@
 import atexit
+import functools
 import hashlib
 import http.cookiejar
 import json
@@ -688,6 +689,30 @@ def logged_question(question: str) -> str:
     return question if log_questions_enabled() else OMITTED_QUESTION
 
 
+@functools.cache
+def log_session() -> str | None:
+    """Which conversation a logged search belongs to, as an opaque value: a
+    digest of the PARENT process (its pid and start time, so a reused pid is
+    another session). The parent is what holds the conversation on both
+    surfaces: the MCP client (the agent session) that started `griot mcp`,
+    and the shell `griot ask` was typed in. `griot golden-set review` pairs a
+    search with the next one of the same session (a rewording); without
+    this the log could only guess sessions from timestamps.
+
+    A digest, not the pid: the log needs "same or not", nothing more. None
+    when the parent is pid 1 or less (an orphan: every orphan shares it, so
+    it is no session) or cannot be read; a row without a session is never
+    paired. Once per process: the parent does not change."""
+    try:
+        parent = os.getppid()
+        if parent <= 1:
+            return None
+        started = psutil.Process(parent).create_time()
+    except (psutil.Error, OSError):
+        return None
+    return hashlib.sha256(f"{parent}:{started}".encode()).hexdigest()[:16]
+
+
 def log_query(**fields) -> None:
     """Same idea as log_run_summary(), but for ask.py queries (not
     indexing) — a separate table (logs/logs.db's `queries` table) so as
@@ -698,6 +723,7 @@ def log_query(**fields) -> None:
         "profile": ACTIVE_PROFILE_NAME,
         "collection": COLLECTION_NAME,
         "project": current_project(),
+        "session": log_session(),
         **fields,
     }
     secure_mkdir(LOG_DIR)

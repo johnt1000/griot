@@ -379,7 +379,7 @@ out on purpose, because every one written here went stale.
 | Unregister a repo | `repos remove` | `griot_repos_remove` | dialog, or `confirm` where nobody can be asked |
 | Delete a profile | `profiles delete` | `griot_profiles_delete` | **human only** |
 | Candidate cases from a git log | `golden-set suggest` *(asks about each and writes the approved ones)* | `griot_golden_set_suggest` *(returns the candidates and writes nothing; a bounded stretch of the log; asked about each time)* | — |
-| Candidate cases from the questions asked | `golden-set review` *(at a terminal: questions asked more than once, or scoring low, from the query log; you pick the right result)* | none, by design *(a person picks which result was right; that is what makes the case worth trusting)* | CLI only |
+| Candidate cases from the questions asked | `golden-set review` *(at a terminal: questions asked more than once, scoring low, ranked very differently by meaning and by the words, or reworded soon after in the same session, from the query log; you pick the right result)* | none, by design *(a person picks which result was right; that is what makes the case worth trusting)* | CLI only |
 | Curate a case | `golden-set add` | `griot_golden_set_add` | dialog, or `confirm` where nobody can be asked |
 | Remove a case | `golden-set remove` | `griot_golden_set_remove` | dialog, or `confirm` where nobody can be asked |
 | Index | `index all\|code\|commits\|tags\|branches\|platform` | `griot_index_repo` (off by default) | dialog, or `confirm` where nobody can be asked |
