@@ -285,3 +285,23 @@ def test_the_release_check_passes_on_this_repository_once_its_section_is_dated(t
 def test_contributing_says_how_a_release_is_made():
     text = (ROOT / "CONTRIBUTING.md").read_text()
     assert "## Releasing" in text and "pyproject.toml" in text and "git tag" in text and DISTRIBUTION in text
+
+
+def test_contributing_describes_the_release_as_a_pull_request_then_a_tag_on_main():
+    """main is protected: no version commit lands on it except through a
+    pull request, so the steps CONTRIBUTING gives are a release/vX.Y.Z pull
+    request carrying the version in every place it is written, then a
+    lightweight tag on main's commit once it is merged, the commit
+    scripts/release-check.py requires to be on main."""
+    section = " ".join((ROOT / "CONTRIBUTING.md").read_text().split("## Releasing", 1)[1]
+                       .split("\n## ", 1)[0].split())
+    # The first step, alone: the paragraph after the steps names `uv.lock`
+    # too, as what the release builds from.
+    first_step = section.split(" 1. ", 1)[1].split(" 2. ", 1)[0]
+    for place in ("`pyproject.toml`", "`src/griot/__init__.py`", "`uv.lock`", "README", "changelog"):
+        assert place in first_step, place
+    assert "`release/vX.Y.Z`" in section and "pull request" in section
+    assert "lightweight tag" in section and "squash" in section
+    # The tag comes after the merge, on main, never on the branch's commit.
+    assert section.index("squash") < section.index("lightweight tag")
+    assert "`git tag vX.Y.Z`" in section

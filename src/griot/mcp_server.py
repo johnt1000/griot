@@ -1215,8 +1215,9 @@ class RepositoryFreshness(TypedDict):
     missing_sources: list[str]
     # True when the newest platform run that reached this repository could
     # fetch nothing of it (the platform refused every request, an expired
-    # token say) while it answered for others: its pull requests and issues
-    # are missing or stale until the token is fixed and the platform indexed.
+    # token say, or did not answer) while it answered for others: its pull
+    # requests and issues are missing or stale until the cause
+    # (platform_refusal_causes says which) is fixed and the platform indexed.
     platform_refused: bool
     # True when that refusal was HTTP 404 to every fetch under a token: the
     # project in the remote does not exist or the token cannot see it, so
@@ -1231,6 +1232,11 @@ class RepositoryFreshness(TypedDict):
     # fault. None when the repository was not refused, or the run that
     # refused it predates this field.
     platform_refusal_causes: dict[str, list[str]] | None
+    # For that same refusal, the HTTP status or kind of error of the
+    # fetches refused for "other" ("HTTP 502", "ReadTimeout"): the platform
+    # did not answer or failed, so retry later; the token is not the
+    # suspect. None when there were none, or the run predates this field.
+    platform_other_reasons: list[str] | None
     sources: dict[str, SourceFreshness]
 
 

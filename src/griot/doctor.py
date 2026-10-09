@@ -297,11 +297,14 @@ def check_repositories(common) -> dict:
     refused = stats.platform_refused_names(reports)
     not_found = stats.platform_not_found_names(reports)
     mixed = stats.platform_mixed_refusals(reports)
+    failures = stats.platform_failures(reports)
     # A 404 under a token is fixed in the remote or the token's reach, not
-    # in the token (debt 67): each kind gets its own phrase and fix, and a
+    # in the token (debt 67): each kind gets its own phrase and fix, a
     # repository refused for more than one reason the fixes of its causes
-    # alone (debt 70).
-    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)]
+    # alone (debt 70), and one the platform did not answer for, or failed,
+    # no token fix at all (debt 72).
+    token_refused = [name for name in refused
+                     if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
     if behind or without_code or refused:
         parts = []
         if behind:
@@ -312,13 +315,20 @@ def check_repositories(common) -> dict:
             parts.append(stats.platform_refused_phrase(token_refused))
         if not_found:
             parts.append(stats.platform_not_found_phrase(not_found))
-        parts.extend(stats.platform_mixed_phrase(name, causes) for name, causes in mixed)
+        if failures:
+            parts.append(stats.platform_failed_phrase(failures))
+        other_reasons = stats.platform_other_reasons_of(reports)
+        parts.extend(stats.platform_mixed_phrase(name, causes, other_reasons.get(name)) for name, causes in mixed)
         # A refusal is fixed first: indexing again before that is refused
         # again.
         fix = "griot index all   # or one with --repo <name>"
         checks = (["the platform's token"] if token_refused or any("token" in c for _, c in mixed) else []) + (
             ["the project path in each remote and that the token can see it"]
             if not_found or any("not_found" in c for _, c in mixed) else [])
+        if failures or any("other" in c for _, c in mixed):
+            # The platform did not answer or failed: retrying now would most
+            # likely fail the same way, and no token check fixes it.
+            fix += ("; where the platform did not answer or failed, " + stats._FAILURE_CHECK)
         if checks:
             fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)

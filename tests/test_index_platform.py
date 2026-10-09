@@ -915,3 +915,99 @@ def test_a_run_that_refused_nothing_records_no_causes(two_repo_run):
 
     (run,) = two_repo_run["runs"]
     assert "refusal_causes" not in run
+
+
+# --- a platform that did not answer, or failed, under a token -----------------------
+#
+# [debt 72] Every fetch of a repository failing for another cause (no answer,
+# a timeout, a 5xx) under a token is a single cause, "other": neither all
+# 404s nor a mix, so the run's readers gave it the token advice. The
+# closing message says the platform did not answer or failed, names the
+# status or the kind of error, and does not point at the token; the run
+# records those reasons per repository (`other_reasons`) so `griot stats`,
+# `griot doctor` and griot_index_status can name them too.
+
+
+def _answer_all_with(monkeypatch, status=None, error=None):
+    """Through the real GitHub adapter, with only HTTP faked: every request
+    answers `status`, or raises `error`."""
+    from griot import platforms
+
+    for name, function in _REAL_PLATFORM_FUNCTIONS.items():
+        monkeypatch.setattr(platforms, name, function)
+
+    def answer(url, **kwargs):
+        if error is not None:
+            raise error
+        response = requests.Response()
+        response.status_code = status
+        response.url = url
+        return response
+    monkeypatch.setattr(platforms.requests, "get", answer)
+
+
+@pytest.mark.parametrize("status,error,reason", [
+    (500, None, "HTTP 500"),
+    (502, None, "HTTP 502"),
+    (None, requests.ReadTimeout("read timed out"), "ReadTimeout"),
+])
+def test_a_platform_that_did_not_answer_or_failed_is_not_blamed_on_the_token(platform_run, monkeypatch, capsys,
+                                                                            status, error, reason):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _answer_all_with(monkeypatch, status=status, error=error)
+
+    assert index_platform.main(["--path", platform_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert "Check the token" not in err and "not visible to the token" not in err
+    [line] = [line for line in err.splitlines() if "group/project" in line]
+    assert "did not answer or failed" in line and reason in line
+    assert "try again later" in line and "not the token" in line
+    assert "refused" not in err
+    (run,) = platform_run["runs"]
+    name = Path(platform_run["path"]).name
+    assert run["refusal_causes"] == {name: {"other": ["merge/pull requests", "releases", "issues"]}}
+    assert run["other_reasons"] == {name: [reason]}
+    assert "not_found_repos" not in run
+    assert "refused" not in run["error"] and reason in run["error"]
+
+
+def test_one_repository_whose_platform_failed_among_others_is_named_as_failed(two_repo_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _refuse_everything_of(monkeypatch, "/bad", status=503)
+
+    assert index_platform.main([]) == 1
+
+    err = capsys.readouterr().err
+    assert "every fetch for bad failed" in err and "refused" not in err
+    assert "Check the token" not in err and "HTTP 503" in err
+    (run,) = two_repo_run["runs"]
+    assert run["other_reasons"] == {"bad": ["HTTP 503"]}
+
+
+def test_only_the_other_fetches_of_a_mix_give_their_reasons(gitlab_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, by_label={"fetch_pull_requests": 500, "fetch_releases": 403, "fetch_issues": 502})
+
+    assert index_platform.main(["--path", gitlab_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    other_line = next(line for line in err.splitlines() if "did not answer or failed" in line)
+    assert "merge/pull requests" in other_line and "issues" in other_line and "releases" not in other_line
+    assert "Check the token" in err
+    # One fetch was refused for the token: the run is not "failed" alone.
+    assert "the platform refused all 3 fetch(es)" in err
+    (run,) = gitlab_run["runs"]
+    name = Path(gitlab_run["path"]).name
+    assert run["other_reasons"] == {name: ["HTTP 500", "HTTP 502"]}
+    assert run["error"].startswith("the platform refused every fetch")
+
+
+def test_a_refusal_without_another_cause_records_no_other_reasons(gitlab_run, monkeypatch):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, status=401)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    (run,) = gitlab_run["runs"]
+    assert "other_reasons" not in run
