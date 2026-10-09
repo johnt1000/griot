@@ -6,7 +6,7 @@ adopting each unused capability would concretely mean here.
 Kept as a reference to return to — not a plan. Nothing below is scheduled;
 see the reasoning at the end for why.
 
-**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06, `griot://result-fields` on 2026-10-09), against the `mcp` SDK installed in this
+**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06, `griot://result-fields` on 2026-10-09, and the whole document against a live server's tools, prompts and resources the same day), against the `mcp` SDK installed in this
 repo's venv.
 
 ## How to re-verify
@@ -56,7 +56,7 @@ anyio.run(m)"
 | Argument completion (`@mcp.completion`) | yes | no | Marginal |
 | HTTP / SSE transports, custom routes | yes | no | Does not apply |
 
-Four of ten — but the raw count misleads. Most absences are correct for what
+Five of eleven — but the raw count misleads. Most absences are correct for what
 griot is, and are recorded below so nobody re-derives the reasoning.
 
 ## Used today
@@ -68,7 +68,12 @@ its command; a list kept here in prose went stale more than once.
 *Read-only*: search, index and spend status, the usage report, the lists of
 repositories, profiles, settings and curated cases, which credentials are
 configured, what an index run would do, and the quality check. Each carries `readOnlyHint`, which is also what the
-installer reads to decide which tools it may offer to pre-approve.
+installer reads to decide which tools it may offer to pre-approve. It offers
+every one of them except the read-only tools that still cost a run or a
+bill (`_READ_ONLY_BUT_ASKED` in `mcp_server.py`): `griot_quality_check`
+(embeds a query per sampled point), `griot_index_preview` and
+`griot_golden_set_suggest` (read a whole repository or its git log), and
+`griot_audit` (reads every stored chunk, holding the index).
 
 *State-changing, behind `_confirmed()`*: registering and removing a
 repository, deleting a profile, curating the golden set, installing the
@@ -229,10 +234,7 @@ confirmation (see the management surface below); it is registered with
 ever started from the server and it could only answer "nothing running".
 
 What it does not do: follow a run started from a terminal (its progress
-has nowhere to go; the lock in `griot_index_status` is all there is), or
-survive a restart of the server (the job registry is the server's memory).
-
-## Gaps worth revisiting
+has nowhere to go; the lock in `griot_index_status` is all there is).
 
 ### Resources
 
@@ -357,7 +359,7 @@ already surface as `isError` with an actionable message.
 ## CLI and MCP, side by side
 
 Verified by reading the CLI's subparsers and calling `list_tools()` on a
-live server; last on 2026-10-01. The table is the mapping; counts are left
+live server; last on 2026-10-09. The table is the mapping; counts are left
 out on purpose, because every one written here went stale.
 
 | Operation | CLI | MCP | Confirmation |
@@ -401,8 +403,9 @@ out on purpose, because every one written here went stale.
 | `config set`, `config unset` | Settings decide how much may be spent, what an agent may index and where tokens are sent. A person changes them; the widening ones only at a terminal. |
 | `doctor` | A checklist for the person setting griot up: most of what it reads a tool already answers (`griot_config_list`, `griot_index_status`, `griot_repos_list`, `griot_spend_status`, `griot_profiles_list`), and what it adds (the file's permissions, the MCP registration, which tools still ask) is about the machine and the harness the agent runs in, which the agent cannot change. |
 | `profiles use` | Which profile is active decides where everything indexed and searched is sent, and whether it is billed. The user's call, at a terminal; a running server would keep its profile anyway. |
+| `update` | It replaces the installed griot, this server included, by running the installer that installed it: an agent must not upgrade the tool it is using. |
 
-Three tools expose less than their CLI counterpart, and the differences
+Five tools expose less than their CLI counterpart, and the differences
 matter enough to state:
 
 - `griot_index_repo`: no `--repo`, no `--profile`, no `--prune`, and one
@@ -422,17 +425,27 @@ matter enough to state:
   curated half is not run and `golden_set_not_run` says so; `griot
   quality-check` in a terminal runs them all. It is not among the tools the
   installer offers to pre-approve, for the same reason.
+- `griot_audit`: reads a bounded number of stored points per call, where
+  `griot audit` reads the whole index; `complete` false says it stopped
+  there, and `repos` reads one repository at a time.
+- `griot_golden_set_suggest`: returns the candidates and writes none (each
+  becomes a case through `griot_golden_set_add`, which a person confirms),
+  and reads a bounded stretch of the log, where `griot golden-set suggest`
+  asks about each candidate at the terminal and writes the approved ones.
 
 ### MCP only
 
 `griot_index_status` and `griot_spend_status` are slices of `griot stats`,
-split out because an agent usually wants one of them. `griot_auth_guidance`
-has no CLI counterpart at all — it exists to say "not through here" and
-name the command that does work. Neither has `griot_index_wait`: a run
-started at a terminal shows its progress in that terminal.
+split out because an agent usually wants one of them. Two tools have no CLI
+counterpart at all: `griot_auth_guidance` exists to say "not through here"
+and name the command that does work, and `griot_index_wait` follows a run
+this server started, where a run started at a terminal shows its progress
+in that terminal. The resources are the same data as their tools, and
+`griot://result-fields` is reference text for agents, which a person reads
+in `docs/indexing-model.md`.
 
 The gap, then, is not coverage. It is a set of deliberate choices, each
-listed above, and two read-only views that are planned.
+listed above.
 
 ## The management surface
 
