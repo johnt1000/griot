@@ -954,6 +954,20 @@ def test_auth_tool_reports_status_without_revealing_anything(monkeypatch):
         assert set(entry) == {"provider", "configured"}
 
 
+@pytest.mark.anyio
+async def test_auth_tool_says_a_running_server_keeps_the_credentials_it_read():
+    """`configured` comes from this server's own process, which keeps what
+    it read at start (.env) and on first use (the keychain, an absence
+    included): a key set in a terminal afterwards is not seen until a
+    restart, and an agent told only "run griot auth set" would report the
+    key still missing."""
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_auth_guidance", {})
+    how_to_set = result.structured_content["how_to_set"]
+    assert "restart" in how_to_set
+    assert "/mcp" in how_to_set
+
+
 # --- tool-call recording ----------------------------------------------------
 # griot exposes 7 tools and 1 prompt, none validated against real agent use.
 # Recording which ones actually get called turns "do these earn their place?"

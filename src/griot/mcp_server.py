@@ -2218,8 +2218,13 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
         # Not "stores in the OS keychain" flatly: with no backend reachable it
         # goes to the plaintext .env, and checking here would read the keychain
         # on every call. `griot auth list` says which, from a terminal.
+        # `configured` is this process's view, and a server keeps what it
+        # read: without this an agent sends the person to set a
+        # key, calls again, and reports it still missing.
         "how_to_set": ("griot auth set <provider>    # hidden prompt; stores in the OS keychain when one is "
-                       "reachable, else in <config>/.env (plaintext, 0600); `griot auth list` says which"),
+                       "reachable, else in <config>/.env (plaintext, 0600); `griot auth list` says which. "
+                       f"After a key is set or removed, {auth.RUNNING_SERVERS_KEEP_WHAT_THEY_READ} `configured` "
+                       "above is what this server read."),
         "how_to_remove": "griot auth remove <provider>",
         "why_not_here": (
             "Credentials are never set through MCP: a value typed into a chat reaches the "
