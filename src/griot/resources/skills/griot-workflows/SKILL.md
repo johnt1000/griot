@@ -129,7 +129,9 @@ also carries `metadata`, what was stored with the source: `file_path` and
 `chunk_index` for code; the whole `commit_hash`, `author` and `date` for a
 commit; the tag, branch, pull request or issue identifier for the rest,
 with a date (for a branch, the date of its last commit). That is what to
-act on: open that file, show that commit, say when. A file or a commit that
+act on: open that file, show that commit, say when. The MCP resource
+`griot://result-fields` lists every field of each kind and what it means
+(the web page in `url` on GitLab, a release's `author`). A file or a commit that
 is indexed in more than one place (a copied file, a fork) comes back once,
 with the other places found among the best matches in `also_in`; two
 different commits with the same message stay two results. One document

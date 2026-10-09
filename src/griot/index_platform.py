@@ -41,7 +41,7 @@ def build_chunks(content: str, id_prefix: str, base_metadata: dict) -> list[dict
         documents.append({
             "id": f"{id_prefix}:{i}",
             "content": chunk,
-            "metadata": {**base_metadata, "chunk_index": i},
+            "metadata": common.result_metadata({**base_metadata, "chunk_index": i}),
         })
     return documents
 

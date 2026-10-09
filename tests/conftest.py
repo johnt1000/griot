@@ -28,16 +28,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # [security review, real gap] Must be set BEFORE the import below, not only
 # in the per-test autouse fixture further down: common.py runs
 # _inject_keychain_credentials() at import time (module-level call), which
-# calls the real `keyring` backend if the package happens to be installed
-# in the venv running this suite. Without this guard here, a dev/CI machine
-# that has `keyring` installed (e.g. for manual testing of the feature)
-# would have this single import silently read the REAL OS keychain, before
+# calls the real `keyring` backend, and keyring is a dependency of griot-rag
+# (installed in every venv that runs this suite). Without this guard here,
+# a dev/CI machine would have this single import silently read the REAL OS keychain, before
 # any fixture ever runs. No monkeypatch fixture exists yet at this point —
 # this is a plain, permanent module-level override for the whole session.
 sys.modules["keyring"] = None
 # The line above covers this process only. A test that runs the real CLI in a
-# subprocess imports the real `keyring` there, and on a machine with the
-# keychain extra a fake credential reached the user's login keychain
+# subprocess imports the real `keyring` there, and on a machine with
+# keyring installed a fake credential reached the user's login keychain
 # (2026-10-06). Every subprocess inherits this environment: keyring's `fail`
 # backend makes it degrade to the file, as the test process does.
 # tests/test_suite_keychain_isolation.py holds it.

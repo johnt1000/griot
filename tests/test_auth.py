@@ -338,7 +338,7 @@ def test_cmd_migrate_leaves_file_untouched_without_keychain_backend(capsys):
     assert rc == 0
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == "sk-plaintext-5678"
     out = capsys.readouterr().out
-    assert "griot[keychain]" in out
+    assert "reinstall griot-rag" in out
 
 
 def test_cmd_migrate_skips_unconfigured_provider(capsys):

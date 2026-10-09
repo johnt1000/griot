@@ -118,12 +118,12 @@ want the exact set the tests ran on, install from a checkout with
 A secret scan is a backstop, not a control. Nothing in this repository should
 ever contain a credential in the first place: `griot auth set` reads keys with
 `getpass` (never echoed, never in argv) and stores them outside the working
-tree: in the OS keychain when the optional `keyring` package is installed and
-finds a backend, otherwise in `<config>/.env` in plaintext at mode 0600. The
+tree: in the OS keychain when `keyring` (a dependency of griot) finds a
+backend, otherwise in `<config>/.env` in plaintext at mode 0600. The
 keychain is best-effort, not a guarantee: headless Linux without a Secret
 Service provider, and most containers, have none, and griot then keeps working
-with the file. `griot auth list` and `griot doctor` say where each credential
-is kept and whether a keychain backend is reachable. A credential already in
+with the file. `griot auth set`, `griot auth list` and `griot doctor` say where
+each credential is kept, whether a keychain backend is reachable, and why not. A credential already in
 the file is moved into the keychain only when you ask, with `griot auth
 migrate`; `griot doctor` names the ones still in the file (names, never
 values) when a keychain is there to take them.

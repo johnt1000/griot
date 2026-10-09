@@ -1281,12 +1281,13 @@ def credential_env_for_profile(name: str, profile: dict) -> str | None:
 # see SECURITY.md's "Encryption at rest" position, deliberately NOT
 # revisited by this change), a credential is NOT redundant with anything
 # else on disk: a leaked API key is a standalone loss. The `keyring`
-# package (pyproject.toml's optional `keychain` extra — NOT a core
-# dependency) is the same pattern real CLI tools use (gh, docker
-# credential helpers, aws-cli, 1Password CLI). `import keyring` happens
-# LAZILY inside each wrapper below (never at module import time) so
-# griot's core CLI/MCP/UI behavior never depends on it being installed —
-# every wrapper catches ANY exception (ImportError when not installed,
+# package (a default dependency since debt 65; it was an opt-in extra, and
+# the documented `pipx install griot-rag` then kept every key in plaintext)
+# is the same pattern real CLI tools use (gh, docker credential helpers,
+# aws-cli, 1Password CLI). `import keyring` still happens LAZILY inside each
+# wrapper below (never at module import time) so griot's core CLI/MCP
+# behavior never depends on it importing — every wrapper catches ANY
+# exception (ImportError on a broken install,
 # keyring.errors.NoKeyringError when no backend is reachable — e.g.
 # headless Linux without a Secret Service provider, or a container — and
 # any backend-specific failure) and degrades to "unavailable," never
@@ -1314,7 +1315,7 @@ def keychain_set(env_var: str, value: str) -> bool:
 
 
 # What keychain_delete() found. "not installed" is apart from "unreachable"
-# because without the `keyring` package griot never stored anything in a
+# because where `keyring` does not import griot never stored anything in a
 # keychain, so there is nothing to warn about; an installed package whose
 # backend fails may be hiding a stored credential that is still there.
 KEYCHAIN_DELETED = "deleted"
@@ -1356,8 +1357,9 @@ def keychain_status() -> dict:
     fallback to the plaintext file can be said instead of happening silently.
 
     {"available": bool, "backend": its name or None, "installed": whether
-    `keyring` imports at all}: "not installed" is fixed by the extra, "no
-    backend" is not (headless Linux, a container), and the advice differs.
+    `keyring` imports at all}: "not installed" is a broken install (keyring
+    is a dependency) fixed by reinstalling griot, "no backend" is not
+    (headless Linux, a container), and the advice differs.
     Asks keyring which backend it chose and reads no credential, so it never
     makes macOS ask the person. keyring falls back to its `fail` backend
     (priority 0) when nothing is reachable, and `null` (priority -1) turns it
@@ -4400,10 +4402,92 @@ _GROUPING_OVERFETCH = 6
 SEARCH_MAX_EXTRA_WINDOWS = 2
 
 
+# What a point of each source type stores besides `repo`, `source_type`,
+# `content` and `content_hash`: the `metadata` of a search result, and what
+# each field means. The ONE list of them: every indexer builds its payload
+# through result_metadata(), which refuses a field missing here, and the
+# griot://result-fields resource serves this dict as it is. griot_search's
+# description has no room to name every field (it is held to 1600
+# characters), so a field added without this list would reach agents with
+# no explanation, or not at all.
+RESULT_FIELDS = {
+    "code": {
+        "file_path": "The file's path, relative to the root of the repository.",
+        "chunk_index": "Which part of the file this is, from 0: a file is indexed in overlapping parts.",
+    },
+    "commit": {
+        "commit_hash": "The full commit hash.",
+        "author": "The commit's author, by the name git records.",
+        "date": "When the commit was authored, ISO 8601 with its offset.",
+        "chunk_index": "Which part of the message this is, from 0: only a long message is split.",
+    },
+    "tag": {
+        "tag_name": "The tag's name.",
+        "commit_hash": "The commit the tag leads to, not the tag object.",
+        "date": "When the tag was created (an annotated tag) or its commit made, ISO 8601.",
+        "chunk_index": "Which part of the tag's message this is, from 0: only a long message is split.",
+    },
+    "branch": {
+        "branch_name": "The remote branch, such as origin/feature-x; the default branch is not indexed.",
+        "last_commit_hash": "The full hash of the commit at the tip of the branch.",
+        "last_commit_date": "When that commit was authored, ISO 8601.",
+    },
+    "merge_request": {
+        "mr_iid": "The merge or pull request's number in its project.",
+        "state": "Its state as the platform gives it, such as opened, merged or closed.",
+        "author": "Who opened it, by the platform's user name.",
+        "created_at": "When it was opened, as the platform gives it.",
+        "source_branch": "The branch it merges from.",
+        "target_branch": "The branch it merges into.",
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its title and description this is, from 0.",
+    },
+    "release": {
+        "tag_name": "The tag the release was made from.",
+        "released_at": "When it was released, as the platform gives it.",
+        "author": ("Who published it, by the platform's user name. GitHub, GitLab and Gitea/Forgejo; "
+                   "absent when the platform gives none, and on a release indexed before griot "
+                   "stored it, until the next platform run."),
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its name and notes this is, from 0.",
+    },
+    "issue": {
+        "issue_iid": "The issue's number in its project.",
+        "state": "Its state as the platform gives it, such as opened or closed.",
+        "author": "Who opened it, by the platform's user name.",
+        "created_at": "When it was opened, as the platform gives it.",
+        "url": "Its web page. GitLab only; absent on the other platforms.",
+        "chunk_index": "Which part of its title and description this is, from 0.",
+    },
+}
+
+# Beside a result's `metadata` rather than in it, on every kind of source.
+RESULT_TOP_LEVEL_FIELDS = {
+    "repo": "The repository's name, the `name` griot_repos_list gives and the `repos` filter takes.",
+    "source_type": "Which kind of source the result is: one of the keys of `metadata` here.",
+}
+
+
+def result_metadata(metadata: dict) -> dict:
+    """`metadata` itself, once every field it holds is one RESULT_FIELDS
+    lists for its source type: what keeps that list, and the resource
+    built from it, from falling behind what is stored. An unlisted field is
+    a programming error in an indexer, found by its tests, not a value to
+    drop quietly."""
+    source_type = metadata.get("source_type")
+    if source_type not in RESULT_FIELDS:
+        raise ValueError(f"Unknown source_type {source_type!r}: add it to common.RESULT_FIELDS.")
+    unlisted = set(metadata) - set(RESULT_TOP_LEVEL_FIELDS) - set(RESULT_FIELDS[source_type])
+    if unlisted:
+        raise ValueError(f"A {source_type} payload holds {', '.join(sorted(unlisted))}, which "
+                         "common.RESULT_FIELDS does not list: list it there, with what it means.")
+    return metadata
+
+
 # The kinds of source an indexer writes as `source_type`, which is what a
 # search can be narrowed to. tests/test_search_filters.py holds this list to
 # what the five indexers actually write.
-SOURCE_TYPES = ("code", "commit", "tag", "branch", "merge_request", "release", "issue")
+SOURCE_TYPES = tuple(RESULT_FIELDS)
 
 # Each repository named in a filter costs one scan of the collection to make
 # sure something is indexed for it (there is no payload index to ask).

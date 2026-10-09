@@ -196,56 +196,66 @@ def test_claude_code_directory_reached_through_a_link_is_the_same_place(claude, 
     assert _files(home / ".config" / "opencode" / "skills") == []
 
 
-def test_opencode_directory_that_is_claude_codes_through_a_link_keeps_its_one_copy(opencode, home):
-    (home / ".claude" / "skills").mkdir(parents=True)
-    (home / ".config" / "opencode").mkdir(parents=True)
-    (home / ".config" / "opencode" / "skills").symlink_to(home / ".claude" / "skills")
-    _put_griot_skills(home / ".claude" / "skills")
-
-    result = harnesses.install(opencode, "global", home=home, alongside=[opencode])
-
-    assert _files(home / ".claude" / "skills") == _skill_files(), "the only copy is not a duplicate"
-    assert result["skills_skipped"] == [] and result["removed"] == []
-
-
 # --- copies left by an earlier install ----------------------------------------------------------
+# An earlier griot deleted these without asking (#110), so a hand edit there
+# was lost. Now an install never deletes them: they are listed, with why they
+# are redundant and how to remove them, and only the CLI at a terminal asks.
 
 
-def test_the_copies_an_earlier_install_left_in_opencode_are_removed(claude, opencode, home):
+def test_an_install_never_deletes_the_copies_an_earlier_one_left(claude, opencode, home):
+    oc_skills = home / ".config" / "opencode" / "skills"
+    _put_griot_skills(oc_skills)
+    edited = oc_skills / _skill_files()[0]
+    edited.write_text("my own edit")
+
+    result = harnesses.install_many([claude, opencode], "global", home=home)[1]
+
+    assert _files(oc_skills) == _skill_files()
+    assert edited.read_text() == "my own edit"
+    assert "removed" not in result
+
+
+def test_the_copies_left_are_listed_with_why_and_how_to_remove_them(claude, opencode, home):
     oc_skills = home / ".config" / "opencode" / "skills"
     _put_griot_skills(oc_skills)
     (oc_skills / "not-griot").mkdir()
     (oc_skills / "not-griot" / "SKILL.md").write_text("theirs")
 
-    result = harnesses.install_many([claude, opencode], "global", home=home)[1]
+    [entry] = harnesses.redundant_copies([claude, opencode], "global", home=home)
 
-    assert _files(oc_skills) == ["not-griot/SKILL.md"]
-    assert result["removed"] == _skill_files()
-    assert sorted(p.name for p in oc_skills.iterdir()) == ["not-griot"], "the emptied skill directories go too"
+    assert entry["harness"] == "opencode"
+    assert entry["skills_target"] == str(oc_skills)
+    assert entry["files"] == _skill_files()
+    assert entry["paths"] == [str(oc_skills / rel) for rel in _skill_files()]
+    assert str(home / ".claude" / "skills") in entry["note"] and "twice" in entry["note"]
+    assert "griot assist install --scope global --harness all" in entry["note"]
+    assert "kept" in entry["note"].lower()
 
 
-def test_an_outdated_copy_is_removed_as_well(opencode, home):
+def test_an_outdated_copy_is_listed_as_well(opencode, home):
     _put_griot_skills(home / ".claude" / "skills")
     stale = home / ".config" / "opencode" / "skills" / _skill_files()[0]
     stale.parent.mkdir(parents=True)
     stale.write_text("an older griot's text")
-    result = harnesses.install(opencode, "global", home=home)
-    assert not stale.exists()
-    assert result["removed"] == [_skill_files()[0]]
-    assert (home / ".config" / "opencode" / "skills").is_dir(), "opencode's own skills directory stays"
+    [entry] = harnesses.redundant_copies([opencode], "global", home=home)
+    assert entry["files"] == [_skill_files()[0]]
+    assert "--harness opencode" in entry["note"]
 
 
-def test_a_file_of_the_users_inside_a_griot_skill_directory_is_kept(opencode, home):
+def test_nothing_skipped_means_no_copies_to_report(opencode, home):
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    assert harnesses.redundant_copies([opencode], "global", home=home) == []
+
+
+def test_opencode_directory_that_is_claude_codes_through_a_link_has_no_copy_to_report(opencode, home):
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".config" / "opencode").mkdir(parents=True)
+    (home / ".config" / "opencode" / "skills").symlink_to(home / ".claude" / "skills")
     _put_griot_skills(home / ".claude" / "skills")
-    oc_skills = home / ".config" / "opencode" / "skills"
-    _put_griot_skills(oc_skills)
-    name = _skill_files()[0].split("/")[0]
-    (oc_skills / name / "my-notes.md").write_text("mine")
-    harnesses.install(opencode, "global", home=home)
-    assert _files(oc_skills) == [f"{name}/my-notes.md"]
+    assert harnesses.redundant_copies([opencode], "global", home=home) == []
 
 
-def test_a_link_where_a_copy_was_is_not_followed_nor_removed(opencode, home, tmp_path):
+def test_a_link_where_a_copy_was_is_not_offered_for_removal(opencode, home, tmp_path):
     _put_griot_skills(home / ".claude" / "skills")
     target = tmp_path / "somewhere" / "precious.md"
     target.parent.mkdir()
@@ -254,30 +264,94 @@ def test_a_link_where_a_copy_was_is_not_followed_nor_removed(opencode, home, tmp
     link.parent.mkdir(parents=True)
     link.symlink_to(target)
 
-    result = harnesses.install(opencode, "global", home=home)
+    [entry] = harnesses.redundant_copies([opencode], "global", home=home)
+    removed, _ = harnesses.remove_redundant_copies(opencode, [opencode], "global", home=home)
 
+    assert entry["paths"] == [] and str(link) in entry["note"]
+    assert removed == []
     assert link.is_symlink() and target.read_text() == "precious"
-    assert result["removed"] == []
-    assert str(link) in result["skills_note"]
 
 
-def test_a_project_directory_that_leads_outside_through_a_link_is_not_emptied(claude, opencode, tmp_path):
+@pytest.mark.parametrize("scope", ["global", "local"])
+def test_a_claude_code_install_alone_reports_the_opencode_copies(claude, home, tmp_path, scope):
+    project = tmp_path / "project"
+    project.mkdir()
+    oc_skills = (home / ".config" / "opencode" / "skills" if scope == "global"
+                 else project / ".opencode" / "skills")
+    _put_griot_skills(oc_skills)
+
+    [entry] = harnesses.redundant_copies([claude], scope, home=home, cwd=project)
+
+    assert entry["harness"] == "opencode"
+    assert entry["files"] == _skill_files()
+    assert "being installed for Claude Code" in entry["note"]
+    assert "--harness claude-code" in entry["note"]
+
+
+def test_a_claude_code_install_alone_with_no_opencode_copies_reports_nothing(claude, home):
+    assert harnesses.redundant_copies([claude], "global", home=home) == []
+
+
+def test_removing_deletes_the_copies_and_the_directories_they_emptied_only(claude, opencode, home):
+    _put_griot_skills(home / ".claude" / "skills")
+    oc_skills = home / ".config" / "opencode" / "skills"
+    _put_griot_skills(oc_skills)
+    (oc_skills / "not-griot").mkdir()
+    (oc_skills / "not-griot" / "SKILL.md").write_text("theirs")
+    name = _skill_files()[0].split("/")[0]
+    (oc_skills / name / "my-notes.md").write_text("mine")
+
+    removed, left = harnesses.remove_redundant_copies(opencode, [claude, opencode], "global", home=home)
+
+    assert removed == _skill_files() and left == []
+    assert _files(oc_skills) == [f"{name}/my-notes.md", "not-griot/SKILL.md"]
+    assert sorted(p.name for p in oc_skills.iterdir()) == sorted([name, "not-griot"])
+
+
+def test_removal_never_empties_a_project_directory_that_leads_outside(claude, opencode, tmp_path):
     project = tmp_path / "project"
     outside = tmp_path / "outside-skills"
     _put_griot_skills(outside)
     (project / ".opencode").mkdir(parents=True)
     (project / ".opencode" / "skills").symlink_to(outside)
 
-    harnesses.install_many([opencode, claude], "local", cwd=project)
+    removed, left = harnesses.remove_redundant_copies(opencode, [opencode, claude], "local", cwd=project)
 
+    assert removed == [] and left
     assert _files(outside) == _skill_files(), "files outside the project are not griot's to delete"
 
 
-def test_nothing_skipped_means_nothing_removed(opencode, home):
-    oc_skills = home / ".config" / "opencode" / "skills"
-    _put_griot_skills(oc_skills)
-    result = harnesses.install(opencode, "global", home=home)
-    assert _files(oc_skills) == _skill_files() and result["removed"] == []
+# --- the environment griot reads is not opencode's --------------------------------------------
+
+
+def test_the_note_names_the_variables_it_read_and_their_values(claude, opencode, home, monkeypatch):
+    monkeypatch.setenv("OPENCODE_DISABLE_CLAUDE_CODE", "0")
+    note = harnesses.install_many([claude, opencode], "global", home=home)[1]["skills_note"]
+    assert "OPENCODE_DISABLE_CLAUDE_CODE='0'" in note
+    assert "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS unset" in note
+    assert "OPENCODE_DISABLE_EXTERNAL_SKILLS unset" in note
+    assert "not opencode's" in note
+
+
+def test_a_variable_that_gave_opencode_its_own_copy_is_named(claude, opencode, home, monkeypatch):
+    monkeypatch.setenv("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "1")
+    result = harnesses.install_many([claude, opencode], "global", home=home)[1]
+    assert result["skills_skipped"] == []
+    assert "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS='1'" in result["skills_note"]
+    assert "not opencode's" in result["skills_note"]
+
+
+def test_the_copies_note_states_the_same_assumption(opencode, home):
+    _put_griot_skills(home / ".claude" / "skills")
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    [entry] = harnesses.redundant_copies([opencode], "global", home=home)
+    assert "OPENCODE_DISABLE_EXTERNAL_SKILLS unset" in entry["note"] and "not opencode's" in entry["note"]
+    assert "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1" in entry["note"], "how to give opencode its own copy"
+
+
+def test_claude_code_has_no_assumption_to_state(claude, home, monkeypatch):
+    monkeypatch.setenv("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "1")
+    assert harnesses.install(claude, "global", home=home)["skills_note"] is None
 
 
 # --- local scope -------------------------------------------------------------------------------
@@ -343,18 +417,143 @@ def test_the_first_directory_opencode_reads_is_the_one_named(opencode, home):
     assert str(home / ".agents" / "skills") not in result["skills_note"]
 
 
-def test_the_command_lists_what_it_removed(home, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+def _terminal(monkeypatch, *, interactive, answers=()):
+    """A terminal (or none) that answers in turn, recording each question."""
+    monkeypatch.setattr(harnesses, "_is_interactive", lambda: interactive)
+    prompts, queue = [], list(answers)
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        if not interactive:
+            raise AssertionError("asked with no terminal to ask on")
+        answer = queue.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    return prompts
+
+
+def _install(home, harness="opencode", **kw):
+    kw.setdefault("mcp", "no")
+    return harnesses.cmd_install("global", harness, ask_instructions=False, ask_tools=False, home=home, **kw)
+
+
+def _left_copies(home):
     _put_griot_skills(home / ".claude" / "skills")
     _put_griot_skills(home / ".config" / "opencode" / "skills")
-    assert harnesses.cmd_install("global", "opencode", skills_only=True, home=home) == 0
+
+
+def test_at_a_terminal_it_lists_the_copies_and_a_yes_removes_them(home, monkeypatch, capsys):
+    _left_copies(home)
+    prompts = _terminal(monkeypatch, interactive=True, answers=["y"])
+
+    assert _install(home) == 0
+
     out = capsys.readouterr().out
+    assert len(prompts) == 1 and "[y/N]" in prompts[0]
+    before_answer = out.split("removed (")[0]
+    assert all(str(home / ".config" / "opencode" / "skills" / rel) in before_answer for rel in _skill_files())
+    assert _files(home / ".config" / "opencode" / "skills") == []
     assert f"removed ({len(_skill_files())})" in out
-    assert all(rel in out for rel in _skill_files())
+    assert "copies left by an earlier install: removed" in out.split("\nSummary")[1]
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no", "maybe", EOFError(), KeyboardInterrupt()])
+def test_anything_but_yes_keeps_them(home, monkeypatch, capsys, answer):
+    _left_copies(home)
+    _terminal(monkeypatch, interactive=True, answers=[answer])
+    assert _install(home) == 0
+    out = capsys.readouterr().out
+    assert _files(home / ".config" / "opencode" / "skills") == _skill_files()
+    assert "copies left by an earlier install: kept" in out.split("\nSummary")[1]
+
+
+def test_with_no_terminal_they_are_kept_and_reported(home, monkeypatch, capsys):
+    _left_copies(home)
+    _terminal(monkeypatch, interactive=False)
+
+    assert _install(home) == 0
+
+    out = capsys.readouterr().out
+    assert _files(home / ".config" / "opencode" / "skills") == _skill_files()
+    assert all(str(home / ".config" / "opencode" / "skills" / rel) in out for rel in _skill_files())
+    assert "twice" in out and "griot assist install --scope global --harness opencode" in out
+    assert "copies left by an earlier install: kept" in out.split("\nSummary")[1]
+
+
+def test_skills_only_asks_nothing_and_keeps_them(home, monkeypatch, capsys):
+    _left_copies(home)
+    prompts = _terminal(monkeypatch, interactive=True, answers=["y"])
+    assert harnesses.cmd_install("global", "opencode", skills_only=True, home=home) == 0
+    assert prompts == []
+    assert _files(home / ".config" / "opencode" / "skills") == _skill_files()
+    assert "copies left by an earlier install: kept" in capsys.readouterr().out.split("\nSummary")[1]
+
+
+def test_claude_code_alone_at_a_terminal_offers_to_remove_opencodes_copies(home, monkeypatch, capsys):
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    prompts = _terminal(monkeypatch, interactive=True, answers=["yes"])
+
+    assert _install(home, harness="claude-code") == 0
+
+    out = capsys.readouterr().out
+    assert len(prompts) == 1
+    assert _files(home / ".config" / "opencode" / "skills") == []
+    assert _files(home / ".claude" / "skills") == _skill_files()
+    assert "opencode: copies left by an earlier install: removed" in out.split("\nSummary")[1]
+
+
+def test_claude_code_alone_with_no_terminal_reports_opencodes_copies(home, monkeypatch, capsys):
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    _terminal(monkeypatch, interactive=False)
+
+    assert _install(home, harness="claude-code") == 0
+
+    out = capsys.readouterr().out
+    assert _files(home / ".config" / "opencode" / "skills") == _skill_files()
+    assert "being installed for Claude Code" in out
+    assert "griot assist install --scope global --harness claude-code" in out
+
+
+def test_the_command_to_run_again_is_the_one_that_was_run(home, monkeypatch, capsys):
+    """`--harness all` that found only Claude Code: running it again with
+    `--harness claude-code` would be a different command than the person's."""
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    monkeypatch.setattr(harnesses, "detect_harnesses", lambda candidates=None: [_harness("claude-code")])
+    _terminal(monkeypatch, interactive=False)
+    assert _install(home, harness="all") == 0
+    assert "griot assist install --scope global --harness all" in capsys.readouterr().out
+
+
+def test_an_opencode_directory_griot_cannot_place_is_not_looked_into(claude, home, tmp_path, monkeypatch, capsys):
+    """XDG_CONFIG_HOME relative: opencode would read it against whatever
+    directory it starts in, so where its copies are is a guess, and a guess
+    is not offered for deletion."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative")
+    _put_griot_skills(tmp_path / "relative" / "opencode" / "skills")
+    # Nor the default place, which is not where that opencode reads.
+    _put_griot_skills(home / ".config" / "opencode" / "skills")
+    prompts = _terminal(monkeypatch, interactive=True, answers=["y"])
+
+    assert harnesses.redundant_copies([claude], "global", home=home) == []
+    assert _install(home, harness="claude-code") == 0
+    assert prompts == []
+    assert _files(tmp_path / "relative" / "opencode" / "skills") == _skill_files()
+    assert _files(home / ".config" / "opencode" / "skills") == _skill_files()
+
+
+def test_nothing_to_remove_asks_nothing(home, monkeypatch, capsys):
+    prompts = _terminal(monkeypatch, interactive=True)
+    assert _install(home) == 0
+    assert prompts == []
+    assert "copies left by an earlier install" not in capsys.readouterr().out
 
 
 @pytest.mark.anyio
-async def test_the_tool_says_so_through_the_protocol(tmp_path, monkeypatch):
+async def test_the_tool_keeps_the_copies_and_says_so_through_the_protocol(tmp_path, monkeypatch):
     from mcp_types import ElicitResult
     project = tmp_path / "project"
     project.mkdir()
@@ -375,18 +574,44 @@ async def test_the_tool_says_so_through_the_protocol(tmp_path, monkeypatch):
     out = result.structured_content
     real = Path(os.path.realpath(project))
     assert "twice" in asked[0] and str(real / ".claude" / "skills") in asked[0]
+    assert "deleted" not in asked[0] and "kept" in asked[0]
     oc = next(r for r in out["results"] if r["harness"] == "opencode")
     assert oc["skills_skipped"] == _skill_files()
-    assert oc["removed"] == _skill_files()
+    assert "removed" not in oc
     assert str(project / ".claude" / "skills") in oc["note"]
-    cc = next(r for r in out["results"] if r["harness"] == "claude-code")
-    assert cc["skills_skipped"] == [] and cc["removed"] == [] and cc["note"] is None
-    assert _files(project / ".opencode" / "skills") == []
-    assert "~/.claude/skills" in listed["griot_assist_install"].description
+    assert _files(project / ".opencode" / "skills") == _skill_files(), "the tool never deletes them"
+    [kept] = out["copies_kept"]
+    assert kept["harness"] == "opencode"
+    assert kept["paths"] == [str(project / ".opencode" / "skills" / rel) for rel in _skill_files()]
+    assert "twice" in kept["note"] and "griot assist install" in kept["note"]
+    assert "kept" in out["message"]
+    description = listed["griot_assist_install"].description
+    assert "~/.claude/skills" in description and "never deletes" in description
 
 
 @pytest.mark.anyio
-async def test_a_run_that_only_removed_copies_changed_something(tmp_path, monkeypatch):
+async def test_the_tool_for_claude_code_alone_reports_opencodes_copies(tmp_path, monkeypatch):
+    from mcp_types import ElicitResult
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    _put_griot_skills(project / ".opencode" / "skills")
+
+    async def accept(ctx, params):
+        return ElicitResult(action="accept", content={})
+
+    async with Client(mcp_server.mcp, elicitation_callback=accept) as client:
+        result = await client.call_tool("griot_assist_install", {"harness": "claude-code", "scope": "local"})
+
+    out = result.structured_content
+    assert [r["harness"] for r in out["results"]] == ["claude-code"]
+    [kept] = out["copies_kept"]
+    assert kept["harness"] == "opencode" and len(kept["paths"]) == len(_skill_files())
+    assert _files(project / ".opencode" / "skills") == _skill_files()
+
+
+@pytest.mark.anyio
+async def test_a_run_that_only_found_copies_changed_nothing(tmp_path, monkeypatch):
     from mcp_types import ElicitResult
     project = tmp_path / "project"
     project.mkdir()
@@ -403,5 +628,5 @@ async def test_a_run_that_only_removed_copies_changed_something(tmp_path, monkey
 
     out = result.structured_content
     assert out["results"][0]["created"] == [] and out["results"][0]["updated"] == []
-    assert out["results"][0]["removed"] == _skill_files()
-    assert out["changed"] is True
+    assert out["changed"] is False
+    assert len(out["copies_kept"][0]["paths"]) == len(_skill_files())

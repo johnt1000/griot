@@ -170,13 +170,13 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
         documents.append({
             "id": f"{key}:branch:{branch}",
             "content": text,
-            "metadata": {
+            "metadata": common.result_metadata({
                 "source_type": "branch",
                 "repo": repo_path.name,
                 "branch_name": branch,
                 "last_commit_hash": commit["hash"],
                 "last_commit_date": commit["date"],
-            },
+            }),
         })
     return documents
 
