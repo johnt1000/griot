@@ -123,7 +123,11 @@ in the plaintext `.env` file (before the OS-keychain integration existed),
 `griot auth migrate` moves everything already in that file into the
 keychain in one pass. `griot auth list` and `griot doctor` say where each
 credential is kept and whether a keychain backend is reachable at all; with
-none, griot keeps credentials in the plaintext file. If you just ran `griot auth set` and a *running* MCP
+none, griot keeps credentials in the plaintext file and says why (on Linux it
+needs a running, unlocked Secret Service provider such as GNOME Keyring,
+KWallet or KeePassXC; a headless server, a container or CI usually has none,
+and `PYTHON_KEYRING_BACKEND` set to keyring's `fail` or `null` backend turns it
+off). If you just ran `griot auth set` and a *running* MCP
 server still reports the key missing, that's expected — the server only
 resolves `.env` once, at process start, so it won't see a newly-set
 credential until restarted.
