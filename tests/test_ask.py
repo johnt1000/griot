@@ -6,6 +6,7 @@ common.CHAT_MODEL, even with a different provider active).
 """
 
 import importlib
+import types
 
 from griot import ask, cli, common
 
@@ -75,8 +76,13 @@ def test_chat_profile_flag_absent_does_not_set_env_var(monkeypatch):
 def test_log_query_uses_active_chat_profile_model_not_hardcoded_gemini(monkeypatch):
     """Real finding: log_query() used common.CHAT_MODEL (always Gemini) as
     the fallback for 'model' even when a different chat profile was active
-    — the log would lie about which model actually answered."""
-    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False, mode="vector", **filters: [])
+    — the log would lie about which model actually answered.
+
+    The search finds one result: a question that finds nothing calls no chat
+    model and logs none (tests/test_ask_nothing_found.py)."""
+    hit = types.SimpleNamespace(payload={"repo": "alpha", "source_type": "code", "file_path": "a.py",
+                                         "content": "retries"}, score=0.9)
+    monkeypatch.setattr(common, "search", lambda query, limit=5, diverse=False, mode="vector", **filters: [hit])
     monkeypatch.setattr(common, "chat_completion", lambda prompt, model=None: "answer")
     monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE_NAME", "groq")
     monkeypatch.setattr(common, "ACTIVE_CHAT_PROFILE", {"model": "llama-3.3-70b-versatile", "backend": "openai_compatible_chat"})
