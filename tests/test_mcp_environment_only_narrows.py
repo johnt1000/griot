@@ -609,7 +609,7 @@ def test_a_digit_that_is_not_a_plain_one_is_a_value_the_setting_cannot_take(tmp_
 def test_the_command_that_sets_a_count_refuses_such_a_digit_too():
     from griot import config
 
-    with pytest.raises(config._NotValid):
+    with pytest.raises(config.NotValid):
         config.normalized(config.find("max-failed-batches"), "²")
 
 

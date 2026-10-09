@@ -59,7 +59,7 @@ def test_the_trend_record_and_stats_read_what_ran(legacy_index):
 
 def test_a_record_whose_total_counted_skipped_cases_is_read_as_what_ran():
     """Written between case modes and this change: total = passed + failed + skipped."""
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF,
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF,
                                     {"total": 10, "passed": 7, "failed": 1, "skipped": 2, "cases": []})
     last = stats.load_state()["last_golden_check"]
     assert (last["passed"], last["total"], last["skipped"]) == (7, 8, 2)
@@ -67,7 +67,7 @@ def test_a_record_whose_total_counted_skipped_cases_is_read_as_what_ran():
 
 def test_a_record_from_before_case_modes_keeps_its_total():
     """No `skipped` then, and nothing could be skipped: total was what ran."""
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF, {"total": 6, "passed": 4, "failed": 2, "cases": []})
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF, {"total": 6, "passed": 4, "failed": 2, "cases": []})
     last = stats.load_state()["last_golden_check"]
     assert (last["passed"], last["total"], last["skipped"]) == (4, 6, 0)
 
@@ -76,7 +76,7 @@ def test_a_record_from_before_case_modes_keeps_its_total():
 def test_a_record_without_both_counts_keeps_its_total(counts):
     """Not one griot ever wrote, but logs.db is a file: a record missing a
     count is read for what it says, never as zero cases run or a crash."""
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF, {"total": 3, **counts, "cases": []})
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF, {"total": 3, **counts, "cases": []})
     assert stats.load_state()["last_golden_check"]["total"] == 3
 
 

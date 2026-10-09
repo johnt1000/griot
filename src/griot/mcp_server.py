@@ -1745,7 +1745,7 @@ def griot_config_list() -> ConfigListOutput:
     from here: `note` says how a setting is changed."""
     try:
         rows = [(setting, config.running_with(setting)) for setting in config.SETTINGS]
-        descriptions = config._template()
+        descriptions = config.template_settings()
     except (OSError, UnicodeError) as e:
         raise RuntimeError(f"Could not read {common.ENV_PATH.name} ({common.ENV_PATH}): {e}. "
                            f"`griot config list` in a terminal reads the same file.") from e
@@ -2771,17 +2771,17 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
         except Exception as e:  # noqa: BLE001 - whatever stops a search (spend ceiling, the embedding API)
             # The self-check is done and paid for: recorded, and said. It
             # used to vanish with the error of the half that came after it.
-            quality_check._record_for_trend(common.COLLECTION_NAME, result, None)
+            quality_check.record_for_trend(common.COLLECTION_NAME, result, None)
             raise RuntimeError(
                 f"The curated golden set stopped before it finished: {common.sentence(str(e))} The self-check did run and is "
                 f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
-    # trend table is read by griot_stats and written by _record_for_trend,
+    # trend table is read by griot_stats and written by record_for_trend,
     # which only the CLI called — so a check run from here left no trace, and
     # the health prompt makes this the recommended path. Recorded whole, as
     # the terminal does; what is returned is the shown form.
-    quality_check._record_for_trend(common.COLLECTION_NAME, result, golden_check)
+    quality_check.record_for_trend(common.COLLECTION_NAME, result, golden_check)
     return {**result, "golden_check": _golden_check_shown(golden_check, cases) if golden_check else None,
             "golden_set_not_run": not_run}
 

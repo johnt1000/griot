@@ -251,8 +251,8 @@ def test_a_file_that_could_not_be_read_keeps_every_point_of_its_repository(tmp_p
     _write(path, "flaky.py")
     index_code.main(["--repo", "proj"])
     (path / "gone.py").unlink()
-    real = index_code._read_source
-    monkeypatch.setattr(index_code, "_read_source",
+    real = index_code.read_source
+    monkeypatch.setattr(index_code, "read_source",
                         lambda p, root: None if p.name == "flaky.py" else real(p, root))
     index_code.main(["--repo", "proj"])
     assert _stored("proj") == ["flaky.py", "gone.py", "keep.py"]
@@ -492,14 +492,14 @@ def test_a_file_whose_read_raises_keeps_every_point_of_its_repository(tmp_path, 
     _write(path, "broken.py")
     index_code.main(["--repo", "proj"])
     (path / "gone.py").unlink()
-    real = index_code._read_source
+    real = index_code.read_source
 
     def flaky(p, root):
         if p.name == "broken.py":
             raise OSError("disk hiccup")
         return real(p, root)
 
-    monkeypatch.setattr(index_code, "_read_source", flaky)
+    monkeypatch.setattr(index_code, "read_source", flaky)
     index_code.main(["--repo", "proj"])
     assert _stored("proj") == ["broken.py", "gone.py", "keep.py"]
 

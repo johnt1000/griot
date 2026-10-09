@@ -139,7 +139,7 @@ def _is_inside(directory: Path, root: Path) -> bool:
         return False
 
 
-def _read_source(path: Path, root: Path) -> str | None:
+def read_source(path: Path, root: Path) -> str | None:
     """The text of a discovered file, or None when it is no longer what
     discovery saw. Listing and reading are two moments: the open itself
     refuses a symlink (O_NOFOLLOW), and what was opened is checked again for
@@ -186,7 +186,7 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
     root = repo_path.resolve()
     for file_path in tqdm(filtered_files, desc=f"Reading {repo_path.name}"):
         try:
-            content = _read_source(file_path, root)
+            content = read_source(file_path, root)
             if content is None:
                 tqdm.write(f"Skipped {file_path}: it changed after it was listed.")
                 if problems is not None:

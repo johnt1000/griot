@@ -400,7 +400,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     repositories_without_code = [r["repo"] for r in repositories if "code" in (r.get("missing_sources") or [])]
     attention = []
     if repositories_behind:
-        attention.append("the index is behind the repository in: " + ", ".join(_behind_phrase(r) for r in repositories_behind)
+        attention.append("the index is behind the repository in: " + ", ".join(behind_phrase(r) for r in repositories_behind)
                          + " — run `griot index all` (or the repository alone with --repo)")
     if repositories_without_code:
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
@@ -420,12 +420,12 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if not_found:
         attention.append(platform_not_found_phrase(not_found) + " — " + _PROJECT_CHECK + ", then `griot index platform`")
     if failures:
-        attention.append(platform_failed_phrase(failures) + " — " + _FAILURE_CHECK + " with `griot index platform`")
+        attention.append(platform_failed_phrase(failures) + " — " + FAILURE_CHECK + " with `griot index platform`")
     other_reasons = platform_other_reasons_of(repositories)
     for name, causes in mixed:
         checks = ([_TOKEN_CHECK + " for the fetches it refused"] if "token" in causes else []) + (
             [_PROJECT_CHECK] if "not_found" in causes else []) + (
-            ["for the fetches that failed, " + _FAILURE_CHECK] if "other" in causes else [])
+            ["for the fetches that failed, " + FAILURE_CHECK] if "other" in causes else [])
         attention.append(platform_mixed_phrase(name, causes, other_reasons.get(name)) + " — " + "; and ".join(checks)
                          + ", then `griot index platform`")
     if last_indexed.get("error") and not refusal_names_last_run(last_indexed, repositories):
@@ -771,9 +771,10 @@ def _source_bars(breakdown: dict[str, int], width: int) -> list[str] | None:
     return lines
 
 
-def _behind_phrase(report: dict) -> str:
+def behind_phrase(report: dict) -> str:
     """`one (3 commits; tags changed)`: the commits since for the sources
-    that follow HEAD, and the refs sources that changed."""
+    that follow HEAD, and the refs sources that changed. Public because
+    griot doctor names a repository behind the same way."""
     count = report.get("commits_behind")
     parts = []
     if count is None:
@@ -841,7 +842,8 @@ _TOKEN_CHECK = "check the platform's token (`griot auth list`)"
 _PROJECT_CHECK = ("check the project path in its remote and that the token's account can see it "
                   "(`griot auth list` shows which token)")
 # No answer, a timeout, a server error: a new token would not fix it.
-_FAILURE_CHECK = "not the token: check the network or the platform's status, and try again later"
+# Public because griot doctor gives the same advice in the same words.
+FAILURE_CHECK = "not the token: check the network or the platform's status, and try again later"
 
 
 def platform_mixed_phrase(name: str, causes: dict[str, list[str]], other_reasons: list[str] | None = None) -> str:
@@ -974,7 +976,7 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
             recency.append(f"last search {searched_ago}" if searched_ago else "never searched")
         lines.append(f"             {' · '.join(recency)}")
     if s.get("repositories_behind"):
-        lines.append(f"             index behind in {', '.join(_behind_phrase(r) for r in s['repositories_behind'])}")
+        lines.append(f"             index behind in {', '.join(behind_phrase(r) for r in s['repositories_behind'])}")
 
     reuse = f"{s['reuse_rate'] * 100:.1f}% reused" if s["reuse_rate"] is not None else "no reuse data"
     lines.append("")

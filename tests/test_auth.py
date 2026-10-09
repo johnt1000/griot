@@ -73,8 +73,8 @@ def test_cmd_set_platform_credential_writes_to_env_file(monkeypatch, provider, e
 
 
 def test_provider_label_strips_griot_prefix_and_api_key_suffix():
-    assert auth._provider_label("GRIOT_OPENAI_API_KEY") == "openai"
-    assert auth._provider_label("GRIOT_VOYAGE_API_KEY") == "voyage"
+    assert auth.provider_label("GRIOT_OPENAI_API_KEY") == "openai"
+    assert auth.provider_label("GRIOT_VOYAGE_API_KEY") == "voyage"
 
 
 def test_mask_shows_only_last_four_chars():

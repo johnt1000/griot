@@ -841,7 +841,7 @@ def mcp_registration(harness: Harness) -> dict | None:
     return {"scope": scope, "command": command, "args": args} if command else None
 
 
-def _command_is_gone(command: str) -> bool:
+def command_is_gone(command: str) -> bool:
     """Whether what a registration runs is certainly not there any more. A
     bare name is found by the harness through the PATH, and a relative path
     from wherever the harness starts the server: only an absolute path that
@@ -919,7 +919,7 @@ def offer_mcp_server(harness: Harness, scope: str, *, mode: str = "ask") -> str:
         running = " ".join(part for part in (found["command"], found["args"]) if part)
         covers = found["scope"] == "user" or not everywhere
         # This very griot is running: whatever else, its command is there.
-        if found["command"] == griot or not _command_is_gone(found["command"]):
+        if found["command"] == griot or not command_is_gone(found["command"]):
             if covers and found["command"] == griot and found["args"] == "mcp":
                 print(f"  MCP server: already registered for {where}, running this griot.")
                 return "current"
@@ -1077,7 +1077,7 @@ def _no_key_twice(pairs: list) -> dict:
     return dict(pairs)
 
 
-def _read_settings(real: Path) -> tuple[dict | None, str | None, str]:
+def read_settings(real: Path) -> tuple[dict | None, str | None, str]:
     """(settings, why they cannot be edited, the text as read). A file that is
     missing is empty settings. Anything griot does not recognise as settings
     is refused rather than guessed at: the file is the user's, and a wrong
@@ -1129,7 +1129,7 @@ def _covers(pattern: str, rule: str, *, allowing: bool) -> bool:
     return fnmatch.fnmatchcase(rule, pattern)
 
 
-def _approval_plan(settings: dict, rules: list[str]) -> tuple[list[str], dict[str, str]]:
+def approval_plan(settings: dict, rules: list[str]) -> tuple[list[str], dict[str, str]]:
     """(rules to add, rules left out and under which list the user already
     decided otherwise). A rule that is already allowed is neither."""
     permissions = settings.get("permissions", {})
@@ -1228,14 +1228,14 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
 
     rules = tool_rules(harness)  # loads the server: only now that something may be offered
     by_hand = "    " + "\n    ".join(rules)
-    settings, why_not, text = _read_settings(real)
+    settings, why_not, text = read_settings(real)
     if settings is None:
         print(f"  tool approval: NOT touched. {path} is not something griot can edit safely: {why_not}. "
               f"To let {harness.display_name} call griot's read-only tools without asking, add these to "
               f"`permissions.allow` there by hand:\n{by_hand}")
         return "malformed"
 
-    to_add, left_out = _approval_plan(settings, rules)
+    to_add, left_out = approval_plan(settings, rules)
     kept_out = ""
     if left_out:
         kept_out = ("  Left out, because that file already has a rule for them under "

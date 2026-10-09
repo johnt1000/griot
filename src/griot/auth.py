@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 from griot import common
 
 
-def _provider_label(api_key_env: str) -> str:
+def provider_label(api_key_env: str) -> str:
     """Derives a human-readable provider name from the env var name (e.g.
     GRIOT_OPENAI_API_KEY -> "openai") — no duplicated table (the design notes): the provider->env var mapping comes from EMBED_PROFILES/
     CHAT_PROFILES (api_key_env field, the design notes), this just
