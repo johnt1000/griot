@@ -49,8 +49,35 @@ between minor versions. Breaking changes are called out explicitly.
   shows both ranks beside each result of a hybrid search. A search logged
   before this, or one whose keyword ranking matched nothing, is never
   offered as a disagreement.
+- **`griot index platform` reads a public GitLab project without a
+  token.** With `GITLAB_PERSONAL_ACCESS_TOKEN` unset (or empty), the
+  project's merge requests, releases and issues are read anonymously and
+  the run says so ("reading GitLab without a token, public data only"). A
+  private project, or one that does not exist, then fails that run with an
+  error that names `GITLAB_PERSONAL_ACCESS_TOKEN` and `griot auth set
+  gitlab`. The other platforms still require their token.
+- Each GitLab merge request, release and issue keeps its web page in the
+  result's metadata (`url`; a release's comes from its `_links.self`). The
+  other platforms give none, and their points keep the payload they had.
+- A release from GitHub, GitLab or Gitea/Forgejo keeps its author, the
+  account (`login`, or GitLab's `username`, not the display name), as merge
+  requests and issues already do; `griot_search` shows it in the result's
+  metadata. It is stored only when the platform gives one (griot reads no
+  release from Bitbucket or Azure DevOps), and a release indexed before
+  gets it on the next `griot index platform` run without being embedded
+  again.
 
 ### Changed
+
+- With a narrowed search that finds nothing, `griot search` and
+  `griot_search` now name the filters that narrowed it, in the sentence
+  `griot ask` prints for the same search (the tool adds it to its `note`).
+  Before, both said only that nothing was found, which reads as "nothing
+  about this anywhere".
+- GitLab's `Retry-After` is honoured on an HTTP 429: griot waits what it
+  asks, up to 60 seconds, instead of the fixed 1 to 16 second backoff that
+  could spend every attempt inside one throttled minute, and does not wait
+  after the last attempt. The other platforms keep the fixed backoff.
 
 - A hybrid search now makes two store queries, one by meaning (dense) and
   one by the words (keyword), and fuses them in griot with the same
@@ -106,6 +133,27 @@ between minor versions. Breaking changes are called out explicitly.
   file that is not valid JSON stops the run with one error and leaves the
   file untouched. The notes that a new case is checked by meaning only
   (vector) now read true whether one case or several were added.
+- A `griot ask` question that found nothing, and so called no chat model,
+  is logged without a chat profile or model. Before, the query log named
+  the active ones, which read as an answer the model gave, and as a call
+  that may have been paid for.
+- `griot assist install` no longer gives opencode a second copy of
+  griot's skills. opencode also loads skills from Claude Code's directory
+  (`~/.claude/skills`, always under the home directory whatever
+  `CLAUDE_CONFIG_DIR` says, or the project's `.claude/skills`) and from
+  `.agents/skills`, so it showed each skill twice ("duplicate skill name")
+  when griot was installed for both harnesses. A skill already there, or
+  being installed there for Claude Code in the same run, is not copied for
+  opencode; the copies an earlier install left in opencode's own directory
+  are deleted, and the output lists them and says which skills were left
+  out and why. opencode still gets its own agent file, which it does not
+  read from `~/.claude`. Starting opencode with
+  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` (or `OPENCODE_DISABLE_CLAUDE_CODE`,
+  or `OPENCODE_DISABLE_EXTERNAL_SKILLS` for both directories) set, and
+  running the install with it set too, gives it its own copy again.
+  `griot_assist_install` follows the same rule: its question names the
+  directory and the deletion, and each result carries `skills_skipped`,
+  `removed` and `note`.
 
 ## [0.3.0] — 2026-10-07
 

@@ -170,9 +170,8 @@ Cloud, Azure DevOps, and Gitea/Forgejo (recognized hosts configured via
 **State this plainly to the user**: these adapters are built against each
 provider's documented API and covered by tests with mocked HTTP, but **only
 the GitHub path has been exercised against a live account, plus GitLab
-reading a public project without a token** (against gitlab.com). If you're
-setting up GitLab with a token, or Bitbucket/Azure DevOps/Gitea, for the
-first time, expect to be the first real-world validation of that path and
+against gitlab.com, with a token and without one**. If you're setting up
+self-hosted GitLab, or Bitbucket/Azure DevOps/Gitea, for the first time, expect to be the first real-world validation of that path and
 watch the first run closely.
 
 Platform tokens (only needed for `griot index platform`):
