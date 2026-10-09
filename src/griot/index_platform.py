@@ -4,6 +4,7 @@ platforms.py for details on each adapter and what each one supports)."""
 
 import argparse
 import hashlib
+import os
 import re
 import sys
 import time
@@ -135,11 +136,11 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
         print(f"WARNING: could not determine the 'origin' remote of {shown_name}.")
         return []
 
+    # Without the user part: a remote is often written with a token in it.
+    shown_remote = common.printable(re.sub(r"://[^/@\s]+@", "://", remote_url))
     detected = platforms.detect_platform(remote_url)
     if not detected:
-        # Without the user part: a remote is often written with a token in it.
-        shown = re.sub(r"://[^/@\s]+@", "://", remote_url)
-        print(f"WARNING: {shown_name}'s remote isn't from any recognized platform ({common.printable(shown)}).")
+        print(f"WARNING: {shown_name}'s remote isn't from any recognized platform ({shown_remote}).")
         return []
     platform, project_id, host = detected
     note = platforms.anonymous_read_note(platform)
@@ -162,12 +163,16 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
         except Exception as e:
             print(f"  WARNING: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}")
             status = getattr(getattr(e, "response", None), "status_code", None)
+            env_var = platforms.TOKEN_ENV.get(platform)
             if fetches is not None:
                 # The status or the kind of error, never its text: the text
                 # can hold the request URL, and this goes into logs.db.
                 reason = f"HTTP {status}" if status else type(e).__name__
-                fetches.append({"id": f"{key}:platform:{label}", "ok": False, "reason": reason})
-            env_var = platforms.TOKEN_ENV.get(platform)
+                # label, cause and where serve the closing message only:
+                # main() records id and reason alone.
+                fetches.append({"id": f"{key}:platform:{label}", "ok": False, "reason": reason,
+                                "label": label, "cause": _refusal_cause(e, status, env_var),
+                                "where": f"{common.printable(project_id)} on {platform} (remote {shown_remote})"})
             # A TokenNeeded already says which variable to set and how.
             if status in (401, 403) and env_var and not hinted and not isinstance(e, platforms.TokenNeeded):
                 # Which token the platform refused: the one exported in the
@@ -175,6 +180,58 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
                 print(f"    {common.credential_hint(env_var)}")
                 hinted = True
     return documents
+
+
+# What a refused fetch is blamed on, which decides what the run tells the
+# user to fix ([debt 67], seen for real on 2026-10-08: a GitLab project the
+# token could not see answered 404 to everything, and the run said "Check
+# the token"). The platforms answer 404, not 403, both for a project that
+# does not exist and for one the token's account cannot see, so a 404 under
+# a token points at the project path and the token's reach, not at the token.
+NOT_FOUND, TOKEN, OTHER = "not_found", "token", "other"
+NOT_FOUND_WHY = "HTTP 404: not found, or not visible to the token"
+
+
+def _refusal_cause(error: Exception, status: int | None, env_var: str | None) -> str:
+    token_set = bool(env_var and os.getenv(env_var))
+    # TokenNeeded is GitLab's 404 (or 401) to a caller without a token,
+    # which a token may well change.
+    if isinstance(error, platforms.TokenNeeded) or status in (401, 403):
+        return TOKEN
+    if status == 404:
+        # With no token set, a 404 says nothing about the project.
+        return NOT_FOUND if token_set else TOKEN
+    # No answer at all: a missing token raises before any request is made,
+    # so it is the token's fault only when there is none.
+    if status is None and not token_set:
+        return TOKEN
+    return OTHER
+
+
+def _refusal_lines(refused_fetches: list[dict]) -> list[str]:
+    """One line per project and cause: which fetches got which answer, and
+    what to check for it. A mix of causes says which fetch got which."""
+    lines = []
+    by_where: dict[str, list[dict]] = {}
+    for f in refused_fetches:
+        by_where.setdefault(f["where"], []).append(f)
+    for where, fetches in by_where.items():
+        for cause in (NOT_FOUND, TOKEN, OTHER):
+            group = [f for f in fetches if f["cause"] == cause]
+            if not group:
+                continue
+            labels = ", ".join(f["label"] for f in group)
+            reasons = ", ".join(sorted({f["reason"] for f in group}))
+            if cause == NOT_FOUND:
+                lines.append(f"  {where}: not found, or not visible to the token in use ({labels}: {reasons}). "
+                             f"Check the project path in that remote, and that the token's account can see the "
+                             f"project (`griot auth list` shows which token is in use).")
+            elif cause == TOKEN:
+                lines.append(f"  {where}: {labels} refused ({reasons}). "
+                             f"Check the token (`griot auth list`) and the warnings above.")
+            else:
+                lines.append(f"  {where}: {labels} failed ({reasons}); see the warnings above.")
+    return lines
 
 
 def main(argv=None):
@@ -224,6 +281,11 @@ def main(argv=None):
     # The repositories whose platform refused every fetch asked of it: the
     # run could not index them, even when the others answered.
     refused_repos: list[str] = []
+    # Their refused fetches, for the closing message.
+    refused_fetches: list[dict] = []
+    # Those of them whose every fetch answered 404 under a token: recorded,
+    # so `griot stats` and `griot doctor` point at the project, not the token.
+    not_found_repos: list[str] = []
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
@@ -235,8 +297,11 @@ def main(argv=None):
         fetches.extend(repo_fetches)
         if repo_fetches and not any(f["ok"] for f in repo_fetches):
             refused_repos.append(path_str)
+            refused_fetches.extend(repo_fetches)
+            if all(f["cause"] == NOT_FOUND for f in repo_fetches):
+                not_found_repos.append(path_str)
 
-    refused = [{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
+    refused =[{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
     # Named in the record, so `griot doctor` and `griot stats` can say which
     # repository was refused once this stderr is gone (freshness.py).
     # Explicitly, not derived from the failure ids: those are capped at
@@ -244,18 +309,23 @@ def main(argv=None):
     # key instead of its name, which is what the freshness report matches.
     refused_names = [Path(p).name for p in refused_repos]
     marked = {"refused_repos": refused_names} if refused_names else {}
+    if not_found_repos:
+        marked["not_found_repos"] = [Path(p).name for p in not_found_repos]
     if refused and not any(f["ok"] for f in fetches):
         # Nothing the platform was asked for came back (an expired token
         # answers 401 to all of it): the run could not do its job, and an
         # exit status of 0 would let `griot index all` call it complete.
-        print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed. "
-              f"Check the token (`griot auth list`) and the warnings above.", file=sys.stderr)
+        print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed:", file=sys.stderr)
+        for line in _refusal_lines(refused_fetches):
+            print(line, file=sys.stderr)
         # `error` is what makes the record a run that did not do its job: the
         # freshness report does not count it as indexing the source, and
         # `griot doctor` and `griot stats` report it.
         # A dry run writes no run (cli.py::_run_index_source): one would
         # shadow the last real run in griot_index_status.
-        reasons = ", ".join(sorted({f["reason"] for f in refused}))
+        # A 404 under a token says what it means here too: stats and doctor
+        # show this error when no line names the refused repositories.
+        reasons = ", ".join(sorted({NOT_FOUND_WHY if f["cause"] == NOT_FOUND else f["reason"] for f in refused_fetches}))
         if not args.dry_run:
             # refused_repos too: the error is reported only while this is the
             # newest run of all, and a later code or commits run would hide
@@ -277,8 +347,9 @@ def main(argv=None):
     rc = None
     if refused_repos:
         print(f"Error: the platform refused every fetch for {', '.join(common.printable(n) for n in refused_names)}; "
-              f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed. "
-              f"Check the token (`griot auth list`) and the warnings above.", file=sys.stderr)
+              f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed:", file=sys.stderr)
+        for line in _refusal_lines(refused_fetches):
+            print(line, file=sys.stderr)
         rc = 1
 
     if not all_documents:

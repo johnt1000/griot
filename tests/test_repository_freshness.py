@@ -1043,3 +1043,169 @@ async def test_a_refused_list_edited_into_something_else_does_not_break_the_tool
 
     assert not status.is_error and status.structured_content["last_indexed"]["refused_repos"] is None
     assert any("last indexing run failed" in line for line in out["attention"])
+
+
+# --- a repository the platform does not find -------------------------------------------------------
+#
+# [debt 67] A 404 to every fetch under a token means the project in the
+# remote does not exist or the token cannot see it: index_platform.py
+# records those repositories under `not_found_repos` too, and `griot stats`,
+# `griot doctor` and griot_index_status point at the project, not at the
+# token, while that refusal is the newest platform run's word on them.
+
+
+def _not_found_run(heads, refused, not_found, at="2026-10-02T10:00:00+00:00"):
+    record = _platform_run(heads, refused=refused, at=at)
+    record["not_found_repos"] = not_found
+    return record
+
+
+def test_a_repository_the_platform_did_not_find_is_said_to_be(tmp_path):
+    good, bad, gone = _repo(tmp_path, "good"), _repo(tmp_path, "bad"), _repo(tmp_path, "gone")
+    runs = [_not_found_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["bad", "gone"], not_found=["gone"])]
+
+    good_report, bad_report, gone_report = freshness.assess(runs, _now(good, bad, gone))
+
+    assert gone_report["platform_refused"] is True and gone_report["platform_not_found"] is True
+    assert bad_report["platform_refused"] is True and bad_report["platform_not_found"] is False
+    assert good_report["platform_not_found"] is False
+
+
+def test_a_newer_refusal_for_the_token_replaces_a_not_found(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    runs = [_platform_run({}, refused=["bad"], at="2026-10-03T10:00:00+00:00"),
+            _not_found_run({}, refused=["bad"], not_found=["bad"])]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refused"] is True and report["platform_not_found"] is False
+
+
+def test_a_later_platform_run_that_indexed_it_clears_a_not_found(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    runs = [_platform_run({"bad": _git(bad, "rev-parse", "HEAD")}, at="2026-10-03T10:00:00+00:00"),
+            _not_found_run({}, refused=["bad"], not_found=["bad"])]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_not_found"] is False
+
+
+@pytest.mark.parametrize("edited", ["bad", None, {"bad": True}])
+def test_a_not_found_list_edited_into_something_else_is_ignored(tmp_path, edited):
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_not_found_run({}, refused=["bad"], not_found=edited)], _now(bad))
+
+    assert report["platform_refused"] is True and report["platform_not_found"] is False
+
+
+def test_a_not_found_name_the_run_did_not_refuse_is_not_believed(tmp_path):
+    """not_found_repos is a subset of refused_repos as recorded; a record
+    edited to name a repository only there says nothing."""
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_not_found_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=[],
+                                                not_found=["bad"])], _now(bad))
+
+    assert report["platform_refused"] is False and report["platform_not_found"] is False
+
+
+def _reported(name, refused, not_found):
+    return {"repo": name, "path": f"/x/{name}", "head": "a" * 40, "behind": False, "commits_behind": 0,
+            "behind_sources": [], "missing_sources": [], "platform_refused": refused,
+            "platform_not_found": not_found, "last_indexed_at": "2026-10-01T00:00:00+00:00", "sources": {}}
+
+
+def test_stats_points_a_repository_not_found_at_its_project_not_at_the_token():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported("gone\x1b[2J", True, True), _reported("bad", True, False),
+                               _reported("good", False, False)]}
+
+    s = stats.compute_stats([], [], status)
+
+    [not_found] = [line for line in s["attention"] if "not visible to the token" in line]
+    [token] = [line for line in s["attention"] if "check the platform's token" in line]
+    assert "gone?[2J" in not_found and "bad" not in not_found and "remote" in not_found
+    assert "bad" in token and "gone" not in token and "good" not in token + not_found
+
+
+def test_a_not_found_without_a_refusal_is_not_named():
+    """platform_not_found qualifies a refusal; a report that has one without
+    the other (built by hand) names nothing."""
+    assert stats.platform_not_found_names([_reported("gone", False, True)]) == []
+    assert stats.platform_not_found_names([_reported("gone", True, True)]) == ["gone"]
+
+
+def test_stats_says_nothing_about_the_token_when_every_refusal_is_a_not_found():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported("gone", True, True)]}
+
+    s = stats.compute_stats([], [], status)
+
+    assert not any("check the platform's token" in line for line in s["attention"])
+    assert any("gone" in line and "not visible to the token" in line for line in s["attention"])
+
+
+def test_doctor_points_a_repository_not_found_at_its_project(tmp_path, monkeypatch):
+    from griot import doctor
+
+    gone = _repo(tmp_path, "gone")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(gone)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [_reported("gone", True, True)])
+
+    check = doctor.check_repositories(common)
+
+    assert check["status"] == "warn" and "gone" in check["detail"] and "not visible to the token" in check["detail"]
+    assert "check the platform's token" not in check["fix"] and "remote" in check["fix"]
+
+
+def test_doctor_with_both_kinds_says_both(tmp_path, monkeypatch):
+    from griot import doctor
+
+    gone, bad = _repo(tmp_path, "gone"), _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(gone), str(bad)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        _reported("gone", True, True), _reported("bad", True, False)])
+
+    check = doctor.check_repositories(common)
+
+    assert "not visible to the token" in check["detail"] and "refused every fetch for bad" in check["detail"]
+    assert "check the platform's token" in check["fix"] and "remote" in check["fix"]
+
+
+def test_a_run_not_found_entirely_is_said_once_by_stats(tmp_path, monkeypatch):
+    """The generic "last indexing run failed" line stays out when the
+    not-found line names every repository the run refused."""
+    gone = _repo(tmp_path, "gone")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(gone)])
+    record = _all_refused_run({"gone": _git(gone, "rev-parse", "HEAD")}, refused=["gone"])
+    record.update(not_found_repos=["gone"], error="the platform refused every fetch (HTTP 404: not found, or not visible to the token)")
+    _write_runs(record)
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    said = [line for line in s["attention"] if "404" in line or "refused" in line or "failed" in line]
+    [line] = said
+    assert "gone" in line and "not visible to the token" in line
+
+
+@pytest.mark.anyio
+async def test_the_status_and_stats_tools_say_which_repository_was_not_found(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    good, gone = _repo(tmp_path, "good"), _repo(tmp_path, "gone")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(good), str(gone)])
+    _write_runs(_not_found_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["gone"], not_found=["gone"]))
+
+    async with Client(mcp_server.mcp) as client:
+        status = await client.call_tool("griot_index_status", {})
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert not status.is_error
+    assert {r["repo"]: (r["platform_refused"], r["platform_not_found"])
+            for r in status.structured_content["repositories"]} == {"good": (False, False), "gone": (True, True)}
+    assert any("gone" in line and "not visible to the token" in line for line in out["attention"])
+    assert not any("check the platform's token" in line for line in out["attention"])

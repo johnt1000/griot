@@ -404,10 +404,16 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if repositories_without_code:
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
-    refused = platform_refused_names(repositories)
-    if refused:
-        attention.append(platform_refused_phrase(refused)
+    refused, not_found = platform_refused_names(repositories), platform_not_found_names(repositories)
+    # A 404 under a token is fixed in the remote or the token's reach, and
+    # pointing at the token sent the user to the wrong place (debt 67).
+    if [name for name in refused if name not in not_found]:
+        attention.append(platform_refused_phrase([name for name in refused if name not in not_found])
                          + " — check the platform's token (`griot auth list`), then `griot index platform`")
+    if not_found:
+        attention.append(platform_not_found_phrase(not_found)
+                         + " — check the project path in its remote and that the token's account can see it "
+                           "(`griot auth list` shows which token), then `griot index platform`")
     if last_indexed.get("error") and not refusal_names_last_run(last_indexed, repositories):
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say). A refusal the
@@ -773,6 +779,12 @@ def platform_refused_names(reports: list[dict]) -> list[str]:
     return [common.printable(r["repo"]) for r in reports if r.get("platform_refused")]
 
 
+def platform_not_found_names(reports: list[dict]) -> list[str]:
+    """Those of platform_refused_names() whose refusal was a 404 to every
+    fetch under a token (freshness.py), as they may be printed."""
+    return [common.printable(r["repo"]) for r in reports if r.get("platform_refused") and r.get("platform_not_found")]
+
+
 def refusal_names_last_run(last_indexed: dict, reports: list[dict]) -> bool:
     """Whether the last run failed only because its platform refused
     repositories that the platform_refused_phrase() line already names.
@@ -793,6 +805,14 @@ def platform_refused_phrase(names: list[str]) -> str:
     """Shared by `griot stats` and `griot doctor`, so both say it the same way."""
     return ("the platform refused every fetch for " + ", ".join(names)
             + " in the last platform run: nothing of " + ("it" if len(names) == 1 else "them") + " was indexed")
+
+
+def platform_not_found_phrase(names: list[str]) -> str:
+    """Shared by `griot stats` and `griot doctor`, as platform_refused_phrase()."""
+    return ("the platform answered 404 to every fetch for " + ", ".join(names)
+            + " in the last platform run: the project in " + ("its" if len(names) == 1 else "their")
+            + " remote was not found, or is not visible to the token; nothing of "
+            + ("it" if len(names) == 1 else "them") + " was indexed")
 
 
 def _mcp_section(lines: list[str], heading: str, event: str, kind: str,

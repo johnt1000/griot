@@ -1203,6 +1203,11 @@ class RepositoryFreshness(TypedDict):
     # token say) while it answered for others: its pull requests and issues
     # are missing or stale until the token is fixed and the platform indexed.
     platform_refused: bool
+    # True when that refusal was HTTP 404 to every fetch under a token: the
+    # project in the remote does not exist or the token cannot see it, so
+    # the fix is the remote's project path or the token's access, not a new
+    # token.
+    platform_not_found: bool
     sources: dict[str, SourceFreshness]
 
 
