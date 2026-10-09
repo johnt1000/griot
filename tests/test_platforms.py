@@ -414,6 +414,74 @@ def test_bitbucket_fetch_pull_requests_follows_cursor_pagination(monkeypatch):
     assert 1 in ids and 2 in ids
 
 
+# --- release authors -------------------------------------------------------
+#
+# The bodies below hold the fields the real APIs return, checked against a
+# public project of each (2026-10-08): GitHub (cli/cli) and Gitea/Forgejo
+# (codeberg.org, forgejo/forgejo) put the user under `author` with a `login`,
+# GitLab (gitlab-org/gitlab-runner) under `author` with a `username` beside a
+# display `name`. The author is the account, as for pull requests and issues.
+
+
+def test_github_release_carries_its_author_login(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    pages = iter([[
+        {"tag_name": "v2.1.0", "name": "GitHub CLI 2.1.0", "body": "notes", "published_at": "2026-10-01T00:00:00Z",
+         "created_at": "2026-09-30T00:00:00Z", "draft": False, "prerelease": False,
+         "author": {"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}},
+        {"tag_name": "v2.0.0", "name": "old", "body": None, "published_at": "2026-01-01T00:00:00Z", "author": None},
+    ]])
+
+    def fake_get(url, headers=None, params=None, auth=None, timeout=None, allow_redirects=True):
+        assert url.endswith("/repos/owner/repo/releases")
+        return FakeResponse(200, next(pages, []))
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    releases = platforms.github_fetch_releases("owner/repo")
+
+    assert [r["author"] for r in releases] == ["github-actions[bot]", None]
+
+
+def test_gitlab_release_carries_its_author_username_not_the_display_name(monkeypatch):
+    monkeypatch.delenv("GITLAB_PERSONAL_ACCESS_TOKEN", raising=False)
+    body = [
+        {"tag_name": "v18.4.0", "name": "v18.4.0", "description": "notes", "released_at": "2026-09-18T00:00:00Z",
+         "author": {"id": 37702883, "username": "release-bot", "name": "Release Bot", "state": "active",
+                    "web_url": "https://gitlab.com/release-bot"},
+         "_links": {"self": "https://gitlab.com/g/p/-/releases/v18.4.0"}},
+        {"tag_name": "v18.3.0", "name": "v18.3.0", "description": "", "released_at": "2026-08-18T00:00:00Z"},
+    ]
+
+    def fake_get(url, headers=None, params=None, auth=None, timeout=None, allow_redirects=True):
+        assert url.endswith("/releases")
+        return FakeResponse(200, body, headers={"x-total-pages": "1"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    releases = platforms.gitlab_fetch_releases("g/p")
+
+    assert [r["author"] for r in releases] == ["release-bot", None]
+
+
+def test_gitea_release_carries_its_author_login(monkeypatch):
+    monkeypatch.setenv("GITEA_TOKEN", "fake-token")
+    pages = iter([[
+        {"tag_name": "v13.0.0", "name": "v13.0.0", "body": "notes", "created_at": "2026-10-01T00:00:00Z",
+         "published_at": "2026-10-01T00:00:00Z",
+         "author": {"id": 70541, "login": "release-team", "username": "release-team", "full_name": ""}},
+        {"tag_name": "v12.0.0", "name": "v12.0.0", "body": "", "created_at": "2026-01-01T00:00:00Z"},
+    ]])
+
+    def fake_get(url, headers=None, params=None, auth=None, timeout=None, allow_redirects=True):
+        assert "git.mycompany.com" in url and url.endswith("/releases")
+        # An empty page ends the listing (_gitea_paginated_get).
+        return FakeResponse(200, next(pages, []))
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    releases = platforms.gitea_fetch_releases("owner/repo", "git.mycompany.com")
+
+    assert [r["author"] for r in releases] == ["release-team", None]
+
+
 def test_bitbucket_fetch_releases_returns_empty():
     """No real API to try against — Bitbucket Cloud has no structured
     release resource (documented in platforms.py)."""

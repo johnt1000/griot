@@ -52,6 +52,14 @@ def _url_field(item: dict) -> dict:
     return {"url": item["url"]} if item.get("url") else {}
 
 
+def _author_field(item: dict) -> dict:
+    """The release's author, for an adapter whose platform gives one. Left
+    out rather than stored as null otherwise: Bitbucket and Azure DevOps
+    have no release griot reads, and a release indexed before releases had
+    authors keeps the payload it was written with until a run gives it one."""
+    return {"author": item["author"]} if item.get("author") else {}
+
+
 def build_mr_documents(repo_name: str, platform: str, project_id: str, host: str | None, id_prefix: str | None = None) -> list[dict]:
     key = id_prefix or repo_name
     mrs = platforms.fetch_pull_requests(platform, project_id, host)
@@ -87,6 +95,7 @@ def build_release_documents(repo_name: str, platform: str, project_id: str, host
             "repo": repo_name,
             "tag_name": release.get("tag_name"),
             "released_at": release.get("released_at"),
+            **_author_field(release),
             **_url_field(release),
         }))
     return documents

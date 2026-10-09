@@ -242,6 +242,8 @@ def github_fetch_releases(project_id: str) -> list[dict]:
             "tag_name": r.get("tag_name"),
             "description": r.get("body"),
             "released_at": r.get("published_at"),
+            # Null for a release whose account was deleted.
+            "author": (r.get("author") or {}).get("login"),
         }
         for r in releases
     ]
@@ -384,6 +386,9 @@ def gitlab_fetch_releases(project_id: str) -> list[dict]:
             "tag_name": r.get("tag_name"),
             "description": r.get("description"),
             "released_at": r.get("released_at"),
+            # The account, as for its merge requests: `name` is a display
+            # name anyone can change.
+            "author": (r.get("author") or {}).get("username"),
             # A release has no web_url; its page is _links.self.
             "url": (r.get("_links") or {}).get("self"),
         }
@@ -685,6 +690,7 @@ def gitea_fetch_releases(project_id: str, host: str) -> list[dict]:
             "tag_name": r.get("tag_name"),
             "description": r.get("body"),
             "released_at": r.get("created_at"),
+            "author": (r.get("author") or {}).get("login"),
         }
         for r in releases
     ]
