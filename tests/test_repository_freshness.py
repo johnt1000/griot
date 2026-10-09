@@ -373,7 +373,7 @@ def test_a_commit_indexed_on_another_branch_is_not_in_this_history(tmp_path):
     [report] = freshness.assess([_run("index_code.py", {"one": indexed})], _now(one))
 
     assert report["behind"] is True and report["commits_behind"] is None
-    assert "not in this history" in stats._behind_phrase({"repo": "one", "commits_behind": None, "behind_sources": ["code"]})
+    assert "not in this history" in stats.behind_phrase({"repo": "one", "commits_behind": None, "behind_sources": ["code"]})
 
 
 def test_the_log_is_read_once_per_search_and_each_repository_asked_once_for_its_head(tmp_path, monkeypatch):

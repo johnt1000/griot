@@ -18,7 +18,7 @@ from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 MAX_STORED_FAILURES = 20
 
 
-def _record_for_trend(collection: str, self_check: dict, golden_check: dict | None) -> None:
+def record_for_trend(collection: str, self_check: dict, golden_check: dict | None) -> None:
     """Appends this run to logs.db's quality_checks table, which is what
     `griot stats` reads to show the pass-rate trend.
 
@@ -435,7 +435,7 @@ def main(argv=None):
             except Exception:
                 # Whatever stopped a search (the spend ceiling, the embedding
                 # API): the self-check above is done and is still recorded.
-                _record_for_trend(collection, self_check, None)
+                record_for_trend(collection, self_check, None)
                 raise
             if not args.json:
                 for case in golden_check["cases"]:
@@ -453,7 +453,7 @@ def main(argv=None):
                         print(f"        top results: {case['top_results']}")
                 print(f"\n{golden_summary(golden_check)}")
 
-    _record_for_trend(collection, self_check, golden_check)
+    record_for_trend(collection, self_check, golden_check)
 
     common.log_and_print(
         f"quality_check: collection={collection} "

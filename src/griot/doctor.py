@@ -82,7 +82,7 @@ def _settings_in_file(env_path: Path) -> list[dict]:
             continue
         try:
             config.normalized(setting, raw)
-        except config._NotValid as e:
+        except config.NotValid as e:
             broken.append({"variable": setting.variable, "name": setting.name, "why": str(e)})
     return broken
 
@@ -308,7 +308,7 @@ def check_repositories(common) -> dict:
     if behind or without_code or refused:
         parts = []
         if behind:
-            parts.append("index behind in " + ", ".join(stats._behind_phrase(r) for r in behind))
+            parts.append("index behind in " + ", ".join(stats.behind_phrase(r) for r in behind))
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
         if token_refused:
@@ -328,7 +328,7 @@ def check_repositories(common) -> dict:
         if failures or any("other" in c for _, c in mixed):
             # The platform did not answer or failed: retrying now would most
             # likely fail the same way, and no token check fixes it.
-            fix += ("; where the platform did not answer or failed, " + stats._FAILURE_CHECK)
+            fix += ("; where the platform did not answer or failed, " + stats.FAILURE_CHECK)
         if checks:
             fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
@@ -368,7 +368,7 @@ def check_mcp_registration() -> dict:
             worst = WARN if worst == OK else worst
             continue
         command = registration.get("command") or ""
-        if harnesses._command_is_gone(command):
+        if harnesses.command_is_gone(command):
             details.append(f"{harness.display_name}: registered ({registration.get('scope')}) but its command is gone: {command}")
             worst = FAIL
             continue
@@ -401,12 +401,12 @@ def check_tool_approval(home: Path | None) -> dict:
             details.append(f"{harness.display_name}: {problem}")
             worst, to_repair = WARN, True
             continue
-        settings, why_not, _ = harnesses._read_settings(path) if path else (None, "unknown", "")
+        settings, why_not, _ = harnesses.read_settings(path) if path else (None, "unknown", "")
         if settings is None:
             details.append(f"{harness.display_name}: {path} cannot be used as settings: {why_not}")
             worst, to_repair = WARN, True
             continue
-        to_add, left_out = harnesses._approval_plan(settings, rules_offered)
+        to_add, left_out = harnesses.approval_plan(settings, rules_offered)
         if to_add:
             details.append(f"{harness.display_name}: {len(to_add)} of {len(rules_offered)} read-only tools still ask "
                            f"before every call")

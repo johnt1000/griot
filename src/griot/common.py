@@ -222,9 +222,9 @@ def secure_write_text_atomic(path: Path, text: str) -> None:
 
 # Provider -> one-line description for the credentials section of the
 # generated .env template (ensure_env_template() below). Not the source of
-# truth for WHICH providers exist — that's auth._providers() (derived from
+# truth for WHICH providers exist — that's credential_env_vars() (derived from
 # EMBED_PROFILES/CHAT_PROFILES + the 5 platform tokens); this is only extra
-# prose for a provider auth._providers() already knows about. A provider
+# prose for a provider credential_env_vars() already knows about. A provider
 # missing here just gets a generic fallback comment, never breaks.
 _ENV_TEMPLATE_PROVIDER_NOTES = {
     "gemini": "default chat profile; not the default embed profile (jina-code, local, is)",
@@ -310,7 +310,6 @@ def ensure_env_template() -> None:
         # command, so it must not stop them all; the defaults apply, a write
         # (env_file_set) raises with the reason, and `griot doctor` says so.
         return
-    from griot import auth  # lazy: auth.py imports common.py at module load, avoid the cycle
 
     lines = [
         "# griot configuration — generated on first run.",
@@ -325,7 +324,7 @@ def ensure_env_template() -> None:
         "",
         "# --- Embedding & chat credentials ---",
     ]
-    for provider, env_var in sorted(auth._providers().items()):
+    for provider, env_var in sorted(credential_env_vars().items()):
         note = _ENV_TEMPLATE_PROVIDER_NOTES.get(provider, f"credential for the '{provider}' provider")
         lines.append(f"# {provider} — {note}")
         lines.append(f"{env_var}=")
@@ -1958,7 +1957,7 @@ def _ensure_spend_state_migrated() -> None:
     legacy file and no log yet there is nothing to migrate and nothing to
     read: a READ of today's spend then creates no directory (griot doctor,
     the status on day one)."""
-    if not SPEND_STATE_PATH.exists() and logdb._nothing_logged_yet(LOG_DIR):
+    if not SPEND_STATE_PATH.exists() and logdb.nothing_logged_yet(LOG_DIR):
         return
     secure_mkdir(LOG_DIR)
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())

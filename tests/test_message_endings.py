@@ -99,7 +99,7 @@ def _golden_set_that_stops(monkeypatch, error):
                                                          "avg_score": 0.99, "failures": []})
     monkeypatch.setattr(mcp_server, "_curated_cases_to_run",
                         lambda: ([{"query": "q", "must_include": [{"repo": "r"}]}], None))
-    monkeypatch.setattr(quality_check, "_record_for_trend", lambda *a, **k: None)
+    monkeypatch.setattr(quality_check, "record_for_trend", lambda *a, **k: None)
 
     def stops(cases):
         raise RuntimeError(error)

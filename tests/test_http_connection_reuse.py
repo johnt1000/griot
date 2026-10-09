@@ -324,4 +324,4 @@ def test_the_kept_session_is_public_and_kept_once_per_process():
 
 # That no other module reaches the session's private machinery (_http_post,
 # _new_http_session, ...) is checked with every other private name of common.py
-# in test_common_private_names.py.
+# in test_private_names.py.

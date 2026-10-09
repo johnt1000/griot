@@ -41,20 +41,20 @@ def test_generated_content_is_valid_dotenv():
     assert "GRIOT_EMBED_PROFILE" in values
 
 
-def test_includes_every_provider_from_auth_providers():
-    """Single source of truth: whatever auth._providers() knows about
+def test_includes_every_provider_griot_has_a_credential_for():
+    """Single source of truth: whatever common.credential_env_vars() knows about
     (EMBED_PROFILES/CHAT_PROFILES api_key_env + the 5 platform tokens) must
     all show up here — new provider added later gets picked up automatically."""
     common.ensure_env_template()
     values = dotenv_values(common.ENV_PATH)
-    for env_var in auth._providers().values():
+    for env_var in common.credential_env_vars().values():
         assert env_var in values, f"{env_var} missing from generated .env template"
 
 
 def test_credential_vars_are_empty_not_fake_placeholders():
     common.ensure_env_template()
     values = dotenv_values(common.ENV_PATH)
-    for env_var in auth._providers().values():
+    for env_var in common.credential_env_vars().values():
         assert values[env_var] in (None, ""), f"{env_var} should be empty, got {values[env_var]!r}"
 
 
