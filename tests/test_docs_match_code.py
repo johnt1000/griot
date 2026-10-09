@@ -18,6 +18,8 @@ from mcp.client.client import Client
 
 from griot import mcp_server, platforms
 
+import test_confirmation_policy_docs as policy_docs  # noqa: E402  the passages its tests hold counts in
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # the floor griot supports
@@ -116,10 +118,17 @@ def test_the_coverage_document_has_each_heading_once():
     assert not repeated, repeated
 
 
+def _expose_less_opening() -> re.Match:
+    """The opening of the paragraph that counts the tools exposing less than
+    their command."""
+    opening = re.search(r"^(\w+) tools expose less than their CLI counterpart", COVERAGE.read_text(), flags=re.M)
+    assert opening, "the paragraph introducing the tools that expose less than their command"
+    return opening
+
+
 def test_the_coverage_document_counts_the_tools_that_expose_less():
     text = COVERAGE.read_text()
-    opening = re.search(r"^(\w+) tools expose less than their CLI counterpart", text, flags=re.M)
-    assert opening, "the paragraph introducing the tools that expose less than their command"
+    opening = _expose_less_opening()
     after = text[opening.end():].split("\n### ", 1)[0]
     bullets = re.findall(r"^- `(griot_[a-z_]+)`", after, flags=re.M)
     assert _number(opening.group(1)) == len(bullets), (opening.group(1), bullets)
@@ -261,12 +270,37 @@ _COUNTED_TEXTS = sorted((ROOT / "src" / "griot" / "resources").rglob("*.md")) + 
 _COUNT = re.compile(r"\b(" + "|".join(_NUMBER_WORDS[2:]) + r"|\d+)\s+(?:[\w`-]+\s+){0,2}"
                     r"(tools|prompts|resources|slash commands)\b", re.I)
 
-# Counts a test already holds, so they cannot go stale without one failing:
-# tests/test_confirmation_policy_docs.py derives the human-only and the
-# not-pre-approved read-only ones from the server's confirmation policy, and
-# the coverage document's "tools expose less" count is held to the bullets
-# under it (test_the_coverage_document_counts_the_tools_that_expose_less).
-_HELD_ELSEWHERE = re.compile(r"\w+ (human-only tools|read-only tools|tools expose less)\b", re.I)
+# Counts a test already holds, so they cannot go stale without one failing,
+# each only in the passage of the one file that test reads (the function it
+# calls gives the passage): tests/test_confirmation_policy_docs.py derives the
+# human-only and the not-pre-approved read-only ones from the server's
+# confirmation policy, and the coverage document's "tools expose less" count
+# is held to the bullets under it. The same words anywhere else are a count
+# nothing holds.
+_HELD_COUNTS = [(ROOT / path, phrase, passage) for path, phrase, passage in policy_docs.HELD_COUNTS] + [
+    (COVERAGE, "tools expose less", lambda: _expose_less_opening().group(0))]
+
+
+def _held(path: Path, text: str, at: int) -> bool:
+    """Whether the count starting at `at` in `text` (the flattened contents
+    of `path`) lies in a passage a test holds it in."""
+    for held_path, phrase, passage in _HELD_COUNTS:
+        if held_path != path or not re.compile(rf"\w+ {re.escape(phrase)}\b", re.I).match(text, at):
+            continue
+        # The holding tests read a paragraph or sentence with its lines
+        # joined, as _flat does, so the passage is found verbatim. A passage
+        # missing from the text holds nothing here; its own test fails then.
+        held = " ".join(passage().split())
+        start = text.find(held)
+        if start >= 0 and start <= at < start + len(held):
+            return True
+    return False
+
+
+def _hand_counts(path: Path, text: str) -> list[str]:
+    """The counts of tools, prompts or resources in `text` (the flattened
+    contents of `path`) that no test holds."""
+    return [m.group(0) for m in _COUNT.finditer(text) if not _held(path, text, m.start())]
 
 
 @pytest.mark.parametrize("path", _COUNTED_TEXTS, ids=lambda p: str(p.relative_to(ROOT)))
@@ -274,9 +308,64 @@ def test_no_text_counts_the_servers_tools_prompts_or_resources_by_hand(path):
     """CLAUDE.md: do not keep an inventory in prose; the server's list_tools(),
     list_prompts() and list_resources() are the inventory. A count written
     by hand goes stale the day one is added, and nothing fails when it does."""
-    text = _flat(path)
-    counts = [m.group(0) for m in _COUNT.finditer(text) if not _HELD_ELSEWHERE.match(text, m.start())]
+    counts = _hand_counts(path, _flat(path))
     assert counts == [], counts
+
+
+# A count each holding test reads, as the scan finds it: the phrase, the
+# part of it _COUNT matches, and the one file a test holds it in.
+_HELD_PHRASES = [("three human-only tools", "three human-only tools", COVERAGE),
+                 ("four read-only tools", "four read-only tools", ROOT / "docs" / "mcp.md"),
+                 ("Five tools expose less than their CLI counterpart", "Five tools", COVERAGE)]
+
+
+@pytest.mark.parametrize("phrase, count, held_in", _HELD_PHRASES)
+def test_a_held_count_in_a_text_no_test_reads_is_a_hand_count(phrase, count, held_in):
+    """A test holds such a count only in the one file it reads: the same
+    words in any other text are a count nothing holds."""
+    others = [path for path in _COUNTED_TEXTS if path != held_in]
+    assert len(others) == len(_COUNTED_TEXTS) - 1
+    for path in others:
+        assert _hand_counts(path, f"Some words. {phrase}. More words.") == [count], path
+
+
+@pytest.mark.parametrize("path, phrase, count", [
+    (COVERAGE, "Two human-only tools", "Two human-only tools"),
+    (COVERAGE, "Two tools expose less than their CLI counterpart", "Two tools"),
+    (ROOT / "docs" / "mcp.md", "two read-only tools", "two read-only tools"),
+])
+def test_a_held_phrase_outside_the_passage_its_test_reads_is_a_hand_count(path, phrase, count):
+    """In the file a test reads, only the passage it reads is held: the
+    phrase written again elsewhere in that file is a count nothing holds."""
+    assert _hand_counts(path, f"{phrase} here. " + _flat(path)) == [count]
+    assert _hand_counts(path, _flat(path) + f" {phrase} here.") == [count]
+
+
+def test_a_held_passage_lets_through_only_its_own_phrase(monkeypatch):
+    """A passage holds the count its test reads, not every count written
+    in it: another count there is one nothing holds."""
+    passage = "Two human-only tools ask a person, and three prompts exist."
+    monkeypatch.setattr(sys.modules[__name__], "_HELD_COUNTS", [(COVERAGE, "human-only tools", lambda: passage)])
+    assert _hand_counts(COVERAGE, passage) == ["three prompts"]
+
+
+def test_a_passage_missing_from_the_text_holds_nothing(monkeypatch):
+    """When the text no longer has the passage, its counts are no longer
+    held, wherever they sit in the text (the start included)."""
+    monkeypatch.setattr(sys.modules[__name__], "_HELD_COUNTS",
+                        [(COVERAGE, "human-only tools", lambda: "Two human-only tools ask a person, at length.")])
+    assert _hand_counts(COVERAGE, "Two human-only tools ask.") == ["Two human-only tools"]
+
+
+@pytest.mark.parametrize("path, phrase, passage", _HELD_COUNTS, ids=lambda v: v if isinstance(v, str) else None)
+def test_each_held_count_is_a_count_the_scan_would_otherwise_fail(path, phrase, passage):
+    """An exemption that lets nothing through is one a later edit can widen
+    unnoticed; each pair names a count the scan finds in its passage."""
+    held = " ".join(passage().split())
+    found = [m.group(0) for m in _COUNT.finditer(held)
+             if re.compile(rf"\w+ {re.escape(phrase)}\b", re.I).match(held, m.start())]
+    assert found, (path, phrase, held)
+    assert _hand_counts(path, _flat(path)) == []
 
 
 # --- docs/getting-started.md: when CI runs ----------------------------------------------

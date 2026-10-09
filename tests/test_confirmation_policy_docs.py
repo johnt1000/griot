@@ -220,14 +220,21 @@ def test_mcp_guide_says_which_read_only_tools_are_left_to_the_client_to_ask(list
     assert not _code_names(text.split(sentence)[0]) & asked
 
 
-def test_mcp_guide_install_section_counts_the_tools_it_leaves_out(listing, policy):
-    """The installer paragraph says which read-only tools get no allow rule;
-    it once named the quality check alone while four were left out."""
+def _installer_counting_sentence():
+    """The sentence of the installer paragraph that counts the read-only
+    tools left without an allow rule."""
     text = _paragraph(MCP_GUIDE, "The installer then **offers**")
     hits = [s for s in _sentences(text) if s.startswith("griot adds no rule")]
     assert len(hits) == 1, hits
+    return hits[0]
+
+
+def test_mcp_guide_install_section_counts_the_tools_it_leaves_out(listing, policy):
+    """The installer paragraph says which read-only tools get no allow rule;
+    it once named the quality check alone while four were left out."""
+    sentence = _installer_counting_sentence()
     asked = _not_preapproved(listing, policy)
-    assert {c.lower() for c in _counts_stated(hits[0])} == {_NUMBER_WORDS[len(asked)]}, hits[0]
+    assert {c.lower() for c in _counts_stated(sentence)} == {_NUMBER_WORDS[len(asked)]}, sentence
 
 
 # --- SECURITY.md -------------------------------------------------------------------
@@ -341,7 +348,25 @@ def test_the_management_surface_table_states_each_tools_policy(policy):
     assert stated[None] and not stated[None] & set(policy), stated[None] & set(policy)
 
 
+def _management_prose():
+    """The management section with its lines joined, so a count wrapped over
+    a line break is read like any other."""
+    return " ".join(_management_section().split())
+
+
 def test_the_management_surface_counts_the_human_only_tools_right(policy):
-    counts = re.findall(r"(\w+) human-only tools|for (\w+) rare operations", _management_section())
+    counts = re.findall(r"(\w+) human-only tools|for (\w+) rare operations", _management_prose())
     words = {w.lower() for pair in counts for w in pair if w}
     assert words == {_NUMBER_WORDS[len(_of(policy, HUMAN))]}, counts
+
+
+# The counts the tests above hold, as (file, phrase, the passage the holding
+# test reads): tests/test_docs_match_code.py, which fails any hand-written
+# count of the server's tools, lets these through only inside that passage,
+# because a held count there cannot go stale without a test here failing.
+# The passage comes from the same function the holding test calls, so the
+# two cannot drift apart.
+HELD_COUNTS = [
+    (MCP_GUIDE, "read-only tools", _installer_counting_sentence),
+    ("docs/mcp-capability-coverage.md", "human-only tools", _management_prose),
+]
