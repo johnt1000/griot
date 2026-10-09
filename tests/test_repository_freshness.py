@@ -1209,3 +1209,229 @@ async def test_the_status_and_stats_tools_say_which_repository_was_not_found(tmp
             for r in status.structured_content["repositories"]} == {"good": (False, False), "gone": (True, True)}
     assert any("gone" in line and "not visible to the token" in line for line in out["attention"])
     assert not any("check the platform's token" in line for line in out["attention"])
+
+
+# --- a repository refused for more than one reason ---------------------------------------------------
+#
+# [debt 70] A repository whose fetches got some 404s and some 401/403 was
+# left out of not_found_repos and so got the token advice alone. The run
+# records the causes per refused repository (`refusal_causes`), the report
+# carries them as `platform_refusal_causes`, and `griot stats`, `griot
+# doctor` and griot_index_status name such a repository as refused for
+# mixed reasons, saying which fetch got which. A record from before the
+# field reads exactly as before.
+
+_MIXED = {"not_found": ["merge/pull requests", "releases"], "token": ["issues"]}
+
+
+def _causes_run(heads, refused, causes, not_found=None, at="2026-10-02T10:00:00+00:00"):
+    record = _platform_run(heads, refused=refused, at=at)
+    record["refusal_causes"] = causes
+    if not_found is not None:
+        record["not_found_repos"] = not_found
+    return record
+
+
+def test_the_report_carries_the_causes_of_the_newest_refusal(tmp_path):
+    bad, gone = _repo(tmp_path, "bad"), _repo(tmp_path, "gone")
+    runs = [_causes_run({}, refused=["bad", "gone"], not_found=["gone"],
+                        causes={"bad": _MIXED, "gone": {"not_found": ["issues"]}})]
+
+    bad_report, gone_report = freshness.assess(runs, _now(bad, gone))
+
+    assert bad_report["platform_refusal_causes"] == _MIXED and bad_report["platform_not_found"] is False
+    assert gone_report["platform_refusal_causes"] == {"not_found": ["issues"]}
+
+
+def test_a_record_without_causes_reports_none(tmp_path):
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_platform_run({}, refused=["bad"])], _now(bad))
+
+    assert report["platform_refused"] is True and report["platform_refusal_causes"] is None
+
+
+def test_a_repository_not_refused_has_no_causes_even_if_the_record_says_some(tmp_path):
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_causes_run({"bad": _git(bad, "rev-parse", "HEAD")}, refused=[],
+                                             causes={"bad": _MIXED})], _now(bad))
+
+    assert report["platform_refused"] is False and report["platform_refusal_causes"] is None
+
+
+def test_the_causes_of_an_older_refusal_do_not_outlive_a_newer_one(tmp_path):
+    bad = _repo(tmp_path, "bad")
+    runs = [_platform_run({}, refused=["bad"], at="2026-10-03T10:00:00+00:00"),
+            _causes_run({}, refused=["bad"], causes={"bad": _MIXED})]
+
+    [report] = freshness.assess(runs, _now(bad))
+
+    assert report["platform_refusal_causes"] is None
+
+
+@pytest.mark.parametrize("edited", [
+    "bad", None, ["not_found"], {"bad": "token"}, {"bad": {"token": "issues"}}, {"bad": {"bogus": ["issues"]}},
+    {"bad": {"token": [1]}}, {"bad": {}}, {"bad": {"token": []}}])
+def test_causes_edited_into_something_else_are_ignored(tmp_path, edited):
+    bad = _repo(tmp_path, "bad")
+
+    [report] = freshness.assess([_causes_run({}, refused=["bad"], causes=edited)], _now(bad))
+
+    assert report["platform_refused"] is True and report["platform_refusal_causes"] is None
+
+
+def _reported_with(name, causes, not_found=False):
+    return {**_reported(name, True, not_found), "platform_refusal_causes": causes}
+
+
+def test_stats_names_a_mixed_refusal_and_says_which_fetch_got_which():
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_with("both", _MIXED), _reported("bad", True, False),
+                               _reported("gone", True, True)]}
+
+    s = stats.compute_stats([], [], status)
+
+    [both] = [line for line in s["attention"] if "mixed reasons" in line]
+    assert "for mixed reasons" in both
+    assert "merge/pull requests, releases: not found, or not visible to the token" in both
+    assert "issues: refused for the token" in both
+    assert "check the platform's token" in both and "project path" in both
+    [token] = [line for line in s["attention"] if line.startswith("the platform refused every fetch for bad")]
+    assert "both" not in token
+    [gone] = [line for line in s["attention"] if "404 to every fetch" in line]
+    assert "both" not in gone
+
+
+def test_stats_gives_no_token_advice_to_a_mix_without_a_token_refusal():
+    causes = {"not_found": ["issues"], "other": ["releases", "merge/pull requests"]}
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_with("both", causes)]}
+
+    s = stats.compute_stats([], [], status)
+
+    [line] = [line for line in s["attention"] if "mixed reasons" in line]
+    assert "releases, merge/pull requests: failed for another reason" in line
+    assert "token (`griot auth list`)" not in line and "check the platform's token" not in line
+    assert "project path" in line
+
+
+def test_a_mix_of_the_token_and_no_answer_gets_no_project_advice():
+    causes = {"token": ["issues"], "other": ["releases"]}
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_with("both", causes)]}
+
+    [line] = [line for line in stats.compute_stats([], [], status)["attention"] if "mixed reasons" in line]
+
+    assert "check the platform's token" in line and "project path" not in line
+
+
+def test_a_refusal_with_a_single_recorded_cause_reads_as_before():
+    """Causes that name one kind are what the old fields already say."""
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_with("bad", {"token": ["issues"]}),
+                               _reported_with("gone", {"not_found": ["issues"]}, not_found=True)]}
+
+    s = stats.compute_stats([], [], status)
+
+    assert not any("mixed reasons" in line for line in s["attention"])
+    assert any(line.startswith("the platform refused every fetch for bad") for line in s["attention"])
+    assert any("gone" in line and "404 to every fetch" in line for line in s["attention"])
+
+
+def test_a_mix_recorded_with_not_found_set_is_still_the_not_found():
+    """platform_not_found says every fetch was a 404; when a hand-edited
+    record says both, the older field wins, as it did before the causes."""
+    status = {"points_count": 10, "points_error": None, "last_indexed": None, "spend_ceiling_exceeded": False,
+              "repositories": [_reported_with("gone", _MIXED, not_found=True)]}
+
+    s = stats.compute_stats([], [], status)
+
+    assert not any("mixed reasons" in line for line in s["attention"])
+    assert stats.platform_mixed_refusals([_reported_with("gone", _MIXED, not_found=True)]) == []
+
+
+def test_a_mix_without_a_refusal_is_not_named():
+    assert stats.platform_mixed_refusals([{**_reported("x", False, False), "platform_refusal_causes": _MIXED}]) == []
+    assert stats.platform_mixed_refusals([_reported_with("x\x1b[2J", _MIXED)]) == [("x?[2J", _MIXED)]
+
+
+def test_doctor_names_a_mixed_refusal_with_both_fixes(tmp_path, monkeypatch):
+    from griot import doctor
+
+    both = _repo(tmp_path, "both")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(both)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [_reported_with("both", _MIXED)])
+
+    check = doctor.check_repositories(common)
+
+    assert check["status"] == "warn" and "both" in check["detail"] and "for mixed reasons" in check["detail"]
+    assert "issues: refused for the token" in check["detail"]
+    assert "the platform's token" in check["fix"] and "project path" in check["fix"]
+
+
+def test_doctor_gives_no_token_fix_to_a_mix_without_a_token_refusal(tmp_path, monkeypatch):
+    from griot import doctor
+
+    both = _repo(tmp_path, "both")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(both)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        _reported_with("both", {"not_found": ["issues"], "other": ["releases"]})])
+
+    check = doctor.check_repositories(common)
+
+    assert "the platform's token" not in check["fix"] and "project path" in check["fix"]
+
+
+def test_doctor_reads_a_record_without_causes_as_before(tmp_path, monkeypatch):
+    from griot import doctor
+
+    bad = _repo(tmp_path, "bad")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(bad)])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [_reported("bad", True, False)])
+
+    check = doctor.check_repositories(common)
+
+    assert "refused every fetch for bad" in check["detail"] and "mixed reasons" not in check["detail"]
+    assert "the platform's token" in check["fix"] and "project path" not in check["fix"]
+
+
+def test_a_mixed_run_is_said_once_by_stats(tmp_path, monkeypatch):
+    both = _repo(tmp_path, "both")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(both)])
+    record = _all_refused_run({"both": _git(both, "rev-parse", "HEAD")}, refused=["both"])
+    record["refusal_causes"] = {"both": _MIXED}
+    _write_runs(record)
+
+    s = stats.compute_stats([], [], common.get_index_status(reuse_active_handle=False))
+
+    said = [line for line in s["attention"] if "refused" in line or "failed" in line]
+    [line] = said
+    assert "mixed reasons" in line and "both" in line and "issues: refused for the token" in line
+
+
+@pytest.mark.anyio
+async def test_the_status_and_stats_tools_say_which_fetch_of_a_mixed_refusal_got_which(tmp_path, monkeypatch):
+    from mcp.client.client import Client
+
+    from griot import mcp_server
+
+    good, both, old = _repo(tmp_path, "good"), _repo(tmp_path, "both"), _repo(tmp_path, "old")
+    monkeypatch.setattr(common, "load_repos", lambda: [str(good), str(both), str(old)])
+    _write_runs(_causes_run({"good": _git(good, "rev-parse", "HEAD")}, refused=["both", "old"],
+                            causes={"both": _MIXED}))
+
+    async with Client(mcp_server.mcp) as client:
+        status = await client.call_tool("griot_index_status", {})
+        out = (await client.call_tool("griot_stats", {})).structured_content
+
+    assert not status.is_error
+    by_repo = {r["repo"]: r for r in status.structured_content["repositories"]}
+    assert by_repo["both"]["platform_refusal_causes"] == _MIXED
+    assert by_repo["both"]["platform_not_found"] is False
+    # A refusal recorded without causes (as before the field) reads as before.
+    assert by_repo["old"]["platform_refused"] is True and by_repo["old"]["platform_refusal_causes"] is None
+    assert by_repo["good"]["platform_refusal_causes"] is None
+    assert any("mixed reasons" in line and "issues: refused for the token" in line for line in out["attention"])
+    [token] = [line for line in out["attention"] if line.startswith("the platform refused every fetch for old")]
+    assert "both" not in token

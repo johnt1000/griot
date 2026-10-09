@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from griot import common, platforms
+from griot import common, freshness, platforms
 
 
 def _repo_key_for_path(repo_path: Path) -> str:
@@ -188,7 +188,9 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
 # the token"). The platforms answer 404, not 403, both for a project that
 # does not exist and for one the token's account cannot see, so a 404 under
 # a token points at the project path and the token's reach, not at the token.
-NOT_FOUND, TOKEN, OTHER = "not_found", "token", "other"
+# Recorded per refused repository (refusal_causes), so the readers in
+# freshness.py own the names.
+NOT_FOUND, TOKEN, OTHER = freshness.REFUSAL_CAUSES
 NOT_FOUND_WHY = "HTTP 404: not found, or not visible to the token"
 
 
@@ -286,6 +288,11 @@ def main(argv=None):
     # Those of them whose every fetch answered 404 under a token: recorded,
     # so `griot stats` and `griot doctor` point at the project, not the token.
     not_found_repos: list[str] = []
+    # Per refused repository, which fetches were refused for which cause
+    # (the causes of _refusal_lines()): one whose fetches got a 404 and a
+    # 401 is not in not_found_repos, and without this the readers could only
+    # give it the token advice ([debt 70]).
+    refusal_causes: dict[str, dict[str, list[str]]] = {}
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
@@ -300,6 +307,10 @@ def main(argv=None):
             refused_fetches.extend(repo_fetches)
             if all(f["cause"] == NOT_FOUND for f in repo_fetches):
                 not_found_repos.append(path_str)
+            causes: dict[str, list[str]] = {}
+            for f in repo_fetches:
+                causes.setdefault(f["cause"], []).append(f["label"])
+            refusal_causes[repo_path.name] = causes
 
     refused =[{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
     # Named in the record, so `griot doctor` and `griot stats` can say which
@@ -311,6 +322,8 @@ def main(argv=None):
     marked = {"refused_repos": refused_names} if refused_names else {}
     if not_found_repos:
         marked["not_found_repos"] = [Path(p).name for p in not_found_repos]
+    if refusal_causes:
+        marked["refusal_causes"] = refusal_causes
     if refused and not any(f["ok"] for f in fetches):
         # Nothing the platform was asked for came back (an expired token
         # answers 401 to all of it): the run could not do its job, and an

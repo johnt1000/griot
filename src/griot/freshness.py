@@ -136,7 +136,10 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     when runs of other sources came after it; `platform_not_found` is True
     when that refusal was a 404 to every fetch under a token (the project in
     the remote does not exist, or the token cannot see it), not a refused
-    token."""
+    token; `platform_refusal_causes` is, for that same refusal, which fetches
+    were refused for which cause ({"not_found"|"token"|"other": [labels]}),
+    None when the run recorded no causes (a run from before they were
+    recorded reads as it always did) or the repository was not refused."""
     reports = []
     for repository in repositories:
         name, path, now = repository["name"], repository["path"], repository["head"]
@@ -145,6 +148,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
         last_indexed_at = None
         platform_refused = None
         platform_not_found = False
+        platform_refusal_causes = None
         for run in runs:
             heads = run.get("heads")
             if platform_refused is None and run.get("script") == "index_platform.py":
@@ -162,6 +166,8 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                     # Of the same run: the newest refusal says why too.
                     not_found = run.get("not_found_repos")
                     platform_not_found = isinstance(not_found, list) and name in not_found
+                    causes = run.get("refusal_causes")
+                    platform_refusal_causes = _causes_or_none(causes.get(name) if isinstance(causes, dict) else None)
                 elif not run.get("error") and isinstance(heads, dict) and name in heads:
                     platform_refused = False
             if run.get("error") or not isinstance(heads, dict) or name not in heads:
@@ -193,8 +199,28 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                         "missing_sources": [source for source in SOURCES if source not in sources] if now is not None else [],
                         "platform_refused": bool(platform_refused),
                         "platform_not_found": platform_not_found,
+                        "platform_refusal_causes": platform_refusal_causes,
                         "sources": sources})
     return reports
+
+
+# The causes index_platform.py records a refused fetch under.
+REFUSAL_CAUSES = ("not_found", "token", "other")
+
+
+def _causes_or_none(causes) -> dict[str, list[str]] | None:
+    """A repository's recorded refusal causes, or None for anything not
+    shaped as index_platform.py writes them (a record edited by hand): the
+    readers then say what they said before causes were recorded, and
+    griot_index_status declares this shape, so another one would fail the
+    whole tool, not just this field."""
+    if not isinstance(causes, dict) or not causes:
+        return None
+    for cause, labels in causes.items():
+        if (cause not in REFUSAL_CAUSES or not isinstance(labels, list) or not labels
+                or not all(isinstance(label, str) for label in labels)):
+            return None
+    return causes
 
 
 def _runs(collection: str | None) -> list[dict]:
