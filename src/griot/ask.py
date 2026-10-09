@@ -3,7 +3,7 @@ import sys
 import time
 
 from griot import common
-from griot.cli import at_least_one
+from griot.cli import PROFILE_FLAG, at_least_one, chat_profile_flag, show_flags_read_by_griot
 
 DEFAULT_LIMIT = 5
 
@@ -78,11 +78,11 @@ def nothing_found_reason(repos: list[str] | None, source_types: list[str] | None
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="RAG question over the indexed repos (list in <config_dir>/repos.json). "
-                    "Chat provider switchable via --chat-profile <gemini|openai|deepseek|groq> "
-                    "(or GRIOT_CHAT_PROFILE) — extracted by the CLI before this parser, same "
-                    "mechanism as --profile for embedding."
+        prog="griot ask",
+        description="RAG question over the indexed repos (list in <config_dir>/repos.json), answered by the "
+                    "active chat provider (GRIOT_CHAT_PROFILE, or --chat-profile below).",
     )
+    show_flags_read_by_griot(parser, chat_profile_flag(common.CHAT_PROFILES), PROFILE_FLAG)
     parser.add_argument("question", help="Natural language question")
     parser.add_argument("--model", default=None, help=f"Model to use within the active chat profile (profile default: {common.ACTIVE_CHAT_PROFILE['model']})")
     # The type `griot search` takes: 0 or a negative limit is refused the

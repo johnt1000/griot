@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from griot import common
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 
 
@@ -104,7 +105,10 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Indexes the tags of the repositories into the RAG vector store.")
+    parser = argparse.ArgumentParser(
+        prog="griot index tags",
+        description="Indexes the tags of the repositories into the RAG vector store.")
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")

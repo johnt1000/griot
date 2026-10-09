@@ -55,13 +55,16 @@ failure while the installation this server runs from is gone is reworded to
 say so and to ask for a restart, with the original error kept in the text
 (see _installation_removed())."""
 
+import argparse
 import functools
 import inspect
 import json
 import os
 import re
 import shlex
+import shutil
 import sys
+import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -3224,15 +3227,46 @@ def _keep_stdout_for_the_protocol() -> None:
     common.set_echo_stream(sys.stderr)
 
 
+def _help_parser() -> argparse.ArgumentParser:
+    """`griot mcp --help`. A parser only for its help: the server takes no
+    option of its own. The variables come from config.SETTINGS and the .env
+    template (common.ENV_TEMPLATE_SETTINGS), not from a list here: a list
+    in prose goes stale (see the module docstring)."""
+    width = shutil.get_terminal_size().columns - 2  # what argparse wraps its own text to
+    described = {variable: description for variable, _, description, _ in common.ENV_TEMPLATE_SETTINGS}
+    settings = [textwrap.fill(f"{s.variable} (`griot config set {s.name}`): {described.get(s.variable, '')}",
+                              width=width, initial_indent="  ", subsequent_indent="      ")
+                for s in config.SETTINGS if s.variable.startswith("GRIOT_MCP_")]
+    intro = ("Starts griot's MCP server on stdio. An MCP client (Claude Code, opencode, ...) starts it and talks to "
+             "it over stdin and stdout; at a terminal it waits for a client and ends at the end of its input. Its "
+             "settings come from <config_dir>/.env, like every griot command's; a value in the server's own "
+             "environment (the `env` of its registration) is obeyed only where it narrows what that file says. "
+             "The settings that are the server's:")
+    parser = argparse.ArgumentParser(
+        prog="griot mcp",
+        usage="griot mcp [-h] [--profile NAME]\n       python -m griot.mcp_server [-h]",
+        # Raw: the settings are a list, one per entry, already wrapped above.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="\n\n".join([textwrap.fill(intro, width=width), "\n".join(settings)]))
+    # Only `griot mcp` reads it: `python -m griot.mcp_server` has no
+    # command line of griot's in front of it.
+    cli.show_flags_read_by_griot(parser, (*cli.PROFILE_FLAG[:2], f"`griot mcp` only. {cli.PROFILE_FLAG[2]}"))
+    return parser
+
+
 def main(argv=None) -> None:
     """The server's actual entry point — `griot mcp` (single subcommand,
-    that decision; `argv` is ignored, accepted only to fit the
-    same passthrough dispatch in cli.py that the other subcommands use) or
-    `python -m griot.mcp_server` directly (dev/editable mode
-    covers this case too). Real finding: this module used to only define
-    the tools, never calling mcp.run() — without that, the process imported
-    everything and exited, never connecting via stdio. transport="stdio" is
-    the SDK's default, made explicit here for clarity."""
+    that decision; `argv` is read only for -h/--help, the server takes no
+    other option) or `python -m griot.mcp_server` directly (dev/editable
+    mode covers this case too). Real finding: this module used to only
+    define the tools, never calling mcp.run() — without that, the process
+    imported everything and exited, never connecting via stdio.
+    transport="stdio" is the SDK's default, made explicit here for clarity."""
+    # Before anything else: stdout is not the protocol's yet, and a help
+    # asked at a terminal used to start a server that waited on stdin.
+    # parse_known_args: -h, --help and its prefixes print the help and exit;
+    # any other argument is left alone, as it always was.
+    _help_parser().parse_known_args(argv or [])
     if not common.ENVIRONMENT_WAS_NARROWED:
         # Whatever imported the configuration did it as a command at a
         # terminal would: the environment was taken at its word. Serving on
@@ -3249,4 +3283,7 @@ def main(argv=None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # The arguments are passed here, not read from sys.argv inside main(): a
+    # caller of main() (a test under pytest) has an argv that is not this
+    # server's.
+    main(sys.argv[1:])

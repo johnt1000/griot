@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, time, timedelta, timezone
 
 from griot import common, logdb
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 DEFAULT_DAYS = 30
 
@@ -1244,6 +1245,7 @@ def main(argv=None) -> int:
         prog="griot stats",
         description="Usage, spend, and savings report — aggregates already-recorded logs, no new collection.",
     )
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
                         help="Window in local days: today since local midnight plus the N-1 days before it, "
                              "the days spend is counted by (default: %(default)s)")
