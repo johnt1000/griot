@@ -536,6 +536,13 @@ HARD_MIN_SEARCHES = 20
 # reader takes in of a result list (an agent asks for 6 to 8): a result the
 # other ranking placed within its first ten is one it still found relevant,
 # and only past that is the other ranking's opinion really a different one.
+# Measured on 2026-10-08 on a throwaway index of this repository's code
+# (default profile, the 50 descriptive and identifier queries of
+# scripts/search-mode-queries/griot.json, hybrid, as griot_search runs them at
+# its default limit of 8): depth 5 offered 17 of the 50 searches, 10 offered
+# 7, 20 offered 5. At 5 a third of all searches would be offered, most with
+# each first still in the other ranking's top ten; 20 drops only two more,
+# so 10 stays.
 DISAGREE_DEPTH = 10
 
 
@@ -679,11 +686,24 @@ def _disagreement(row: dict) -> tuple[int, int] | None:
     person picking the right result can; the case then holds a result that
     one ranking alone would lose, so a change to either ranking, or to how
     they are fused, shows in the golden set. Each first must be among the
-    results logged (what the reader got); a result one ranking did not
-    place at all (a null rank) counts as past the depth only when the
-    ranking was asked for at least that many points, since otherwise the
-    null could still be within it. A keyword ranking that matched nothing
-    has no first, and no opinion to disagree with: not a disagreement."""
+    results logged (what the reader got). A keyword ranking that matched
+    nothing has no first, and no opinion to disagree with: not a
+    disagreement.
+
+    A null rank says only "not among the first `rank_window` points that
+    ranking was asked for". With a window that reaches the depth, that is
+    past the depth. With a narrower window w it is only past w, and the
+    result could have been anywhere from w+1 to the depth in the other
+    ranking, which is near by the depth's own argument: comparing against
+    min(depth, w) instead would offer rankings that agree. So such a null
+    is never counted as far. That costs no disagreement in practice: every
+    search that logs ranks (`griot ask`, griot_search) is made for a reader
+    (diverse), whose two rankings are each fetched several times wider than
+    the list returned (common._GROUPING_OVERFETCH), so already at limit 2,
+    the smallest limit with two results to disagree about, the window
+    reaches the depth (tests/test_hybrid_rankings_logged.py holds every
+    such surface to that). Only a limit-1 search logs a narrower window,
+    and one result cannot disagree with itself."""
     if _mode(row) != "hybrid":
         return None
     ranks = _ranks(row)
