@@ -245,6 +245,31 @@ def test_security_names_every_state_changing_tool_and_which_need_a_person(policy
     assert counts and {c.lower() for c in counts} == {_NUMBER_WORDS[len(_of(policy, HUMAN))]}, counts
 
 
+def test_security_names_the_read_only_tools_the_installer_does_not_offer(listing, policy):
+    """The paragraph on pre-approval once named the quality check alone as
+    the exception, while the server leaves out every tool in its
+    _READ_ONLY_BUT_ASKED."""
+    text = _paragraph("SECURITY.md", "**Only you can let griot's tools run without being asked.**")
+    hits = [s for s in _sentences(text) if "`griot assist install` can add allow rules" in s]
+    assert len(hits) == 1, hits
+    asked = _not_preapproved(listing, policy)
+    assert _code_names(hits[0]) == asked, {"missing": asked - _code_names(hits[0]),
+                                           "wrong": _code_names(hits[0]) - asked}
+
+
+# --- docs/mcp-capability-coverage.md, "Used today" ----------------------------------
+
+
+def test_the_coverage_document_names_the_read_only_tools_the_installer_does_not_offer(listing, policy):
+    """The paragraph describes the read-only tools in prose and names as code
+    only the ones the installer leaves out."""
+    text = _paragraph("docs/mcp-capability-coverage.md", "*Read-only*")
+    assert "pre-approve" in text
+    asked = _not_preapproved(listing, policy)
+    named = _code_names(text)
+    assert named == asked, {"missing": asked - named, "wrong": named - asked}
+
+
 # --- docs/mcp-capability-coverage.md, "The management surface" ---------------------
 
 # The table names CLI commands, not tools. The rule from command to tool is

@@ -191,7 +191,8 @@ that has both vectors, reading the existing dense vectors back. It needs
 about as much free disk as the collection while it runs, and holds the
 collection until it finishes (so stop or wait for a running `griot mcp`
 session or index run first, as for any index run). Safe to run again; after
-an interruption it starts over. `griot doctor` and `griot_index_status`
+an interruption it resumes, writing only the points the copy is missing or
+that changed since. `griot doctor` and `griot_index_status`
 (`keyword_search`) say whether it has run.
 
 ## `griot stats` says "point count unavailable (collection in use)"
