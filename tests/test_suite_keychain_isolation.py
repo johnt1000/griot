@@ -3,7 +3,7 @@
 conftest.py makes `import keyring` fail inside the test process, which only
 covers that process. A test that runs the real CLI in a subprocess
 (`python -m griot.cli auth set ...`) imported the real `keyring` there:
-on a machine with the `keychain` extra installed, the fake test credential
+on a machine with `keyring` installed (a dependency since debt 65), the fake test credential
 went into the user's login keychain under the service "griot" (it happened,
 2026-10-06, through tests/test_env_symlink.py). The environment a
 subprocess inherits now names keyring's `fail` backend, so a subprocess
@@ -31,7 +31,9 @@ def test_a_subprocess_started_from_the_suite_cannot_reach_the_os_keychain():
     done = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, env=dict(os.environ))
 
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() in {"absent", "keyring.backends.fail"}
+    # keyring is a dependency of griot-rag, so it is installed wherever the
+    # suite runs: "absent" would mean the probe no longer tests anything.
+    assert done.stdout.strip() == "keyring.backends.fail"
 
 
 def _functions_that_start_griot_with_a_hand_built_environment():

@@ -69,6 +69,14 @@ dependencies = [
     # And again: mcp_server.py waits with anyio.sleep (the MCP SDK's own async
     # layer), which it imports directly.
     "anyio",
+    # OS keychain storage for credentials (macOS Keychain / Linux Secret
+    # Service / Windows Credential Manager). A default dependency since debt
+    # 65: as an opt-in extra, `pipx install griot-rag` (the documented
+    # install) kept every key in plaintext. common.py's keychain wrappers
+    # still degrade to <config>/.env (0600) where no backend is reachable
+    # (headless Linux without a Secret Service, a container, CI), and
+    # `griot auth` / `griot doctor` say so.
+    "keyring>=24",
 ]
 
 [project.optional-dependencies]
@@ -76,13 +84,10 @@ dependencies = [
 # packages bring them today; named for the same reason as typing-extensions
 # above.
 dev = ["pytest", "packaging", "pyyaml", "tomli; python_version < '3.11'"]
-# OS keychain storage for credentials (macOS Keychain / Linux Secret
-# Service / Windows Credential Manager) — opt-in, not a core dependency:
-# common.py's keychain wrappers already degrade to the existing file-based
-# .env storage when this isn't installed or no backend is reachable
-# (headless Linux without a Secret Service provider, a container, etc.),
-# so griot's core CLI/MCP behavior never depends on it.
-keychain = ["keyring>=24"]
+# Empty on purpose: keyring is a default dependency now, and the extra stays
+# so the command older docs gave (`pip install "griot-rag[keychain]"`) keeps
+# installing without pip's "does not provide the extra" warning.
+keychain = []
 
 # What the packaging job of the CI runs: the build backend that [build-system]
 # names, and the metadata checker. They are here so that uv.lock pins them
