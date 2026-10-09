@@ -499,6 +499,7 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "keyring" },
     { name = "mcp" },
     { name = "psutil" },
     { name = "pydantic" },
@@ -517,9 +518,6 @@ dev = [
     { name = "pyyaml" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-keychain = [
-    { name = "keyring" },
-]
 
 [package.dev-dependencies]
 build = [
@@ -530,7 +528,7 @@ build = [
 [package.metadata]
 requires-dist = [
     { name = "anyio" },
-    { name = "keyring", marker = "extra == 'keychain'", specifier = ">=24" },
+    { name = "keyring", specifier = ">=24" },
     { name = "mcp", specifier = ">=2.0.0,<3" },
     { name = "packaging", marker = "extra == 'dev'" },
     { name = "psutil" },

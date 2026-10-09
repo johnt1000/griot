@@ -107,8 +107,8 @@ def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
     when that succeeds, the value is deliberately NOT ALSO written to the
     plaintext .env file (storing it in two places would defeat the point).
     Falls back to the existing common.env_file_set() path (same one
-    cmd_set() always used) whenever the keychain is unavailable — no
-    `keyring` installed, no reachable backend (headless Linux without a
+    cmd_set() always used) whenever the keychain is unavailable — `keyring`
+    not importable (a broken install), no reachable backend (headless Linux without a
     Secret Service provider, a container), or any other failure. The
     fallback is not an error (a missing OS keychain is a normal
     environment), so it does not fail here; `griot auth list` and
@@ -234,15 +234,23 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
 def keychain_phrase(keychain: dict) -> str:
     """Where a key set now goes, from common.keychain_status(): said by
     `auth list` and `doctor` so the fallback to the plaintext file is never
-    silent. Not installed and not reachable get different advice: the extra
-    fixes the first, not the second."""
+    silent. keyring is a dependency of griot-rag, so "not importable" is a
+    broken install (reinstalling fixes it), while "no backend" is the machine
+    (a Secret Service fixes it on Linux; a container or CI may never have
+    one). PYTHON_KEYRING_BACKEND is named when set, since it overrides
+    keyring's own choice and is the likeliest reason in CI."""
     if keychain["available"]:
         return f"the OS keychain ({keychain['backend']}) is reachable: a key set now is stored there"
     if keychain["installed"]:
-        why = "keyring is installed but finds none: on Linux it needs a Secret Service provider"
+        chosen = os.environ.get("PYTHON_KEYRING_BACKEND")
+        why = (f"PYTHON_KEYRING_BACKEND={chosen} picks a backend that stores nothing here" if chosen
+               else "keyring finds none")
+        why += ("; on Linux a keychain is a running, unlocked Secret Service provider (GNOME Keyring, KWallet, "
+                "KeePassXC), and a headless server, a container or CI usually has none")
     else:
-        why = 'the keyring package is not installed: pip install "griot[keychain]"'
-    return f"no OS keychain backend ({why}), so keys are kept in plaintext in {common.ENV_PATH} (mode 0600)"
+        why = ("the keyring package, a dependency of griot-rag, cannot be imported here: reinstall griot-rag "
+               "(pipx reinstall griot-rag)")
+    return f"no OS keychain backend reachable ({why}), so keys are kept in plaintext in {common.ENV_PATH} (mode 0600)"
 
 
 def where_stored(origin: dict) -> str:
@@ -353,8 +361,8 @@ def cmd_migrate() -> int:
     if migrated:
         print(f"Migrated to the OS keychain: {', '.join(migrated)}.")
     if could_not_migrate:
-        # Not "install the extra" whatever the cause: with keyring installed
-        # and no backend (headless Linux), installing it again fixes nothing.
+        # Not "reinstall griot" whatever the cause: with keyring importable
+        # and no backend (headless Linux), reinstalling fixes nothing.
         keychain = common.keychain_status()
         why = (f"the OS keychain ({keychain['backend']}) refused them" if keychain["available"]
                else keychain_phrase(keychain))

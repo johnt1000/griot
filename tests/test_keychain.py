@@ -3,12 +3,12 @@ Service / Windows Credential Manager) — a security-review finding: griot's
 credentials (`<config_dir>/.env`) sit in plaintext on disk, protected only
 by file permissions (0600) + whatever full-disk encryption the OS
 provides. A leaked/misconfigured backup, or another process/user reading
-the file directly, gets the raw value. The `keyring` package (optional
-dependency, see pyproject.toml's `keychain` extra) is the well-precedented
+the file directly, gets the raw value. The `keyring` package (a default
+dependency of griot-rag since debt 65) is the well-precedented
 fix real CLI tools use (gh, docker, aws-cli, 1Password CLI) — this is an
 ADDITIVE, best-effort layer: griot's file-based storage stays the fallback
-whenever no keychain backend is reachable (headless Linux, a container, no
-`keyring` installed at all), never a hard requirement.
+whenever no keychain backend is reachable (headless Linux, a container, a
+broken install where `keyring` does not import), never a hard requirement.
 
 conftest.py's autouse fixture forces `sys.modules["keyring"] = None`
 before every test — Python's import machinery treats that as "explicitly
