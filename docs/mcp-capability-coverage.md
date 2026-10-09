@@ -6,7 +6,7 @@ adopting each unused capability would concretely mean here.
 Kept as a reference to return to — not a plan. Nothing below is scheduled;
 see the reasoning at the end for why.
 
-**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06), against the `mcp` SDK installed in this
+**Last verified**: 2026-08-22 (updated the same day, after the management surface landed; the resources rows, the progress section and the tool count on 2026-10-06, `griot://result-fields` on 2026-10-09), against the `mcp` SDK installed in this
 repo's venv.
 
 ## How to re-verify
