@@ -37,26 +37,41 @@ cases were searched in each mode.
 
 `griot golden-set review` grows the golden set from real use. It reads the
 query log (`griot ask` and the `griot_search` tool record each question) and
-offers, at most `--limit` (10) at a time: first the questions asked more than
-once, most asked first, in any session or project, including the same session
-(an agent retrying a search counts too; the same words count as the same
-question, whatever the case, punctuation or word order); then the vector
-searches whose best result scored in the bottom quarter of that collection's
-vector searches (once there are at least 20 of them; keyword and hybrid scores
-are not similarity, so they are not used); then, newest first, the hybrid
-searches whose two rankings disagreed: the first result by meaning (vector) is
-not in the first 10 by the words (keyword), and the first by the words is not
-in the first 10 by meaning, both among the results the search returned; then,
-newest first, the searches that were reworded: the next search of the same
-session came within 5 minutes, is not the same question, shares at least half
-of the shorter question's words of four letters or more (normalised as for
-asked more than once; shorter words such as "how" or "the" say nothing about
-the subject), and brought back other results, an implicit sign the first list
-did not serve.
+offers, at most `--limit` (10) at a time, four kinds of candidate that take
+turns (one of each kind in this order, then a second of each, and so on, so
+a kind with many candidates does not crowd out the others; each candidate is
+labelled with its kind): the questions asked more than once, most asked
+first, in any session or project, including the same session (an agent
+retrying a search counts too; the same words count as the same question,
+whatever the case, punctuation or word order); the vector searches whose
+best result scored in the bottom quarter of that collection's vector
+searches (once there are at least 20 of them; keyword and hybrid scores are
+not similarity, so they are not used), lowest first; newest first, the
+hybrid searches whose two rankings disagreed: the first result by meaning
+(vector) is not in the first 10 by the words (keyword), and the first by the
+words is not in the first 10 by meaning, both among the results the search
+returned; and, newest first, the searches that were reworded: the next
+search of the same session came within 5 minutes, is not the same question,
+shares at least half of the shorter question's words of four letters or more
+(normalised as for asked more than once; shorter words such as "how" or
+"the" say nothing about the subject), and brought back other results, an
+implicit sign the first list did not serve.
 
-The first search is the one offered, with the rewording shown beside it, since
-the rule cannot tell a rewording from a question about another facet of the
-same thing and you can.
+The first search is the one offered, with the rewording shown beside it,
+since the rule cannot tell a rewording from a question about another facet
+of the same thing and you can. Both lists are shown, each result marked with
+the search that returned it (first search only, follow-up only, or both
+searches, shown once), and you can pick from either: the follow-up is the
+search that served, so the right document may be only in its list. A pick
+makes a case of the first question, in the first search's mode. A result can
+be picked when the search that returned it was neither narrowed nor grouped
+by document (the pool the case is checked against), whichever of the two
+that was; the follow-up's own mode does not matter, since the case does not
+repeat it. Subagents that reach griot through their parent's `griot mcp`
+share its session, so a parallel subagent's search on a nearby subject can
+be taken for the next search of another's; the shared-words rule limits
+this, and the follow-up and its results are there for you to judge (`n` or
+`s`).
 
 Each logged search records its session as an opaque digest, never the value it
 came from: of the conversation id the agent client exports, when it exports
@@ -82,15 +97,16 @@ list returned), and a one-result search has nothing to disagree about. Only
 `griot_search` logs a best score, so a `griot ask` question can be offered as
 asked more than once or as a disagreement but never as scoring low.
 
-For each it shows the question, why it is a candidate, and the results logged
-for it (with each result's rank by meaning and by the words, for a hybrid
-search, and the rewording, for a reworded one); you type the number of the
-right one (or several), `n` when none of them was, `s` to skip, `r` to reject
-it for good, `q` to stop. A pick becomes a case exactly as `golden-set add`
-makes one, asserting that result comes back. Questions already in the golden
-set and ones you rejected are not offered again; rejections are kept as
-digests, not text, in `golden_set_rejected.json` beside the golden set.
-Nothing is written to the index.
+For each it shows the question, why it is a candidate, and the results
+logged for it (with each result's rank by meaning and by the words, for a
+hybrid search, and the rewording and its results, for a reworded one); you
+type the number of the right one (or several), `n` when none of them was,
+`s` to skip, `r` to reject it for good, `q` to stop. A pick becomes a case
+exactly as `golden-set add` makes one, asserting that result comes back.
+Questions already in the golden set and ones you rejected are not offered
+again; rejections are kept as digests, not text, in
+`golden_set_rejected.json` beside the golden set. Nothing is written to the
+index.
 
 A case keeps the search mode its results came from (the mode that ran: vector,
 keyword or hybrid), and is checked by a search in that mode over every

@@ -228,7 +228,12 @@ def test_two_calls_that_each_need_the_index_to_themselves_do_not_block_each_othe
     first.join(timeout=10)
     second.join(timeout=10)
     try:
-        assert answers["first"] is None and took["first"] < 1.0, "it did not sit through the whole wait"
+        # Sitting through the wait takes at least the whole of it (the deadline
+        # is what ends it), while going at once takes about the 0.3 s until the
+        # search ends: the bound is the wait itself, not a fixed second, so a
+        # loaded machine has the most room before it fails a correct release.
+        assert answers["first"] is None, "the first did not get the index"
+        assert took["first"] < mcp_server._WAIT_FOR_OTHER_CALLS_SECONDS, "it sat through the whole wait"
         assert answers["second"] and "another griot tool call" in answers["second"], "the first is still running"
     finally:
         mcp_server._tool_finished()
