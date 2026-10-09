@@ -91,14 +91,14 @@ def build_documents(repo_path: Path, repo_key: str | None = None) -> list[dict]:
             documents.append({
                 "id": doc_id,
                 "content": chunk,
-                "metadata": {
+                "metadata": common.result_metadata({
                     "source_type": "tag",
                     "repo": repo_path.name,
                     "tag_name": tag["name"],
                     "commit_hash": tag["commit_hash"],
                     "date": tag["date"],
                     "chunk_index": i,
-                },
+                }),
             })
     return documents
 

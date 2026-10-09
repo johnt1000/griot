@@ -46,7 +46,7 @@ anyio.run(m)"
 |---|---|---|---|
 | Tools | yes | **19** (21 with `GRIOT_MCP_ENABLE_INDEX`) | Covered |
 | Prompts | yes | **4** | Covered |
-| Resources | yes | **yes** (see `list_resources()`) | Covered: duplicates of read-only tools |
+| Resources | yes | **yes** (see `list_resources()`) | Covered: duplicates of read-only tools, plus `griot://result-fields` |
 | Resource templates | yes | no | Follows from resources |
 | Progress (`ctx.report_progress`) | yes | **yes** (`griot_index_wait`) | Covered |
 | Client-side logging (`ctx.log`) | yes | no | Minor |
@@ -83,7 +83,9 @@ JSON, without a tool call. Each one is a read-only tool at its default
 arguments — the repositories, the usage report, the index status — and
 `list_resources()` is the inventory (each description names its tool). See
 [Resources](#resources) for why they duplicate the tools rather than replace
-them, and how the two are kept from disagreeing.
+them, and how the two are kept from disagreeing. One resource has no tool:
+`griot://result-fields`, the reference list of a search result's metadata
+fields.
 
 **Elicitation** is used, but never alone — see `_confirmed()` in
 `mcp_server.py` for the three-layer policy and why no single layer is
@@ -268,6 +270,19 @@ handled:
   reported by `griot stats` as `resource_reads`, apart from the tool
   calls), and counted as a call in flight, so the idle reaper does not
   close the collection under it.
+
+`griot://result-fields` (2026-10-09, debt 68) is the one resource with no
+tool behind it. The `griot_search` description is held to 1600 characters
+and cannot name every field a result's `metadata` may hold (GitLab's `url`,
+a release's `author`), and `docs/indexing-model.md` is not where agents
+look; the description points to the resource instead. It is reference text,
+not data an argument could change, so a tool call for it would cost a turn
+for nothing. It is not the second implementation the paragraph above warns
+about: it serves `common.RESULT_FIELDS`, the list every indexer's payload is
+checked against by `common.result_metadata()`, which refuses a field the
+list does not hold. `tests/test_result_fields.py` builds real documents from
+every indexer and compares them with the resource read through a client.
+Its reads are recorded like the others.
 
 ## Gaps worth revisiting
 

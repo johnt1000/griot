@@ -199,12 +199,12 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
                 documents.append({
                     "id": f"{key}:code:{rel_path}:{i}",
                     "content": chunk,
-                    "metadata": {
+                    "metadata": common.result_metadata({
                         "source_type": "code",
                         "repo": repo_path.name,
                         "file_path": rel_path,
                         "chunk_index": i,
-                    },
+                    }),
                 })
         except Exception as e:
             tqdm.write(f"Error reading {file_path}: {e}")

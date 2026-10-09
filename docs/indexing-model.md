@@ -57,7 +57,13 @@ source type, the natural key is the part to get right first.
 
 Every point carries `source_type`, `content` (the indexed text) and
 `content_hash` (what decides whether it is embedded again), plus fields
-specific to its kind:
+specific to its kind. The authoritative list, with what each field means,
+is the MCP resource `griot://result-fields`, served from
+`common.RESULT_FIELDS`: every indexer builds its payload through
+`common.result_metadata()`, which refuses a field that list does not hold,
+so the resource cannot fall behind what is stored. The table below is a
+copy for reading here, which `tests/test_result_fields.py` holds to the
+same fields:
 
 | `source_type` | Additional fields |
 |---|---|
@@ -83,7 +89,9 @@ it).
 
 Each result also carries `metadata`: the fields of the table above, except
 `content`, `content_hash`, `repo` and `source_type`, which are beside it or
-not for a reader. That is what to act on (open that file, show that commit,
+not for a reader. An agent finds them, with what each means, by reading the
+`griot://result-fields` resource; the `griot_search` description has room
+for only a few. That is what to act on (open that file, show that commit,
 say when). `also_in` is added when the same thing was found in another place.
 
 `griot_search` takes `source_types` (and `repos`) to narrow a search to

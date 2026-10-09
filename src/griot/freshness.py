@@ -133,7 +133,10 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     `platform_refused` is True when the newest platform run that concerned
     the repository could fetch nothing of it (the platform refused every
     fetch for it, whether or not it answered for other repositories), even
-    when runs of other sources came after it."""
+    when runs of other sources came after it; `platform_not_found` is True
+    when that refusal was a 404 to every fetch under a token (the project in
+    the remote does not exist, or the token cannot see it), not a refused
+    token."""
     reports = []
     for repository in repositories:
         name, path, now = repository["name"], repository["path"], repository["head"]
@@ -141,6 +144,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
         sources: dict[str, dict] = {}
         last_indexed_at = None
         platform_refused = None
+        platform_not_found = False
         for run in runs:
             heads = run.get("heads")
             if platform_refused is None and run.get("script") == "index_platform.py":
@@ -155,6 +159,9 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                 refused = run.get("refused_repos")
                 if isinstance(refused, list) and name in refused:
                     platform_refused = True
+                    # Of the same run: the newest refusal says why too.
+                    not_found = run.get("not_found_repos")
+                    platform_not_found = isinstance(not_found, list) and name in not_found
                 elif not run.get("error") and isinstance(heads, dict) and name in heads:
                     platform_refused = False
             if run.get("error") or not isinstance(heads, dict) or name not in heads:
@@ -185,6 +192,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                         # Nothing could have run for a path that is not a repository.
                         "missing_sources": [source for source in SOURCES if source not in sources] if now is not None else [],
                         "platform_refused": bool(platform_refused),
+                        "platform_not_found": platform_not_found,
                         "sources": sources})
     return reports
 

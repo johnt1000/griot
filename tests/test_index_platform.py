@@ -626,3 +626,230 @@ def test_a_platform_item_url_is_stored_when_the_platform_gives_one(gitlab_run, m
     assert "url" not in by_title["without"]
     assert by_title["issue"]["url"].endswith("/work_items/3")
     assert by_title["v1"]["url"].endswith("/releases/v1")
+
+
+# --- what the closing message blames ------------------------------------------
+#
+# [debt 67] With a valid GitLab token, a project that does not exist or that
+# the token cannot see answers HTTP 404 to every fetch, and the run ended
+# with "Check the token (`griot auth list`)": the wrong cause, seen for real
+# on 2026-10-08. The closing message now follows what was refused: a 404
+# under a token names the project and the remote it came from; a 401/403
+# keeps pointing at the token; a mix says which is which. The rule is the
+# platform's answer, not GitLab's: GitHub, Bitbucket, Azure DevOps and Gitea
+# answer 404 too for a repository the token cannot see.
+
+# Taken at import, before any fixture replaces them on the module.
+_REAL_PLATFORM_FUNCTIONS = {name: getattr(index_platform.platforms, name) for name in (
+    "detect_platform", "fetch_pull_requests", "fetch_releases", "fetch_issues")}
+
+
+def _refuse_all(monkeypatch, status=None, by_label=None, error=None):
+    """Every fetch refused: with `status`, or per fetch function name in
+    `by_label`, or by raising `error` (an exception, not an HTTP answer)."""
+    for name in ("fetch_pull_requests", "fetch_releases", "fetch_issues"):
+        if error is not None:
+            def fetch(platform, project_id, host=None, _e=error):
+                raise _e
+        else:
+            fetch = _refused((by_label or {}).get(name, status), message="404 Client Error")
+        monkeypatch.setattr(index_platform.platforms, name, fetch)
+
+
+@pytest.mark.parametrize("platform,env_var,remote", [
+    ("gitlab", "GITLAB_PERSONAL_ACCESS_TOKEN", "https://gitlab.com/group/project.git"),
+    ("github", "GITHUB_TOKEN", "git@github.com:group/project.git"),
+    ("bitbucket", "BITBUCKET_ACCESS_TOKEN", "git@bitbucket.org:group/project.git"),
+])
+def test_every_fetch_404_under_a_token_names_the_project_not_the_token(platform_run, monkeypatch, capsys,
+                                                                     platform, env_var, remote):
+    monkeypatch.setattr(index_platform, "_remote_url", lambda repo_path: remote)
+    monkeypatch.setattr(index_platform.platforms, "detect_platform", lambda url: (platform, "group/project", None))
+    monkeypatch.setenv(env_var, "fake-token")
+    _refuse_all(monkeypatch, status=404)
+
+    rc = index_platform.main(["--path", platform_run["path"]])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "group/project" in err and remote in err
+    assert "not found" in err and "not visible to the token" in err
+    assert "Check the token" not in err
+    (run,) = platform_run["runs"]
+    name = Path(platform_run["path"]).name
+    assert run["not_found_repos"] == [name] and run["refused_repos"] == [name]
+    assert "not found" in run["error"] and "HTTP 404" in run["error"]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_every_fetch_refused_with_401_or_403_still_points_at_the_token(gitlab_run, monkeypatch, capsys, status):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, status=status)
+
+    assert index_platform.main(["--path", gitlab_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert "Check the token (`griot auth list`)" in err
+    assert "not found" not in err
+    (run,) = gitlab_run["runs"]
+    assert "not_found_repos" not in run
+    assert run["error"] == f"the platform refused every fetch (HTTP {status})"
+
+
+def test_a_404_without_a_token_in_the_environment_is_not_called_not_found(platform_run, monkeypatch, capsys):
+    """Only a token that was sent can be one the project is invisible to:
+    with none set, the 404 says nothing about the project."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _refuse_all(monkeypatch, status=404)
+
+    index_platform.main(["--path", platform_run["path"]])
+
+    err = capsys.readouterr().err
+    assert "not visible to the token" not in err and "Check the token" in err
+    assert "not_found_repos" not in platform_run["runs"][0]
+
+
+def test_a_gitlab_token_needed_404_is_not_called_not_found(gitlab_run, monkeypatch, capsys):
+    """Without a token GitLab's 404 is a TokenNeeded: the token is the fix."""
+    response = requests.Response()
+    response.status_code = 404
+
+    def hidden(platform, project_id, host=None):
+        raise index_platform.platforms.TokenNeeded("set GITLAB_PERSONAL_ACCESS_TOKEN", response=response)
+    for name in ("fetch_pull_requests", "fetch_releases", "fetch_issues"):
+        monkeypatch.setattr(index_platform.platforms, name, hidden)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    err = capsys.readouterr().err
+    assert "not visible to the token" not in err and "Check the token" in err
+
+
+def test_a_token_needed_is_the_token_s_fault_whatever_the_environment_says(gitlab_run, monkeypatch, capsys):
+    """TokenNeeded is the adapter's own word that the request went without
+    a token, so its 404 is never read as a project the token cannot see."""
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    response = requests.Response()
+    response.status_code = 404
+
+    def hidden(platform, project_id, host=None):
+        raise index_platform.platforms.TokenNeeded("set GITLAB_PERSONAL_ACCESS_TOKEN", response=response)
+    for name in ("fetch_pull_requests", "fetch_releases", "fetch_issues"):
+        monkeypatch.setattr(index_platform.platforms, name, hidden)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    err = capsys.readouterr().err
+    assert "not visible to the token" not in err and "Check the token" in err
+
+
+def test_a_missing_token_that_stops_before_any_request_points_at_the_token(platform_run, monkeypatch, capsys):
+    """The adapters that require a token raise before asking anything: no
+    HTTP status, and the token is what to fix."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _refuse_all(monkeypatch, error=ValueError("GITHUB_TOKEN not found in the environment"))
+
+    assert index_platform.main(["--path", platform_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert "Check the token" in err and "ValueError" in err
+
+
+def test_a_mix_of_404_and_403_says_which_fetch_got_which(gitlab_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, by_label={"fetch_pull_requests": 404, "fetch_releases": 404, "fetch_issues": 403})
+
+    assert index_platform.main(["--path", gitlab_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert "group/project" in err
+    not_found_line = next(line for line in err.splitlines() if "not visible to the token" in line)
+    token_line = next(line for line in err.splitlines() if "Check the token" in line)
+    assert "merge/pull requests" in not_found_line and "releases" in not_found_line and "issues" not in not_found_line
+    assert "issues" in token_line and "HTTP 403" in token_line
+    (run,) = gitlab_run["runs"]
+    # Not all of it a 404: the token is part of the cause, not ruled out.
+    assert "not_found_repos" not in run
+
+
+def test_a_refusal_that_is_no_http_answer_does_not_blame_the_token(platform_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, error=requests.ConnectionError("no route"))
+
+    assert index_platform.main(["--path", platform_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert "Check the token" not in err and "not found" not in err
+    assert "ConnectionError" in err and "warnings above" in err
+
+
+def test_the_remote_is_named_without_the_credentials_written_in_it(gitlab_run, monkeypatch, capsys):
+    monkeypatch.setattr(index_platform, "_remote_url",
+                        lambda repo_path: "https://oauth2:hunter2@gitlab.com/group/project.git")
+    monkeypatch.setenv("GITLAB_PERSONAL_ACCESS_TOKEN", "fake-token")
+    _refuse_all(monkeypatch, status=404)
+
+    index_platform.main(["--path", gitlab_run["path"]])
+
+    err = capsys.readouterr().err
+    assert "https://gitlab.com/group/project.git" in err and "hunter2" not in err
+
+
+def test_one_repository_404_among_others_names_its_project(two_repo_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _refuse_everything_of(monkeypatch, "/bad", status=404)
+
+    assert index_platform.main([]) == 1
+
+    err = capsys.readouterr().err
+    assert "refused every fetch for bad" in err
+    assert "group/bad" in err and "git@github.com:group/bad.git" in err and "not visible to the token" in err
+    assert "Check the token" not in err
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["bad"] and run["not_found_repos"] == ["bad"]
+
+
+@pytest.mark.parametrize("platform,env_var,remote,status,blamed", [
+    ("gitlab", "GITLAB_PERSONAL_ACCESS_TOKEN", "https://gitlab.com/group/project.git", 404, "not visible to the token"),
+    ("gitlab", "GITLAB_PERSONAL_ACCESS_TOKEN", "https://gitlab.com/group/project.git", 401, "Check the token"),
+    ("github", "GITHUB_TOKEN", "git@github.com:group/project.git", 404, "not visible to the token"),
+    ("github", "GITHUB_TOKEN", "git@github.com:group/project.git", 403, "Check the token"),
+])
+def test_the_real_adapters_answer_over_http_lead_to_the_right_cause(platform_run, monkeypatch, capsys,
+                                                                   platform, env_var, remote, status, blamed):
+    """Through the real adapters, with only HTTP faked: each fetch the
+    platform answers with `status`, under a token."""
+    from griot import platforms
+
+    monkeypatch.setattr(index_platform, "_remote_url", lambda repo_path: remote)
+    for name, function in _REAL_PLATFORM_FUNCTIONS.items():
+        monkeypatch.setattr(platforms, name, function)
+    monkeypatch.setenv(env_var, "fake-token")
+    monkeypatch.delenv("GRIOT_GITLAB_API_BASE", raising=False)
+
+    def answer(url, **kwargs):
+        response = requests.Response()
+        response.status_code = status
+        response.url = url
+        return response
+    monkeypatch.setattr(platforms.requests, "get", answer)
+
+    assert index_platform.main(["--path", platform_run["path"]]) == 1
+
+    err = capsys.readouterr().err
+    assert blamed in err and "group/project" in err
+
+
+def test_only_the_repositories_all_404_are_recorded_as_not_found(two_repo_run, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    _refuse_everything_of(monkeypatch, "/bad", status=404)
+    _refuse_everything_of(monkeypatch, "/good", status=401)
+
+    assert index_platform.main([]) == 1
+
+    err = capsys.readouterr().err
+    assert "group/bad" in err and "Check the token" in err
+    (run,) = two_repo_run["runs"]
+    assert run["refused_repos"] == ["good", "bad"] and run["not_found_repos"] == ["bad"]
+    # A mixed run's error names both causes.
+    assert "HTTP 401" in run["error"] and "HTTP 404" in run["error"]
