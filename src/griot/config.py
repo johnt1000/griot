@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 from griot import FALSE_WORDS, TRUE_WORDS  # the package itself: not the configuration
 
 
-class _NotValid(ValueError):
+class NotValid(ValueError):
     """A value that is not valid for the setting it was given to."""
 
 
@@ -106,7 +106,7 @@ EMPTY_IS_DEFAULT = frozenset({"flag", "enable", "roots", "hosts"})
 
 
 def normalized(setting: Setting, raw: str) -> str:
-    """`raw` as it is written to the file, or _NotValid saying what a valid
+    """`raw` as it is written to the file, or NotValid saying what a valid
     value looks like. The same rules the readers apply when griot starts:
     a value accepted here is one the next run can start with."""
     text = raw.strip()
@@ -117,33 +117,33 @@ def normalized(setting: Setting, raw: str) -> str:
         except ValueError:
             number = math.nan
         if not math.isfinite(number) or number < 0:
-            raise _NotValid(f"{setting.name} takes a finite number, zero or more (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes a finite number, zero or more (got {raw!r}).")
         return text
     if kind == "count":
         # isascii: "²" and "٣" are digits to isdigit() and an error to int().
         if not (text.isascii() and text.isdigit()) or int(text) < 1:
-            raise _NotValid(f"{setting.name} takes a whole number from 1 up (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes a whole number from 1 up (got {raw!r}).")
         return str(int(text))
     if kind in ("flag", "enable"):
         if text.lower() not in _TRUE + _FALSE:
-            raise _NotValid(f"{setting.name} takes true or false (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes true or false (got {raw!r}).")
         return "true" if text.lower() in _TRUE else "false"
     if kind == "choice":
         if text not in setting.choices:
-            raise _NotValid(f"{setting.name} takes one of: {', '.join(setting.choices)} (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes one of: {', '.join(setting.choices)} (got {raw!r}).")
         return text
     if kind == "model":
         if not text or len(text) > 100 or not text.isprintable() or any(ch.isspace() for ch in text):
-            raise _NotValid(f"{setting.name} takes a model name, one word (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes a model name, one word (got {raw!r}).")
         return text
     if kind == "url":
         parts = urlsplit(text)
         host = parts.hostname
         if not host or parts.username or parts.password or parts.query or parts.fragment or not text.isprintable():
-            raise _NotValid(f"{setting.name} takes the base URL of the API, such as https://gitlab.example.com/api/v4, "
+            raise NotValid(f"{setting.name} takes the base URL of the API, such as https://gitlab.example.com/api/v4, "
                             f"with no credentials in it (got {raw!r}).")
         if parts.scheme != "https" and not (parts.scheme == "http" and host in _LOCAL_HOSTS):
-            raise _NotValid(f"{setting.name} takes an https URL: the platform token is sent to it (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes an https URL: the platform token is sent to it (got {raw!r}).")
         return text.rstrip("/")
     if kind == "hosts":
         # As the reader compares them (platforms._remote_host): the host of
@@ -151,10 +151,10 @@ def normalized(setting: Setting, raw: str) -> str:
         # a host would be accepted here and never match anything.
         hosts = [host.lower() for host in _split(text, ",")]
         if any(re.fullmatch(r"[^:]+:\d+", host) for host in hosts):
-            raise _NotValid(f"{setting.name} takes host names without a port: a remote is matched by its host "
+            raise NotValid(f"{setting.name} takes host names without a port: a remote is matched by its host "
                             f"alone (got {raw!r}).")
         if not hosts or not all(_HOST.fullmatch(host) for host in hosts):
-            raise _NotValid(f"{setting.name} takes host names separated by commas, such as git.example.com "
+            raise NotValid(f"{setting.name} takes host names separated by commas, such as git.example.com "
                             f"(no scheme, no path; got {raw!r}).")
         return ",".join(dict.fromkeys(hosts))
     if kind == "roots":
@@ -162,16 +162,16 @@ def normalized(setting: Setting, raw: str) -> str:
         for part in _split(text, ":"):
             path = os.path.abspath(os.path.expanduser(part))
             if not os.path.isabs(os.path.expanduser(part)):
-                raise _NotValid(f"{setting.name} takes absolute directories separated by ':' ({part!r} is relative).")
+                raise NotValid(f"{setting.name} takes absolute directories separated by ':' ({part!r} is relative).")
             if path == os.path.abspath(os.sep):
-                raise _NotValid(f"{setting.name} cannot be the whole filesystem ({part!r}).")
+                raise NotValid(f"{setting.name} cannot be the whole filesystem ({part!r}).")
             if not os.path.isdir(path):
-                raise _NotValid(f"{setting.name}: {part!r} is not a directory.")
+                raise NotValid(f"{setting.name}: {part!r} is not a directory.")
             roots.append(path)
         if not roots:
-            raise _NotValid(f"{setting.name} takes absolute directories separated by ':' (got {raw!r}).")
+            raise NotValid(f"{setting.name} takes absolute directories separated by ':' (got {raw!r}).")
         return ":".join(dict.fromkeys(roots))
-    raise _NotValid(f"{setting.name} is not changed with this command.")
+    raise NotValid(f"{setting.name} is not changed with this command.")
 
 
 # --- before the configuration loads ---------------------------------------------------------
@@ -214,7 +214,7 @@ def before_configuration_loads(argv: list[str]) -> None:
         return
     try:
         value = normalized(setting, argv[2])
-    except _NotValid:
+    except NotValid:
         return
     os.environ[setting.variable] = value
 
@@ -222,7 +222,7 @@ def before_configuration_loads(argv: list[str]) -> None:
 # --- what is in force -----------------------------------------------------------------------
 
 
-def _template() -> dict[str, tuple[str | None, str]]:
+def template_settings() -> dict[str, tuple[str | None, str]]:
     from griot import common
 
     return {variable: (default or None, description)
@@ -230,7 +230,7 @@ def _template() -> dict[str, tuple[str | None, str]]:
 
 
 def default_of(setting: Setting) -> str | None:
-    return _template().get(setting.variable, (None, ""))[0]
+    return template_settings().get(setting.variable, (None, ""))[0]
 
 
 def _in_file(setting: Setting) -> str | None:
@@ -372,7 +372,7 @@ def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, s
     try:
         return _measured(setting, raw, old)
     except ValueError:
-        # _NotValid is one, and so is whatever else a value nobody thought of
+        # NotValid is one, and so is whatever else a value nobody thought of
         # raises on the way: what cannot be measured is not known to be narrow.
         return "it is not a value this setting takes", raw
 
@@ -387,7 +387,7 @@ def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, 
     try:
         # As the readers take it ("yes" in the file is on).
         old = normalized(setting, old) if old else old
-    except _NotValid:
+    except NotValid:
         pass  # measured against what the file says, as it says it
     if setting.variable in _OFF_STAYS_OFF:
         turned_off = (old or "").strip().lower() in _FALSE
@@ -547,7 +547,7 @@ def cmd_list(as_json: bool) -> int:
     for setting in SETTINGS:
         value, source = in_force(setting)
         rows.append({"name": setting.name, "variable": setting.variable, "value": value, "source": source,
-                     "default": default_of(setting), "description": _template().get(setting.variable, (None, ""))[1]})
+                     "default": default_of(setting), "description": template_settings().get(setting.variable, (None, ""))[1]})
     if as_json:
         print(json.dumps(rows, ensure_ascii=False))
         return 0
@@ -579,7 +579,7 @@ def cmd_set(name: str, raw: str) -> int:
         return 2
     try:
         value = normalized(setting, raw)
-    except _NotValid as e:
+    except NotValid as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
@@ -605,7 +605,7 @@ def cmd_set(name: str, raw: str) -> int:
                   f"<USD per 1M tokens>")
         credential = common.CHAT_PROFILES[value].get("api_key_env") or ("GEMINI_TOKEN" if value == "gemini" else None)
         if credential and not common.credential(credential):
-            provider = auth._provider_label(credential) if credential.startswith("GRIOT_") else value
+            provider = auth.provider_label(credential) if credential.startswith("GRIOT_") else value
             print(f"  It needs a credential that is not set ({credential}): griot auth set {provider}")
     _after_a_change(setting)
     return 0

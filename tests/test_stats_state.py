@@ -287,7 +287,7 @@ def test_the_state_is_read_from_the_logs_and_the_golden_set_file(tmp_path):
         {"query": "b", "must_include": [{"repo": "gone", "source_type": "code"}]},
     ]))
     common.log_query(question="old", via="cli", num_sources=1, duration_seconds=1.0, sources=[])
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF, {"total": 2, "passed": 1, "failed": 1, "cases": []})
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF, {"total": 2, "passed": 1, "failed": 1, "cases": []})
 
     state = stats.load_state()
 
@@ -313,8 +313,8 @@ def test_the_latest_record_is_the_last_one_written():
 def test_a_check_without_the_golden_set_does_not_erase_its_last_result():
     """The background check and `--skip-golden-set` record a check with no
     golden part. After one, the report said "never run"."""
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF, {"total": 5, "passed": 4, "failed": 1, "cases": []})
-    quality_check._record_for_trend(common.COLLECTION_NAME, dict(SELF, passed=10, failed=0), None)
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF, {"total": 5, "passed": 4, "failed": 1, "cases": []})
+    quality_check.record_for_trend(common.COLLECTION_NAME, dict(SELF, passed=10, failed=0), None)
 
     state = stats.load_state()
 
@@ -324,7 +324,7 @@ def test_a_check_without_the_golden_set_does_not_erase_its_last_result():
 
 
 def test_a_check_of_another_profiles_collection_says_nothing_about_this_one():
-    quality_check._record_for_trend("codebase__some-other-profile", SELF, {"total": 5, "passed": 5, "failed": 0, "cases": []})
+    quality_check.record_for_trend("codebase__some-other-profile", SELF, {"total": 5, "passed": 5, "failed": 0, "cases": []})
     state = stats.load_state()
     assert state["last_quality_check"] is None and state["last_golden_check"] is None
 
@@ -403,7 +403,7 @@ async def test_the_tool_returns_a_golden_set_and_a_dead_last_run_through_the_pro
     _write_golden_set(json.dumps([{"query": "a", "must_include": [{"repo": "gone", "source_type": "code"}]}]))
     (tmp_path / "kept").mkdir()
     repos.add_repo(str(tmp_path / "kept"))
-    quality_check._record_for_trend(common.COLLECTION_NAME, SELF, {"total": 1, "passed": 0, "failed": 1, "cases": []})
+    quality_check.record_for_trend(common.COLLECTION_NAME, SELF, {"total": 1, "passed": 0, "failed": 1, "cases": []})
     common.log_run_summary(script="index_code", indexed=None, skipped=None, failed=None, error="died early")
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_stats", {})

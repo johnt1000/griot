@@ -2032,7 +2032,7 @@ def test_quality_check_tool_records_its_run_for_the_trend(monkeypatch, tmp_path)
     write_quality_check(), leaving the trend reading a table nothing filled;
     the fix was to record from the CLI. But griot_quality_check calls
     run_self_check() directly, so an MCP check never reaches
-    _record_for_trend — and the new /mcp__griot__health prompt turns that
+    record_for_trend — and the new /mcp__griot__health prompt turns that
     into the recommended path. Run it ten times, then ask for stats, and
     quality_trend is empty while griot_stats' own docstring promises it.
 
@@ -2043,7 +2043,7 @@ def test_quality_check_tool_records_its_run_for_the_trend(monkeypatch, tmp_path)
                         lambda collection, sample_size: {"passed": 9, "sampled": 10, "failed": 1,
                                                          "collection": collection, "failures": []})
     recorded = []
-    monkeypatch.setattr(quality_check, "_record_for_trend",
+    monkeypatch.setattr(quality_check, "record_for_trend",
                         lambda collection, self_check, golden_check: recorded.append(collection))
 
     mcp_server.griot_quality_check(sample_size=10)
@@ -2065,7 +2065,7 @@ def test_quality_check_tool_caps_the_sample_size(monkeypatch):
                         lambda collection, sample_size: seen.update(n=sample_size) or
                         {"passed": 1, "sampled": 1, "failed": 0, "collection": collection,
                          "avg_score": 0.99, "failures": []})
-    monkeypatch.setattr(quality_check, "_record_for_trend", lambda *a, **kw: None)
+    monkeypatch.setattr(quality_check, "record_for_trend", lambda *a, **kw: None)
 
     mcp_server.griot_quality_check(sample_size=100_000)
 

@@ -326,7 +326,7 @@ def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit
         if name not in indexable:
             return False
         if name not in has_text:
-            content = index_code._read_source(indexable[name], root)
+            content = index_code.read_source(indexable[name], root)
             has_text[name] = bool(content and content.strip())
         return has_text[name]
 

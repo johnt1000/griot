@@ -222,9 +222,9 @@ def secure_write_text_atomic(path: Path, text: str) -> None:
 
 # Provider -> one-line description for the credentials section of the
 # generated .env template (ensure_env_template() below). Not the source of
-# truth for WHICH providers exist — that's auth._providers() (derived from
+# truth for WHICH providers exist — that's credential_env_vars() (derived from
 # EMBED_PROFILES/CHAT_PROFILES + the 5 platform tokens); this is only extra
-# prose for a provider auth._providers() already knows about. A provider
+# prose for a provider credential_env_vars() already knows about. A provider
 # missing here just gets a generic fallback comment, never breaks.
 _ENV_TEMPLATE_PROVIDER_NOTES = {
     "gemini": "default chat profile; not the default embed profile (jina-code, local, is)",
@@ -310,7 +310,6 @@ def ensure_env_template() -> None:
         # command, so it must not stop them all; the defaults apply, a write
         # (env_file_set) raises with the reason, and `griot doctor` says so.
         return
-    from griot import auth  # lazy: auth.py imports common.py at module load, avoid the cycle
 
     lines = [
         "# griot configuration — generated on first run.",
@@ -325,7 +324,7 @@ def ensure_env_template() -> None:
         "",
         "# --- Embedding & chat credentials ---",
     ]
-    for provider, env_var in sorted(auth._providers().items()):
+    for provider, env_var in sorted(credential_env_vars().items()):
         note = _ENV_TEMPLATE_PROVIDER_NOTES.get(provider, f"credential for the '{provider}' provider")
         lines.append(f"# {provider} — {note}")
         lines.append(f"{env_var}=")
@@ -693,8 +692,10 @@ def logged_question(question: str) -> str:
 # process it starts for that conversation. Claude Code exports
 # CLAUDE_CODE_SESSION_ID both to the commands its shell tool runs and to the
 # MCP servers it starts (checked on 2.1.x: the same value in both, and across
-# shell calls). opencode exports only OPENCODE=1 and OPENCODE_PID, the pid of
-# its own process, which can hold several conversations, so it is no session.
+# shell calls). The servers get it once, when started: see log_session() for
+# what that means after /clear or /resume. opencode exports only OPENCODE=1
+# and OPENCODE_PID, the pid of its own process, which can hold several
+# conversations, so it is no session.
 CLIENT_SESSION_ENV_VARS = ("CLAUDE_CODE_SESSION_ID",)
 
 
@@ -711,6 +712,19 @@ def log_session() -> str | None:
     process, and only the client's id makes two of them one session. The
     client gives the same id to the `griot mcp` it started, so a
     `griot_search` and a later `griot ask` of one conversation pair too.
+
+    Except when the conversation changes under a running server (a known
+    limit, observed on Claude Code 2.1.295): `/clear` and an in-session `/resume`
+    keep the MCP servers running with the id they were started with, while
+    the shell tool's next command gets the new conversation's id. From then
+    on the server's searches stay in the old session (so a search after
+    `/clear` can pair with one before it) and a later `griot ask` does not
+    pair with them. Nothing per call could replace the start-time
+    environment: a tools/call `_meta` carries only `claudecode/toolUseId`
+    (one tool use) and `progressToken`, and initialize names the client,
+    not the conversation. A new `claude` process (`claude --resume` is one)
+    starts its servers with the conversation's id; whether a reconnect from
+    `/mcp` does too was not checked.
 
     Otherwise, a digest of the PARENT process (its pid and start time, so a
     reused pid is another session): the MCP client that started `griot mcp`,
@@ -1958,7 +1972,7 @@ def _ensure_spend_state_migrated() -> None:
     legacy file and no log yet there is nothing to migrate and nothing to
     read: a READ of today's spend then creates no directory (griot doctor,
     the status on day one)."""
-    if not SPEND_STATE_PATH.exists() and logdb._nothing_logged_yet(LOG_DIR):
+    if not SPEND_STATE_PATH.exists() and logdb.nothing_logged_yet(LOG_DIR):
         return
     secure_mkdir(LOG_DIR)
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
