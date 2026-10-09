@@ -143,6 +143,9 @@ jobs:
           cd /tmp
           /tmp/fresh/bin/griot --version
           /tmp/fresh/bin/griot --help > /dev/null
+          # keyring is a dependency (the OS keychain for credentials): a wheel
+          # that stops declaring it would fall back to plaintext silently.
+          /tmp/fresh/bin/python -c "import keyring"
         env:
           # Never let a smoke test write into the runner's real XDG paths.
           GRIOT_CONFIG_DIR: /tmp/griot-smoke/config

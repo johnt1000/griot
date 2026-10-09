@@ -251,33 +251,86 @@ fastembed has no BAAI/bge-m3, so the profile failed at its first embedding. Reso
 
 A long-running server whose virtual environment was deleted answered with the error of whatever file a call read, such as a missing CA bundle. Resolved: a failed call checks whether the installation is gone and, if so, says so and asks for a restart (#103).
 
-### 60. A question that found nothing is logged with a chat model
+### 60. ~~A question that found nothing is logged with a chat model~~ — resolved
 
-When `griot ask` finds nothing it calls no chat model (#105), but the query
-log still records the active chat profile and model for that question, so
-the log reads as if a chat call was made. The tests of the log assert those
-fields, which is why it was kept.
+The query log named the active chat profile and model for a question that called none. Resolved: such a question is logged with neither (#109).
 
-### 61. `griot search` does not say which filters left it empty
+### 61. ~~`griot search` does not say which filters left it empty~~ — resolved
 
-`griot ask` follows `No results.` with the filters that narrowed the search
-(#105); `griot search` with the same filters says only `No results.`, which
-reads as "nothing about this anywhere".
+`griot ask` named the filters that narrowed an empty search; `griot search` and `griot_search` did not. Resolved: the three say the same sentence, from one function, and a test holds them to it (#109).
 
-### 62. The disagreement offer is blind to a narrow rank window
+### 62. ~~The disagreement offer is blind to a narrow rank window~~ — resolved
 
-`griot golden-set review` treats a result one ranking did not place as past
-the depth only when that ranking was asked for at least `DISAGREE_DEPTH`
-(10) points. A hybrid search logged with a smaller window, such as `griot
-search --limit 5` without grouping, is therefore never offered as a
-disagreement. The depth itself is argued, not measured on real logs.
+The premise did not hold for the searches that are logged: `griot search`, the example given, logs nothing, and every search `griot ask` and `griot_search` log fetches each ranking several times wider than the list it returns, so from a limit of 2 the window already reaches the depth; only a one-result search is narrower, and it has nothing to disagree about. Resolved by pinning that at every such limit in the tests and writing the reason down; the depth of 10 was measured against 5 and 20 on a throwaway index of this repository, not on real logs (#108).
 
-### 63. opencode shows each griot skill twice when both harnesses are installed globally
+### 63. ~~opencode shows each griot skill twice when both harnesses are installed globally~~ — resolved
 
-opencode also reads `~/.claude/skills` (unless
-`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` is set), so griot installed globally
-for both Claude Code and opencode gives opencode two copies of each skill:
-it logs a "duplicate skill name" warning and the last one loaded wins.
+opencode also loads `~/.claude/skills`, so it got two copies of each skill. Resolved: a skill opencode already loads from another directory, or one being installed there in the same run, is not copied for it, and the copies an earlier install left are deleted (#110); debts 64 and 69 are what that left open.
+
+### 64. `griot assist install` deletes opencode's earlier skill copies without asking
+
+To end the duplicates (#110), the install deletes the copies of griot's
+skills an earlier install left in opencode's own directory, at a terminal
+or not; the MCP tool's question mentions it, but only inside the question
+about the whole install. A copy the person edited by hand is lost with the
+rest. The shape decided: at a terminal, ask before deleting; without one,
+or from `griot_assist_install`, keep the copies and report them, with the
+command that removes them.
+
+### 65. A default `pipx install griot-rag` has no keychain
+
+The `keyring` package is the optional `keychain` extra, so a default
+install has no keychain and `griot auth set` stores the credential in
+`<config_dir>/.env` (0600). The commands say so, but the advice they give,
+as the README does, is `pip install "griot[keychain]"`, which names
+`griot`, not griot's PyPI name `griot-rag`, and is not how a pipx install
+adds a package (`pipx inject griot-rag keyring`), so the person may not
+notice the fallback or not know how to leave it. Either
+`griot auth set`, `auth list` and `doctor` name the right command for the
+way griot was installed, or `keyring` becomes a default dependency: to be
+decided.
+
+### 66. Importing griot reads every credential from the keychain
+
+On import, `common.py` asks the keychain for every known credential not
+already in the environment, whether the command needs it or not. On macOS,
+an interpreter the keychain items do not trust (a new virtual environment,
+a reinstall) raises one password prompt per credential per process, and a
+run that starts several processes raises many. The shape of a fix: read
+only the credential a command needs, when it needs it.
+
+### 67. A GitLab 404 with a token blames the token
+
+With a valid token, a project that does not exist or is not visible to
+that token answers HTTP 404, and the run ends with "Check the token
+(`griot auth list`)", which points at the wrong cause. Without a token the
+404 already says "private, or does not exist" (#107). With a token set, a
+404 should say the project was not found or is not visible to that token.
+
+### 68. Agents do not learn the new result metadata
+
+The `griot_search` tool description is capped at 1600 characters
+(`tests/test_server_instructions.py`) and is 2 characters short of it, so
+the metadata added this round, a GitLab item's `url` (#107) and a
+release's `author` (#111), is documented only in `docs/indexing-model.md`,
+not where agents read. Decide how agents learn which metadata fields a
+result can carry: a resource that lists them, say, or a shorter
+description that points to one.
+
+### 69. opencode's skill switches are read from griot's environment
+
+Whether a skill is skipped for opencode (#110) depends on
+`OPENCODE_DISABLE_CLAUDE_CODE(_SKILLS)` and
+`OPENCODE_DISABLE_EXTERNAL_SKILLS` as griot's own process sees them, not as
+opencode is started, so the decision is wrong when opencode runs with other
+values: a skill it no longer loads from `~/.claude/skills` is skipped, or a
+duplicate is copied. And `griot assist install --harness claude-code` alone
+puts the skills in `~/.claude/skills` without removing the copies an
+earlier opencode install left, so opencode shows them twice until the next
+install for opencode. The shape of a fix: say in the output that the
+decision assumes opencode is started with the same values, and clean
+opencode's copies whenever an install for Claude Code makes them
+duplicates.
 
 ---
 

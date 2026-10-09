@@ -65,9 +65,9 @@ specific to its kind:
 | `commit` | `repo`, `commit_hash`, `author`, `date`, `chunk_index` |
 | `tag` | `repo`, `tag_name`, `commit_hash` (the commit the tag leads to, not the tag object), `date`, `chunk_index` |
 | `branch` | `repo`, `branch_name`, `last_commit_hash`, `last_commit_date` |
-| `merge_request` | `repo`, `mr_iid`, `state`, `author`, `created_at`, `source_branch`, `target_branch`, `chunk_index` |
-| `release` | `repo`, `tag_name`, `released_at`, `author` (GitHub, GitLab and Gitea/Forgejo: absent when the platform gives none, and on a release indexed before griot stored it until the next platform run), `chunk_index` |
-| `issue` | `repo`, `issue_iid`, `state`, `author`, `created_at`, `chunk_index` |
+| `merge_request` | `repo`, `mr_iid`, `state`, `author`, `created_at`, `source_branch`, `target_branch`, `url` (GitLab only: its web page), `chunk_index` |
+| `release` | `repo`, `tag_name`, `released_at`, `author` (GitHub, GitLab and Gitea/Forgejo: absent when the platform gives none, and on a release indexed before griot stored it until the next platform run), `url` (GitLab only), `chunk_index` |
+| `issue` | `repo`, `issue_iid`, `state`, `author`, `created_at`, `url` (GitLab only), `chunk_index` |
 
 `griot search` always labels each excerpt from these fields —
 `commit a1b2c3d4 — my-service`, `MR !245 (merged) — my-api` — and

@@ -2,8 +2,8 @@
 
 Two things were silent. A credential set before the keychain support stays in
 plaintext in <config>/.env until `griot auth migrate` moves it, and nothing
-said it was still there. And with no keychain backend reachable (the `keyring`
-extra not installed, headless Linux, a container) griot falls back to the
+said it was still there. And with no keychain backend reachable (`keyring`
+not importable, headless Linux, a container) griot falls back to the
 plaintext file, which is right, and nothing said so either.
 
 `griot auth list` and `griot doctor` now say where each credential is stored
@@ -132,7 +132,7 @@ def test_list_says_there_is_no_keychain_and_the_file_is_plaintext(capsys):
     auth.cmd_list()
 
     out = capsys.readouterr().out
-    assert "no OS keychain backend" in out and "griot[keychain]" in out
+    assert "no OS keychain backend" in out and "reinstall griot-rag" in out
     openai = next(line for line in out.splitlines() if line.strip().startswith("openai"))
     assert "plaintext" in openai and str(common.ENV_PATH) in openai
     assert SECRET not in out
@@ -144,7 +144,7 @@ def test_list_with_keyring_installed_but_no_backend_does_not_say_install_it(monk
     auth.cmd_list()
 
     out = capsys.readouterr().out
-    assert "no OS keychain backend" in out and "griot[keychain]" not in out
+    assert "no OS keychain backend" in out and "reinstall griot-rag" not in out
 
 
 def test_list_names_the_keychain_and_where_each_one_is(keychain, monkeypatch, capsys):
@@ -215,7 +215,7 @@ def test_set_says_the_fallback_to_the_plaintext_file_and_why(monkeypatch, capsys
 
     out = capsys.readouterr().out
     assert "plaintext" in out and str(common.ENV_PATH) in out
-    assert "no OS keychain backend" in out and "griot[keychain]" in out
+    assert "no OS keychain backend" in out and "reinstall griot-rag" in out
     _no_secret_in(out)
 
 
@@ -253,7 +253,7 @@ def test_migrate_with_keyring_but_no_backend_does_not_say_install_it(monkeypatch
     assert auth.cmd_migrate() == 0
 
     out = capsys.readouterr().out
-    assert "openai" in out and "griot[keychain]" not in out and "Secret Service" in out
+    assert "openai" in out and "reinstall griot-rag" not in out and "Secret Service" in out
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == SECRET
 
 
@@ -299,7 +299,7 @@ def test_doctor_names_credentials_still_in_plaintext_and_the_command_that_moves_
     assert "Fake Keyring" in check["detail"] and "GITLAB_PERSONAL_ACCESS_TOKEN" in check["detail"]
     assert "griot auth migrate" in check["fix"]
     # The keychain is there: the advice is the move alone, not to find a backend first.
-    assert "Secret Service" not in check["fix"] and "griot[keychain]" not in check["fix"]
+    assert "Secret Service" not in check["fix"] and "reinstall griot-rag" not in check["fix"]
     _no_secret_in(check["detail"] + check["fix"])
 
 
@@ -324,20 +324,20 @@ def test_doctor_says_the_fallback_when_no_backend_is_reachable():
     assert check["status"] == "ok" and check["fix"] is None
     assert "no OS keychain backend" in check["detail"] and "plaintext" in check["detail"]
     assert "GRIOT_OPENAI_API_KEY" in check["detail"]
-    assert "griot[keychain]" in check["detail"] and "griot auth migrate" in check["detail"]
+    assert "reinstall griot-rag" in check["detail"] and "griot auth migrate" in check["detail"]
     _no_secret_in(check["detail"])
 
 
 def test_doctor_does_not_say_install_it_when_keyring_is_there_but_finds_no_backend(monkeypatch):
-    """Installing the extra again fixes nothing on headless Linux: the note
-    is a backend, then the move."""
+    """Reinstalling griot fixes nothing on headless Linux: the note is a
+    backend, then the move."""
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring(_Backend("fail Keyring", 0)))
     common.env_file_set("GRIOT_OPENAI_API_KEY", SECRET)
 
     check = _credentials()
 
     assert check["status"] == "ok" and check["fix"] is None
-    assert "griot[keychain]" not in check["detail"]
+    assert "reinstall griot-rag" not in check["detail"]
     assert "Secret Service" in check["detail"] and "griot auth migrate" in check["detail"]
 
 
