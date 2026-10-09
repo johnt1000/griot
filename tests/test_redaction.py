@@ -249,21 +249,80 @@ PATHOLOGICAL = {
 }
 
 
+# The child spends its own CPU on `setup` (importing griot is most of it) before
+# the clock starts: the limit covers `call` alone.
+_CPU_LIMITED_CHILD = """
+import math, resource, sys
+cpu_seconds = int(sys.argv[1])
+{setup}
+text = sys.stdin.read()
+usage = resource.getrusage(resource.RUSAGE_SELF)
+spent = math.ceil(usage.ru_utime + usage.ru_stime)
+_, hard = resource.getrlimit(resource.RLIMIT_CPU)
+resource.setrlimit(resource.RLIMIT_CPU, (spent + cpu_seconds, hard))
+{call}
+"""
+
+# Only a backstop for a child that never gets CPU at all: the verdict comes
+# from the CPU limit, which kills a runaway after `cpu_seconds` of CPU however
+# long the machine makes it wait for them.
+_WALL_BACKSTOP_SECONDS = 120
+
+
+def _runs_away(setup: str, call: str, text: str, cpu_seconds: int) -> str | None:
+    """Why `call` ran away on `text`, or None if it finished in time.
+
+    Time is CPU time, not wall time: a backtracking pattern burns CPU, while
+    a busy machine (the full suite, a CI runner) only makes a fast one wait
+    for a CPU, and a wall-clock limit failed a fast detector that way
+    (2026-10-09). RLIMIT_CPU makes the kernel kill the child with SIGXCPU
+    once it has spent its budget, so a runaway still fails in about
+    `cpu_seconds` instead of after minutes."""
+    import signal
+    import subprocess
+    import sys
+    child = _CPU_LIMITED_CHILD.format(setup=setup, call=call)
+    try:
+        done = subprocess.run([sys.executable, "-c", child, str(cpu_seconds)], input=text, text=True,
+                              capture_output=True, timeout=_WALL_BACKSTOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        return f"no verdict after {_WALL_BACKSTOP_SECONDS} seconds of wall time"
+    if done.returncode == -signal.SIGXCPU:
+        return f"still running after {cpu_seconds} seconds of CPU"
+    # Any other failure is a broken check, not a fast detector: say so.
+    assert done.returncode == 0, f"the child failed (exit {done.returncode}): {done.stderr[-2000:]}"
+    return None
+
+
 @pytest.mark.parametrize("name", list(PATHOLOGICAL))
 def test_no_input_makes_the_detectors_run_away(name):
     """~60 KB each. A pattern that backtracks takes minutes on these; one that
-    does not takes milliseconds. The budget is generous so a busy machine
-    does not fail it (the real cost is about 20 ms), and still far below what backtracking costs."""
-    import multiprocessing
+    does not takes about 20 ms of CPU. The budget is 3 seconds of CPU, far
+    below what backtracking costs and far above the real cost."""
+    assert _runs_away("from griot import redaction", "redaction.redact(text)", PATHOLOGICAL[name], 3) is None
 
-    process = multiprocessing.Process(target=redaction.redact, args=(PATHOLOGICAL[name],))
-    process.start()
-    process.join(3)
-    alive = process.is_alive()
-    if alive:
-        process.terminate()
-        process.join()
-    assert not alive, "a detector is still running after 3 seconds"
+
+def test_the_runaway_check_catches_a_pattern_that_backtracks():
+    """The check above is only worth something if it fails for a real
+    catastrophic pattern, and once its CPU budget is spent: by the kernel's
+    CPU limit, not by the wall-clock backstop minutes later."""
+    why = _runs_away("import re; pattern = re.compile(r'(a+)+$')", "pattern.search(text)", "a" * 40 + "!", 1)
+    assert why == "still running after 1 seconds of CPU"
+
+
+def test_the_runaway_check_does_not_count_time_spent_off_the_cpu():
+    """A loaded machine (the full suite, a CI runner) leaves the detector
+    waiting for a CPU: a wall-clock limit then fails a fast pattern
+    (2026-10-09). Sleeping past the budget is that wait, made certain."""
+    assert _runs_away("import time", "time.sleep(2)", "", 1) is None
+
+
+def test_a_child_that_fails_is_not_read_as_a_fast_detector():
+    """A child that dies of something else (griot fails to import, say) also
+    ends early: read as "finished in time", every case above would pass
+    without having run a detector."""
+    with pytest.raises(AssertionError, match="the child failed"):
+        _runs_away("import griot.no_such_module", "pass", "", 1)
 
 
 # --- private keys: the material, not the mention -------------------------------------------
