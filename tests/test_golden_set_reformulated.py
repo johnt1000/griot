@@ -311,7 +311,10 @@ def test_the_server_keeping_its_start_session_is_documented_where_sessions_are()
     paragraph = paragraph.split("A hybrid search logs")[0]
     for text in (doc, paragraph):
         assert "/clear" in text and "/resume" in text, text
-        assert "_meta" in text, text# --- which searches are offered ---------------------------------------------
+        assert "_meta" in text, text
+
+
+# --- which searches are offered ---------------------------------------------
 
 
 def test_a_search_reworded_soon_after_in_the_same_session_is_offered():
