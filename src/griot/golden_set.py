@@ -785,7 +785,15 @@ def _rewords(first: dict, then: dict) -> bool:
     It cannot tell a rewording from a question about another facet of the
     same thing ("how is the lock acquired" after "how is the lock
     released"); the person reviewing can, which is why the follow-up is
-    shown beside the question."""
+    shown beside the question.
+
+    Nor can it tell two conversations apart that log one session: subagents
+    reaching griot through their parent's `griot mcp` process share the
+    parent's session, so a parallel subagent's search on a nearby subject
+    can be paired as "the next search" of another's. Accepted as a limit:
+    the shared-words rule above keeps out searches on other subjects, two
+    searches at the same instant are never paired, and the person sees the
+    follow-up and its results and can answer `n` or `s`."""
     if not all(isinstance(r.get("question"), str) and r["question"] != common.OMITTED_QUESTION
                for r in (first, then)):
         return False
@@ -835,10 +843,7 @@ def _candidate(kind: str, key: str, group: list[dict], thresholds: dict, followu
     row = (next((r for r in reversed(group) if _has_pickable_results(r) and not _unlike_the_check(r)), None)
            or next((r for r in reversed(group) if _has_pickable_results(r)), None)
            or group[-1])
-    sources = _sources(row)
-    results = row.get("results")
-    if not isinstance(results, list) or len(results) != len(sources):
-        results = None  # logged before results were recorded: shown, not made a case
+    sources, results = _sources(row), _results(row)
     limit = row.get("limit")
     return {
         "kind": kind, "key": key, "query": row["question"], "times": len(group),
@@ -856,15 +861,105 @@ def _candidate(kind: str, key: str, group: list[dict], thresholds: dict, followu
         # many seconds later: what tells the person why it is offered.
         "followup": followup["question"] if followup else None,
         "followup_after": round((_logged_at(followup) - _logged_at(row)).total_seconds()) if followup else None,
+        # And what the follow-up returned: it is the search that served, so
+        # the right document may be only in its list (see _choices()).
+        "followup_mode": _mode(followup) if followup else None,
+        "followup_sources": _sources(followup) if followup else None,
+        "followup_results": _results(followup) if followup else None,
+        "followup_unlike": _unlike_the_check(followup) if followup else None,
     }
+
+
+def _results(row: dict) -> list | None:
+    """A row's case entries, one per source, or None when they cannot be
+    read as written: logged before results were recorded, shown and not
+    made a case."""
+    results = row.get("results")
+    return results if isinstance(results, list) and len(results) == len(_sources(row)) else None
+
+
+def _choices(candidate: dict) -> list[dict]:
+    """What the person can pick from, in the order shown: {label, entry,
+    origin, blocked, rank}. `entry` is the must_include entry a pick adds;
+    `blocked` is None when it can be picked, "cannot" when the log holds no
+    entry for it, or the note saying why its search cannot make a case;
+    `rank` is its place in the first search's list (None when only the
+    follow-up returned it).
+
+    For most candidates, the results of the one search offered (origin
+    None). For a "reformulated" one, the first search's results, then the
+    follow-up's that the first did not return, each marked with the search
+    that returned it ("first", "follow-up", or "both", shown once). A pick
+    from either list makes a case of the FIRST question in the first
+    search's mode: its list is the one that did not serve, and the person
+    is saying which document answers it.
+
+    Which results can be picked follows from the case that would be made,
+    checked in the first search's mode over every repository and not
+    grouped (see _unlike_the_check()): a result can be picked when the
+    search that returned it drew from that same pool, neither narrowed nor
+    grouped, and the first search's mode is one the check knows. The
+    follow-up's own mode does not matter, since the case does not repeat
+    it. A narrowed first search does not block the follow-up's results: the
+    case asserts nothing about what the first search returned, only which
+    document answers its question, and that judgement was made among
+    results from the check's pool. A document in both lists can be picked
+    when either search allows it."""
+    first_results = candidate["results"]
+    reformulated = candidate["followup_sources"] is not None
+    first_note = (_unlike_note(candidate["unlike"], "The first search's" if reformulated else "These")
+                  if candidate["unlike"] else None)
+
+    def entry_of(results, j, note):
+        if note:
+            return None, note
+        if results is None or not isinstance(results[j], dict):
+            return None, "cannot"
+        return results[j], None
+
+    if not reformulated:
+        return [{"label": label, "entry": entry, "origin": None, "blocked": blocked, "rank": j}
+                for j, label in enumerate(candidate["sources"])
+                for entry, blocked in [entry_of(first_results, j, first_note)]]
+
+    follow_sources, follow_results = candidate["followup_sources"], candidate["followup_results"]
+    if candidate["mode"] not in common.SEARCH_MODES:
+        follow_note = first_note  # no case can be checked in the first search's mode at all
+    elif candidate["followup_unlike"]:
+        follow_note = _unlike_note(candidate["followup_unlike"], "The follow-up's")
+    else:
+        follow_note = None
+    in_follow: dict[str, int] = {}
+    for j, label in enumerate(follow_sources):
+        in_follow.setdefault(label, j)
+
+    choices = []
+    for j, label in enumerate(candidate["sources"]):
+        entry, blocked = entry_of(first_results, j, first_note)
+        if label in in_follow and blocked:
+            other, other_blocked = entry_of(follow_results, in_follow[label], follow_note)
+            if not other_blocked:
+                entry, blocked = other, None
+        choices.append({"label": label, "entry": entry, "origin": "both" if label in in_follow else "first",
+                        "blocked": blocked, "rank": j})
+    shown = set(candidate["sources"])
+    for j, label in enumerate(follow_sources):
+        if label not in shown:
+            shown.add(label)
+            entry, blocked = entry_of(follow_results, j, follow_note)
+            choices.append({"label": label, "entry": entry, "origin": "follow-up", "blocked": blocked,
+                            "rank": None})
+    return choices
 
 
 def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dict:
     """Data half of `golden-set review`: questions from the query log worth
     making into cases, none written.
 
-    Four kinds, in this order: a question asked more than once (by
-    query_key(), across sessions and projects), most asked first; a
+    Four kinds, taking turns one candidate each in this order until
+    `limit` (see _take_turns()), each kind in its own order: a question
+    asked more than once (by query_key(), across sessions and projects),
+    most asked first; a
     vector search whose best result scored in the bottom quarter of its
     collection's (see _hard_thresholds()), lowest first; a hybrid search
     whose vector and keyword rankings disagreed about what comes first
@@ -919,8 +1014,20 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
     # that means more than "past the depth".
     disagree.sort(key=lambda c: str(c["timestamp"] or ""), reverse=True)
     reformulated.sort(key=lambda c: str(c["timestamp"] or ""), reverse=True)
-    return {"candidates": (repeated + hard + disagree + reformulated)[:limit], "searches": len(rows),
+    return {"candidates": _take_turns([repeated, hard, disagree, reformulated], limit), "searches": len(rows),
             "omitted": omitted}
+
+
+def _take_turns(kinds: list[list[dict]], limit: int) -> list[dict]:
+    """One candidate of each kind in turn, each kind in its own order, until
+    `limit`. Cutting the kinds one after another at `limit` let a kind with
+    many candidates (a log full of repeated questions) crowd out every kind
+    after it, so a reworded search was never shown at the default limit;
+    taking turns shows each kind while it has candidates left."""
+    taken: list[dict] = []
+    for turn in range(max(map(len, kinds), default=0)):
+        taken.extend(kind[turn] for kind in kinds if turn < len(kind))
+    return taken[:limit]
 
 
 def _not_logged_note(omitted: int) -> str | None:
@@ -937,15 +1044,26 @@ _CANNOT = ("cannot become a case: it was logged before griot recorded what a cas
            "or its name looked like a credential")
 
 
-def _unlike_note(unlike: list[str]) -> str:
-    return (f"These results cannot become a case: this was {', '.join(unlike)}, and a case is checked in its own "
+def _unlike_note(unlike: list[str], whose: str = "These") -> str:
+    it = "this" if whose == "These" else "it"
+    return (f"{whose} results cannot become a case: {it} was {', '.join(unlike)}, and a case is checked in its own "
             f"mode (vector, keyword or hybrid) over every repository, searched as readers search and not grouped "
             f"by document, which may never return them. "
             f"Asked again that way, the question can be.")
 
 
+# Which kind each candidate is, at the head of it: the kinds take turns in
+# one list (see _take_turns()), so the order alone no longer says.
+_KIND_LABELS = {"repeated": "asked again", "hard": "low score", "disagree": "rankings disagree",
+                "reformulated": "reworded"}
+
+_ORIGIN_MARKS = {None: "", "first": "  (first search only)", "both": "  (both searches)",
+                 "follow-up": "  (follow-up only)"}
+
+
 def _show(candidate: dict, number: int, total: int) -> None:
-    print(f"\n[{number}/{total}] {common.shown(candidate['query'].splitlines()[0] if candidate['query'] else '')}")
+    print(f"\n[{number}/{total}] ({_KIND_LABELS[candidate['kind']]}) "
+          f"{common.shown(candidate['query'].splitlines()[0] if candidate['query'] else '')}")
     if candidate["kind"] == "repeated":
         where = f", from {candidate['projects']} projects" if candidate["projects"] > 1 else ""
         print(f"  Why: asked {candidate['times']} times{where}.")
@@ -963,27 +1081,34 @@ def _show(candidate: dict, number: int, total: int) -> None:
         print(f"  Why: low score. Its best result scored {candidate['top_score']:.2f}, at or under "
               f"{candidate['threshold']:.2f}: the bottom quarter of the vector searches in this collection.")
     unlike = candidate["unlike"]
-    print(f"  Results logged for it ({candidate['mode']} search, {str(candidate['timestamp'] or '?')[:10]}):")
-    results, ranks = candidate["results"], candidate["ranks"]
-    for j, label in enumerate(candidate["sources"], start=1):
-        flag = "" if not unlike and results is not None and isinstance(results[j - 1], dict) \
-            else "  (cannot become a case)"
-        # Where it stood in each ranking; "-" for not among the points that
-        # ranking was asked for.
-        where = (f"  (vector {ranks[j - 1]['vector'] or '-'}, keyword {ranks[j - 1]['keyword'] or '-'})"
-                 if ranks is not None else "")
-        print(f"    [{j}] {common.shown(label)}{where}{flag}")
+    reformulated = candidate["followup_sources"] is not None
+    also = f" and for its follow-up ({candidate['followup_mode']} search)" if reformulated else ""
+    print(f"  Results logged for it ({candidate['mode']} search, {str(candidate['timestamp'] or '?')[:10]}){also}:")
+    ranks = candidate["ranks"]
+    for j, choice in enumerate(_choices(candidate), start=1):
+        flag = "  (cannot become a case)" if choice["blocked"] else ""
+        # Where it stood in each ranking of the first search; "-" for not
+        # among the points that ranking was asked for.
+        where = (f"  (vector {ranks[choice['rank']]['vector'] or '-'}, "
+                 f"keyword {ranks[choice['rank']]['keyword'] or '-'})"
+                 if ranks is not None and choice["rank"] is not None else "")
+        print(f"    [{j}] {common.shown(choice['label'])}{where}{_ORIGIN_MARKS[choice['origin']]}{flag}")
+    whose = "The first search's" if reformulated else "These"
     if unlike:
-        print(f"  {_unlike_note(unlike)}")
-    elif results is None:
-        print(f"  These results {_CANNOT}. Asked again, the question can be.")
+        print(f"  {_unlike_note(unlike, whose)}")
+    elif candidate["results"] is None:
+        print(f"  {whose} results {_CANNOT}. Asked again, the question can be.")
+    if reformulated and candidate["followup_unlike"]:
+        print("  " + _unlike_note(candidate["followup_unlike"], "The follow-up's"))
+    elif reformulated and candidate["followup_results"] is None:
+        print(f"  The follow-up's results {_CANNOT}.")
 
 
 def _ask(candidate: dict) -> str | list[dict]:
     """The person's answer for one candidate: "skip", "none", "reject",
     "quit", or the must_include entries of the results they picked."""
-    sources, results = candidate["sources"], candidate["results"]
-    pickable = not candidate["unlike"] and results is not None and any(isinstance(e, dict) for e in results)
+    choices = _choices(candidate)
+    pickable = any(not choice["blocked"] for choice in choices)
     prompt = (("Which result is the right one? number(s), comma-separated; " if pickable else "")
               + "n = none of them, s = skip, r = reject (never offer again), q = quit: ")
     while True:
@@ -1004,18 +1129,19 @@ def _ask(candidate: dict) -> str | list[dict]:
         except ValueError:
             print("  Answer with numbers (e.g. 1,3), n, s, r or q.")
             continue
-        wrong = [j for j in picked if not 1 <= j <= len(sources)]
+        wrong = [j for j in picked if not 1 <= j <= len(choices)]
         if not picked or wrong:
-            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{len(sources)}).")
+            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{len(choices)}).")
             continue
-        if candidate["unlike"]:
-            print(f"  {_unlike_note(candidate['unlike'])}")
+        blocked = [choices[j - 1]["blocked"] for j in picked if choices[j - 1]["blocked"]]
+        if blocked:
+            for note in dict.fromkeys(b for b in blocked if b != "cannot"):
+                print(f"  {note}")
+            unusable = [j for j in picked if choices[j - 1]["blocked"] == "cannot"]
+            if unusable:
+                print(f"  Result {', '.join(map(str, unusable))} {_CANNOT}.")
             continue
-        unusable = [j for j in picked if results is None or not isinstance(results[j - 1], dict)]
-        if unusable:
-            print(f"  Result {', '.join(map(str, unusable))} {_CANNOT}.")
-            continue
-        return [results[j - 1] for j in picked]
+        return [choices[j - 1]["entry"] for j in picked]
 
 
 def cmd_review(limit: int = 10) -> int:
