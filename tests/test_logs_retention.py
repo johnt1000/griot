@@ -175,17 +175,26 @@ def test_concurrent_writers_lose_nothing_while_the_prune_runs(tmp_path):
     take a row it should not while others write."""
     _fill(tmp_path, 400)
     errors = []
+    # The prune starts once every writer has written a row of each table.
+    # The newest row of a table is never pruned, however old, so a prune that
+    # finished before any write kept the old row by design, and nothing
+    # pruned after: a scheduler that ran the prune thread first (seen on the
+    # macOS runner) failed the test for a reason that is not a lost write.
+    first_writes = threading.Barrier(5)
 
     def write(n):
         try:
             for i in range(40):
                 logdb.write_tool_call(tmp_path, f"t{n}", ok=True, timestamp=_at(0))
                 logdb.write_query(tmp_path, {"timestamp": _at(0), "question": f"{n}-{i}"})
+                if i == 0:
+                    first_writes.wait(timeout=30)
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
     def prune():
         try:
+            first_writes.wait(timeout=30)
             for _ in range(20):
                 logdb.prune_older_than(tmp_path, 30, now=NOW)
         except Exception as e:  # noqa: BLE001
