@@ -66,9 +66,30 @@ between minor versions. Breaking changes are called out explicitly.
   release from Bitbucket or Azure DevOps), and a release indexed before
   gets it on the next `griot index platform` run without being embedded
   again.
+- **The `griot://result-fields` MCP resource** lists, for each kind of
+  source, the metadata fields a `griot_search` result can hold and what
+  each one means (a file path, a commit hash, GitLab's `url`, a release's
+  `author`, ...). It is generated from the list every indexer's payload is
+  now checked against, so it cannot fall behind what is stored: an indexer
+  that writes a field the list does not hold fails. The `griot_search`
+  description names a few fields as examples and points to the resource
+  for the rest, instead of listing fields it had no room for.
 
 ### Changed
 
+- **`keyring` is a dependency of `griot-rag`**, so a default
+  `pipx install griot-rag` keeps credentials in the OS keychain. The
+  `keychain` extra is kept, empty, so install commands that name it still
+  work without a warning. Where no keychain backend is reachable (Linux
+  without a running Secret Service, a headless server, a container, CI),
+  credentials still go to `<config_dir>/.env` (mode 0600), and
+  `griot auth set`, `auth list`, `auth migrate` and `griot doctor` now say
+  the key is kept in plaintext, why (naming `PYTHON_KEYRING_BACKEND` when
+  that variable chose the backend), and how to get a backend. A missing
+  `keyring` now says to reinstall `griot-rag`. **Upgrade note:** on macOS
+  the keychain becomes reachable after the upgrade, so a machine whose keys
+  were kept in plaintext in `.env` will see `griot doctor` warn and
+  suggest `griot auth migrate`, which moves them into the keychain.
 - With a narrowed search that finds nothing, `griot search` and
   `griot_search` now name the filters that narrowed it, in the sentence
   `griot ask` prints for the same search (the tool adds it to its `note`).
@@ -144,16 +165,52 @@ between minor versions. Breaking changes are called out explicitly.
   `.agents/skills`, so it showed each skill twice ("duplicate skill name")
   when griot was installed for both harnesses. A skill already there, or
   being installed there for Claude Code in the same run, is not copied for
-  opencode; the copies an earlier install left in opencode's own directory
-  are deleted, and the output lists them and says which skills were left
-  out and why. opencode still gets its own agent file, which it does not
-  read from `~/.claude`. Starting opencode with
-  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` (or `OPENCODE_DISABLE_CLAUDE_CODE`,
-  or `OPENCODE_DISABLE_EXTERNAL_SKILLS` for both directories) set, and
-  running the install with it set too, gives it its own copy again.
-  `griot_assist_install` follows the same rule: its question names the
-  directory and the deletion, and each result carries `skills_skipped`,
-  `removed` and `note`.
+  opencode, and the output says which skills were left out and why.
+  opencode still gets its own agent file, which it does not read from
+  `~/.claude`. Starting opencode with `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`
+  (or `OPENCODE_DISABLE_CLAUDE_CODE`, or `OPENCODE_DISABLE_EXTERNAL_SKILLS`
+  for both directories) set, and running the install with it set too,
+  gives it its own copy again; the note names each of those variables with
+  the value it had (or `unset`), and says they were read in griot's own
+  environment, not in the one opencode is started with. The copies an
+  earlier install left in opencode's own directory are never deleted
+  without asking, so a hand edit there is not lost: at a terminal the
+  install lists them and asks (default no); otherwise, and with
+  `--skills-only`, it keeps them and says where they are, why opencode
+  shows them twice and how to remove them. It also reports them after an
+  install for Claude Code alone, which is what makes them duplicates.
+  `griot_assist_install` follows the same rule and never deletes: its
+  question names the directory, each result carries `skills_skipped` and
+  `note`, and the copies found are listed under `copies_kept`.
+- **Credentials are read from the OS keychain only when a command needs
+  them**, once per process, instead of every known credential each time
+  griot was imported. On macOS, an interpreter the keychain items do not
+  trust (a new virtual environment, a reinstall) asked for the keychain
+  password once per stored credential in every griot process, a search,
+  the MCP server and each index run it starts; now a search with a local
+  profile reads none, an `openai-small` search reads only its key,
+  `griot index platform` only that platform's token, and `griot auth list`
+  and `griot doctor` each credential once. A key that is not in the
+  keychain is not asked for again in the same process. The order is
+  unchanged: a shell export, then `<config_dir>/.env`, then the keychain.
+  A value found in the keychain is no longer put in the environment, so
+  child processes do not inherit every credential and each reads only what
+  it needs. Because a lookup, absence included, is kept for the life of
+  the process, a key added to the keychain later reaches a running
+  `griot mcp` only after it is restarted.
+- **A platform that answers HTTP 404 under a token no longer blames the
+  token.** With the platform's token set, a project that does not exist,
+  or that the token cannot see, ended `griot index platform` with "Check
+  the token". The closing message now names the project, the platform and
+  the remote it came from (without any credentials written in the remote
+  URL) and says the project was not found or is not visible to the token;
+  a 401 or 403 still points at the token, and a mix says which fetch got
+  which answer. The rule is the same for GitHub, GitLab, Bitbucket, Azure
+  DevOps and Gitea/Forgejo. The run records the repositories whose every
+  fetch got a 404 (`not_found_repos`), and `griot stats`, `griot doctor`
+  and `griot_index_status` (`platform_not_found` per repository) show
+  them apart, pointing at the project path and the token's access instead
+  of at the token.
 
 ## [0.3.0] — 2026-10-07
 

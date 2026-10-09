@@ -267,70 +267,49 @@ The premise did not hold for the searches that are logged: `griot search`, the e
 
 opencode also loads `~/.claude/skills`, so it got two copies of each skill. Resolved: a skill opencode already loads from another directory, or one being installed there in the same run, is not copied for it, and the copies an earlier install left are deleted (#110); debts 64 and 69 are what that left open.
 
-### 64. `griot assist install` deletes opencode's earlier skill copies without asking
+### 64. ~~`griot assist install` deletes opencode's earlier skill copies without asking~~ — resolved
 
-To end the duplicates (#110), the install deletes the copies of griot's
-skills an earlier install left in opencode's own directory, at a terminal
-or not; the MCP tool's question mentions it, but only inside the question
-about the whole install. A copy the person edited by hand is lost with the
-rest. The shape decided: at a terminal, ask before deleting; without one,
-or from `griot_assist_install`, keep the copies and report them, with the
-command that removes them.
+The install deleted the copies of griot's skills an earlier install left in opencode's own directory, so a hand edit there was lost. Resolved: at a terminal it lists them and asks (default no); otherwise it keeps them and says where they are, why they are redundant and how to remove them, and `griot_assist_install` never deletes and lists them under `copies_kept` (#115).
 
-### 65. A default `pipx install griot-rag` has no keychain
+### 65. ~~A default `pipx install griot-rag` has no keychain~~ — resolved
 
-The `keyring` package is the optional `keychain` extra, so a default
-install has no keychain and `griot auth set` stores the credential in
-`<config_dir>/.env` (0600). The commands say so, but the advice they give,
-as the README does, is `pip install "griot[keychain]"`, which names
-`griot`, not griot's PyPI name `griot-rag`, and is not how a pipx install
-adds a package (`pipx inject griot-rag keyring`), so the person may not
-notice the fallback or not know how to leave it. Either
-`griot auth set`, `auth list` and `doctor` name the right command for the
-way griot was installed, or `keyring` becomes a default dependency: to be
-decided.
+`keyring` was an optional extra, so a default install kept credentials in plaintext and named the wrong command to leave it. Resolved: `keyring` is a dependency of `griot-rag` (the `keychain` extra kept, empty), and where no backend is reachable `griot auth` and `griot doctor` say the key is in plaintext, why, and how to get a backend (#113).
 
-### 66. Importing griot reads every credential from the keychain
+### 66. ~~Importing griot reads every credential from the keychain~~ — resolved
 
-On import, `common.py` asks the keychain for every known credential not
-already in the environment, whether the command needs it or not. On macOS,
-an interpreter the keychain items do not trust (a new virtual environment,
-a reinstall) raises one password prompt per credential per process, and a
-run that starts several processes raises many. The shape of a fix: read
-only the credential a command needs, when it needs it.
+Every griot process asked the keychain for every known credential on import, one macOS prompt each. Resolved: a credential is read only when a command needs it, once per process, absence included, and is no longer put in the environment children inherit (#114); debt 71 is what that left open.
 
-### 67. A GitLab 404 with a token blames the token
+### 67. ~~A GitLab 404 with a token blames the token~~ — resolved
 
-With a valid token, a project that does not exist or is not visible to
-that token answers HTTP 404, and the run ends with "Check the token
-(`griot auth list`)", which points at the wrong cause. Without a token the
-404 already says "private, or does not exist" (#107). With a token set, a
-404 should say the project was not found or is not visible to that token.
+A project that does not exist or is not visible to the token ended the run with "Check the token". Resolved for every platform: a fetch answered 404 under a token is called not found, naming the project, platform and remote, and the run records `not_found_repos`, which `griot stats`, `griot doctor` and `griot_index_status` (`platform_not_found`) show apart (#117); debt 70 is what that left open.
 
-### 68. Agents do not learn the new result metadata
+### 68. ~~Agents do not learn the new result metadata~~ — resolved
 
-The `griot_search` tool description is capped at 1600 characters
-(`tests/test_server_instructions.py`) and is 2 characters short of it, so
-the metadata added this round, a GitLab item's `url` (#107) and a
-release's `author` (#111), is documented only in `docs/indexing-model.md`,
-not where agents read. Decide how agents learn which metadata fields a
-result can carry: a resource that lists them, say, or a shorter
-description that points to one.
+The `griot_search` description had no room for new metadata fields. Resolved: the `griot://result-fields` resource lists the fields of each kind of source, served from the list every indexer's payload is checked against, and the description points to it (#116).
 
-### 69. opencode's skill switches are read from griot's environment
+### 69. ~~opencode's skill switches are read from griot's environment~~ — resolved
 
-Whether a skill is skipped for opencode (#110) depends on
-`OPENCODE_DISABLE_CLAUDE_CODE(_SKILLS)` and
-`OPENCODE_DISABLE_EXTERNAL_SKILLS` as griot's own process sees them, not as
-opencode is started, so the decision is wrong when opencode runs with other
-values: a skill it no longer loads from `~/.claude/skills` is skipped, or a
-duplicate is copied. And `griot assist install --harness claude-code` alone
-puts the skills in `~/.claude/skills` without removing the copies an
-earlier opencode install left, so opencode shows them twice until the next
-install for opencode. The shape of a fix: say in the output that the
-decision assumes opencode is started with the same values, and clean
-opencode's copies whenever an install for Claude Code makes them
-duplicates.
+The decision to skip a skill for opencode silently assumed opencode runs with griot's values of `OPENCODE_DISABLE_*`, and an install for Claude Code alone left opencode's copies as duplicates. Resolved: the note names each variable with its value and says it was read in griot's environment, and an install for Claude Code alone reports opencode's copies too (#115).
+
+### 70. A repository refused for mixed reasons still gets the token advice
+
+A repository is recorded in `not_found_repos` only when every fetch got a
+404 under a token (#117). One whose fetches got some 404s and some 401 or
+403 answers stays among the token refusals, so `griot stats`,
+`griot doctor` and `griot_index_status` tell the person to check the token
+and say nothing about the project. The run's own closing message does say
+which fetch got which answer; the record keeps only the repository.
+
+### 71. A key added to the keychain does not reach a running server, and `griot auth set` does not say so
+
+A server process asks the keychain for a credential once and keeps the
+answer, an absence included, for its whole life (#114), so a key added
+later reaches a running `griot mcp` only after a restart. `griot auth set`
+warns about restarting only when the key it stores replaced one in
+`<config_dir>/.env`; a new key, or one that replaces a keychain value,
+prints nothing, and the warning it does print names only `.env` as the
+reason. The fix is in the wording: say to restart a running server
+whenever a key is stored, wherever it went.
 
 ---
 
@@ -466,11 +445,12 @@ keychain storage while continuing to decline encryption of the vector store.
 
 ### Adopt security layers additively, never as a hard requirement
 
-Keychain support degrades to the pre-existing behaviour on any failure, with
-the credential injected into `os.environ` once at import so that every
-existing `os.getenv()` call site works unchanged and is unaware of which
-backend held the value. A security improvement that breaks the tool in
-environments where it used to work will be turned off, not adopted.
+Keychain support degrades to the pre-existing behaviour on any failure: an
+unreachable backend leaves the credential in `<config_dir>/.env`, and every
+call site reads it through one accessor that falls back from the
+environment to the keychain, unaware of which backend held the value. A
+security improvement that breaks the tool in environments where it used to
+work will be turned off, not adopted.
 
 ### A default written out explicitly is an override in disguise
 
@@ -505,6 +485,17 @@ marker and its list of exceptions. A tool marked read-only by mistake would
 have been both offered and expected. The answer now comes from what each
 tool does when called. A test whose expected value is computed from the
 thing under test cannot catch a mistake the two share.
+
+### A guard written against the old shape guards the mechanism, not the harm
+
+A test said that the credential status the MCP tools read must never touch
+the keychain, because on macOS each read can ask for a password and those
+tools run on every call. It held only while importing griot had already put
+every key in the environment. Once keys were read on demand, obeying it
+would have shown a key kept only in the keychain as not configured. The
+harm was a prompt on every call, not a read; the guard now says that (once
+per process). When the code a guard sits on changes shape, check the guard
+against the harm it was written for, not against its wording.
 
 
 ---
