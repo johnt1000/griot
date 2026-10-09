@@ -20,6 +20,8 @@ import math
 import re
 from typing import Callable, NamedTuple
 
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
+
 
 class Detector(NamedTuple):
     rule: str
@@ -321,6 +323,7 @@ def main(argv=None) -> int:
         description="Lists where the index holds credential-looking values: locations and rule names, never the "
                     "values. Read-only. Exit status 1 when something is found.",
     )
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.parse_args(argv)
     from griot import common
 

@@ -163,6 +163,7 @@ def _cmd_index_keywords(rest: list) -> int:
                     "embeds nothing and costs nothing. A collection made before keyword search is copied into a "
                     "new one, which needs about as much free disk as the collection while it runs. Safe to run "
                     "again; run again after an interruption, it resumes the copy where it stopped.")
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.parse_args(rest)
     from griot import common
 
@@ -205,12 +206,28 @@ def _cmd_index_keywords(rest: list) -> int:
     return 0
 
 
+def _index_all_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="griot index all",
+        description=f"Runs every source in one process, in this order: {', '.join(INDEX_SOURCES)}; stops at the "
+                    f"first one that fails. Every other flag (--repo, --path, --dry-run, --prune) is forwarded to "
+                    f"each source: see `griot index code --help`.")
+    show_flags_read_by_griot(parser, SOURCES_FLAG, PROFILE_FLAG)
+    return parser
+
+
 def _cmd_index(args) -> int:
     rest = list(args.rest)
     if args.source == "keywords":
         return _cmd_index_keywords(rest)
     if args.source != "all":
         return _run_index_source(args.source, rest)
+    # `all` has a help of its own: otherwise --help reaches each source's
+    # parser in turn, five helps followed by "all sources completed".
+    # parse_known_args takes every spelling of --help each source's parser
+    # takes (a prefix, -h) and leaves every other flag alone; its result is
+    # not used, so `rest` is forwarded exactly as given.
+    _index_all_parser().parse_known_args(rest)
 
     # `griot index all`: runs the sources in sequence within a single process.
     # `--sources` (resolved) filters which of the INDEX_SOURCES
@@ -575,6 +592,45 @@ def _extract_flag(argv: list, flag: str) -> tuple[list, str | None]:
     return out, value
 
 
+# The flags _extract_flag() takes out, as each --help shows them. They are
+# not declared as options of any parser: a declared option would also take
+# argparse's prefixes (`--pro`, `--sour`), which the extraction does not, so
+# a prefix would be parsed and silently dropped instead of refused as now,
+# and it would make prefixes of other options ambiguous (`--pr` for
+# --prune). show_flags_read_by_griot() adds them to the help only. Public
+# because the modules griot forwards to (ask.py, index_*.py, ...) show them
+# in their own parsers' help. (flag, metavar, help)
+PROFILE_FLAG = ("--profile", "NAME", "Use this embedding profile for this run only, instead of the active one "
+                                     "(`griot profiles list` names them, `griot profiles use` changes the active one)")
+SOURCES_FLAG = ("--sources", "LIST", f"Run only these sources, comma-separated, in the order given (default: all "
+                                     f"of {','.join(INDEX_SOURCES)})")
+# Where more than `griot index all` reads the help, it says whose flag it is.
+_SOURCES_OF_INDEX_ALL = (*SOURCES_FLAG[:2], f"`griot index all` only. {SOURCES_FLAG[2]}")
+
+
+def chat_profile_flag(names) -> tuple[str, str, str]:
+    """`griot ask`'s --chat-profile. The names are passed in: they live in
+    common.CHAT_PROFILES, which this module must not import to build a help
+    (see the module docstring)."""
+    return ("--chat-profile", "NAME", f"Answer with this chat provider for this run only ({', '.join(names)}), "
+                                      f"instead of GRIOT_CHAT_PROFILE")
+
+
+def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str, str, str]) -> None:
+    """Adds to `parser`'s --help a section naming `flags`, which griot reads
+    before that parser sees the command line. The section is laid out by
+    argparse itself, on a parser that is only ever formatted, so it reads
+    like the options above it; `parser` parses exactly what it did."""
+    shown = argparse.ArgumentParser(prog=parser.prog, add_help=False)
+    group = shown.add_argument_group("read by griot itself, anywhere on the command line")
+    for flag, metavar, help_text in flags:
+        group.add_argument(flag, metavar=metavar, help=help_text)
+    # Without its usage paragraph, which names only these flags.
+    section = shown.format_help().split("\n\n", 1)[1]
+    format_help = parser.format_help
+    parser.format_help = lambda: f"{format_help().rstrip()}\n\n{section}"
+
+
 def _extract_profile_override(argv: list) -> tuple[list, str | None]:
     return _extract_flag(argv, "profile")
 
@@ -604,6 +660,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="griot",
         description="Griot — local RAG over code, git history and code platforms (GitHub/GitLab/Bitbucket/Azure DevOps/Gitea) of your repositories.",
     )
+    show_flags_read_by_griot(parser, PROFILE_FLAG,
+                             ("--chat-profile", "NAME", "`griot ask`: the chat provider for this run only (see "
+                                                        "`griot ask --help`)"),
+                             _SOURCES_OF_INDEX_ALL)
     parser.add_argument("--version", action="version", version=f"griot {__version__}")
     subparsers = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
@@ -616,6 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "`griot index keywords` is not a source: it adds keyword (BM25) vectors to a collection "
                     "indexed before keyword search existed, embedding nothing.",
     )
+    show_flags_read_by_griot(p_index, PROFILE_FLAG, _SOURCES_OF_INDEX_ALL)
     p_index.add_argument("source", choices=INDEX_SOURCES + ["all", "keywords"], metavar="source",
                          help=f"One of: {', '.join(INDEX_SOURCES + ['all', 'keywords'])}")
     p_index.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
@@ -626,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raw search, by meaning or by exact words (no chat/LLM synthesis)",
         description="Searches the vector store and prints sources + score. Never calls any chat model.",
     )
+    show_flags_read_by_griot(p_search, PROFILE_FLAG)
     p_search.add_argument("query", help="Natural-language query")
     p_search.add_argument("--limit", type=at_least_one, default=5, help="How many results (default: %(default)s)")
     p_search.add_argument("--repo", action="append", metavar="NAME",

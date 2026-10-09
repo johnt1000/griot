@@ -9,6 +9,7 @@ import qdrant_edge as qe
 # aliased because `golden_set` is also this module's parameter name.
 from griot import common, logdb
 from griot import golden_set as golden_set_mod
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 # Cap on how many individual failures a stored record keeps. A self-check
 # over a large corpus with a high failure rate would otherwise persist a
@@ -362,11 +363,13 @@ def golden_summary(golden_check: dict) -> str:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
+        prog="griot quality-check",
         description="Tests the SEARCH quality of a collection (self-check + curated golden set, each case in "
                     "the search mode it was made in). "
                     "Does not call any chat LLM (only embeds the query) — tests retrieval, not ask.py's "
                     "final answer, which isn't deterministic."
     )
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.add_argument("--collection", help="Collection name (default: the active GRIOT_EMBED_PROFILE's)")
     parser.add_argument("--sample-size", type=int, default=SELF_CHECK_SAMPLE_SIZE, help="How many points to sample in the self-check (default: %(default)s)")
     parser.add_argument("--min-score", type=float, default=SELF_CHECK_MIN_SCORE, help="Minimum acceptable self-match score (default: %(default)s)")

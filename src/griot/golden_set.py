@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from griot import common, logdb, retrieval_eval
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 # Fields that identify an item of each source_type specifically but without
 # overfitting (e.g. it does NOT include chunk_index for code — a question
@@ -1079,6 +1080,7 @@ def main(argv=None) -> int:
         prog="griot golden-set",
         description="Manages quality_golden_set.json (curated level 2, from `griot quality-check`).",
     )
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
     p_suggest = sub.add_parser(

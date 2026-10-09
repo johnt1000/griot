@@ -37,6 +37,7 @@ from importlib import metadata
 from pathlib import Path
 
 from griot import ConfigurationError, UnknownEmbedProfile
+from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 OK, WARN, FAIL, SKIP = "ok", "warn", "FAIL", "skip"
 # The name of the check on git itself (a label: the one git call here goes
@@ -679,6 +680,7 @@ def main(argv=None) -> int:
                     "registration and tool approval, the environment a server would obey, git, the log, and whether "
                     "a newer griot was released (asks PyPI; `griot config set update-check false` turns that off). "
                     "Reads only (changes no setting, index or file of yours). Exit status 1 only when a check fails.")
+    show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.add_argument("--json", action="store_true", help="One JSON document instead of the report")
     args = parser.parse_args(argv)
     checks = run_checks()
