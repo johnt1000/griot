@@ -8,6 +8,52 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Added
+
+- **`griot golden-set review` offers a fourth kind of candidate,
+  `reformulated`**: a search the next search of the same session reworded,
+  an implicit sign its list did not serve. The follow-up must come within 5
+  minutes, search the same collection, not be the same question, share at least half of the shorter
+  question's words of four letters or more (normalised as for questions
+  asked more than once), and bring back other results. The first search is
+  the one offered, newest first and after the other three kinds, with the
+  rewording and the gap in seconds shown beside it, since the rule cannot
+  tell a rewording from a question about another facet of the same thing
+  and the person reviewing can. For this every logged search now records
+  `session`, an opaque digest of the process that holds the conversation
+  (the agent session that started `griot mcp`, or the shell `griot ask`
+  ran in), never its process number; a search logged before this, or from
+  a process with no parent of its own, is never paired. The 5-minute
+  window was chosen on constructed logs with
+  `scripts/measure-reformulation-window.py`, not on real use, which is
+  still to be read.
+
+### Fixed
+
+- **`griot auth set` and `griot auth remove` say that running MCP servers
+  keep what they read until restarted** whenever they store or remove a
+  key, wherever it went: a `griot mcp` server reads `<config_dir>/.env`
+  when it starts and keeps each keychain answer, a missing key included,
+  for its life. The note says how to restart one (reconnect it from the
+  client, in Claude Code `/mcp`, or restart the client). Before, `set`
+  warned only when it replaced a key in `.env`, so a new key, or one stored
+  in the keychain, went unannounced while a running server went on without
+  it. Nothing is said when nothing changed, nor by `griot auth migrate`,
+  which moves a value without changing it. An empty template entry
+  (`VAR=` in `.env`) is no longer a key `griot auth remove` reports
+  removing. `griot_auth_guidance` says the same, and that its
+  `configured` is what that server read.
+- **A repository the platform refused for mixed reasons is named as
+  such.** One whose fetches got some 404s under a token and some 401 or
+  403 answers was listed among the token refusals, so `griot stats`,
+  `griot doctor` and `griot_index_status` said to check the token and
+  nothing about the project. The run now records, per refused repository,
+  which fetches were refused for which cause (`refusal_causes`: not found,
+  the token, or another reason), and those readers say which fetch got
+  which answer and give the token advice only for the fetches refused for
+  the token. `griot_index_status` carries the causes per repository as
+  `platform_refusal_causes`. A run recorded before this reads as it did.
+
 ## [0.4.0] — 2026-10-09
 
 ### Added

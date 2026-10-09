@@ -291,25 +291,53 @@ The `griot_search` description had no room for new metadata fields. Resolved: th
 
 The decision to skip a skill for opencode silently assumed opencode runs with griot's values of `OPENCODE_DISABLE_*`, and an install for Claude Code alone left opencode's copies as duplicates. Resolved: the note names each variable with its value and says it was read in griot's environment, and an install for Claude Code alone reports opencode's copies too (#115).
 
-### 70. A repository refused for mixed reasons still gets the token advice
+### 70. ~~A repository refused for mixed reasons still gets the token advice~~ — resolved
 
-A repository is recorded in `not_found_repos` only when every fetch got a
-404 under a token (#117). One whose fetches got some 404s and some 401 or
-403 answers stays among the token refusals, so `griot stats`,
-`griot doctor` and `griot_index_status` tell the person to check the token
-and say nothing about the project. The run's own closing message does say
-which fetch got which answer; the record keeps only the repository.
+A repository whose fetches got some 404s and some 401 or 403 answers stayed among the token refusals, so the readers said to check the token and nothing about the project. Resolved: the run records which fetches were refused for which cause per refused repository (`refusal_causes`), and `griot stats`, `griot doctor` and `griot_index_status` (`platform_refusal_causes`) name it as refused for mixed reasons and give the token advice only for the fetches refused for the token; a run recorded before reads as it did (#122). Debt 72 is what that left open.
 
-### 71. A key added to the keychain does not reach a running server, and `griot auth set` does not say so
+### 71. ~~A key added to the keychain does not reach a running server, and `griot auth set` does not say so~~ — resolved
 
-A server process asks the keychain for a credential once and keeps the
-answer, an absence included, for its whole life (#114), so a key added
-later reaches a running `griot mcp` only after a restart. `griot auth set`
-warns about restarting only when the key it stores replaced one in
-`<config_dir>/.env`; a new key, or one that replaces a keychain value,
-prints nothing, and the warning it does print names only `.env` as the
-reason. The fix is in the wording: say to restart a running server
-whenever a key is stored, wherever it went.
+`griot auth set` warned about a running server only when it replaced a key in `.env`. Resolved: `set` and `remove` say, whenever they store or remove a key, that running MCP servers keep what they read until restarted and how to restart them, and `griot_auth_guidance` says the same (#121).
+
+### 72. A platform failure under a token that is not the token's fault still gets the token advice
+
+A repository whose every platform fetch failed for another cause (no
+answer, a server error) under a token has a single cause, `other`, so it is
+neither among the 404s nor refused for mixed reasons (#122): `griot stats`,
+`griot doctor` and `griot_index_status` list it among the token refusals
+and say to check the token, which is not what failed.
+`platform_refusal_causes` does say `other`; the advice does not read it.
+
+### 73. `griot ask` run through an agent's shell tool never pairs as reworded
+
+The session a logged search records is a digest of its parent process
+(#123). For `griot mcp` that is the agent session; for `griot ask` it is the
+shell it ran in, and an agent's shell tool starts a new shell for each call,
+so every `griot ask` it runs is a session of its own and a rewording through
+it is never offered as `reformulated`.
+
+### 74. Subagents sharing one MCP server share a session
+
+Subagents that reach griot through their parent's `griot mcp` process log
+under the parent's session, so a parallel subagent's search on a nearby
+subject can be taken as "the next search" of another's (#123). The rule that
+half of the subject words must be shared limits this but does not exclude
+it; the person reviewing sees the follow-up and can answer `n` or `s`.
+
+### 75. Reworded candidates can be crowded out of a review
+
+`griot golden-set review` offers the `reformulated` kind last, and the four
+kinds share one `--limit` (10 by default), so with enough repeated, low
+scoring or disagreeing searches the reworded ones are never shown unless the
+limit is raised (#123).
+
+### 76. A reworded candidate offers only the first search's results
+
+A `reformulated` candidate lets the person pick from the results of the
+first search, the one offered (#123). When the right document came back only
+in the follow-up, the person can only answer `n`, and no case comes of it.
+Letting them pick from the follow-up's results as the right answer for the
+first question is a pending maintainer decision.
 
 ---
 
@@ -496,6 +524,17 @@ would have shown a key kept only in the keychain as not configured. The
 harm was a prompt on every call, not a read; the guard now says that (once
 per process). When the code a guard sits on changes shape, check the guard
 against the harm it was written for, not against its wording.
+
+### A measurement on constructed data shows the rule, not the use
+
+The window for reworded searches was chosen by running the rule over
+constructed logs, at the gaps between searches the script assumes (#123).
+That shows how the rule behaves if those assumptions hold: which window
+keeps nearly every rewording before returns to the subject come in. It
+cannot say how often people and agents actually reword, how fast, or how
+many follow-ups are about another facet of the subject, because those are
+the inputs it was given. Such a number is recorded with its assumptions and
+as pending until real use is read, not as a finding.
 
 
 ---
