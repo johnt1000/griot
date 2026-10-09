@@ -343,38 +343,38 @@ The `griot-workflows` skill and the coverage document counted prompts, tools and
 
 The test that refuses hand-written counts let "N human-only tools", "N read-only tools" and "N tools expose less" through in every skill, agent and guide, though a test held them in one passage of one file each. Resolved: a count is let through only inside the passage its holding test reads, taken from the function that test calls (#135).
 
-### 83. A conversation id that changes under a running server would stop pairing
+### 83. ~~A conversation id that changes under a running server would stop pairing~~ — resolved as a documented limit
 
 The `griot mcp` environment is fixed when the client starts it, while each
 `griot ask` through the shell tool reads the conversation id afresh (#126).
 If Claude Code changed `CLAUDE_CODE_SESSION_ID` within a conversation
 without restarting its MCP servers (possibly on `/clear` or a resume), the
 asks after the change would no longer pair with the server's searches until
-it restarts. Not verified either way.
+it restarts. It was not verified when recorded. Resolved: Claude Code was observed to keep its MCP servers across `/clear` and an in-session `/resume`, and to send no conversation id with a tool call, so there is nothing per call to read; the limit and what was observed are documented in `log_session()` and `docs/quality.md` (#137).
 
-### 84. `griot doctor` reads private names of `stats`
+### 84. ~~`griot doctor` reads private names of `stats`~~ — resolved
 
 `doctor` builds its advice from `stats._FAILURE_CHECK`, the wording added
 for a platform that did not answer or failed (#128), and from
 `stats._behind_phrase`, which it has used since it was written. Debt 47
 resolved the same pattern for `common.py` by making such names public, with
-a guard against new ones; `stats` has no such guard.
+a guard against new ones; `stats` has no such guard. Resolved: `stats` exposes `FAILURE_CHECK` and `behind_phrase`, and the guard of debt 47 now covers every module of the package; it found twelve other uses of a module's private names across seven modules, each given a public name (#138).
 
-### 85. The hand-written count test sees at most two words between the number and the noun
+### 85. ~~The hand-written count test sees at most two words between the number and the noun~~ — resolved
 
 The test that refuses hand-written counts of the server's tools, prompts or
 resources (#134, #135) matches a number word from "two", or digits, then
 at most two words, then the noun: "three of griot's read-only MCP tools" or
 "one resource" would pass it. It catches the counts the documents have
-held so far, not every way to write one.
+held so far, not every way to write one. Resolved: the scan reads one, zero, "a single" and digits, singular and plural nouns, and any describing words up to the noun within a clause; closed-class words and nouns that make a compound (a tool call, a tool use) do not count (#139).
 
-### 86. One release-race test still bounds a path by a fixed fraction of a second
+### 86. ~~One release-race test still bounds a path by a fixed fraction of a second~~ — resolved
 
 `test_a_status_read_does_not_wait_behind_a_slow_open` asserts the status
 read takes under 0.25 s against a 0.3 s open (#132). The bound cannot be
 raised toward the open's length without losing the check, and a longer
 open would slow every test that uses the fixture, so it was left; it is
-the one timing bound in that file a loaded machine can still trip.
+the one timing bound in that file a loaded machine can still trip. Resolved: the slow open lasts 10 s and the test asserts the read returned before it finished; two more fixed timings found by the sweep now take their bound from the wait they guard (#139).
 
 ---
 

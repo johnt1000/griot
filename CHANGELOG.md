@@ -38,6 +38,14 @@ between minor versions. Breaking changes are called out explicitly.
   session, so a parallel subagent's search can be taken for the next
   search of another's. This is now documented as a limit of the reworded
   candidates; the person reviewing sees the follow-up and can decline it.
+- A `griot mcp` that outlives a `/clear` or an in-session `/resume` in
+  Claude Code keeps the conversation id it was started with, while the
+  shell tool's next `griot ask` gets the new one, so searches through the
+  server after the switch stay in the old session. This is documented as
+  a limit in `docs/quality.md`: Claude Code was observed to keep its MCP
+  servers running across both commands and to send no conversation id with
+  a tool call. A new `claude` process, `claude --resume` included, starts
+  the server with the right id.
 
 ### Fixed
 
