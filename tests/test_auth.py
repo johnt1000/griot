@@ -359,3 +359,158 @@ def test_main_dispatches_migrate(monkeypatch):
 
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(common.ENV_PATH)
     assert common.keychain_get("GRIOT_OPENAI_API_KEY") == "sk-via-main-migrate"
+
+
+# --- running MCP servers keep what they read (debt 71) -----------------------
+# A server reads <config_dir>/.env into its environment at start and asks the
+# keychain for a credential once, keeping the answer (an absence included)
+# for its whole life, so a key stored or removed later reaches it only after
+# a restart. `griot auth` has to say so whenever it changes a key, wherever
+# the key went, and never when it changed nothing.
+
+
+def _says_restart(out: str) -> bool:
+    return "running griot MCP servers" in out and "/mcp" in out
+
+
+def _cli_auth(*argv) -> int:
+    from griot import cli
+    return cli.main(["auth", *argv])
+
+
+def _fresh_auth(tmp_path, *argv):
+    """A real `griot auth` process under the suite's keyring `fail` backend
+    (conftest sets PYTHON_KEYRING_BACKEND for every child)."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GRIOT_", "RAG_"))}
+    env.update(GRIOT_CONFIG_DIR=str(tmp_path / "config"), GRIOT_DATA_DIR=str(tmp_path / "data"))
+    return subprocess.run([sys.executable, "-m", "griot.cli", "auth", *argv], env=env, capture_output=True,
+                          text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+
+def test_auth_set_of_a_new_key_in_the_file_says_to_restart_running_servers(monkeypatch, capsys):
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "sk-new-key-1111")
+
+    assert _cli_auth("set", "openai") == 0
+
+    out = capsys.readouterr().out
+    assert _says_restart(out)
+    # The old reason named only .env and import time; a keychain read is
+    # kept for the process's life too.
+    assert "only at import time" not in out
+    note = next(line for line in out.splitlines() if "running griot MCP servers" in line)
+    assert "keychain" in note and ".env" in note
+
+
+def test_auth_set_replacing_a_file_key_says_to_restart_running_servers(monkeypatch, capsys):
+    common.env_file_set("GRIOT_OPENAI_API_KEY", "sk-old-key-0000")
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "sk-new-key-1111")
+
+    assert _cli_auth("set", "openai") == 0
+
+    assert _says_restart(capsys.readouterr().out)
+
+
+def test_auth_set_of_a_new_key_in_the_keychain_says_to_restart_running_servers(monkeypatch, capsys):
+    fake = _FakeKeyring()
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "sk-new-key-1111")
+
+    assert _cli_auth("set", "openai") == 0
+
+    out = capsys.readouterr().out
+    assert fake.store[("griot", "GRIOT_OPENAI_API_KEY")] == "sk-new-key-1111"
+    assert _says_restart(out)
+
+
+def test_auth_set_replacing_a_keychain_key_says_to_restart_running_servers(monkeypatch, capsys):
+    fake = _FakeKeyring()
+    fake.store[("griot", "GRIOT_OPENAI_API_KEY")] = "sk-old-key-0000"
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "sk-new-key-1111")
+
+    assert _cli_auth("set", "openai") == 0
+
+    out = capsys.readouterr().out
+    assert fake.store[("griot", "GRIOT_OPENAI_API_KEY")] == "sk-new-key-1111"
+    assert _says_restart(out)
+
+
+def test_auth_set_that_writes_nothing_does_not_mention_restart(monkeypatch, capsys):
+    monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "   ")
+
+    assert _cli_auth("set", "openai") != 0
+    assert _cli_auth("set", "no-such-provider") != 0
+
+    captured = capsys.readouterr()
+    assert "restart" not in (captured.out + captured.err).lower()
+
+
+def test_auth_remove_of_a_keychain_key_says_to_restart_running_servers(monkeypatch, capsys):
+    fake = _FakeKeyring()
+    fake.store[("griot", "GRIOT_OPENAI_API_KEY")] = "sk-old-key-0000"
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+
+    assert _cli_auth("remove", "openai", "--yes") == 0
+
+    out = capsys.readouterr().out
+    assert ("griot", "GRIOT_OPENAI_API_KEY") not in fake.store
+    assert _says_restart(out)
+
+
+def test_auth_remove_of_a_file_key_says_to_restart_running_servers_in_a_real_process(tmp_path):
+    env_path = tmp_path / "config" / "griot" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("GRIOT_OPENAI_API_KEY=sk-old-key-0000\n")
+
+    done = _fresh_auth(tmp_path, "remove", "openai", "--yes")
+
+    # Exit 1: the fail backend cannot confirm the keychain held no copy. The
+    # file's copy is gone all the same, and that is a change a running
+    # server holds on to.
+    assert done.returncode == 1, done.stderr
+    assert "keychain could not be reached" in done.stderr
+    assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(env_path)
+    assert _says_restart(done.stdout)
+
+
+def test_auth_remove_with_nothing_stored_does_not_mention_restart_in_a_real_process(tmp_path):
+    done = _fresh_auth(tmp_path, "remove", "openai", "--yes")
+
+    # Under the fail backend nothing was removed and the keychain could not
+    # be asked: a warning, but no change for a server to miss.
+    assert done.returncode == 1, done.stderr
+    assert "removed from" not in done.stdout
+    assert "restart" not in (done.stdout + done.stderr).lower()
+
+
+def test_auth_migrate_does_not_mention_restart(monkeypatch, capsys):
+    """Migrate moves a value from the file to the keychain unchanged: a
+    running server already holds that value from the file, and after a
+    restart it reads the same one from the keychain, so nothing it would use
+    changes, and a note asking for a restart would only teach people to
+    ignore it."""
+    common.env_file_set("GRIOT_OPENAI_API_KEY", "sk-old-key-0000")
+    monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring())
+
+    assert _cli_auth("migrate") == 0
+
+    out = capsys.readouterr().out
+    assert "Migrated" in out
+    assert "restart" not in out.lower()
+
+
+def test_auth_remove_on_a_fresh_template_removes_nothing_and_keeps_the_placeholder(capsys):
+    """The template every config starts with lists `GRIOT_OPENAI_API_KEY=`
+    empty: that is no key, so removing reports nothing, says nothing about
+    restarting, and leaves the placeholder that makes the variable visible
+    in the template."""
+    common.ensure_env_template()
+    assert dotenv_values(common.ENV_PATH).get("GRIOT_OPENAI_API_KEY") == ""
+
+    assert _cli_auth("remove", "openai", "--yes") == 0
+
+    out = capsys.readouterr().out
+    assert "was not configured" in out
+    assert "restart" not in out.lower()
+    assert "GRIOT_OPENAI_API_KEY" in dotenv_values(common.ENV_PATH)

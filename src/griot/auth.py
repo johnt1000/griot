@@ -105,9 +105,9 @@ def _store_provider_key(provider: str, key: str) -> tuple[bool, str]:
     place the key went from the write itself rather than inferring it.
 
     Write half of provider_status() — validates the provider
-    and the key. Returns True if it REPLACED an already-configured value
-    (the caller may want to warn about a running MCP server not picking
-    this up until restart, same as cmd_set() prints). Raises ValueError on
+    and the key. `replaced` is True if it REPLACED a value in the file (a
+    keychain value it overwrites is not read first: on macOS that is a
+    prompt). Raises ValueError on
     an unknown provider or an empty key — never on a missing .env (that
     case is just "nothing replaced").
 
@@ -177,7 +177,7 @@ def remove_provider_key(provider: str) -> KeyRemoval:
 
     env_var = providers[provider]
     keychain = common.keychain_delete(env_var)
-    removed_from_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
+    removed_from_file = _in_file(env_var)
     if removed_from_file:
         common.env_file_unset(env_var)
     places = tuple(place for place, done in (("keychain", keychain == common.KEYCHAIN_DELETED),
@@ -198,17 +198,32 @@ def cmd_set(provider: str) -> int:
         return 1
 
     _ensure_env_file()
-    replaced, where = _store_provider_key(provider, key)
+    _, where = _store_provider_key(provider, key)
 
     _say_where_it_went(env_var, where)
     _say_if_the_shell_overrides(env_var)
-    if replaced:
-        # [review] common.py resolves .env once, at import time
-        # — a long-lived MCP server already running won't see this change
-        # until it restarts. The CLI is a new process on every call, so this
-        # doesn't affect `griot auth set` itself, only concurrent MCP sessions.
-        print("Warning: an already-running MCP server won't see this change until restarted (common.py resolves .env only at import time).")
+    # Whether or not it replaced anything, and wherever it went: a running
+    # server that asked for this key before kept the absence too.
+    _say_running_servers_keep_what_they_read()
     return 0
+
+
+RUNNING_SERVERS_KEEP_WHAT_THEY_READ = (
+    "running griot MCP servers keep the credentials they already read until they are restarted (each reads "
+    "<config_dir>/.env when it starts and asks the keychain once for each credential, keeping that answer, "
+    "a missing key included). Reconnect them from the client (in Claude Code, /mcp) or restart the client."
+)
+
+
+def _say_running_servers_keep_what_they_read() -> None:
+    """After a key was stored or removed. The CLI is a new process on every
+    call and sees the change; a `griot mcp` server is not: it loaded .env
+    into its environment at import and keeps each keychain answer for its
+    life (common.credential()), so it goes on with the old key, or with no
+    key, until it restarts. Said only
+    when something changed: a note printed on every call is one people
+    learn to skip."""
+    print(f"Note: {RUNNING_SERVERS_KEEP_WHAT_THEY_READ}")
 
 
 def _say_where_it_went(env_var: str, where: str) -> None:
@@ -304,8 +319,16 @@ def _has_stored_key(provider: str) -> bool:
     """Read-only twin of remove_provider_key()'s return value: whether a key
     is stored in the keychain or in the file, the two places it removes from."""
     env_var = _providers()[provider]
-    in_file = common.ENV_PATH.exists() and env_var in dotenv_values(common.ENV_PATH)
-    return bool(in_file or common.keychain_get(env_var))
+    return bool(_in_file(env_var) or common.keychain_get(env_var))
+
+
+def _in_file(env_var: str) -> bool:
+    """Whether <config_dir>/.env holds a key for env_var. The template every
+    config starts with lists each credential as `VAR=` with nothing after
+    it: that placeholder is no key, so removing it would report a removal
+    that changed nothing (and ask for a restart for it), and deleting the
+    line would hide the variable from the template it is there to show."""
+    return bool(common.ENV_PATH.exists() and dotenv_values(common.ENV_PATH).get(env_var))
 
 
 def cmd_remove(provider: str) -> int:
@@ -327,6 +350,7 @@ def cmd_remove(provider: str) -> int:
         if origin["source"] == "environment":
             print(f"Note: {env_var} is still exported in {common.export_places(origin)}: griot keeps using that "
                   f"value until it is not; to stop it, {common.export_advice(env_var, origin, places_said=True)}.")
+        _say_running_servers_keep_what_they_read()
     if unreachable:
         # Not "nothing to remove": a key stored there earlier may still be
         # there, and saying it is gone would be the one wrong answer. Exit 1
@@ -367,6 +391,9 @@ def cmd_migrate() -> int:
         return 0
 
     if migrated:
+        # No note about restarting running servers: the value moved, it did
+        # not change. A server holds it from the file it read at start, and
+        # after a restart reads the same value from the keychain.
         print(f"Migrated to the OS keychain: {', '.join(migrated)}.")
     if could_not_migrate:
         # Not "reinstall griot" whatever the cause: with keyring importable
