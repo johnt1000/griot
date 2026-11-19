@@ -78,6 +78,7 @@ SETTINGS = [
     Setting("mcp-index-roots", "GRIOT_MCP_INDEX_ROOTS", "roots"),
     Setting("mcp-concurrency", "GRIOT_MCP_CONCURRENCY_MODE", "choice", ("multi", "single")),
     Setting("mcp-idle-release", "GRIOT_MCP_IDLE_RELEASE_SECONDS", "amount"),
+    Setting("mcp-search-timeout", "GRIOT_SEARCH_TIMEOUT_SECONDS", "amount"),
     Setting("gitlab-api-base", "GRIOT_GITLAB_API_BASE", "url"),
     Setting("gitea-hosts", "GRIOT_GITEA_HOSTS", "hosts"),
 ]

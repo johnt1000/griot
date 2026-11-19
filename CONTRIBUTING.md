@@ -134,7 +134,7 @@ credential, and asserts after every test that it did not touch your real
 config or data directories. If a change makes a test need the network or a
 key, that is a design problem with the change.
 
-CI runs the suite on Python 3.10, 3.13 and 3.14 on Linux, and on 3.13 on
+CI runs the suite on Python 3.11, 3.13 and 3.14 on Linux, and on 3.13 on
 macOS — the floor the package declares, a current release and the newest.
 It also scans for committed secrets and installs the built wheel in a clean
 environment.

@@ -16,17 +16,13 @@ credential: the real OS keychain is never reached."""
 import importlib.metadata
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 
 from griot import auth, common, doctor
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python < 3.11
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]

@@ -224,6 +224,7 @@ def test_golden_set_suggest_names_the_repository_for_a_relative_path(git_repo, m
     git_repo.commit("Add the login flow", filename="login.py")
     monkeypatch.chdir(git_repo.path)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    monkeypatch.setattr("griot.common.is_interactive", lambda: True)  # suggest refuses without a terminal
     golden_set.cmd_suggest(".")
     cases = golden_set.list_cases()
     assert cases and all(entry["repo"] == git_repo.path.name for case in cases for entry in case["must_include"])

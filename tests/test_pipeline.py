@@ -23,6 +23,7 @@ import platform
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ INSTALL_GITLEAKS = ROOT / "scripts" / "install-gitleaks.sh"
 WORKFLOWS = ROOT / ".github" / "workflows"
 # The checks main's branch protection requires (set on GitHub, not in this
 # repository): keep this list and that setting the same.
-REQUIRED_ON_MAIN = ["tests (py3.10)", "tests (py3.13)", "tests (py3.14)", "tests (macos, py3.13)",
+REQUIRED_ON_MAIN = ["tests (py3.11)", "tests (py3.13)", "tests (py3.14)", "tests (macos, py3.13)",
                     "secret scan", "package builds and installs", "pull request credits no assistant"]
 
 
@@ -140,7 +141,11 @@ def test_the_tests_run_on_the_floor_the_current_and_the_newest_python_and_on_mac
     include = CI["jobs"]["test"]["strategy"]["matrix"]["include"]
     linux = {entry["python"] for entry in include if entry["os"].startswith("ubuntu")}
     mac = {entry["python"] for entry in include if entry["os"].startswith("macos")}
-    assert {"3.10", "3.13", "3.14"} <= linux and mac
+    assert {"3.11", "3.13", "3.14"} <= linux and mac
+    # The floor job tests the floor pyproject declares, whatever it is raised to.
+    floor = re.fullmatch(r">=\s*(3\.\d+)", tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["requires-python"])
+    assert floor and floor.group(1) in linux, "a Linux test job runs on the declared floor"
+    assert min(linux, key=lambda v: tuple(map(int, v.split(".")))) == floor.group(1), "and nothing below it"
 
 
 def test_the_test_jobs_have_the_real_scanner():

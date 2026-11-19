@@ -13,11 +13,11 @@ Or from a checkout:
 `git clone https://github.com/johnt1000/griot && cd griot && pipx install .`
 (`pipx install -e .` for an editable install).
 
-Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads
+Requires Python ≥ 3.11 and `git`. **The first run of a local profile downloads
 its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and
 caches it under your data directory; `griot profiles list` shows each
 profile's RAM tier against the RAM you actually have. CI runs the suite on
-Python 3.10, 3.13 and 3.14 on Linux and on 3.13 on macOS, scans for committed
+Python 3.11, 3.13 and 3.14 on Linux and on 3.13 on macOS, scans for committed
 secrets, and installs the built wheel in a clean environment. It runs on
 every pull request and every push to `main`, when started by hand, and on the
 tagged commit before a release builds.
@@ -96,6 +96,18 @@ says it could not check. `griot config set update-check false` turns it off;
 the only other command that asks PyPI is `griot update`, which you run to
 upgrade. Exit status 1 only when a check fails; a warning is something to
 know.
+
+### The agent cannot connect to griot at all
+
+If the client says `Failed to reconnect to griot` and the server's log shows
+`cannot execute: No such file or directory` for the `python` inside
+`.../pipx/venvs/griot-rag/bin/`, `griot doctor` cannot help: griot never
+starts. A Python upgrade (typically Homebrew's) removed the interpreter the
+installation was built on. Reinstall with `pipx reinstall griot-rag` (or
+`uv tool install --reinstall griot-rag`), check that `griot --version`
+prints a version, run `griot doctor`, and restart the agent session. After a
+Homebrew Python upgrade, `pipx reinstall-all` avoids it. The
+`griot-troubleshooting` skill has the full entry.
 
 ## Upgrading: `griot update`
 

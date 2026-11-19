@@ -145,6 +145,7 @@ def test_a_case_is_curated_from_the_list_it_will_be_held_to(index, monkeypatch, 
     so the document a person picks is one the check can find."""
     shown = iter(["", ""])
     monkeypatch.setattr("builtins.input", lambda prompt: next(shown))
+    monkeypatch.setattr(common, "is_interactive", lambda: True)  # add refuses without a terminal
     golden_set.cmd_add(QUERY, limit=5)
     out = capsys.readouterr().out
     assert "target.py" in out

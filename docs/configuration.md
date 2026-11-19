@@ -93,6 +93,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_MCP_INDEX_ROOTS` | `:`-separated dir prefixes allowed for MCP indexing |
 | `GRIOT_MCP_CONCURRENCY_MODE` | `multi` (default) or `single` — see [Running multiple sessions](mcp.md#running-multiple-sessions) |
 | `GRIOT_MCP_IDLE_RELEASE_SECONDS` | idle window before releasing the collection handle in `multi` mode (default 30) |
+| `GRIOT_SEARCH_TIMEOUT_SECONDS` | seconds a `griot_search` call may run before the MCP server answers with an error saying the machine may have slept or the collection may be busy (default 60; `0` turns the deadline off) |
 | `GRIOT_GITLAB_API_BASE` | self-hosted GitLab API base (default `https://gitlab.com/api/v4`) |
 | `GRIOT_GITEA_HOSTS` | comma-separated Gitea/Forgejo hosts to recognize |
 

@@ -23,7 +23,7 @@ pipx install griot-rag    # the distribution is griot-rag; the command is griot
 
 (Or from a checkout: `git clone https://github.com/johnt1000/griot && cd griot && pipx install .`.)
 
-Requires Python >= 3.10 and `git`. If griot is already installed and
+Requires Python >= 3.11 and `git`. If griot is already installed and
 attached as an MCP server in this project, you can skip straight to
 registering a repo below.
 

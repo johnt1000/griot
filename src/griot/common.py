@@ -25,7 +25,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
 import griot as _package
-from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, redaction
+from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -285,6 +285,7 @@ ENV_TEMPLATE_SETTINGS = [
     # pinning it after the default became `multi`.
     ("GRIOT_MCP_CONCURRENCY_MODE", "multi", "multi (default): griot mcp releases the collection after the idle window, so other sessions and shell indexing can use it; single keeps it open for the server's whole life (no reopen cost, but nothing else can use that profile meanwhile)", True),
     ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
+    ("GRIOT_SEARCH_TIMEOUT_SECONDS", "60", "seconds the griot_search MCP tool may run before it fails with an error telling the agent what to do; 0 turns the deadline off", False),
     ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
     ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
 ]
@@ -525,6 +526,19 @@ def is_git_hash(value: str) -> bool:
 def is_interactive() -> bool:
     """True when a person can be asked: both ends are a terminal."""
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def refuse_without_terminal(what: str, command: str) -> int:
+    """The refusal of a command that asks a person something, when nobody
+    can be asked. `what` completes "Error: ... and there is no terminal to
+    ask on" (it names the command and what it asks); `command` is the line to
+    run at a terminal and ends the message, so it can be pasted. Prints to
+    stderr and returns exit code 2 (incorrect use). Callers check this BEFORE
+    any search, scan or other work that costs something: asking about work
+    already done makes the refusal arrive too late."""
+    print(f"Error: {what}, and there is no terminal to ask on. Nothing was changed.\n"
+          f"Run it in an interactive terminal:\n  {command}", file=sys.stderr)
+    return 2
 
 
 def confirm(question: str, *, yes: bool | None = False) -> int:
@@ -1849,12 +1863,17 @@ def _credential_hint(env_var: str) -> str:
     return f"{env_var} is not set; set it with {set_it}."
 
 
+class CredentialMissing(GriotError, ValueError):
+    """A paid call needs a credential that is set nowhere griot looks. A
+    ValueError, as these always were."""
+
+
 def _require_gemini_token() -> str:
     # GEMINI_TOKEN holds what the environment and the file gave at import;
     # the keychain is asked only here, when a gemini call is about to run.
     token = GEMINI_TOKEN or _keychain_value("GEMINI_TOKEN")
     if not token:
-        raise ValueError(
+        raise CredentialMissing(
             f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
             f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
             f"and for ask.py's chat answer (direct call to Google's API)."
@@ -1997,6 +2016,13 @@ if CONCURRENCY_MODE not in ("single", "multi"):
 # Finite and zero or more, like an amount: an idle time of `nan` is never
 # reached, and the index would be held for as long as the server runs.
 IDLE_RELEASE_SECONDS = _amount_env("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30")
+# How long the griot_search MCP tool may run before it fails with an error that
+# says what to do, so an agent client never waits on a search that cannot
+# finish (a sleeping machine, a collection held elsewhere). 0 turns the
+# deadline off. Chosen well above a normal search (1 to 2 seconds, a cold
+# open of a big collection tens of seconds) and below the ~2 minutes after
+# which the clients seen so far give up on their own.
+SEARCH_TIMEOUT_SECONDS = _amount_env("GRIOT_SEARCH_TIMEOUT_SECONDS", "60")
 # [tuned after empirical validation with a real collision] local DISK
 # contention (another process with the WAL open), not network — a much
 # smaller budget than the 10-20s used for paid-API retries, but needs to
@@ -2140,6 +2166,12 @@ def _ensure_spend_state_migrated() -> None:
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
 
 
+class SpendCircuitBreakerError(GriotError, RuntimeError):
+    """The local circuit breaker stopped a paid call: a spend ceiling was
+    reached, or a call's cost could not be counted. A RuntimeError, as the
+    breaker always raised."""
+
+
 def check_spend_ceiling() -> None:
     """Two independent checks, run before ANY paid call directly to Gemini
     (embedding or chat — no LiteLLM in between, this is the only budget
@@ -2158,7 +2190,7 @@ def check_spend_ceiling() -> None:
     # that is not a number compares False both ways, and must read as
     # reached, never as under.
     if not spend_today < SPEND_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
             f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
             f"reason before continuing — if this is expected, raise the ceiling explicitly."
@@ -2167,7 +2199,7 @@ def check_spend_ceiling() -> None:
     now = time.time()
     velocity = logdb.read_spend_velocity(LOG_DIR, now - SPEND_VELOCITY_WINDOW_SECONDS)
     if not velocity < SPEND_VELOCITY_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
             f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
             f"${SPEND_VELOCITY_CEILING_USD:.2f}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
@@ -2200,7 +2232,7 @@ def record_spend(cost_usd: float) -> None:
         # and adding nothing would let the paid calls go on uncounted (a
         # negative cost used to be dropped as if the call had been free):
         # stop the run.
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: the cost of a paid call came out as {cost_usd!r}, which is not an "
             f"amount (the provider reported a token count that is not a number, or is negative). It was "
             f"not added to today's total; stopping here rather than go on spending uncounted.")
@@ -2306,7 +2338,7 @@ def get_embed_model():
     return _embed_model
 
 
-class CollectionBusyError(RuntimeError):
+class CollectionBusyError(GriotError, RuntimeError):
     """The collection is open in another process. A normal condition on a
     machine running `griot mcp`, so callers can tell it apart from a broken
     collection and explain it instead of showing a traceback. A RuntimeError
@@ -2380,6 +2412,14 @@ _client_lock = threading.RLock()
 # How long a status read (get_client(wait=False)) waits for a call that is
 # opening the collection before it answers "busy".
 _STATUS_READ_PATIENCE = 0.5
+# How long a caller that needs the shard waits for the lock before giving up
+# with CollectionBusyError. The lock is held for a whole open: the ~12s retry
+# budget of _load_shard_with_retry plus the load of a large collection, so the
+# limit has to outlast that or a legitimate slow open turns into a spurious
+# failure for everyone queued behind it. It is still a limit: with
+# timeout=-1 (forever) a stuck open parked every later call with no sign of
+# it (2026-10-25: two searches took ~2600s).
+CLIENT_LOCK_WAIT_SECONDS = 120.0
 
 
 def get_client(*, wait: bool = True) -> "qe.EdgeShard":
@@ -2403,7 +2443,7 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     caller does not wait long behind another call that is opening it,
     either."""
     global _client, _client_last_used_at
-    if not _client_lock.acquire(timeout=-1 if wait else _STATUS_READ_PATIENCE):
+    if not _client_lock.acquire(timeout=CLIENT_LOCK_WAIT_SECONDS if wait else _STATUS_READ_PATIENCE):
         path = collection_path(COLLECTION_NAME)
         raise CollectionBusyError(COLLECTION_NAME, path,
                                   f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
@@ -2817,7 +2857,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     api_key_env = ACTIVE_PROFILE["api_key_env"]
     api_key = credential(api_key_env)
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{api_key_env} not found in the environment — required for the "
             f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
         )
@@ -2925,7 +2965,7 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     profile = ACTIVE_CHAT_PROFILE
     api_key = credential(profile["api_key_env"])
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{profile['api_key_env']} not found in the environment — required for the "
             f"{ACTIVE_CHAT_PROFILE_NAME!r} chat profile."
         )
@@ -3006,6 +3046,11 @@ def printable(text: str) -> str:
     and indexed text come from the repository; a name can hold a line break
     or an escape sequence, which would forge lines or drive the terminal."""
     return "".join(ch if ch.isprintable() else "?" for ch in text)
+
+
+# The longest caller- or client-chosen label (an agent client's name and
+# version, an error class) kept in the usage log and printed by griot stats.
+LOGGED_LABEL_MAX = 80
 
 
 def shown(name: str) -> str:
@@ -4734,7 +4779,7 @@ SOURCE_TYPES = tuple(RESULT_FIELDS)
 SEARCH_FILTER_MAX_VALUES = 20
 
 
-class SearchFilterError(ValueError):
+class SearchFilterError(GriotError, ValueError):
     """A search filter that cannot be used: not a list of names, too many, a
     kind of source that does not exist, a repository with nothing indexed.
     Its own type so that a caller can tell "the arguments are wrong" from
@@ -4868,6 +4913,11 @@ def _fused(by_meaning: list, by_words: list, limit: int) -> list[FusedHit]:
     return sorted(fused.values(), key=lambda entry: entry.score, reverse=True)[:limit]
 
 
+class EmbeddingFailed(GriotError, RuntimeError):
+    """A search's query could not be embedded: the embedding API gave
+    nothing back, and the message says why (last_embedding_failure())."""
+
+
 class SearchModeUnavailable(SearchFilterError):
     """A keyword or hybrid search on a collection made before keyword
     search: an error rather than an empty result, which would read as
@@ -4926,6 +4976,18 @@ SEARCH_DEFAULT_MODE = "hybrid"
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
     "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
+
+
+KEYWORD_BUILD_COMMAND = "griot index keywords"
+
+
+def keyword_search_missing_sentence(collection: str) -> str:
+    """The one sentence `griot doctor`, `griot stats` and griot_stats use for a
+    collection without keyword vectors, so the three never word it apart: what
+    is missing, the command that builds it, and that the command is free."""
+    return (f"keyword search is not built for collection '{collection}' (it was indexed before griot stored keyword "
+            f"vectors), so searches run by meaning only instead of the default hybrid: `{KEYWORD_BUILD_COMMAND}` "
+            f"builds it once (local, embeds nothing)")
 
 
 def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
@@ -4988,11 +5050,19 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
     if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
+        # Read by an agent first (the CLI shows the same words to a person), so
+        # it says what to do NOW, not only what is missing: vector search does
+        # not answer the queries that need a word match (measured: MRR@10 0.01
+        # for commit hashes in vector against 0.80 in hybrid), so the agent is
+        # told which tool does, and the refusal stays a refusal.
         raise SearchModeUnavailable(
             f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
-            f"stored keyword vectors. Run `griot index keywords` once to add them (local: it embeds nothing and "
-            f"costs nothing; while it runs it needs about as much free disk as the collection). Until then, "
-            f"use mode 'vector'.")
+            f"stored keyword vectors. Running `{KEYWORD_BUILD_COMMAND}` once builds it (local: it "
+            f"embeds nothing and costs nothing; while it runs it needs about as much free disk as the "
+            f"collection). Until then: for a commit hash, an error code or where a name is used, use grep or "
+            f"`git log` in the repository you are working in (they do not reach the other registered "
+            f"repositories or pull request text); for a descriptive question, retry with mode 'vector'. "
+            f"Vector search does not find exact strings, so do not use it for those.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = search_filter(client, repos, source_types)
@@ -5004,7 +5074,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # right for a batch being indexed (the rest of the batch goes on). A
             # search has one text and nothing to go on with: say what happened,
             # or the None becomes a type error from the vector store.
-            raise RuntimeError(
+            raise EmbeddingFailed(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
                 + sentence(last_embedding_failure() or "the embedding call returned nothing"))
 
