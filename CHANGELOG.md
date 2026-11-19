@@ -8,6 +8,84 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+
+- **Python 3.11 is now the minimum.** Pillow's fixes for its open
+  advisories exist only in Pillow 13, which needs Python 3.11, so while
+  griot declared 3.10 no lock could hold it and Dependabot's security job
+  failed every week without opening a pull request. Python 3.10 reached end
+  of life on 2026-10-31; installs on 3.10 stay on 0.6.x. CI's floor job is
+  now `tests (py3.11)` (#159).
+- **A collection without keyword vectors tells each reader what to do.**
+  The `mode=keyword`/`hybrid` refusal names `griot index keywords` and what
+  to do meanwhile: grep or `git log` in the repository you are working in
+  for a hash, an error code or a name, or `mode=vector` for a descriptive
+  question. It stays a refusal, not a silent fallback, because vector
+  search finds hashes far worse (MRR@10 0.01 against 0.80 in hybrid).
+  `griot doctor` reports such an index as a WARN naming the command (exit
+  status unchanged), `griot stats` and `griot_stats` add the same sentence
+  to their attention list, and the server instructions say what to do when
+  the tool reports it (#156).
+- **Tool call durations use a monotonic clock**, so a machine that slept no
+  longer logs a search of about 2,600 seconds (#157).
+
+### Added
+
+- **The usage log records the mode a search asked for and the agent
+  client.** Each MCP tool call records the client's name and version from
+  `clientInfo`, and each `griot_search` the mode the caller asked for,
+  failed calls included; the query text is never recorded. `griot stats`
+  and `griot_stats` show failed tool calls by error class, calls by client
+  and searches by asked mode (#157).
+
+### Fixed
+
+- **Errors griot writes for the agent reach it on mcp 2.2 and later.** From
+  mcp 2.2 on, the SDK shows a client the text of a `ToolError` (or a
+  `ResourceError`) and nothing else. griot raised none, so "index a
+  repository first", "run `griot index keywords`", the busy collection, the
+  search deadline, the spend ceiling and refused filters all reached the
+  agent as `Error executing tool griot_search`. These errors are now marked
+  as griot's (`griot.GriotError`) and sent as `ToolError` or `ResourceError`
+  with the same text. Anything else is a crash and keeps the SDK's masking,
+  so text griot did not write, such as an `OSError` naming a file, is not
+  shown to the agent; the call log keeps it, recorded by its original class
+  so `griot stats` groups failures as before. With mcp 2.3, a structured
+  tool output omits an absent optional key where it used to return null
+  (#162).
+- **A `griot_search` that cannot finish fails in bounded time instead of
+  hanging.** After `GRIOT_SEARCH_TIMEOUT_SECONDS` (default 60, `0` turns it
+  off) the tool answers with an error saying the machine may have slept or
+  the collection may be busy, to retry once, and that `mode=vector` needs
+  no keyword index; the failure is recorded in the call log. `get_client()`
+  no longer waits forever for the collection lock: after 120 seconds it
+  raises the usual busy-collection error. Two parallel searches had taken
+  about 2,600 seconds on 2026-10-25 (#155).
+
+### Security
+
+- **The lock holds Pillow 13.0.0, filelock 4.2.12 and certifi 2026.10.23,
+  past their advisories.** It moves to qdrant-client 1.20 and fastembed
+  0.9.1, the first fastembed that allows Pillow 13, which is what an install
+  from the wheel already resolves, and the wheel now requires
+  `qdrant-client[fastembed]>=1.20`, so every install gets them. Local
+  embeddings are unchanged: fastembed 0.8.0 and 0.9.1 were compared on the
+  same texts (bge-small identical; jina-code within about 5e-9) (#159).
+- **The MCP SDK floor is `mcp>=2.2.0`**, and the lock moves mcp and
+  mcp-types to 2.3.0 and opentelemetry-api to 1.45.2, past their advisories
+  (#162).
+
+### Documentation
+
+- **A launcher that fails with `cannot execute: No such file or directory`
+  has a fix where people look.** From 2026-11-02 to 2026-11-07 the MCP
+  server did not start in any agent session: a Homebrew Python upgrade had
+  removed the interpreter the pipx environment linked to. The
+  griot-troubleshooting skill and the getting-started guide say how to
+  reinstall, restart the session and confirm, and how to prevent it (#158).
+- `GRIOT_SEARCH_TIMEOUT_SECONDS` is listed with the other settings in the
+  configuration guide.
+
 ## [0.6.0] — 2026-10-09
 
 ### Changed
