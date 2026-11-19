@@ -58,7 +58,7 @@ dependencies = [
     # would otherwise get code nobody ran against it. Raised on purpose, with
     # the suite green on the new version. 0.8.0 is the oldest qdrant-edge-py
     # the suite has ever run on, so it is the floor.
-    "qdrant-edge-py>=0.8.0,<0.9",
+    "qdrant-edge-py>=0.8.0,<0.10",
     # 2.2.0 is the floor: from it on the SDK shows a client only the text of
     # a ToolError, and griot raises one for every error written for the agent
     # (mcp_server._records_call); below it four advisories apply.
