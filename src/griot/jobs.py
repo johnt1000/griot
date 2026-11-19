@@ -590,11 +590,12 @@ def start_index_job(
     the target already IS the full allowed list, there's nothing to
     validate a path against.
 
-    env: the child's environment (see child_env()) — None means inherit
-    the host's os.environ as-is (fine for the MCP server, whose own
-    os.environ. is never stale relative to itself the way a long-lived
-    UI's boot snapshot can be). Either way the child also gets
-    GRIOT_INDEX_PROGRESS, the file its progress goes to."""
+    env: the child's environment. None means the host's, without what
+    griot's settings file put into it (common.environment_without_the_env_file):
+    handed os.environ as it is, the run would take the file's values as
+    exported, and the old ones once the file was edited while the host
+    ran. Either way the child also gets GRIOT_INDEX_PROGRESS, the file its
+    progress goes to."""
     sources = sources or list(DEFAULT_INDEX_SOURCES)
 
     refusal = index_job_refusal(path, allow_env_roots=allow_env_roots)
@@ -653,7 +654,12 @@ def start_index_job(
     progress_fd, progress_path = tempfile.mkstemp(prefix=_PROGRESS_PREFIX, suffix=_PROGRESS_SUFFIX,
                                                   dir=_progress_dir())
     os.close(progress_fd)
-    env = {**(env if env is not None else os.environ), common.INDEX_PROGRESS_ENV: progress_path}
+    # Not os.environ as it is: the run is a griot process that reads the
+    # settings file itself. Handed the values this host copied from it, it
+    # would take them as exported, and a host that outlived an edit to the
+    # file would hand on the old ones (see environment_without_the_env_file).
+    env = {**(env if env is not None else common.environment_without_the_env_file()),
+           common.INDEX_PROGRESS_ENV: progress_path}
 
     # start_new_session=True: survives even if the caller (an MCP tool
     # call, an HTTP request) is cancelled/disconnects. explicit stdout=/
@@ -749,7 +755,8 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
     os.close(fd)
     try:
         try:
-            done = _run_dry_run(argv, {**(env if env is not None else os.environ),
+            # Without the settings file's values, as for a real run (see start_index_job).
+            done = _run_dry_run(argv, {**(env if env is not None else common.environment_without_the_env_file()),
                                        "GRIOT_DRY_RUN_REPORT": report_path, "TQDM_DISABLE": "1"}, timeout)
         except subprocess.TimeoutExpired:
             return {**result, "path": str(repo_path),
@@ -846,7 +853,9 @@ def run_quality_check_job(sample_size: int, *, collection: str | None = None, en
         if collection:
             argv += ["--collection", collection]
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+            # Without the settings file's values, as for an index run (see start_index_job).
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                                  env=env if env is not None else common.environment_without_the_env_file())
         except subprocess.TimeoutExpired:
             return {"ok": False, "reason": f"quality check timed out after {timeout}s"}
 

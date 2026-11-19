@@ -784,8 +784,17 @@ def _run_harness_command(argv: list[str]) -> "subprocess.CompletedProcess":
     """The one place this module runs another program. Its own function so
     that the test suite can forbid it outright: a test that answers "y" to a
     simulated prompt must never change the real configuration of whoever
-    runs the tests."""
-    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    runs the tests.
+
+    Not with this process's environment as it is: `claude mcp get` starts
+    the registered `griot mcp` to check it, and that server inherits what
+    the harness CLI inherited. With the values griot's settings file put
+    into os.environ, the server would take them as its environment's (see
+    griot.ENVIRONMENT_ONLY_NARROWS), not as the file's. None (inherit) only
+    when the configuration was never loaded here: then nothing was copied."""
+    common = sys.modules.get("griot.common")
+    env = common.environment_without_the_env_file() if common is not None else None
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env)
 
 
 def _model_note() -> str:

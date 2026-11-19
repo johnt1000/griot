@@ -1071,13 +1071,54 @@ keep_own_directories_private()
 # process that outlives edits to the file (the MCP server) has no other way
 # to tell a variable that was exported from one the file gave it at start.
 ENVIRONMENT_BEFORE_ENV_FILE = {name: value for name, value in os.environ.items() if name.startswith("GRIOT_")}
+def value_digest(value: str) -> str:
+    """How a variable's value is remembered here: enough to tell two values
+    apart, without keeping a second copy of a secret."""
+    return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+
+
 # Every variable the environment set before the file was read, as a digest of
 # its value: enough to tell a credential exported in the shell from one the
 # file or the keychain gave, and whether the two differ, without keeping a
 # second copy of any secret (see credential_origin()).
-EXPORTED_BEFORE_ENV_FILE = {name: hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
-                            for name, value in os.environ.items()}
+EXPORTED_BEFORE_ENV_FILE = {name: value_digest(value) for name, value in os.environ.items()}
 load_dotenv(dotenv_path=ENV_PATH)
+# What the file put into the environment just now (load_dotenv never
+# overrides, so: every name it added), as digests. The file can be edited
+# while a server runs; this is what tells its value at start from an export.
+SET_BY_ENV_FILE = {name: value_digest(value) for name, value in os.environ.items()
+                   if name not in EXPORTED_BEFORE_ENV_FILE}
+
+
+def environment_without_the_env_file() -> dict[str, str]:
+    """This process's environment for a griot process it starts, without
+    what griot's settings file put there.
+
+    Handed on as it is, every value the file gave would reach the child as
+    if the person had exported it: reported as the environment's, and, for
+    an MCP server, taken as the environment's word (see
+    griot.ENVIRONMENT_ONLY_NARROWS), where the file and the environment
+    count differently. A long-lived host would also hand on the file's value
+    as it was at start. The child reads the file itself, as it is now.
+
+    Kept: a value the environment gave (GRIOT_CONFIG_DIR and GRIOT_DATA_DIR
+    among them, so the child uses the same directories), and what this
+    process set itself (--quiet, --profile, --chat-profile write theirs
+    before the file is read; anything set later and not the file's). Left
+    out: a value the file gave at start, and one the file holds now (what a
+    server put back from the file after ignoring a widening export, see
+    _take_from_the_environment_only_what_narrows)."""
+    from dotenv import dotenv_values
+
+    in_file = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    kept = {}
+    for name, value in os.environ.items():
+        digest = value_digest(value)
+        if EXPORTED_BEFORE_ENV_FILE.get(name) == digest:
+            kept[name] = value  # the environment's own value
+        elif SET_BY_ENV_FILE.get(name) != digest and in_file.get(name) != value:
+            kept[name] = value  # neither the environment's nor the file's: this process set it
+    return kept
 
 # Rename RAG_* -> GRIOT_*: values under the
 # old names are IGNORED — better to warn loudly than to let, say, a
@@ -1861,7 +1902,7 @@ def credential_origin(env_var: str) -> dict:
     # keychain).
     source = "environment" if exported else stored
     shadows = bool(exported and stored_value
-                   and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
+                   and value_digest(stored_value) != EXPORTED_BEFORE_ENV_FILE[env_var])
     direnv = _direnv_exports(env_var) if exported else []
     return {"source": source, "stored": stored, "shadows_stored": shadows,
             "exported_in": _shell_exports(env_var) + direnv if exported else [], "direnv_in": direnv}

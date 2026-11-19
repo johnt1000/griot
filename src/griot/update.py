@@ -99,34 +99,18 @@ def _report(stdout: str) -> list[dict]:
     return rows
 
 
-def _environment_for_the_doctor() -> dict[str, str]:
-    """This process's environment without what its settings file put there.
-
-    load_dotenv copied the file into os.environ; handed on as it is, a value
-    only the file holds (an empty GRIOT_MCP_INDEX_ROOTS=, say) reaches the
-    doctor as if it had been exported, and its "server environment" check
-    warns about variables nobody exported. A name the file gave and that
-    still holds the file's value goes; what was exported, and what this
-    process set itself afterwards (--quiet), stays. The doctor reads the
-    file again on its own."""
-    import os
-
-    from dotenv import dotenv_values
-
-    from griot import common
-
-    in_file = dotenv_values(common.ENV_PATH) if common.ENV_PATH.exists() else {}
-    return {name: value for name, value in os.environ.items()
-            if name in common.EXPORTED_BEFORE_ENV_FILE or in_file.get(name) != value}
-
-
 def _run_new_doctor(executable: str) -> list[dict] | str:
     """The upgraded doctor's rows, or why there are none (a phrase)."""
+    from griot import common
+
     try:
         # Otherwise the environment is this one: the same configuration and
-        # data directories, the same profile, --quiet included.
+        # data directories, the same profile, --quiet included. Without what
+        # the settings file put there: the doctor reads the file itself, and
+        # its "server environment" check would warn about values (an empty
+        # GRIOT_MCP_INDEX_ROOTS=, say) nobody exported.
         done = subprocess.run([executable, *DOCTOR_ARGS], capture_output=True, text=True, timeout=DOCTOR_TIMEOUT_S,
-                              stdin=subprocess.DEVNULL, env=_environment_for_the_doctor())
+                              stdin=subprocess.DEVNULL, env=common.environment_without_the_env_file())
     except subprocess.TimeoutExpired:
         return f"they took longer than {DOCTOR_TIMEOUT_S} s"
     except (OSError, subprocess.SubprocessError):
