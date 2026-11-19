@@ -34,8 +34,10 @@ griot remembers what your repositories have been through.
   on everything it writes, no credential ever follows a redirect. See
   [SECURITY.md](https://github.com/johnt1000/griot/blob/main/SECURITY.md).
 
-**Status:** v1.0.0, stable. One maintainer, used daily by its author. The CLI,
-the MCP tools and the on-disk layout follow semantic versioning from 1.0 on.
+**Status:** v1.0.0, stable. One maintainer, used daily by its author. From
+1.0 on, commands and flags, `--json` output, the MCP tools and the files griot
+writes follow semantic versioning; message wording and the vector store's
+internal format, which a re-index rebuilds, do not.
 
 ## Installation
 

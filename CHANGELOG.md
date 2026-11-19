@@ -3,9 +3,12 @@
 Notable changes to griot. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-From 1.0 on, the CLI, the MCP tools and the on-disk layout follow semantic
-versioning: a breaking change comes with a new major version, and is called
-out explicitly.
+From 1.0 on, the commands and their flags, the `--json` output, the MCP tools
+and their parameters, and the files griot writes under its configuration and
+data directories follow semantic versioning: a breaking change comes with a
+new major version, and is called out explicitly. The wording of messages is
+not part of that promise, and neither is the vector store's internal format,
+which a re-index rebuilds.
 
 ## [Unreleased]
 
