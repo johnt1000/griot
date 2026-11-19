@@ -508,6 +508,18 @@ def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str 
     return repository_path_refusal(path, allow_env_roots=allow_env_roots)
 
 
+def _repos_unreadable() -> str | None:
+    """The sentence for a repos.json that is there and cannot be used, or
+    None (read fine, or not there: nothing registered is just that)."""
+    try:
+        common.load_repos()
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        return common.repos_unreadable_sentence(e)
+    return None
+
+
 def repository_path_refusal(path: str, *, allow_env_roots: bool = True) -> str | None:
     """Why `path` is not a repository griot may read on an agent's request,
     or None: the allowlist and the "is a git work tree" check, without the
@@ -522,12 +534,20 @@ def repository_path_refusal(path: str, *, allow_env_roots: bool = True) -> str |
     # refusal doesn't work as a filesystem-enumeration oracle (the
     # same concern behind the collapsed message just below).
     if not index_path_allowed(repo_path, allow_env_roots=allow_env_roots):
+        # Still refused (fail closed), but a repos.json that cannot be read
+        # is said as such: the path may well be registered, and "register
+        # it" would send the person to `griot repos add`, which fails on the
+        # same file. Naming griot's own config file reveals nothing about
+        # the filesystem, so the oracle concern below does not apply.
+        if (unreadable := _repos_unreadable()) is not None:
+            return unreadable
         if allow_env_roots:
-            return "path outside the allowed repo list — register it with `griot repos add <path>` or include a parent directory in GRIOT_MCP_INDEX_ROOTS (':'-separated list)."
+            return ("path outside the allowed repo list. Register it, or add a parent directory to "
+                    f"GRIOT_MCP_INDEX_ROOTS:\n  {common.REGISTER_COMMAND}")
         # [jobs] this caller doesn't honor GRIOT_MCP_INDEX_ROOTS
         # (decision C) — mentioning it here would be actionable-sounding
         # advice that doesn't actually work for this caller.
-        return "path outside the allowed repo list — register it first with `griot repos add <path>`."
+        return f"path outside the allowed repo list. Register it first:\n  {common.REGISTER_COMMAND}"
 
     # [review — carried over from mcp_server.py] the 3
     # original error messages ("doesn't exist" vs "not a directory" vs
@@ -617,6 +637,12 @@ def start_index_job(
         else:
             argv += ["--path", str(repo_path)]
     argv += ["--sources", ",".join(sources)]
+    # The run has no terminal, so the CLI's confirmation before spending would
+    # refuse it (exit 2) after the person already said yes: the host that
+    # starts it asks first (griot_index_repo, through its client or
+    # confirm=true), and the spend ceiling still applies. The run still
+    # estimates and prints its cost, which lands in the job's log.
+    argv.append("--yes")
 
     # Where the run records its progress (common.progress_begin() and what
     # follows): a file of its own per job, so that two servers' jobs never
@@ -702,7 +728,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
     subprocess can open it, and returns a reason when it must not (another
     call is using it). Defaults to common.release_client."""
     result = {"ok": False, "reason": None, "path": None, "profile": common.ACTIVE_PROFILE_NAME,
-              "paid": common.ACTIVE_PROFILE["backend"] != "local", "sources": [], "notes": [],
+              "paid": common.profile_is_paid(), "sources": [], "notes": [],
               "to_embed": 0, "up_to_date": 0, "stale": 0, "held_back": 0, "estimated_cost_usd": None}
     refusal = index_job_refusal(path, allow_env_roots=allow_env_roots)
     if refusal is not None:
@@ -768,7 +794,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
             "held_back": held_back,
             # An estimate from the size of the text; the bill comes from the
             # provider's own token count.
-            "estimated_cost_usd": (round(estimate, 4) if result["paid"] and estimate is not None else None)}
+            "estimated_cost_usd": common.estimate_rounded(estimate) if result["paid"] else None}
 
 
 _quality_check_lock = threading.Lock()

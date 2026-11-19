@@ -23,7 +23,17 @@ in a server's own `env`, wins over the file.
 | `gemini` | Gemini API | paid | needs `GEMINI_TOKEN` |
 
 `griot profiles list` shows every profile with RAM estimates and credential
-status. `griot profiles delete <profile>` permanently deletes that profile's
+status. `griot profiles list --json` prints the same as one JSON document on
+stdout (notices stay on stderr): `active` (the active profile), `ram_gb`
+(this machine's RAM) and `profiles`, sorted by name, each with the keys of
+`griot_profiles_list` (`profile`, `is_active`, `paid`,
+`credential_configured`, `collection`; built by the same function, so the two
+never disagree on a credential) plus `dim`, `ram_tier`, `rss_max_mb` and
+`fits` (local profiles; `null` for a paid one: `fits` is whether this
+machine's RAM reaches the tier's floor of 8, 16 or 32 GB),
+`price_per_1m_tokens` (paid ones; `null` for a local one), `credential_env`
+(the variable a paid profile reads) and `fix` (the command that sets a missing
+credential, otherwise `null`). `griot profiles delete <profile>` permanently deletes that profile's
 on-disk collection to reclaim disk space (refuses the active profile, and
 refuses while any indexing run is in progress). It asks for confirmation at an
 interactive terminal and has no `--yes`.
@@ -84,6 +94,7 @@ The most used ones; `griot config list` shows them all.
 | `GRIOT_CHAT_PROFILE` | active chat profile (default `gemini`) |
 | `GRIOT_SPEND_CEILING_USD` | daily spend ceiling (default $3) |
 | `GRIOT_SPEND_VELOCITY_CEILING_USD` | 5-minute window ceiling (default $1) |
+| `GRIOT_CONFIRM_SPEND_USD` | on a paid profile, `griot index` and `griot quality-check --from-history` print their estimated cost on stderr, even with `--yes` or `--quiet`; at or above this amount they ask first, and `--yes` answers (default $0.50). A run the daily spend ceiling would stop (already reached today, or reached by the estimate) is refused before it asks or starts. Raising it with `griot config set` asks first. The MCP tools do not ask: `griot_quality_check` returns `paid` and the estimate, and `griot_index_repo` names it in its confirmation |
 | `GRIOT_LOG_QUESTIONS` | `false` omits question text from the query log |
 | `GRIOT_UPDATE_CHECK` | `false` keeps `griot doctor` from asking PyPI whether a newer griot was released (`griot update`, which you run to upgrade, asks regardless) |
 | `GRIOT_LOG_RETENTION_DAYS` | days of searches and MCP tool calls kept in `logs/logs.db` (default 365); older ones are deleted, at most once a day, by the next search or tool call. Indexing runs have `GRIOT_RUN_RETENTION`; quality checks are kept. Shortening it with `griot config set` asks first |

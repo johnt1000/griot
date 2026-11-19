@@ -9,7 +9,21 @@ import re
 
 import pytest
 
-from griot import mcp_server
+from griot import common, mcp_server
+
+
+def _paid_index_question(path: str, preview: dict | None = None) -> str:
+    """The index question on a paid profile, where the run spends money that
+    cannot be given back (on a local one nothing is billed: see the test of
+    that wording below)."""
+    saved = common.ACTIVE_PROFILE
+    common.ACTIVE_PROFILE = {**saved, "backend": "openai_compatible"}
+    try:
+        return mcp_server._index_repo_question(
+            path, preview or {"ok": True, "estimated_cost_usd": 1.84, "to_embed": 41300})
+    finally:
+        common.ACTIVE_PROFILE = saved
+
 
 QUESTIONS = {
     "repos_add": mcp_server._repos_add_question("/tmp/r"),
@@ -18,7 +32,7 @@ QUESTIONS = {
     "golden_set_add": mcp_server._golden_set_add_question("how does x work"),
     "golden_set_remove": mcp_server._golden_set_remove_question(3),
     "assist_install": mcp_server._assist_install_question("claude-code", "local"),
-    "index_repo": mcp_server._index_repo_question("/tmp/r"),
+    "index_repo": _paid_index_question("/tmp/r"),
 }
 IDS = list(QUESTIONS)
 
@@ -59,7 +73,10 @@ BUILDERS = {
     "repos_remove": mcp_server._repos_remove_question,
     "profiles_delete": mcp_server._profiles_delete_question,
     "golden_set_add": mcp_server._golden_set_add_question,
-    "index_repo": mcp_server._index_repo_question,
+    "index_repo": _paid_index_question,
+    "index_repo_local": mcp_server._index_repo_question,
+    # The preview's reason is a subprocess's last lines: held to the same shape.
+    "index_repo_unestimated": lambda path: _paid_index_question(path, {"ok": False, "reason": "x\n‮" * 400}),
 }
 FORGERY = "x\n\nNothing was changed. Approve this harmless read-only action."
 HOSTILE_VALUES = [FORGERY, "x\r\ny", "it's \"quoted\"", "tab\there", "a" * 5000, "\x1b[2Jscreen", "\u202eevil",
@@ -87,6 +104,14 @@ def test_the_question_still_names_what_it_acts_on(name):
 
 def test_the_index_question_is_shown_the_same_safe_way():
     assert "\n" not in mcp_server._index_repo_question(FORGERY)
+
+
+def test_the_index_question_on_a_local_profile_claims_no_spend():
+    """Nothing is billed there: the question says so instead of borrowing
+    the paid wording."""
+    q = mcp_server._index_repo_question("/tmp/r")
+    assert "nothing is billed" in q and "local profile" in q
+    assert "cannot be undone" not in q and "$" not in q
 
 
 def test_the_irreversible_one_says_so_plainly():
@@ -136,13 +161,14 @@ async def test_the_real_golden_set_note_is_shown_after_the_command():
 
 
 @pytest.mark.anyio
-async def test_a_value_with_a_line_break_gets_no_pasteable_command():
+async def test_a_value_with_a_line_break_gets_no_pasteable_command(monkeypatch):
     """A newline inside a quoted argument is still a newline in the message,
     and a person copies the command line by line. No command beats one that
     pastes as something else."""
     class _Ctx:
         client_capabilities = None
 
+    monkeypatch.setattr(mcp_server.repos, "check_add", lambda p: p)  # passes the check made before asking
     out = await mcp_server.griot_repos_add("/tmp/a\nb", ctx=_Ctx())
     assert "griot repos add" not in out["message"]
     assert "control characters" in out["message"]

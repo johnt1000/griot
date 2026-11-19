@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from griot import common, freshness, platforms
-from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
+from griot.cli import DRY_RUN_HELP, PROFILE_FLAG, YES_HELP, show_flags_read_by_griot
 
 
 def _repo_key_for_path(repo_path: Path) -> str:
@@ -279,7 +279,9 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")
-    parser.add_argument("--dry-run", action="store_true", help="Only counts how many chunks would need to be (re)embedded, without spending anything on embedding (still queries the platform's API to know what exists).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help=f"{DRY_RUN_HELP[:-1]} (it still queries the platform's API to know what exists).")
+    parser.add_argument("--yes", action="store_true", help=YES_HELP)  # read by cli's gate, before this runs
     parser.add_argument("--prune", action="store_true", help="Accepted so `griot index all --prune` can forward it; points from the code platform are never removed automatically, because a failed or partial API listing would look the same as deleted items.")
     args = parser.parse_args(argv)
 
@@ -292,11 +294,9 @@ def main(argv=None):
         # name (Path(".").name is empty), in its points and in its ids.
         repo_paths_str = [str(Path(args.path).resolve())]
     else:
-        try:
-            repo_paths_str = common.load_repos()
-        except FileNotFoundError:
-            print(f"Error: {common.REPOS_JSON_PATH} not found.", file=sys.stderr)
-            return 1
+        repo_paths_str = common.load_repos_or_say()
+        if repo_paths_str is None:
+            return 1  # missing or unusable: load_repos_or_say said which
 
         if args.repo:
             repo_paths_str = [p for p in repo_paths_str if Path(p).name == args.repo]
@@ -435,7 +435,7 @@ def main(argv=None):
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed + len(refused)} failed"
+    print(f"Total: {indexed} chunks indexed, {skipped} already up to date, {failed + len(refused)} failed"
           + (f" ({len(refused)} fetch(es) refused by the platform)." if refused else "."))
     _log_run(args, covered, start_time, indexed=indexed, skipped=skipped, failed=failed + len(refused),
              redacted=redacted,

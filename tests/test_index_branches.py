@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import GitRepo
-from griot import index_branches
+from griot import common, index_branches
 
 
 def _checkout_new_branch(repo_path, name, base="main"):
@@ -72,7 +72,7 @@ def test_main_with_path_indexes_without_reading_repos_json(git_repo, monkeypatch
     git_repo.set_remote_head("main")
     calls = {}
 
-    def fake_index_documents(documents, desc="Indexing"):
+    def fake_index_documents(documents, desc="Indexing", unit="chunks"):
         calls["documents"] = documents
         return (len(documents), 0, 0)
 
@@ -110,7 +110,7 @@ def test_path_disambiguates_ids_for_same_basename_different_location(git_repo, t
 
     calls = []
 
-    def fake_index_documents(documents, desc="Indexing"):
+    def fake_index_documents(documents, desc="Indexing", unit="chunks"):
         calls.append(documents)
         return (len(documents), 0, 0)
 
@@ -137,7 +137,7 @@ def test_main_without_repos_json_prints_friendly_error(monkeypatch, capsys):
     assert index_branches.main([]) == 1
 
     out = capsys.readouterr().err  # an error: stderr and a failing exit status
-    assert "not found" in out
+    assert out == f"Error: No repository registered in {common.REPOS_JSON_PATH}.\n  griot repos add <path>\n"
 
 
 # --- git argument injection (finding L1 from the 2026-08-19 audit) ----------

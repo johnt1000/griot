@@ -413,9 +413,73 @@ Since the MCP fix of this round, a griot error that wraps a crash adds
 that text. An exception with an empty message (`KeyError()`) counts as
 already held, so the row names no cause.
 
+### 92. Prompts still go to stdout
+
+The retry hints of the golden-set prompts moved to stderr (#160, #161), but
+the prompt itself, written by `input()`, and `common.confirm`'s question
+still go to stdout. A script that captures stdout sees the prompt without
+its hints.
+
+### 93. Enter means quit in `golden-set add` and skip in `suggest` and `review`
+
+The three commands share one answer loop since #160, but Enter keeps the
+meaning each command had: documented in `docs/quality.md`, and left as a
+product decision.
+
+### 94. `golden-set suggest` with nothing added does not say "Nothing was changed."
+
+It prints "0 case(s) added to <path>", naming a file that may never have
+been created, where `add` and `review` say "Nothing was changed."
+
+### 95. `-q` given as the value of another option is taken as the flag
+
+`--quiet`/`-q` is read before the parser (#161), so only `--` protects a
+value that is literally `-q`.
+
+### 96. A failed dry run's reason can carry progress lines
+
+`jobs.py` builds a failed dry run's reason from the last lines of the
+child's stderr, which since #161 also carries progress headers. No wrong
+reason has been seen, and it has no test.
+
+### 97. The default search mode does not put a pull request first by its number
+
+Keyword search ranks "PR #14" first since #167; the default (hybrid) puts it
+second or third, because the embedding ignores the number and the fusion
+weighs both rankings equally. The server instructions send number lookups to
+`mode=keyword`. Choosing keyword by default for a query that is a pull
+request reference would change the default mode, and is left as a decision.
+
+### 98. `quality-check --from-history`'s recall is capped by large commits
+
+recall@10 is the share of the touched files found in the top 10, so a commit
+that touched many files cannot reach 1, and the mean mixes commit sizes. Its
+search is also the raw one, not the diversified one a reader gets, so its
+numbers are not comparable with `scripts/measure-search-modes.py` (#166).
+`griot stats` does not show the series yet, and the `quality-check` summary
+in `griot --help` still says "self-check + golden set".
+
+### 99. Smaller wording gaps found by the 0.8.0 reviews
+
+A failed write of `repos.json` is worded with the read sentence;
+`jobs.repository_path_refusal` still ends with a `<path>` placeholder;
+`griot stats` does not name a golden-set case that cannot be run; and
+`stats._repos_error` and `common.repos_read_error` read `repos.json` with two
+copies of the same check, which could come to disagree (#170).
+
 ---
 
 ## Lessons
+
+### Run the suite the way CI runs it
+
+Twice on 2026-11-19 a branch passed its full suite locally and failed every
+CI job: a test imported a shared helper as `from tests.test_x import y`.
+`python -m pytest` puts the repository root on `sys.path`, so that worked;
+CI runs `uv run --no-sync pytest`, which does not, so it raised
+`ModuleNotFoundError`. A local run that differs from CI's in how it starts
+can agree with itself and still be wrong. Run `.venv/bin/pytest` as CI
+does.
 
 ### CI tests the lock; users run the newest release the requirements allow
 

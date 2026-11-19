@@ -16,7 +16,7 @@ import threading
 import pytest
 from mcp.client.client import Client
 
-from griot import ask, cli, common, golden_set, logdb, mcp_server, notices, quality_check
+from griot import ask, cli, common, golden_set, logdb, mcp_server, notices, quality_check, search_result
 from test_keyword_search import DOCS, _active_path, fake_embeddings, index, legacy_index  # noqa: F401
 
 
@@ -345,7 +345,7 @@ def test_two_concurrent_first_searches_carry_the_fallback_note_once(monkeypatch)
                         lambda query, mode: ("vector", notices.keyword_vectors_missing(common.COLLECTION_NAME)))
     monkeypatch.setattr(common, "search", lambda *a, **kw: [])
     monkeypatch.setattr(mcp_server, "_log_search", lambda *a, **kw: None)
-    monkeypatch.setattr(mcp_server.freshness, "reports_among", lambda repos: [])
+    monkeypatch.setattr(search_result.freshness, "reports_among", lambda repos: [])
     monkeypatch.setattr(mcp_server.NOTES_GIVEN, "given", _DictWhoseLookupWaitsForASecondCaller(threading.Barrier(2)))
     start = threading.Barrier(2)
     notes = []

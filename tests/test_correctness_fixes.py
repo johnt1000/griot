@@ -125,7 +125,7 @@ def test_a_missing_repos_file_is_an_error(module, capsys):
     mod = importlib.import_module(f"griot.{module}")
     assert not common.REPOS_JSON_PATH.exists()
     assert mod.main([]) == 1
-    assert "not found" in capsys.readouterr().err
+    assert capsys.readouterr().err == f"Error: {common.no_repository_sentence()}\n"
 
 
 def test_index_all_does_not_announce_success_when_nothing_could_run(tmp_path, capsys):

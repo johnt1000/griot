@@ -190,8 +190,9 @@ def test_from_history_reports_mrr_and_recall_per_kind_of_question(history_index,
 
 def test_from_history_json_shape(history_index, capsys):
     result = _run_json(capsys, "--repo", "repo", "--limit", "2")
-    assert set(result) == {"collection", "profile", "mode", "k", "repositories", "not_measured",
+    assert set(result) == {"collection", "profile", "mode", "k", "repositories", "not_measured", "paid",
                            "estimated_cost_usd", "ok"}
+    assert result["paid"] is False
     assert result["collection"] == common.COLLECTION_NAME
     assert result["mode"] == "vector" and result["k"] == 10 and result["ok"] is True
     assert result["not_measured"] == [] and result["estimated_cost_usd"] is None  # a local profile
@@ -259,7 +260,7 @@ def test_an_empty_history_says_what_to_do(git_repo, monkeypatch, capsys):
     assert exc.value.code == 1
     lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert any("no commit" in line for line in lines)
-    assert "`griot index all --repo repo`" in lines[-1]
+    assert lines[-1].strip() == "griot index all --repo repo"
     assert logdb.read_recent(common.LOG_DIR, "history_checks", limit=5) == [], "nothing measured, nothing recorded"
 
 
@@ -280,7 +281,7 @@ def test_a_repository_with_nothing_indexed_says_what_to_do(git_repo, monkeypatch
     (missing,) = result["not_measured"]
     assert missing["repo"] == "repo"
     assert "nothing is indexed as code" in missing["reason"]
-    assert missing["reason"].rstrip().endswith("`griot index code --repo repo`")
+    assert missing["reason"].rstrip().endswith("\n  griot index code --repo repo")
 
 
 def test_a_registered_path_that_is_not_a_repository_here_is_named(history_index, tmp_path, capsys):
@@ -290,7 +291,7 @@ def test_a_registered_path_that_is_not_a_repository_here_is_named(history_index,
     assert [r["repo"] for r in result["repositories"]] == ["repo"], "the other repositories are still measured"
     (missing,) = result["not_measured"]
     assert missing["repo"] == "moved-away" and "not a git repository" in missing["reason"]
-    assert missing["reason"].endswith("`griot repos list`")
+    assert missing["reason"].endswith("\n  griot repos list")
 
 
 def test_an_unregistered_repository_name_is_refused(history_index, capsys):
@@ -300,7 +301,7 @@ def test_an_unregistered_repository_name_is_refused(history_index, capsys):
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "nope" in captured.err and "`griot repos list`" in captured.err
+    assert "nope" in captured.err and captured.err.endswith("\n  griot repos list\n")
 
 
 @pytest.mark.parametrize("flag", [["--repo", "repo"], ["--limit", "3"], ["--mode", "vector"]])
@@ -312,12 +313,15 @@ def test_the_history_flags_need_from_history(flag, capsys):
 
 
 def test_a_paid_profile_says_the_estimated_cost_before_searching_and_goes_on(history_index, monkeypatch, capsys):
+    # A price high enough for the estimate to survive rounding to 4 decimals,
+    # under the threshold so nothing asks.
     monkeypatch.setattr(common, "ACTIVE_PROFILE", {**common.ACTIVE_PROFILE, "backend": "openai_compatible",
-                                                   "price_per_1m_tokens": 0.02})
+                                                   "price_per_1m_tokens": 20.0})
+    monkeypatch.setattr(common, "CONFIRM_SPEND_USD", 0.50)
     result = _run_json(capsys)
     chars = len(Q_ALPHA) + len(Q_BETA) + len(Q_GAMMA)
-    expected = chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * 0.02
-    assert result["estimated_cost_usd"] == pytest.approx(expected)
+    expected = chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * 20.0
+    assert result["estimated_cost_usd"] == round(expected, 4) > 0
     assert result["repositories"][0]["pairs"] == 3, "the estimate is said, and the measurement still runs"
     _run_json(capsys)  # the estimate goes to stderr, so --json stdout stays one payload
     capsys.readouterr()
@@ -360,7 +364,7 @@ def test_a_mode_that_needs_keyword_vectors_is_refused_before_anything_is_embedde
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "griot index keywords" in captured.err
-    assert captured.err.rstrip().endswith("`griot quality-check --from-history --mode vector`")
+    assert captured.err.endswith("\n  griot quality-check --from-history --mode vector\n")
     assert history_index == []
 
 

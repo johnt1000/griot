@@ -176,8 +176,8 @@ def test_the_embedding_progress_line_is_on_stderr(_fake_embed, capsys):
     common.index_documents(_docs(["a.py"]))
 
     seen = capsys.readouterr()
-    assert "Generating embeddings" not in seen.out
-    assert "Generating embeddings" in seen.err
+    assert "Embedding 1 of 1 chunk" not in seen.out
+    assert "Embedding 1 of 1 chunk" in seen.err
 
 
 def test_the_embedding_progress_line_is_silenced_by_quiet(_fake_embed, capsys, monkeypatch):
@@ -185,7 +185,7 @@ def test_the_embedding_progress_line_is_silenced_by_quiet(_fake_embed, capsys, m
     common.index_documents(_docs(["a.py"]))
 
     seen = capsys.readouterr()
-    assert "Generating embeddings" not in seen.out + seen.err
+    assert "Embedding 1 of 1 chunk" not in seen.out + seen.err
 
 
 def test_removing_stale_points_is_said_on_stderr_and_a_dry_run_result_stays_on_stdout(

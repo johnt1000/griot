@@ -16,9 +16,12 @@ real module's help.
 
 import argparse
 import importlib
+import json
 import os
+import shlex
 import signal
 import sys
+from pathlib import Path
 
 import griot
 from griot import ConfigurationError, UnknownEmbedProfile, UsageError, __version__
@@ -206,14 +209,149 @@ def _cmd_index_keywords(rest: list) -> int:
     return 0
 
 
+YES_HELP = ("On a paid profile, do not ask before a run estimated at or above confirm-spend (default $0.50). "
+            "The cost is still estimated first (a dry run of what is pending) and printed.")
+DRY_RUN_HELP = ("Says how many chunks would be (re)embedded and, on a paid profile, their estimated cost, "
+                "without embedding or spending anything.")
+
+
 def _index_all_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="griot index all",
         description=f"Runs every source in one process, in this order: {', '.join(INDEX_SOURCES)}; stops at the "
-                    f"first one that fails. Every other flag (--repo, --path, --dry-run, --prune) is forwarded to "
-                    f"each source: see `griot index code --help`.")
+                    f"first one that fails. On a paid profile it asks once, for every source, before the first "
+                    f"one embeds. Every other flag is forwarded to each source: see `griot index code --help`.")
+    parser.add_argument("--yes", action="store_true", help=YES_HELP)
     show_flags_read_by_griot(parser, SOURCES_FLAG, PROFILE_FLAG)
     return parser
+
+
+def _gate_flags(rest: list):
+    """What the spend confirmation needs from the forwarded argv: --help
+    (nothing to confirm), --yes, and the repository named. Read the way the
+    source modules' parsers read it (prefixes included); a command line they
+    would refuse is left to them, so the gate is skipped (None)."""
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--repo")
+    parser.add_argument("--path")
+    try:
+        known, _ = parser.parse_known_args(rest)
+    except (argparse.ArgumentError, SystemExit):
+        return None
+    return None if known.help else known
+
+
+def _pending_by_source(sources: list, rest: list):
+    """What each source would embed: its own --dry-run, run in this process
+    with its report read back as data (the same records the MCP preview
+    reads), and its printed lines kept out of sight. Returns (records, 0),
+    or (None, exit code) when a dry run failed: its own error is shown and
+    the real run, which would fail the same way, never starts."""
+    import contextlib
+    import io
+    import tempfile
+
+    from griot import common
+
+    fd, report = tempfile.mkstemp(prefix="griot-estimate-", suffix=".jsonl")
+    os.close(fd)
+    previous = os.environ.get("GRIOT_DRY_RUN_REPORT")
+    os.environ["GRIOT_DRY_RUN_REPORT"] = report
+    try:
+        for source in sources:
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    rc = _run_module(f"griot.index_{source}", [*rest, "--dry-run"])
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            except Exception as e:
+                if _is_collection_busy(e):
+                    raise
+                sys.stderr.write(err.getvalue())
+                print(f"Error: could not estimate what 'griot index {source}' would embed: {e}. Nothing was "
+                      f"changed.\n  griot doctor", file=sys.stderr)
+                return None, 1
+            if rc != 0:
+                sys.stderr.write(err.getvalue())
+                return None, rc
+        with open(report, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()], 0
+    finally:
+        if previous is None:
+            os.environ.pop("GRIOT_DRY_RUN_REPORT", None)
+        else:
+            os.environ["GRIOT_DRY_RUN_REPORT"] = previous
+        try:
+            os.unlink(report)
+        except OSError:
+            pass
+        common.take_redactions()  # counted by the dry runs; the real run counts and reports its own
+
+
+def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_override) -> int:
+    """The confirmation before an index run spends money (decided
+    2026-11-19): on a paid profile, what is pending is estimated first and
+    said; at or above confirm-spend it asks, once for every source of `run`
+    ("all" or one source) before the first one embeds. Asking inside the
+    loop would spend on `code` before `commits` is asked. A refusal returns
+    its exit code with only common.confirm()'s line: no progress is begun
+    and no run is recorded, because nothing ran. 0 lets the run start.
+
+    Costs a second read of every source on a paid profile (the dry run),
+    --yes included: --yes answers the question, it does not skip the
+    estimate, because what runs without a question leaves a trace (a
+    script's log, griot_index_repo's job log). A local profile, a dry run
+    and --help never come here."""
+    from griot import common
+
+    flags = _gate_flags(rest)
+    if flags is None or _is_dry_run(rest) or not common.profile_is_paid():
+        return 0
+    # First, before the estimate is announced or made: a run that cannot
+    # start must not say it is estimating or spending, nor pay for a dry run.
+    refused = common.refuse_missing_credential()
+    if refused:
+        return refused
+    if flags.repo:
+        target = flags.repo
+    elif flags.path:
+        target = Path(flags.path).resolve().name
+    else:
+        try:
+            registered = common.load_repos()
+        except (OSError, ValueError):
+            # Nothing registered yet (or a file griot cannot read): the dry
+            # run below fails on it with the source's own error, the one a
+            # local profile prints, and the gate names no repository.
+            registered = None
+        target = (None if not isinstance(registered, list) else Path(registered[0]).name if len(registered) == 1
+                  else f"{len(registered)} registered repositories")
+    target = None if target is None else common.printable(target)[:80]
+    origin = f" from {target}" if target else ""
+    # The dry run reads every file (and asks the platform's API) with its
+    # output kept out of sight: said first, so a long read does not look hung.
+    common.progress_note(f"Estimating the cost of {', '.join(sources)}{origin} with paid profile "
+                         f"'{common.ACTIVE_PROFILE_NAME}'...")
+    records, failed = _pending_by_source(sources, rest)
+    if records is None:
+        return failed
+    pending = [record for record in records if record["to_embed"]]
+    count = sum(record["to_embed"] for record in pending)
+    if not count:
+        return 0  # nothing to embed costs nothing: the run says what it found
+    chunks = f"{count:,} chunk{'s' if count != 1 else ''}"
+    kinds = (f"of {run}" if run != "all" else f"({', '.join(record['source'] for record in pending)})")
+    what = f"{chunks} {kinds}{origin}"
+    estimate = common.estimated_embedding_cost_usd(sum(record["to_embed_chars"] for record in pending))
+    # The command as it was typed, with what griot took out of argv first.
+    argv = ["griot", "index", run, *rest]
+    if sources_override is not None:
+        argv += ["--sources", ",".join(sources_override)]
+    argv += global_flags_typed()
+    return common.confirm_spend(what, estimate, yes=flags.yes, command=shlex.join(argv))
 
 
 def _cmd_index(args) -> int:
@@ -221,6 +359,9 @@ def _cmd_index(args) -> int:
     if args.source == "keywords":
         return _cmd_index_keywords(rest)
     if args.source != "all":
+        refused = _confirm_index_spend([args.source], rest, run=args.source, sources_override=None)
+        if refused:
+            return refused
         return _run_index_source(args.source, rest)
     # `all` has a help of its own: otherwise --help reaches each source's
     # parser in turn, five helps followed by "all sources completed".
@@ -241,10 +382,23 @@ def _cmd_index(args) -> int:
 
     from griot import common  # lazy, same as every other subcommand here
 
+    # Before the progress record and the loop: a decline is not a failed
+    # source, and one question covers every source.
+    refused = _confirm_index_spend(sources, rest, run="all", sources_override=args.sources_override)
+    if refused:
+        return refused
+
     # Where the run is, for the host that started it (griot_index_repo): a
     # no-op unless that host named a file for it. The sources are announced
     # up front so that what is still to come shows as pending.
     common.progress_begin(sources)
+
+    with common.notes_said_once():
+        return _run_index_all(sources, rest)
+
+
+def _run_index_all(sources, rest) -> int:
+    from griot import common
 
     # Stops at the FIRST error, saying which source failed — continuing to
     # index with a broken source would mask the problem, and the next run
@@ -316,6 +470,21 @@ def _cmd_search(args) -> int:
         # "nothing about this there". A usage error, hence the status.
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    if getattr(args, "json", False):
+        # The griot_search document, built by the same function: an agent
+        # reading this through a shell reads what the tool would have given
+        # it, with one difference on purpose. One process per command keeps
+        # no memory, so every current condition is in every note (the server
+        # says each once per process), and each ends with commands to paste.
+        from griot import search_result
+        common.print_json(search_result.output(
+            results, mode=mode, repos=args.repo, source_types=args.source_type, keyword_notice=note,
+            asked_mode=args.mode, behind_next=search_result.terminal_commands,
+            keyword_next=search_result.terminal_command))
+        # Said in the note already: not on stderr too, but recorded, so that
+        # the footer does not count it as news afterwards.
+        say_keyword_fallback(args.mode, note, said_in_result=True)
+        return 0
     if not results:
         print("No results.")
         # The line `griot ask` prints for the same search: which filters
@@ -343,85 +512,126 @@ def _cmd_search(args) -> int:
     return 0
 
 
-def say_keyword_fallback(asked_mode, notice) -> None:
+def say_keyword_fallback(asked_mode, notice, *, said_in_result: bool = False) -> None:
     """What `griot search` and `griot ask` say when a default search fell
     back to vector: the ledger's prose once per collection, on stderr. A
     default search that ran as it should read the collection's state and
     found nothing to say: that is recorded too, so the prose comes again if
-    the condition returns. An explicit mode read nothing and says nothing."""
+    the condition returns. An explicit mode read nothing and says nothing.
+    `said_in_result`: the result itself carried it (`--json`'s note), so it
+    is only recorded."""
     from griot import notices
 
     if notice is not None or asked_mode is None:
-        notices.say_once(notice, notices.KEYWORD_VECTORS_MISSING, lead=notices.FELL_BACK)
+        if said_in_result:
+            notices.said_in_result(notice, notices.KEYWORD_VECTORS_MISSING)
+        else:
+            notices.say_once(notice, notices.KEYWORD_VECTORS_MISSING, lead=notices.FELL_BACK)
 
 
 _TIER_MIN_GB = {"light": 8, "medium": 16, "heavy": 32}
 
 
+def profiles_list_result(*, ram_gb: float | None = None, active: str | None = None) -> dict:
+    """What `griot profiles list --json` prints and what the
+    griot_profiles_list tool returns (its keys are a subset of each entry),
+    built once so the two cannot disagree: {profiles, active, ram_gb}, the
+    profiles sorted by name.
+
+    Credentials are resolved once, through auth.provider_status() (the
+    environment, griot's .env, then the keychain), and only for the
+    embedding profiles: each one checked can be a keychain prompt on macOS.
+    `fits` is for a local profile only (null for one that calls an API),
+    and "fits" means the machine's RAM is at least the tier's nominal floor
+    (light 8 GB, medium 16 GB, heavy 32 GB), not a share of RAM computed
+    from rss_estimate_mb: the floor is what the profile guide documents.
+    `active` defaults to the profile this process runs with; a long-lived
+    MCP server passes the one in effect now."""
+    from griot import auth, common
+
+    if ram_gb is None:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    active = active or common.ACTIVE_PROFILE_NAME
+    # Keyed by env var, not by provider label: the label is derived from the
+    # var by a rule 'gemini' does not follow, and matching on the derived
+    # name would silently miss it.
+    key_envs = {common.credential_env_for_profile(name, profile) for name, profile in common.EMBED_PROFILES.items()}
+    statuses = {s["env_var"]: s for s in auth.provider_status(key_envs - {None})}
+    profiles = []
+    for name in sorted(common.EMBED_PROFILES):
+        profile = common.EMBED_PROFILES[name]
+        key_env = common.credential_env_for_profile(name, profile)
+        status = statuses.get(key_env) or {}
+        configured = bool(status.get("configured")) if key_env else True
+        local = key_env is None
+        tier = profile.get("ram_tier") if local else None
+        profiles.append({
+            "profile": name,
+            "is_active": name == active,
+            # The one definition behind every `paid` field and the
+            # confirmation before spending (common.profile_is_paid), so this
+            # listing and the spend gate can never disagree about a profile.
+            "paid": common.profile_is_paid(profile),
+            "credential_configured": configured,
+            "collection": common.collection_name_for(name),
+            "dim": profile["dim"],
+            "ram_tier": tier,
+            "rss_max_mb": profile["rss_estimate_mb"][1] if local and profile.get("rss_estimate_mb") else None,
+            "fits": (ram_gb >= _TIER_MIN_GB[tier]) if tier in _TIER_MIN_GB else None,
+            "price_per_1m_tokens": None if local else profile.get("price_per_1m_tokens"),
+            "credential_env": key_env,
+            "fix": None if configured else f"griot auth set {status.get('provider') or name}",
+        })
+    return {"profiles": profiles, "active": active, "ram_gb": round(ram_gb, 1)}
+
+
 def _cmd_profiles_list(args) -> int:
-    """`griot profiles list`: detects the machine's real
-    RAM via psutil and classifies each local profile by ram_tier.
-
-    "Fits comfortably" criterion: detected RAM >= the tier's nominal floor
-    (light=8GB/medium=16GB/heavy=32GB), not a percentage computed on top of
-    rss_estimate_mb — an earlier version tried "a model alone shouldn't
-    exceed ~25-30% of total RAM", which matched section 9.3's TEXT, but
-    diverges from that same section's own mockup (16GB: bge-large-en,
-    heavy tier, shown as "might be tight" even though it fits under that
-    percentage). The nominal floor per tier reproduces the mockup exactly
-    and is the source of truth when the plan's two criteria conflict with
-    each other (review finding)."""
-    import psutil
-
+    """`griot profiles list`: every embedding profile, the local ones by RAM
+    tier against the machine's RAM, the paid ones with their price and
+    whether their credential is set. Read from profiles_list_result(), as
+    --json and the griot_profiles_list tool are."""
     from griot import common
 
-    total_gb = psutil.virtual_memory().total / (1024 ** 3)
-    print(f"\nYour machine: {total_gb:.1f} GB total RAM (detected via psutil)\n")
+    result = profiles_list_result()
+    if getattr(args, "json", False):
+        common.print_json(result)
+        return 0
+    total_gb = result["ram_gb"]
+    print(f"\nYour machine: {total_gb:.1f} GB RAM\n")
 
     tier_labels = {"light": "light (8GB)", "medium": "medium (16GB)", "heavy": "heavy (32GB+)"}
-
-    by_tier = {}
-    paid = []
-    for name, profile in common.EMBED_PROFILES.items():
-        if profile["backend"] == "local":
-            by_tier.setdefault(profile.get("ram_tier"), []).append((name, profile))
-        elif profile["backend"] == "direct":
-            paid.append((name, profile))
-
     for tier in ["light", "medium", "heavy"]:
-        entries = by_tier.get(tier)
+        entries = [e for e in result["profiles"] if e["ram_tier"] == tier]
         if not entries:
             continue
         print(f"  LOCAL — {tier_labels[tier]}")
-        fits = total_gb >= _TIER_MIN_GB[tier]
-        label = "✓ fits comfortably" if fits else f"⚠ might be tight (you have {total_gb:.1f}GB)"
-        for name, profile in entries:
-            rss_max = profile["rss_estimate_mb"][1]
-            active = "   [ACTIVE]" if name == common.ACTIVE_PROFILE_NAME else ""
-            print(f"    {name:<14}{profile['dim']}d   ~{rss_max}MB   {label}{active}")
+        for entry in entries:
+            # An estimate that needs no action: a note, not a warning glyph.
+            label = "fits comfortably" if entry["fits"] else f"might be tight (you have {total_gb:.1f}GB)"
+            active = "   [ACTIVE]" if entry["is_active"] else ""
+            print(f"    {entry['profile']:<14}{entry['dim']}d   ~{entry['rss_max_mb']}MB   {label}{active}")
         print()
 
     print("  PAID (requires API key)")
-    from griot import auth  # lazy: only used here, avoids pulling dotenv into the rest of the CLI
-
-    for name, profile in paid:
-        # gemini uses GEMINI_TOKEN (a historical variable, with no
-        # api_key_env in the profile); the openai_compatible profiles
-        # (openai-small and future Voyage/remote ones) declare their own
-        # api_key_env — never reuse GEMINI_TOKEN to check another
-        # provider's credential. [review finding] Resolved through
-        # credential_env_for_profile() rather than read off the profile dict:
-        # that special case has to live in exactly one place, or a new remote
-        # profile added next to gemini gets reported as free by whichever
-        # caller still guesses from api_key_env.
-        api_key_env = common.credential_env_for_profile(name, profile)
-        provider_label = auth.provider_label(api_key_env) if api_key_env.startswith("GRIOT_") else name
-        configured = "configured" if common.credential(api_key_env) else f"missing {api_key_env} — run: griot auth set {provider_label}"
-        active = "   [ACTIVE]" if name == common.ACTIVE_PROFILE_NAME else ""
-        price = f"${profile['price_per_1m_tokens']:.2f}/1M"
-        print(f"    {name:<14}{profile['dim']}d   {price}   {configured}{active}")
-
-    print("\n  Make one the active profile with: griot profiles use <name>")
+    # {command: the profiles it unlocks}: one provider's credential serves
+    # each of its profiles, so the command is given once and names them.
+    fixes: dict[str, list[str]] = {}
+    for entry in (e for e in result["profiles"] if e["paid"]):
+        # Worded as `griot doctor` words the same fact.
+        configured = ("configured" if entry["credential_configured"]
+                      else f"its credential ({entry['credential_env']}) is not configured")
+        if entry["fix"]:
+            fixes.setdefault(entry["fix"], []).append(entry["profile"])
+        active = "   [ACTIVE]" if entry["is_active"] else ""
+        price = f"${entry['price_per_1m_tokens']:.2f}/1M"
+        print(f"    {entry['profile']:<14}{entry['dim']}d   {price}   {configured}{active}")
+    # The commands last, the more urgent one at the very end: what switches,
+    # then what sets a missing credential, without which that profile
+    # cannot index or search.
+    print("\n  griot profiles use <name>   # makes it the active profile")
+    for fix, profiles in fixes.items():
+        print(f"  {fix}   # for {', '.join(profiles)}")
     return 0
 
 
@@ -674,12 +884,32 @@ QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never er
                                "Same as GRIOT_QUIET=1. Also -q")
 
 
+def json_flag_help(guide: str) -> str:
+    """The --json help of every listing (`repos list`, `profiles list`,
+    `golden-set list`, `search`): the same promise in the same words, and
+    the guide that documents the keys of that one."""
+    return (f"One JSON document on stdout instead of the list; notices and errors stay on stderr "
+            f"(keys: {guide})")
+
+
 def chat_profile_flag(names) -> tuple[str, str, str]:
     """`griot ask`'s --chat-profile. The names are passed in: they live in
     common.CHAT_PROFILES, which this module must not import to build a help
     (see the module docstring)."""
     return ("--chat-profile", "NAME", f"Answer with this chat provider for this run only ({', '.join(names)}), "
                                       f"instead of GRIOT_CHAT_PROFILE")
+
+
+def global_flags_typed() -> list[str]:
+    """The flags griot takes out of argv before a subcommand sees them
+    (--profile, --quiet), as they were typed: a command rebuilt for a person
+    to paste (a refusal's `... --yes`) runs the way the one typed would."""
+    flags = []
+    if griot.PROFILE_FROM_COMMAND_LINE is not None:
+        flags += ["--profile", griot.PROFILE_FROM_COMMAND_LINE]
+    if griot.QUIET_FROM_COMMAND_LINE:
+        flags.append("--quiet")
+    return flags
 
 
 def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str, str, str]) -> None:
@@ -786,8 +1016,9 @@ def build_parser() -> argparse.ArgumentParser:
         "index",
         help="Indexes one source (code|commits|tags|branches|platform) or all (all); keywords adds keyword "
              "vectors to what is already indexed",
-        description="Indexes repositories into the vector store. Extra flags (--repo, --dry-run, ...) "
-                    "are forwarded to the source's indexer — use `griot index <source> --help`. "
+        description="Indexes repositories into the vector store. Every other flag is forwarded to the source's "
+                    "indexer: see `griot index <source> --help`. On a paid profile the cost is estimated first, "
+                    "and a run estimated at or above confirm-spend asks (--yes answers). "
                     "`griot index keywords` is not a source: it adds keyword (BM25) vectors to a collection "
                     "indexed before keyword search existed, embedding nothing.",
     )
@@ -800,7 +1031,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_search = subparsers.add_parser(
         "search",
         help="Raw search, by meaning or by exact words (no chat/LLM synthesis)",
-        description="Searches the vector store and prints sources + score. Never calls any chat model.",
+        description="Searches the vector store and prints sources + score (or one JSON document with --json). "
+                    "Never calls any chat model.",
     )
     show_flags_read_by_griot(p_search, PROFILE_FLAG)
     p_search.add_argument("query", help="Natural-language query")
@@ -821,6 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
                                "words alone, for a commit hash, an error code or where a name is used (the "
                                "default finds where it is defined); embeds nothing. "
                                "Scores are on each mode's own scale.")
+    p_search.add_argument("--json", action="store_true", help=json_flag_help("docs/search.md"))
     p_search.set_defaults(func=_cmd_search)
 
     for name, help_text in [
@@ -854,7 +1087,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show_flags_read_by_griot(p_profiles)
     profiles_sub = p_profiles.add_subparsers(dest="profiles_command", metavar="<action>", required=True)
-    profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
+    p_profiles_list = profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
+    p_profiles_list.add_argument("--json", action="store_true", help=json_flag_help("docs/configuration.md"))
     p_profiles_use = profiles_sub.add_parser(
         "use", help="Makes a profile the active one (writes GRIOT_EMBED_PROFILE to the config .env)"
     )
@@ -974,6 +1208,7 @@ def _main(argv=None) -> int:
     argv, quiet_asked = _extract_switch(argv, "--quiet", "-q")
     if quiet_asked:
         os.environ["GRIOT_QUIET"] = "1"
+        griot.QUIET_FROM_COMMAND_LINE = True
     # What the REAL environment says, before --profile below writes the same
     # variable and before .env is loaded: `profiles use` needs to tell an
     # exported variable from either of those.

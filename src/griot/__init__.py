@@ -1,4 +1,4 @@
-__version__ = "0.7.0"  # the same number as pyproject.toml: tests/test_release.py
+__version__ = "0.8.0"  # the same number as pyproject.toml: tests/test_release.py
 
 
 # The spellings a yes/no setting is read with. Here, in one place, because
@@ -24,6 +24,19 @@ ENVIRONMENT_ONLY_NARROWS = False
 # the command a person approves when a server is registered, which the `env`
 # beside it is not, so it is not treated as the environment's.
 PROFILE_FROM_COMMAND_LINE: str | None = None
+# Whether `--quiet` (or -q) was typed, as opposed to GRIOT_QUIET=1 in the
+# environment: a command griot rebuilds for a person to paste keeps it.
+QUIET_FROM_COMMAND_LINE = False
+
+
+def is_interactive() -> bool:
+    """True when a person can be asked: both ends are a terminal. The one
+    check for every command that asks something (common.confirm and the
+    others in common.py, `griot assist install`). Here, not in common.py,
+    which re-exports it: `griot assist install` must still ask, and still
+    finish, when the configuration common.py reads cannot be loaded."""
+    import sys
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 class GriotError(Exception):

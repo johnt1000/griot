@@ -15,6 +15,7 @@ import sys
 import pytest
 from mcp.client.client import Client
 
+import griot
 from griot import common, config, mcp_server
 
 # What a fresh server process answers, as JSON on its last line. `after_start`
@@ -281,7 +282,7 @@ def test_the_installer_says_that_settings_are_among_what_the_rules_show(monkeypa
     from griot import harnesses
     claude = next(h for h in harnesses.HARNESSES if h.id == "claude-code")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     harnesses.offer_tool_approval(claude, "global", home=tmp_path)
     out = " ".join(capsys.readouterr().out.split())

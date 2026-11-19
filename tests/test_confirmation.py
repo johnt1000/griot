@@ -16,7 +16,7 @@ from mcp.server.elicitation import AcceptedElicitation, CancelledElicitation, De
 from mcp.server.mcpserver.resolve import Elicit
 from mcp_types import ElicitResult
 
-from griot import mcp_server, repos
+from griot import common, mcp_server, repos
 
 
 from test_mcp_server import _accepted  # noqa: E402  same helper, one definition
@@ -161,6 +161,7 @@ MODES = ["legacy", "2026-07-28"]
 async def _remove_via_client(mode, action, tmp_path, monkeypatch, with_callback=True):
     removed = []
     monkeypatch.setattr(repos, "remove_repo", lambda p: removed.append(p) or p)
+    monkeypatch.setattr(repos, "check_remove", lambda p: p)  # passes the check made before asking
 
     async def callback(ctx, params):
         return ElicitResult(action=action, content={})
@@ -210,8 +211,13 @@ def _effects(monkeypatch):
     calls = []
     monkeypatch.setattr(repos, "add_repo", lambda p: calls.append("repos_add") or p)
     monkeypatch.setattr(repos, "remove_repo", lambda p: calls.append("repos_remove") or p)
+    # The paths pass the checks made before anyone is asked.
+    monkeypatch.setattr(repos, "check_add", lambda p: p)
+    monkeypatch.setattr(repos, "check_remove", lambda p: p)
     monkeypatch.setattr(mcp_server.cli, "delete_profile", lambda name, **kw: calls.append("profiles_delete") or "deleted")
     monkeypatch.setattr(mcp_server.golden_set, "remove_case", lambda i: calls.append("golden_set_remove") or {"query": "q"})
+    # The case to remove is there (checked before anyone is asked).
+    monkeypatch.setattr(mcp_server.golden_set, "get_case", lambda i, cases=None: {"query": "q"})
     monkeypatch.setattr(mcp_server.golden_set, "add_case",
                         lambda **kw: calls.append("golden_set_add") or {"query": "q", "must_include": [{"repo": "r"}]})
     monkeypatch.setattr(mcp_server.harnesses, "install_many", lambda *a, **k: calls.append("assist_install") or [])
@@ -314,8 +320,18 @@ def test_assist_install_is_not_asked_when_no_harness_is_there_or_a_destination_i
 
 def test_golden_set_add_is_not_asked_when_the_limit_is_invalid():
     ctx = _Ctx(elicitation=object())
-    assert mcp_server._ask_golden_set_add(ctx, query="q", limit=0) is mcp_server._NO_CHANNEL
-    assert isinstance(mcp_server._ask_golden_set_add(ctx, query="q", limit=5), Elicit)
+    entries = [{"repo": "r"}]
+    assert mcp_server._ask_golden_set_add(ctx, query="q", must_include=entries, limit=0) is mcp_server._NO_CHANNEL
+    assert isinstance(mcp_server._ask_golden_set_add(ctx, query="q", must_include=entries, limit=5), Elicit)
+    assert mcp_server._ask_golden_set_add(ctx, query="q", must_include=[], limit=5) is mcp_server._NO_CHANNEL
+
+
+def test_golden_set_remove_is_not_asked_about_a_case_that_is_not_there():
+    ctx = _Ctx(elicitation=object())
+    common.secure_mkdir(common.GOLDEN_SET_PATH.parent)
+    common.GOLDEN_SET_PATH.write_text(json.dumps([{"query": "q", "must_include": [{"repo": "r"}]}]))
+    assert mcp_server._ask_golden_set_remove(ctx, index=2) is mcp_server._NO_CHANNEL
+    assert isinstance(mcp_server._ask_golden_set_remove(ctx, index=1), Elicit)
 
 
 def test_index_repo_is_not_asked_about_a_path_that_would_be_refused(monkeypatch):

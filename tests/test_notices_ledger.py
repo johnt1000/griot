@@ -672,6 +672,43 @@ def test_the_golden_set_fallback_note_ends_with_the_command():
     assert note.startswith("The case(s) just added are checked in mode vector")
     assert note.splitlines()[-1] == "  griot index keywords"
     assert note.count("griot index keywords") == 1
+    # In the order it is done: build, then remove and add the case again.
+    assert "build it, then remove the case and add it again:" in note
+
+
+# --- after the merge with `griot search --json` (search_result.py) ------------------------------------------
+
+def test_a_name_that_cannot_be_printed_gets_no_command_of_its_own():
+    """Printed, `bad\\nname` reads `bad?name`, which --repo would refuse or
+    match to another repository: the action reaches it by indexing all."""
+    found = notices.behind(_report(repo="bad\nname"))
+
+    assert "bad?name" in found.sentence
+    assert found.action == "griot index all"
+
+
+def test_behind_with_nothing_counted_says_against_what():
+    assert notices.behind_detail({"commits_behind": 0, "behind_sources": []}) == "since the last index run"
+
+
+def test_search_json_records_the_keyword_fact_and_the_footer_does_not_repeat_it(tmp_path, monkeypatch, capsys):
+    """The note carried it; on stderr it would be said twice, and the footer
+    would count as news what the reader was just given."""
+    from griot import cli
+
+    common.secure_mkdir(common.DATA_DIR)
+    notice = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    monkeypatch.setattr(common, "search_mode_for", lambda query, mode: ("vector", notice))
+    monkeypatch.setattr(common, "search", lambda *a, **k: [])
+    assert cli.main(["search", "retries", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    doc = json.loads(captured.out)
+    assert doc["note"].splitlines()[-1] == "  griot index keywords"
+    assert notices.keyword_fallback_text(notice) in doc["note"]
+    assert "griot index keywords" not in captured.err and "notice" not in captured.err
+    assert notices.stored_fingerprint(notices.KEYWORD_VECTORS_MISSING) == common.COLLECTION_NAME
+    assert notices.footer(spoken=set()) is None
 
 
 def test_a_line_has_no_period_before_its_action():

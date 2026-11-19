@@ -169,17 +169,18 @@ def _golden_set_state() -> tuple[dict | None, str | None]:
 
     if not common.GOLDEN_SET_PATH.exists():
         return None, None
+    # The cause is classified (golden_set.unreadable_sentence() says it),
+    # never an exception's name: the same sentence as the CLI and MCP.
+    # The shape is checked by the reader `griot golden-set list` uses, so
+    # both say the same cause for the same file.
     try:
-        cases = golden_set.list_cases()
-        if not isinstance(cases, list):
-            raise ValueError("it is not a list of cases")
-        expected = set()
-        for case in cases:
-            for exp in case["must_include"]:
-                if isinstance(exp.get("repo"), str) and exp["repo"]:
-                    expected.add(exp["repo"])
-    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
-        return None, f"{type(e).__name__}: {e}"[:200]
+        cases = golden_set.checked_cases(golden_set.list_cases())
+    except (OSError, ValueError) as e:
+        return None, common.unreadable_cause(e)
+    # One case's defect (no must_include list) is quality-check's to name:
+    # here it only contributes no repository.
+    expected = {exp["repo"] for case in cases for exp in golden_set.required_entries(case)
+                if isinstance(exp.get("repo"), str) and exp["repo"]}
     # Compared with repos.json, not with the index: asking the index costs a
     # scan per name and needs the collection, which another process may
     # hold. `griot quality-check` asks the index itself. When repos.json
@@ -235,7 +236,21 @@ def load_state() -> dict:
     curated, unreadable = _golden_set_state()
     return {"last_query_at": (last_query or {}).get("timestamp"), "last_index_change_at": last_change,
             "last_quality_check": last_quality, "last_golden_check": last_golden,
-            "golden_set": curated, "golden_set_error": unreadable}
+            "golden_set": curated, "golden_set_error": unreadable, "repos_error": _repos_error()}
+
+
+def _repos_error() -> str | None:
+    """Why repos.json is there and cannot be used (classified), or None.
+    `griot doctor` FAILs on it; saying nothing here would leave the two
+    reports disagreeing about the same file. Not there is not an error:
+    nothing is registered yet."""
+    try:
+        common.load_repos()
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        return common.unreadable_cause(e)
+    return None
 
 
 def _most_behind_first(repositories: list[dict]) -> list[dict]:
@@ -486,9 +501,11 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
 
+    if state.get("repos_error"):
+        attention.append(common.repos_unreadable_sentence(state["repos_error"], before_command=" "))
     if state.get("golden_set_error"):
-        attention.append(f"the golden set file could not be read ({state['golden_set_error']}): fix or delete "
-                         f"{common.GOLDEN_SET_PATH.name}, then curate again with `griot golden-set add`")
+        from griot import golden_set
+        attention.append(golden_set.unreadable_sentence(state["golden_set_error"], before_command=" "))
 
     curated = state.get("golden_set") or None
     golden = None

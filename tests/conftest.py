@@ -254,6 +254,7 @@ def _no_test_leaves_this_process_marked_as_a_server():
     yield
     griot.ENVIRONMENT_ONLY_NARROWS = False
     griot.PROFILE_FROM_COMMAND_LINE = None
+    griot.QUIET_FROM_COMMAND_LINE = False
 
 
 @pytest.fixture(autouse=True)

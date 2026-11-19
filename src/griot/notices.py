@@ -129,7 +129,10 @@ def behind_detail(report: dict) -> str:
     changed = [source for source in report.get("behind_sources") or [] if source in ("tags", "branches")]
     if changed:
         parts.append(f"{' and '.join(changed)} changed")
-    return "; ".join(parts) or "behind"
+    # Not reached by a report of freshness.assess() (behind is a count, a
+    # rewritten history or a changed ref), but a bare "behind" would say
+    # nothing about how: say what the comparison is against.
+    return "; ".join(parts) or "since the last index run"
 
 
 def index_repo_command(name: str) -> str:
@@ -149,9 +152,14 @@ def behind(report: dict) -> Notice | None:
     if not report.get("behind"):
         return None
     name = _printable(report["repo"])
+    # A name with a character that cannot be printed would paste, printed,
+    # as another repository's name: no command names it, and the one that
+    # reaches it anyway is indexing everything (search_result.catch_up_commands
+    # gives it only when no other command is left).
+    action = index_repo_command(name) if report["repo"].isprintable() else INDEX_ALL
     return Notice(id=f"{BEHIND}:{name}", severity=WARN, fingerprint=commits_band(report.get("commits_behind")),
                   sentence=f"the index of {name} is behind it ({behind_detail(report)})",
-                  action=index_repo_command(name), repo=name, path=report.get("path"), detail=behind_detail(report))
+                  action=action, repo=name, path=report.get("path"), detail=behind_detail(report))
 
 
 KEYWORD_BUILD_COMMAND = "griot index keywords"
@@ -423,6 +431,16 @@ def say_once(notice: Notice | None, kind: str, lead: str = "") -> bool:
         SPOKEN.add(notice.id)
     record({kind}, [notice])
     return new
+
+
+def said_in_result(notice: Notice | None, kind: str) -> None:
+    """For a command whose result carried the condition (`griot search
+    --json` puts it in its note on every run): recorded as say_once()
+    records it, and counted as said, so the footer has nothing new to say
+    about it. Under --quiet too: the result is not a notice, and it said it."""
+    if notice is not None:
+        SPOKEN.add(notice.id)
+    record({kind}, [notice] if notice is not None else [])
 
 
 # --- the MCP server's memory: once per fingerprint per process ---------------------------------------

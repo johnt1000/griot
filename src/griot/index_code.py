@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from griot import common
-from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
+from griot.cli import DRY_RUN_HELP, PROFILE_FLAG, YES_HELP, show_flags_read_by_griot
 
 SUPPORTED_EXTENSIONS = {
     ".py", ".md", ".js", ".ts", ".java", ".cs", ".php", ".cpp",
@@ -227,7 +227,8 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--repo", help="Name of a single repository (dirname) from repos.json to index, instead of all of them.")
     group.add_argument("--path", help="Directory of an arbitrary repository to index directly, without going through repos.json.")
-    parser.add_argument("--dry-run", action="store_true", help="Only counts how many chunks would need to be (re)embedded, without spending anything (no local CPU, no API cost).")
+    parser.add_argument("--dry-run", action="store_true", help=DRY_RUN_HELP)
+    parser.add_argument("--yes", action="store_true", help=YES_HELP)  # read by cli's gate, before this runs
     parser.add_argument("--prune", action="store_true", help="Remove stale points (their source is no longer there) even when they are more than half of what is indexed for a repository.")
     args = parser.parse_args(argv)
 
@@ -240,11 +241,9 @@ def main(argv=None):
         # name (Path(".").name is empty), in its points and in its ids.
         repo_paths_str = [str(Path(args.path).resolve())]
     else:
-        try:
-            repo_paths_str = common.load_repos()
-        except FileNotFoundError:
-            print(f"Error: {common.REPOS_JSON_PATH} not found.", file=sys.stderr)
-            return 1
+        repo_paths_str = common.load_repos_or_say()
+        if repo_paths_str is None:
+            return 1  # missing or unusable: load_repos_or_say said which
 
         if args.repo:
             repo_paths_str = [p for p in repo_paths_str if Path(p).name == args.repo]
@@ -297,7 +296,7 @@ def main(argv=None):
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
+    print(f"Total: {indexed} chunks indexed, {skipped} already up to date, {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
     common.log_run_summary(
         script="index_code.py", repo=args.repo or args.path or "all", repo_paths=repo_paths_str,
         indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,

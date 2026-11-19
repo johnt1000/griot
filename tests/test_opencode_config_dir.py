@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 from mcp.client.client import Client
 
+import griot
 from griot import harnesses, mcp_server
 
 
@@ -145,7 +146,7 @@ def test_the_harness_is_detected_by_its_relocated_directory(opencode, tmp_path, 
 
 
 def test_the_command_says_where_it_wrote_and_which_variable_chose_it(tmp_path, xdg, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     home = tmp_path / "home"
     assert harnesses.cmd_install("global", "opencode", mcp="no", home=home) == 0
     out = capsys.readouterr().out
@@ -159,7 +160,7 @@ def test_the_command_says_where_it_wrote_and_which_variable_chose_it(tmp_path, x
 def test_the_command_refuses_a_bad_value(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", "cfg")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     assert harnesses.cmd_install("global", "opencode", mcp="no", home=tmp_path / "home") == 1
     assert "XDG_CONFIG_HOME" in capsys.readouterr().err
     assert _files(tmp_path / "home") == [] and not (tmp_path / "cfg").exists()

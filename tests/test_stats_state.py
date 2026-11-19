@@ -162,8 +162,9 @@ def test_cases_that_expect_a_repository_that_is_not_registered_are_named():
 def test_a_golden_set_file_that_cannot_be_read_needs_attention():
     """Not the same as having none: it is something to fix, and silence
     about it read as "no golden set"."""
-    result, text = _report(state={"golden_set": None, "golden_set_error": "JSONDecodeError: Expecting value"})
-    assert any("golden set file could not be read" in item and "Expecting value" in item for item in result["attention"])
+    result, text = _report(state={"golden_set": None, "golden_set_error": "corrupted JSON"})
+    assert any(f"{common.GOLDEN_SET_PATH} could not be read (corrupted JSON)" in item
+               and item.endswith("griot golden-set suggest <repo-path>") for item in result["attention"])
     assert "Attention" in text
 
 
@@ -272,7 +273,7 @@ def test_callers_that_pass_no_state_still_get_a_report():
 
 SELF = {"sampled": 10, "passed": 9, "failed": 1, "failures": [], "avg_score": 0.9}
 EMPTY_STATE = {"last_query_at": None, "last_index_change_at": None, "last_quality_check": None,
-               "last_golden_check": None, "golden_set": None, "golden_set_error": None}
+               "last_golden_check": None, "golden_set": None, "golden_set_error": None, "repos_error": None}
 
 
 def _write_golden_set(text: str) -> None:
@@ -350,15 +351,24 @@ def test_a_fresh_install_has_an_empty_state_and_creates_nothing_but_the_log():
     assert not common.GOLDEN_SET_PATH.exists()
 
 
-@pytest.mark.parametrize("content", ["{not json", "{}", "[1, 2]", '[{"query": "a"}]',
-                                     '[{"query": "a", "must_include": null}]',
-                                     '[{"query": "a", "must_include": ["x"]}]'])
+@pytest.mark.parametrize("content", ["{not json", "{}", "[1, 2]"])
 def test_a_golden_set_file_that_is_there_and_unusable_is_reported_not_taken_for_none(content):
     _write_golden_set(content)
     state = stats.load_state()
     assert state["golden_set"] is None and state["golden_set_error"]
     result = stats.compute_stats([], [], {"points_count": 1, "embed_profile": "any"}, state=state)
-    assert any("golden set file could not be read" in item for item in result["attention"])
+    assert any(f"{common.GOLDEN_SET_PATH} could not be read" in item for item in result["attention"])
+
+
+@pytest.mark.parametrize("content", ['[{"query": "a"}]', '[{"query": "a", "must_include": null}]',
+                                     '[{"query": "a", "must_include": ["x"]}]'])
+def test_one_case_without_a_must_include_list_is_not_a_file_that_cannot_be_read(content):
+    """That case is quality-check's to name (by number, with the command
+    that removes it); the file reads, and the other cases still count."""
+    _write_golden_set(content)
+    state = stats.load_state()
+    assert state["golden_set_error"] is None
+    assert state["golden_set"] == {"cases": 1, "unregistered_repos": []}
 
 
 def test_without_a_registry_nothing_is_claimed_about_registration():

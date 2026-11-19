@@ -105,9 +105,8 @@ one that calls an API is ignored.
 ## Step 2 — before spending anything
 
 1. Confirm the repo is registered: `griot_repos_list` (usable means
-   `exists` and `is_git` are both true) or `griot repos list` (its `✓` only
-   says the directory exists, not that it is a git repo). `--repo` takes the
-   repo's **directory name**, not the path.
+   `exists` and `is_git` are both true) or `griot repos list --json` (the
+   same keys). `--repo` takes the repo's **directory name**, not the path.
 2. Know the active profile: `griot profiles list` (or `griot_index_status`
    → `embed_profile`). `openai-small` and `gemini` are paid.
 3. On a paid profile, get the size first. With the MCP server attached,
@@ -117,10 +116,15 @@ one that calls an API is ignored.
    read `notes`), plus an estimated cost; it embeds and removes nothing, and
    lets go of the server's handle itself (once no other griot tool call is
    using the index). From a shell,
-   `griot index all --repo <name> --dry-run` does the same (free, but it
-   opens the collection too, so the Step 1 rule applies). Tell the user the
-   numbers before the real run. Re-indexing an unchanged repo embeds almost
-   nothing (content-hash reuse).
+   `griot index all --repo <name> --dry-run` does the same, estimate
+   included (free, but it opens the collection too, so the Step 1 rule
+   applies). Tell the user the numbers before the real run. Re-indexing an
+   unchanged repo embeds almost nothing (content-hash reuse).
+4. On a paid profile a real `griot index` run says its estimated cost on
+   stderr and, at or above confirm-spend ($0.50 unless set), asks. Your shell
+   has no terminal, so there it stops with exit 2, nothing spent, and prints
+   the command with `--yes`. Tell the user the estimate, and add `--yes`
+   only after they agree.
 
 ## Path A — `griot_index_repo`
 

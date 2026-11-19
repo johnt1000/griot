@@ -575,7 +575,8 @@ async def test_a_repository_name_cannot_carry_a_line_break_into_the_note(monkeyp
     # One line each: the anti-injection note, the behind clause, its action.
     lines = out["note"].splitlines()
     assert lines[0] == mcp_server.SEARCH_RESULT_NOTE and len(lines) == 3, out["note"]
-    assert "bad?name" in lines[1] and lines[2] == "In a terminal: griot index all --repo 'bad?name'"
+    # Printed, the name would paste as another one: no command names it.
+    assert "bad?name" in lines[1] and lines[2] == "In a terminal: griot index all"
 
 
 def test_the_server_tells_the_agent_what_behind_means():

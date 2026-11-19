@@ -349,15 +349,18 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
     except FileNotFoundError:
         paths = []  # nothing registered yet: the file is written by the first `griot repos add`
     except (OSError, ValueError) as e:
-        return _check("repositories", FAIL, f"repos.json could not be read: {e}", None)
+        # The sentence every other surface says, split into what happened
+        # (detail) and the command (fix): the two parts of it, word for word.
+        return _check("repositories", FAIL, common.repos_unreadable_detail(e), common.REGISTER_COMMAND)
     if not paths:
         _looked(looked, notices.BEHIND)  # nothing registered: nothing can be behind
         return _check("repositories", WARN, "no repository registered: nothing to index",
-                      "griot repos add <path>")
+                      common.REGISTER_COMMAND)
     gone = [p for p in paths if not Path(p).is_dir()]
     if gone:
-        return _check("repositories", FAIL, "registered but not there: " + ", ".join(gone),
-                      "; ".join(f"griot repos remove {p}" for p in gone))
+        from griot import repos
+        return _check("repositories", FAIL, f"{repos.GONE}: " + ", ".join(gone),
+                      "; ".join(repos.remove_command(p) for p in gone))
     reports = freshness.repository_freshness()
     _looked(looked, notices.BEHIND)
     from griot import stats
@@ -435,10 +438,20 @@ def check_quality(common, now=None, found: list | None = None, looked: set | Non
 
 def check_spend(common) -> dict:
     today, ceiling = common.get_spend_today(), common.SPEND_CEILING_USD
+    # The amounts written as the paid run's refusal writes them: spend as
+    # format_usd, a configured limit as configured.
+    spent, limit = common.format_usd(today), common.format_limit(ceiling)
     if not today < ceiling:
-        return _check("spend", WARN, f"today's estimated spend ${today:.2f} reached the ${ceiling:.2f} daily ceiling: "
-                                     f"paid calls are refused until tomorrow", "griot config set spend-ceiling <usd>   # asks first")
-    return _check("spend", OK, f"${today:.2f} today of a ${ceiling:.2f} daily ceiling")
+        # No run to estimate here: the next whole dollar above today's spend,
+        # as a plain number (`<usd>` is a redirect to a shell, and a trailing
+        # `# comment` is passed as arguments by an interactive zsh).
+        return _check("spend", WARN, f"today's estimated spend {spent} reached the {limit} daily ceiling: paid calls "
+                                     f"are refused until tomorrow; raising the ceiling asks first",
+                      f"griot config set spend-ceiling {common.spend_ceiling_to_propose(today, None)}")
+    # The threshold only where it can ask: on a local profile nothing does.
+    asks = (f"; a paid run estimated at {common.format_limit(common.CONFIRM_SPEND_USD)} or more asks first"
+            if common.profile_is_paid() else "")
+    return _check("spend", OK, f"{spent} today of a {limit} daily ceiling{asks}")
 
 
 def _present_harnesses():
