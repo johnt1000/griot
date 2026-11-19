@@ -200,6 +200,9 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
         # The CLI's error ends with the commands that fix it, indented on lines
         # of their own; they belong in the row's fix, where every reader of
         # fixes (an agent, `griot update`, the fix guard) looks for them.
+        # The contract this relies on: a ConfigurationError is prose, then,
+        # when there is one, `:` and each command indented by two spaces on
+        # a line of its own (common._where_to_fix and every other raiser).
         lines = str(error).splitlines()
         cut = len(lines)
         while cut and lines[cut - 1].startswith("  ") and lines[cut - 1].strip():
