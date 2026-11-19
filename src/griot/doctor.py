@@ -131,8 +131,10 @@ def _from_ledger(name: str, found: list, detail_before: str = "") -> dict:
     `griot stats` lists them with."""
     severity = FAIL if any(n.severity == FAIL for n in found) else WARN if any(
         n.severity == WARN for n in found) else OK
+    # Actions one per line, never "; "-joined: a fix that ends in a shell
+    # comment would swallow every command pasted after it on the same line.
     return _check(name, severity, detail_before + "; ".join(n.sentence for n in found),
-                  "; ".join(n.action for n in found))
+                  "\n".join(n.action for n in found))
 
 
 def _looked(looked: set | None, kind: str) -> None:
@@ -283,7 +285,7 @@ def _with_condition(row: dict, notice) -> dict:
     rank = {OK: 0, WARN: 1, FAIL: 2}
     status = max(row["status"], notice.severity, key=lambda s: rank.get(s, 0))
     return _check(row["check"], status, f"{row['detail']}; {notice.sentence}",
-                  "; ".join(part for part in (row["fix"], notice.action) if part))
+                  "\n".join(part for part in (row["fix"], notice.action) if part))
 
 
 def check_index(common, found: list | None = None, looked: set | None = None) -> dict:
@@ -763,7 +765,8 @@ def format_report(checks: list[dict]) -> str:
     for check in checks:
         lines.append(f"{check['status']:<5} {check['check']:<19} {check['detail']}")
         if check.get("fix"):
-            lines.append(f"{'':<5} {'':<19} → {check['fix']}")
+            # One arrow per command, so each can be pasted on its own.
+            lines.extend(f"{'':<5} {'':<19} → {command}" for command in check["fix"].splitlines() if command)
     failures = sum(check["status"] == FAIL for check in checks)
     warnings = sum(check["status"] == WARN for check in checks)
     lines.append("")

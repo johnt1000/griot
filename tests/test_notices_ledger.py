@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from griot import common, logdb, notices, stats
-from tests.test_repository_freshness import _advance, _git, _repo, _run
+from test_repository_freshness import _advance, _git, _repo, _run
 
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
 

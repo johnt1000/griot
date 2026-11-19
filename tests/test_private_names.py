@@ -120,6 +120,9 @@ TESTS_MAY_REACH = {
     },
     "doctor": {
         "_settings_in_file": _HELPER,
+        "_check": _HELPER,
+        "_with_condition": _HELPER,
+        "_from_ledger": _HELPER,
     },
     "freshness": {
         "_commits_between": _SEAM,
