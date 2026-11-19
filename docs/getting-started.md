@@ -135,12 +135,15 @@ for example keyword search not built for a collection indexed before an
 upgrade made hybrid the default, followed by `griot index keywords`; the
 doctor's other warnings and failures are counted, pointing at `griot doctor`.
 With none it says nothing else needs doing. `griot update` runs none of those
-commands itself. If the check cannot run it says so and points to
-`griot doctor`; the upgrade still exits 0. Under `--quiet` the conditions are
-still shown (the doctor records them as said, so no later notice would say
-them again); the rest of these lines are not. Running the doctor means what
-it always means: it asks PyPI unless `update-check` is off, and its
-registration check may start the MCP server for a moment. The check exists
+commands itself. If the check cannot run (or its report cannot be read) it
+says so and points to `griot doctor`; the upgrade still exits 0. Under
+`--quiet` the conditions and a check that could not run are still shown (the
+doctor records what it found as said, so no later notice would say it
+again); the restart advice, the line saying the checks are running and the
+"nothing else" line are not. If the installer itself cannot be started, it
+says why and shows the upgrade command to run once it can. Running the
+doctor means what it always means: it asks PyPI unless `update-check` is
+off, and its registration check may start the MCP server for a moment. The check exists
 from the upgrade after the release that ships it: an older `griot update`
 does not run it. MCP servers already running keep the old version until they
 are restarted: reconnect them from the client (in Claude Code, `/mcp`) or

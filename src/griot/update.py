@@ -25,9 +25,9 @@ upgrade that made hybrid the default: nothing said so). The check runs the
 UPGRADED interpreter as a subprocess because this process still holds the
 old modules: an import here would check with the old code. The doctor exits
 1 on any failure, which is its report, not a failed check; a check that
-cannot run is one notice pointing at `griot doctor` and never changes the
-exit status of an upgrade that succeeded. It only reads: `griot update`
-never indexes or builds anything itself.
+cannot run is one message pointing at `griot doctor` (shown under --quiet
+too) and never changes the exit status of an upgrade that succeeded. It
+only reads: `griot update` never indexes or builds anything itself.
 
 The --json rows (and their `notices` field) are therefore read across
 versions: this release's `griot update` parses the next release's doctor,
@@ -126,7 +126,7 @@ def _covered(row: dict, actionable: list[dict]) -> bool:
 
 def _after_upgrade(rows: list[dict], now: str) -> tuple[str, bool]:
     """What the new version's checks report: (the message, whether it names
-    something to do)."""
+    something to do, which --quiet does not silence)."""
     from griot import common, notices
 
     listed, failures, warnings = [], 0, 0
@@ -138,6 +138,11 @@ def _after_upgrade(rows: list[dict], now: str) -> tuple[str, bool]:
             warnings += row["status"] == "warn"
     if not listed and not failures and not warnings:
         return (f"Nothing else needs doing: griot {now}'s checks report {doctor.counts_phrase(0, 0)}.", False)
+    if not listed:
+        # Only the doctor's own rows: one line, not a "1 thing" header over
+        # a count of several warnings.
+        return (f"After the upgrade, griot {now}'s checks report {doctor.counts_phrase(failures, warnings)}:\n"
+                f"  griot doctor", True)
     # Printable line by line: the text came from another process, and a
     # line break inside an action is how several commands are given.
     items = [notices.prose(notices.Notice(id=n["id"], severity=n["severity"], fingerprint="",
@@ -148,9 +153,10 @@ def _after_upgrade(rows: list[dict], now: str) -> tuple[str, bool]:
         # The doctor's own fixes are prose in places: counted here and read
         # there, not reworded as if they were commands.
         counted = doctor.counts_phrase(failures, warnings)
-        items.append(f"griot doctor also reports {counted} besides these:\n  griot doctor" if listed
-                     else f"griot doctor reports {counted}:\n  griot doctor")
-    return ("\n".join([f"griot {now} reports {len(items)} thing{'s' if len(items) != 1 else ''} to do after the "
+        items.append(f"griot doctor also reports {counted} besides these:\n  griot doctor")
+    # The header counts the conditions; the doctor's other rows are their
+    # own count, under them.
+    return ("\n".join([f"griot {now} reports {len(listed)} thing{'s' if len(listed) != 1 else ''} to do after the "
                        f"upgrade:", *items]), True)
 
 
@@ -224,19 +230,23 @@ def main(argv=None) -> int:
     status = common.confirm("Run it?", yes=args.yes)
     if status:
         return status
+    # Once the installer runs, this is what to run: the command it shows.
+    retry = f"Nothing was changed.\n  {commands[0]}"
     try:
         # An argument list, never a shell string; nothing captured, so the
         # installer's own output reaches the person as it happens.
         done = subprocess.run(argvs[0])
     except FileNotFoundError:
-        print(f"Error: {argvs[0][0]} is not on the PATH, so the upgrade could not run. Nothing was changed.",
-              file=sys.stderr)
+        print(f"Error: {argvs[0][0]} is not on the PATH, so the upgrade could not run. {retry}", file=sys.stderr)
         return 1
     except PermissionError:
-        print(f"Error: {argvs[0][0]} could not be run (permission denied). Nothing was changed.", file=sys.stderr)
+        print(f"Error: {argvs[0][0]} could not be run (permission denied). {retry}", file=sys.stderr)
         return 1
-    except OSError:
-        print(f"Error: {argvs[0][0]} could not be run. Nothing was changed.", file=sys.stderr)
+    except OSError as e:
+        # The system's own words for the cause (an exec format error, say),
+        # never the exception's class or errno.
+        cause = f" ({e.strerror[:1].lower()}{e.strerror[1:]})" if e.strerror else ""
+        print(f"Error: {argvs[0][0]} could not be run{cause}. {retry}", file=sys.stderr)
         return 1
     if done.returncode != 0:
         print(f"Error: {commands[0]} exited with {done.returncode}: its output above says why. griot may still be "
@@ -253,9 +263,11 @@ def _say_what_is_left(installed: str, now: str | None) -> int:
     Under --quiet the conditions that need an action are still said: the
     new doctor records what it found as said (notices.listed), so a later
     footer would not say a condition hidden here, and it is said once per
-    upgrade, the upgrade being the change of state. Silenced: the restart
-    advice, the "nothing else" line and a check that could not run (nothing
-    was recorded, so the next footer or doctor still says what there is)."""
+    upgrade, the upgrade being the change of state. A check that could not
+    run is also said: it is data that is missing, and a doctor whose report
+    could not be read may already have recorded its conditions as said, so
+    `griot doctor` is the only place left that lists them. Silenced: the
+    restart advice, the progress line and the "nothing else" line."""
     global CHECKED_AFTER_UPGRADE
     from griot import auth, common
 
@@ -271,15 +283,18 @@ def _say_what_is_left(installed: str, now: str | None) -> int:
               "not be read:\n  griot --version\n  griot doctor", file=sys.stderr)
         return 0
     print(f"griot {now} is now installed (this was {installed}).", flush=True)
-    report = _run_new_doctor(sys.executable)
-    if isinstance(report, str):
-        message, to_do = (f"The upgraded griot's checks could not run ({report}); they only read, so run them "
-                          f"yourself:\n  griot doctor"), False
-    else:
-        message, to_do = _after_upgrade(report, now)
     if not common.quiet():
         print(advice, file=sys.stderr)
-    if to_do or not common.quiet():
+        # The doctor takes seconds (up to its timeout): said, so the pause
+        # is not a hang.
+        print(f"Running griot {now}'s checks (they only read)...", file=sys.stderr, flush=True)
+    report = _run_new_doctor(sys.executable)
+    if isinstance(report, str):
+        message, shown = (f"The upgraded griot's checks could not run ({report}); they only read, so run them "
+                          f"yourself:\n  griot doctor"), True
+    else:
+        message, shown = _after_upgrade(report, now)
+    if shown or not common.quiet():
         print(message, file=sys.stderr)
     return 0
 

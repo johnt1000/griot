@@ -731,7 +731,7 @@ def check_release(common) -> dict:
     # a FAIL about an installation that has nothing wrong with it.
     except Exception as e:
         return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({pypi_failure_cause(e)}); "
-                                     f"this is {installed}")
+                                     f"this is griot {installed}")
     mine, theirs = release_numbers(installed), release_numbers(newest)
     if mine is None or theirs is None:
         return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
