@@ -40,7 +40,8 @@ between minor versions. Breaking changes are called out explicitly.
   missing, the quality check older than the index, renamed variables and the
   old layout each have one sentence and one action, which `griot doctor`
   and `griot stats` list in full. Other commands end with at most one stderr
-  line, `N notices: run griot doctor`, when the set changed or a week later.
+  line saying how many notices there are and to run `griot doctor`, when the
+  set changed or a week later.
   `griot_search` and `griot search --json` share one note built from the
   ledger; the server says each condition once per process and again when it
   changes, and a repository behind ends with one `griot index all --repo
