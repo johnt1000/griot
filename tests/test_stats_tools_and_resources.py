@@ -47,7 +47,8 @@ def test_tool_calls_and_resource_reads_are_counted_apart():
     text = stats.format_stats(result, days=30)
     tools = _section(text, "MCP tools:")
     assert tools[0].startswith("MCP tools:   2 calls across 1 tool,")
-    assert [line.split() for line in tools[1:]] == [["griot_search", "2"]]
+    # the lines after the per-tool ones (clients, asked modes) are about who and what, not which tool
+    assert [line.split() for line in tools[1:2]] == [["griot_search", "2"]]
     reads = _section(text, "MCP reads:")
     assert reads[0].startswith("MCP reads:   3 reads across 2 resources,")
     assert [line.split() for line in reads[1:]] == [
