@@ -272,7 +272,7 @@ def _pending_by_source(sources: list, rest: list):
                     raise
                 sys.stderr.write(err.getvalue())
                 print(f"Error: could not estimate what 'griot index {source}' would embed: {e}. Nothing was "
-                      f"embedded.\n  griot doctor", file=sys.stderr)
+                      f"changed.\n  griot doctor", file=sys.stderr)
                 return None, 1
             if rc != 0:
                 sys.stderr.write(err.getvalue())
@@ -310,6 +310,11 @@ def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_overrid
     flags = _gate_flags(rest)
     if flags is None or _is_dry_run(rest) or not common.profile_is_paid():
         return 0
+    # First, before the estimate is announced or made: a run that cannot
+    # start must not say it is estimating or spending, nor pay for a dry run.
+    refused = common.refuse_missing_credential()
+    if refused:
+        return refused
     if flags.repo:
         target = flags.repo
     elif flags.path:

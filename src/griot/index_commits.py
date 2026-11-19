@@ -152,13 +152,13 @@ def main(argv=None):
         common.dry_run(all_documents, source="commits", unit="commits", desc="Checking commits", prune_scope=prune_scope)
         return
 
-    indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing commits")
+    indexed, skipped, failed = common.index_documents(all_documents, desc="Indexing commits", unit="commits")
     redacted = common.report_redactions()
     pruned = common.prune_orphans(all_documents, failed=failed, **prune_scope)
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} commits indexed, {skipped} unchanged (skipped), {failed} failed.")
+    print(f"Total: {indexed} commits indexed, {skipped} already up to date, {failed} failed.")
     common.log_run_summary(
         script="index_commits.py", repo=args.repo or args.path or "all", repo_paths=repo_paths_str,
         indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,

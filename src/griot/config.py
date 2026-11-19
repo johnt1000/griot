@@ -444,9 +444,10 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
             before = _amount(default_of(setting)) or 0.0
         raised = float(new) > before
         if setting.kind == "threshold":
-            # Written like common.format_usd at a cent or more; that module is
-            # not imported here (see the module docstring).
-            return (f"Raise {setting.name} from {old} to {new}? A paid run estimated below ${float(new):,.2f} "
+            # The value as written, like the ceiling's question below: a limit
+            # rounded to cents would read 0.0004 as $0.00, "nothing starts
+            # without asking", the opposite of what it does.
+            return (f"Raise {setting.name} from {old} to {new}? A paid run estimated below ${new} "
                     f"then starts without asking.") if raised else None
         window = "in any 5 minutes" if "VELOCITY" in setting.variable else "in a day"
         return (f"Raise {setting.name} from {old} to {new}? Up to ${new} can then be spent {window} before griot "

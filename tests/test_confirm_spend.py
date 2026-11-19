@@ -50,7 +50,10 @@ def test_the_setting_is_known_to_griot_config_and_listed_in_the_docs():
 def test_raising_the_threshold_asks_and_lowering_it_does_not():
     setting = config.find("confirm-spend")
     question = config._question(setting, "0.50", "5")
-    assert question == "Raise confirm-spend from 0.50 to 5? A paid run estimated below $5.00 then starts without asking."
+    assert question == "Raise confirm-spend from 0.50 to 5? A paid run estimated below $5 then starts without asking."
+    # A configured limit is a known value: never rounded to cents (to zero).
+    assert config._question(setting, "0", "0.0004") == ("Raise confirm-spend from 0 to 0.0004? A paid run estimated "
+                                                        "below $0.0004 then starts without asking.")
     assert config._question(setting, "0.50", "0.10") is None
     assert config._question(setting, "0.50", "0.50") is None
 
@@ -243,7 +246,7 @@ def test_above_the_threshold_index_all_asks_once_for_every_source_before_any_emb
     assert "failed" not in err, "a decline is not a failed source"
     assert err.strip().splitlines() == [
         "Estimating the cost of code, commits from repo with paid profile 'openai-small'...",
-        "Aborted, nothing changed."]
+        "Aborted. Nothing was changed."]
     assert _runs() == []
 
 
@@ -285,11 +288,9 @@ def test_a_missing_credential_is_said_before_asking(repo, embedded, monkeypatch,
     assert cli.main(["index", "code", "--repo", "repo"]) == 1
     out, err = capsys.readouterr()
     assert asked == [] and embedded == []
-    lines = err.rstrip().splitlines()
-    assert lines[-1] == "  griot auth set openai", err
-    assert lines[-2].startswith("Error: embedding ") and "GRIOT_OPENAI_API_KEY is not set" in lines[-2]
-    assert "Nothing was embedded." in lines[-2]
-    assert "--yes" not in err
+    assert err.rstrip().splitlines() == [
+        "Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed.",
+        "  griot auth set openai"], err
     assert out == ""
 
 
@@ -314,7 +315,7 @@ def test_an_estimate_that_fails_ends_with_a_command(repo, embedded, monkeypatch,
     capsys.readouterr()
     assert cli.main(["index", "code", "--repo", "repo"]) == 1
     err = capsys.readouterr().err
-    assert "could not estimate what 'griot index code' would embed: the disk is gone. Nothing was embedded." in err
+    assert "could not estimate what 'griot index code' would embed: the disk is gone. Nothing was changed." in err
     assert err.rstrip().splitlines()[-1] == "  griot doctor"
 
 
@@ -343,7 +344,7 @@ def test_a_local_profile_never_asks_and_says_nothing_about_cost(repo, embedded, 
     assert cli.main(["index", "code", "--repo", "repo"]) == 0
     assert embedded
     out, err = capsys.readouterr()
-    assert "Embedding" not in err and "$" not in err + out
+    assert "paid profile" not in err and "$" not in err + out
 
 
 def test_the_dry_run_says_the_cost_on_a_paid_profile_and_never_asks(repo, embedded, monkeypatch, capsys,
@@ -816,17 +817,31 @@ def test_a_paid_profile_with_nothing_registered_gets_the_sources_own_error(embed
     assert embedded == []
 
 
+def _ceiling_for(today, estimate):
+    """The amount the refusal proposes, written out here rather than read
+    from griot: what today's spend plus the estimate needs, up to the next
+    half dollar, and half a dollar more when that is exact (an estimate)."""
+    import math
+    needed = today + estimate
+    amount = math.ceil(needed * 2) / 2
+    if amount == needed:
+        amount += 0.5
+    return f"{amount:.0f}" if amount == int(amount) else f"{amount:.2f}"
+
+
 def _ceiling(monkeypatch, today, ceiling):
     monkeypatch.setattr(common, "get_spend_today", lambda: today)
     monkeypatch.setattr(common, "SPEND_CEILING_USD", ceiling)
 
 
 @pytest.mark.parametrize("yes", [False, True])
-def test_a_reached_spend_ceiling_is_said_before_asking(repo, embedded, monkeypatch, capsys, yes):
+def test_a_reached_spend_ceiling_is_said_before_asking(repo, embedded, monkeypatch, capsys, yes, tmp_path):
     """A yes could not change the outcome: the breaker refuses every paid
     call today. Cheap to read, so it comes before the question (and before
     a --yes run that would only reach the breaker)."""
+    chars = _dry_chars(monkeypatch, tmp_path, "index", "code", "--repo", "repo")["code"]["to_embed_chars"]
     _paid(monkeypatch, threshold=0.0)
+    estimate = common.estimated_embedding_cost_usd(chars)
     _ceiling(monkeypatch, today=3.0, ceiling=3.0)
     asked = _terminal(monkeypatch, "y")
     capsys.readouterr()
@@ -834,10 +849,10 @@ def test_a_reached_spend_ceiling_is_said_before_asking(repo, embedded, monkeypat
     out, err = capsys.readouterr()
     assert asked == [] and embedded == [] and out == ""
     lines = err.rstrip().splitlines()
-    assert lines[-1] == "  griot config set spend-ceiling <usd>", err
+    assert lines[-1] == f"  griot config set spend-ceiling {_ceiling_for(3.0, estimate)}", err
     assert lines[-2].startswith("Error: today's estimated spend $3.00 reached the $3.00 daily ceiling"), err
-    assert "Nothing was embedded." in lines[-2]
-    assert "--yes" not in err
+    assert lines[-2].endswith(" would be refused. Nothing was changed."), lines[-2]
+    assert "--yes" not in err and "<" not in err
 
 
 def test_a_reached_spend_ceiling_refuses_a_run_whose_cost_is_unknown(repo, embedded, monkeypatch, capsys):
@@ -851,7 +866,8 @@ def test_a_reached_spend_ceiling_refuses_a_run_whose_cost_is_unknown(repo, embed
     assert cli.main(["index", "code", "--repo", "repo"]) == 1
     err = capsys.readouterr().err
     assert asked == [] and embedded == []
-    assert err.rstrip().splitlines()[-1] == "  griot config set spend-ceiling <usd>", err
+    # No estimate to add: the next whole dollar above today's spend.
+    assert err.rstrip().splitlines()[-1] == "  griot config set spend-ceiling 4", err
 
 
 def test_a_run_that_would_pass_the_spend_ceiling_is_said_before_asking(repo, embedded, monkeypatch, capsys,
@@ -866,8 +882,9 @@ def test_a_run_that_would_pass_the_spend_ceiling_is_said_before_asking(repo, emb
     err = capsys.readouterr().err
     assert asked == [] and embedded == []
     lines = err.rstrip().splitlines()
-    assert lines[-1] == "  griot config set spend-ceiling <usd>", err
+    assert lines[-1] == f"  griot config set spend-ceiling {_ceiling_for(1.0, estimate)}", err
     assert f"would cost {common.about_usd(estimate)} (estimated)" in lines[-2]
+    assert lines[-2].endswith("which would stop the run partway. Nothing was changed."), lines[-2]
     assert "today's estimated spend $1.00 plus that passes the" in lines[-2], lines[-2]
 
 
@@ -890,7 +907,9 @@ def test_from_history_checks_the_spend_ceiling_before_asking(history, monkeypatc
         quality_check.main(["--from-history", "--mode", "vector"])
     assert exc.value.code == 1
     assert asked == [] and history == []
-    assert capsys.readouterr().err.rstrip().splitlines()[-1] == "  griot config set spend-ceiling <usd>"
+    estimate = common.estimated_embedding_cost_usd(len("Add the parser"))
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == \
+        f"  griot config set spend-ceiling {_ceiling_for(5.0, estimate)}"
 
 
 def test_the_refusal_keeps_quiet_when_it_was_typed(repo, embedded, monkeypatch, capsys):
@@ -927,7 +946,7 @@ def test_a_credential_with_no_known_provider_ends_with_a_command_that_runs(repo,
     capsys.readouterr()
     assert cli.main(["index", "code", "--repo", "repo"]) == 1
     err = capsys.readouterr().err
-    assert "MY_CUSTOM_KEY is not set" in err
+    assert "needs MY_CUSTOM_KEY, and it is not set" in err
     assert err.rstrip().splitlines()[-1] == "  griot doctor", err
     assert "<provider>" not in err
 
@@ -958,3 +977,249 @@ async def test_every_index_question_ends_with_the_same_removal_clause(server_wit
     question = text.splitlines()[0]
     assert question.endswith("It also removes indexed points whose source is gone."), text
     assert "brings them back" not in text
+
+
+# --- round 4: the credential first, a ceiling that can be pasted, one count -------------------
+
+
+@pytest.mark.parametrize("amount,text", [(3.0, "$3.00"), (0.5, "$0.50"), (0.0001, "$0.0001"),
+                                         (1234.5, "$1,234.50"), (0.125, "$0.125"), (0.0, "$0.00")])
+def test_a_configured_limit_is_printed_as_configured(amount, text):
+    """A limit is a value someone set, not an approximation: "under $0.001"
+    or "$0.00" would misstate it."""
+    assert common.format_limit(amount) == text
+
+
+@pytest.mark.parametrize("today,estimate,amount", [(2.40, 0.84, "3.50"), (3.0, 0.5, "4"), (3.0, None, "4"),
+                                                   (2.4, None, "4"), (0.004, 0.0001, "0.50"), (3.0, 1.0, "4.50"),
+                                                   (10.2, 0.0042, "10.50")])
+def test_the_ceiling_a_refusal_proposes(today, estimate, amount):
+    """Today's spend plus the estimate, up to the next half dollar, and half
+    a dollar more when that is exact (the estimate is approximate); with no
+    estimate, the next whole dollar above today's spend. A plain number the
+    config parser takes: `<usd>` is a redirect to a shell."""
+    assert common.spend_ceiling_to_propose(today, estimate) == amount
+    config.normalized(config.find("spend-ceiling"), amount)  # accepted as written
+
+
+def test_the_ceiling_refusal_in_full(monkeypatch, capsys):
+    monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "openai-small")
+    _ceiling(monkeypatch, today=2.40, ceiling=3.0)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("asked"))
+    assert common.confirm_spend("412 chunks (code, commits) from my-app", 0.84, yes=False, command="griot x") == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == ("Error: embedding 412 chunks (code, commits) from my-app with paid profile 'openai-small' would "
+                   "cost about $0.84 (estimated), and today's estimated spend $2.40 plus that passes the $3.00 daily "
+                   "ceiling, which would stop the run partway. Nothing was changed.\n"
+                   "  griot config set spend-ceiling 3.50\n")
+
+
+def test_the_reached_ceiling_refusal_in_full(monkeypatch, capsys):
+    monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "openai-small")
+    _ceiling(monkeypatch, today=4.0, ceiling=0.0001)
+    assert common.confirm_spend("2 chunks of code from my-app", None, yes=True, command="griot x") == 1
+    assert capsys.readouterr().err == (
+        "Error: today's estimated spend $4.00 reached the $0.0001 daily ceiling, so embedding 2 chunks of code from "
+        "my-app with paid profile 'openai-small' would be refused. Nothing was changed.\n"
+        "  griot config set spend-ceiling 5\n")
+
+
+def test_the_threshold_in_a_refusal_is_printed_as_configured(monkeypatch, capsys):
+    monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "openai-small")
+    monkeypatch.setattr(common, "CONFIRM_SPEND_USD", 0.0001)
+    _ceiling(monkeypatch, today=0.0, ceiling=3.0)
+    _no_terminal(monkeypatch)
+    assert common.confirm_spend("2 chunks of code from my-app", 0.5, yes=False, command="griot x") == 2
+    err = capsys.readouterr().err
+    assert "at or above confirm-spend ($0.0001)" in err, err
+
+
+def _no_estimate(monkeypatch):
+    """The dry run behind the estimate: never reached when the run cannot start."""
+    monkeypatch.setattr(common, "dry_run", lambda *a, **k: pytest.fail("estimated a run that cannot start"))
+
+
+MISSING = ["Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed.",
+           "  griot auth set openai"]
+
+
+@pytest.mark.parametrize("argv,threshold", [
+    (["index", "code", "--repo", "repo"], 1e12),                   # below the threshold
+    (["index", "code", "--repo", "repo", "--yes"], 0.0),           # --yes
+    (["index", "code", "--repo", "repo", "--yes", "--quiet"], 0.0),  # --quiet never hides an error
+    (["index", "all", "--repo", "repo"], 1e12),
+    (["index", "all", "--repo", "repo", "--yes"], 0.0),
+])
+def test_a_missing_credential_is_the_first_check_whatever_the_threshold(repo, embedded, monkeypatch, capsys, argv,
+                                                                        threshold):
+    """A run that cannot start never says it is estimating or spending:
+    the credential is read before anything else, nothing is embedded, and
+    the command that sets it is the last line."""
+    monkeypatch.setenv("GRIOT_QUIET", "0")
+    _paid(monkeypatch, threshold=threshold)
+    _credential_unset(monkeypatch)
+    _no_terminal(monkeypatch)
+    _no_estimate(monkeypatch)
+    capsys.readouterr()
+    assert cli.main(argv) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and embedded == []
+    assert err.rstrip().splitlines() == MISSING, err
+    assert _runs() == [], "a refusal is not a failed run"
+
+
+def test_a_credential_that_is_set_lets_the_run_go_on(repo, embedded, monkeypatch, capsys):
+    _paid(monkeypatch, threshold=1e12)
+    monkeypatch.setattr(common, "ACTIVE_PROFILE", {**common.ACTIVE_PROFILE, "api_key_env": "GRIOT_OPENAI_API_KEY"})
+    monkeypatch.setattr(common, "credential", lambda env_var: "sk-test" if env_var == "GRIOT_OPENAI_API_KEY" else None)
+    _no_terminal(monkeypatch)
+    capsys.readouterr()
+    assert cli.main(["index", "code", "--repo", "repo"]) == 0
+    assert embedded and "griot auth set" not in capsys.readouterr().err
+
+
+def test_a_dry_run_needs_no_credential(repo, embedded, monkeypatch, capsys):
+    _paid(monkeypatch, threshold=0.0)
+    _credential_unset(monkeypatch)
+    assert cli.main(["index", "code", "--repo", "repo", "--dry-run"]) == 0
+    assert "griot auth set" not in capsys.readouterr().err
+
+
+def test_a_custom_key_missing_ends_with_doctor_before_any_estimate(repo, embedded, monkeypatch, capsys):
+    _paid(monkeypatch, threshold=1e12)
+    monkeypatch.setattr(common, "ACTIVE_PROFILE", {**common.ACTIVE_PROFILE, "api_key_env": "MY_CUSTOM_KEY"})
+    monkeypatch.setattr(common, "credential", lambda env_var: None)
+    _no_terminal(monkeypatch)
+    _no_estimate(monkeypatch)
+    capsys.readouterr()
+    assert cli.main(["index", "code", "--repo", "repo"]) == 1
+    assert capsys.readouterr().err.rstrip().splitlines() == [
+        "Error: paid profile 'openai-small' needs MY_CUSTOM_KEY, and it is not set. Nothing was changed.",
+        "  griot doctor"]
+
+
+@pytest.mark.parametrize("argv,threshold", [(["--from-history", "--mode", "vector"], 1e12),
+                                            (["--from-history", "--mode", "vector", "--yes", "--json"], 0.0)])
+def test_from_history_a_missing_credential_is_the_first_check(history, monkeypatch, capsys, argv, threshold):
+    _paid(monkeypatch, threshold=threshold)
+    _credential_unset(monkeypatch)
+    _no_terminal(monkeypatch)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        quality_check.main(argv)
+    assert exc.value.code == 1
+    out, err = capsys.readouterr()
+    assert out == "" and history == []
+    assert err.rstrip().splitlines() == MISSING, err
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_the_index_tool_refuses_a_missing_credential_before_asking(server_with_index, allowed, monkeypatch,
+                                                                         confirm):
+    """The job runs with --yes: asked to approve a spend it cannot make,
+    the person would say yes and the run would fail in its log."""
+    from mcp_types import ElicitResult
+
+    _paid(monkeypatch)
+    _credential_unset(monkeypatch)
+    calls = _preview(monkeypatch, {"estimated_cost_usd": 1.84, "to_embed": 3})
+    monkeypatch.setattr(jobs, "start_index_job", lambda *a, **k: pytest.fail("started without a credential"))
+    asked = []
+
+    async def ask(ctx, params):
+        asked.append(params.message)
+        return ElicitResult(action="accept", content={})
+
+    mcp_server._index_questions.clear()
+    async with Client(server_with_index.mcp, elicitation_callback=ask) as client:
+        out = await client.call_tool("griot_index_repo", {"path": allowed, "confirm": confirm})
+    assert out.structured_content["started"] is False
+    assert out.structured_content["reason"] == (
+        "Paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was started. "
+        "A credential is set in a terminal:\n  griot auth set openai")
+    assert asked == [] and calls == []
+
+
+def _docs(names, text="def f():\n    return 1\n"):
+    return [{"id": f"r:code:{n}:0", "content": f"{text}# {n}\n",
+             "metadata": {"source_type": "code", "repo": "r", "file_path": n, "chunk_index": 0}} for n in names]
+
+
+def test_the_run_says_how_many_it_embeds_and_how_many_were_current(embedded, capsys):
+    name = common.ACTIVE_PROFILE_NAME
+    common.index_documents(_docs(["a.py", "b.py", "c.py"]))
+    first = capsys.readouterr()
+    assert f"Embedding 3 of 3 chunks with profile '{name}'; 0 are already up to date." in first.err.splitlines()
+    changed = _docs(["a.py", "b.py", "c.py"])
+    changed[0]["content"] += "# changed\n"
+    common.index_documents(changed)
+    seen = capsys.readouterr()
+    assert seen.out == ""
+    assert f"Embedding 1 of 3 chunks with profile '{name}'; 2 are already up to date." in seen.err.splitlines()
+    assert "Generating embeddings" not in seen.err
+    common.index_documents(changed)
+    assert "Nothing to embed: all 3 chunks are already up to date." in capsys.readouterr().err.splitlines()
+
+
+def test_the_run_line_uses_the_source_unit_and_stays_a_notice(embedded, capsys, monkeypatch):
+    name = common.ACTIVE_PROFILE_NAME
+    common.index_documents(_docs(["a.py"]), unit="commits")
+    assert f"Embedding 1 of 1 commit with profile '{name}'; 0 are already up to date." in \
+        capsys.readouterr().err.splitlines()
+    common.index_documents(_docs(["a.py", "b.py"]), unit="branches")
+    assert f"Embedding 1 of 2 branches with profile '{name}'; 1 is already up to date." in \
+        capsys.readouterr().err.splitlines()
+    monkeypatch.setenv("GRIOT_QUIET", "1")
+    common.index_documents(_docs(["c.py"]))
+    assert "Embedding" not in capsys.readouterr().err
+
+
+def test_the_gate_and_the_run_give_the_same_count(repo, embedded, monkeypatch, capsys):
+    assert cli.main(["index", "code", "--repo", "repo"]) == 0  # indexed once, locally
+    repo.commit("Add the lexer", filename="lexer.py", content="def lex(text):\n    return list(text)\n")
+    embedded.clear()
+    _paid(monkeypatch, threshold=1e12)
+    _no_terminal(monkeypatch)
+    capsys.readouterr()
+    assert cli.main(["index", "code", "--repo", "repo"]) == 0
+    out, err = capsys.readouterr()
+    lines = err.splitlines()
+    assert any(line.startswith("Embedding 1 chunk of code from repo with paid profile") for line in lines), err
+    assert any(line.startswith("Embedding 1 of ") and line.endswith(" already up to date.") for line in lines), err
+    total = next(line for line in out.splitlines() if line.startswith("Total:"))
+    assert total.startswith("Total: 1 chunks indexed, ") and " already up to date, " in total, total
+    assert "unchanged (skipped)" not in out
+
+
+def test_doctor_proposes_a_ceiling_that_can_be_pasted(monkeypatch):
+    monkeypatch.setattr(common, "get_spend_today", lambda: 3.2)
+    monkeypatch.setattr(common, "SPEND_CEILING_USD", 3.0)
+    check = doctor.check_spend(common)
+    assert check["detail"] == ("today's estimated spend $3.20 reached the $3.00 daily ceiling: paid calls are "
+                               "refused until tomorrow; raising the ceiling asks first")
+    assert check["fix"] == "griot config set spend-ceiling 5"
+
+
+def test_doctor_writes_amounts_as_the_refusal_does(monkeypatch):
+    monkeypatch.setattr(common, "get_spend_today", lambda: 0.004)
+    monkeypatch.setattr(common, "SPEND_CEILING_USD", 3.0001)
+    assert doctor.check_spend(common)["detail"] == "$0.004 today of a $3.0001 daily ceiling"
+
+
+def test_the_troubleshooting_skill_proposes_an_amount_not_a_placeholder():
+    text = (Path(common.__file__).parent / "resources" / "skills" / "griot-troubleshooting" / "SKILL.md").read_text()
+    assert "<usd>" not in text and "<USD>" not in text
+    assert "`griot config set spend-ceiling 3.50`" in text
+
+
+@pytest.mark.parametrize("source,unit", [("commits", "commit"), ("tags", "tag")])
+def test_each_source_counts_in_its_own_unit(repo, embedded, capsys, source, unit):
+    """The line agrees with the source's Total line, which counts commits
+    or tags, not chunks (branches pass their unit the same way)."""
+    repo.tag("v1") if source == "tags" else None
+    assert cli.main(["index", source, "--repo", "repo"]) == 0
+    out, err = capsys.readouterr()
+    plan = next(line for line in err.splitlines() if line.startswith(("Embedding ", "Nothing to embed")))
+    assert f" {unit}" in plan and "chunk" not in plan, plan

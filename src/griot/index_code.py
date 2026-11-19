@@ -298,7 +298,7 @@ def main(argv=None):
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
+    print(f"Total: {indexed} chunks indexed, {skipped} already up to date, {failed} failed. Collection: {common.COLLECTION_NAME} ({common.QDRANT_PATH})")
     common.log_run_summary(
         script="index_code.py", repo=args.repo or args.path or "all", repo_paths=repo_paths_str,
         indexed=indexed, skipped=skipped, failed=failed, redacted=redacted, pruned=pruned,

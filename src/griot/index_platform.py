@@ -437,7 +437,7 @@ def main(argv=None):
 
     elapsed = time.time() - start_time
     print(f"\nIndexing completed in {elapsed:.2f}s.")
-    print(f"Total: {indexed} chunks indexed, {skipped} unchanged (skipped), {failed + len(refused)} failed"
+    print(f"Total: {indexed} chunks indexed, {skipped} already up to date, {failed + len(refused)} failed"
           + (f" ({len(refused)} fetch(es) refused by the platform)." if refused else "."))
     _log_run(args, covered, start_time, indexed=indexed, skipped=skipped, failed=failed + len(refused),
              redacted=redacted,

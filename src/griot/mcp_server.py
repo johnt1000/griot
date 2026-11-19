@@ -3341,9 +3341,25 @@ def _index_question_asked(path: str, sources) -> str:
     return question
 
 
+def _missing_credential_reason() -> str | None:
+    """griot_index_repo's refusal when the active profile's credential is
+    set nowhere: the job runs with --yes, so a person asked to approve the
+    spend would say yes to a run that fails in its log. The CLI's sentence
+    (common.missing_credential); a secret is set in a terminal, never
+    through this server."""
+    missing = common.missing_credential()
+    if missing is None:
+        return None
+    why, fix = missing
+    return f"{why[0].upper()}{why[1:]}. Nothing was started. A credential is set in a terminal:\n  {fix}"
+
+
 def _ask_index_repo(ctx: Context, path: str, sources=None, confirm: bool = False):
     # A path that will be refused is never worth a person's attention.
     if jobs.index_job_refusal(path) is not None:
+        return _NO_CHANNEL
+    # Nor a run that cannot start: the tool refuses it without asking.
+    if _missing_credential_reason() is not None:
         return _NO_CHANNEL
     # Checked before the question is built: building it costs a dry run on a
     # paid profile, and nobody would read it.
@@ -3416,7 +3432,9 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         confirmation along the way.
 
         It is confirmed before it starts: through your client when it can
-        ask the user, otherwise by calling again with confirm=true.
+        ask the user, otherwise by calling again with confirm=true. On a
+        paid profile whose credential is not set it is refused without
+        asking, with the terminal command that sets it.
 
         The run needs the index to itself. While another griot tool call is
         using it, this waits a few seconds for that call to finish, before
@@ -3457,6 +3475,11 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         blocked = jobs.index_job_refusal(path)
         if blocked is not None:
             return {"started": False, "reason": blocked, "path": None, "pid": None, "sources": None}
+        # Cheap too, and confirm=true cannot change it either: the job would
+        # only fail on it in its log.
+        missing = _missing_credential_reason()
+        if missing is not None:
+            return {"started": False, "reason": missing, "path": None, "pid": None, "sources": None}
         # The run needs the collection to itself (its subprocess opens the
         # same directory), and closing it under another call would take the
         # index from under that call. Also checked BEFORE asking: a yes that

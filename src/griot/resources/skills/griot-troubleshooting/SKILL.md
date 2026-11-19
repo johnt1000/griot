@@ -105,8 +105,11 @@ or:
 
 A `griot index` or `griot quality-check --from-history` run checks the
 daily ceiling before it starts: when today's spend already reached it, or
-the run's estimate would pass it, it stops with nothing embedded and ends
-with `griot config set spend-ceiling <usd>`.
+the run's estimate would pass it, it stops with nothing changed and ends
+with the command that raises the ceiling enough for that run, an amount
+griot computes from today's spend plus the estimate (for example
+`griot config set spend-ceiling 3.50`); at a terminal it asks before
+raising. Tell the user the amount; do not run it for them.
 
 **Cause**: griot enforces two independent, atomic, on-disk spend ceilings
 before any call to a paid provider — a **daily** ceiling
@@ -120,7 +123,7 @@ indexing and `griot ask` — they draw from the same spend state.
 breaker exists specifically to make you stop and look, not to be raised
 reflexively. If the spend really is expected (a deliberate large paid
 reindex, for instance), the user raises the relevant ceiling with `griot
-config set spend-ceiling <USD>` (or `spend-velocity-ceiling`). Raising one
+config set spend-ceiling 5` (an amount in USD; or `spend-velocity-ceiling`). Raising one
 asks for confirmation at an interactive terminal and has no flag that
 answers, so it is the user's step, not an agent's. Note also: the `openai`
 and `deepseek` **chat** profiles refuse to run at all until their price is
@@ -134,7 +137,12 @@ compute.
 
 **Symptom**: a command using a paid profile or a platform adapter fails
 with something like `GRIOT_OPENAI_API_KEY not found in the environment —
-required for the 'openai-small' embedding profile`.
+required for the 'openai-small' embedding profile`. A `griot index` or
+`griot quality-check --from-history` run on a paid profile reads the
+credential before anything else and stops with `Error: paid profile
+'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was
+changed.`, the command that sets it on the last line; `griot_index_repo`
+refuses the same way, without asking.
 
 **Cause**: the credential for that provider was never set, or was set on a
 different machine/environment. griot never guesses a credential is present.

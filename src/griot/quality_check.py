@@ -530,6 +530,11 @@ def run_from_history(args) -> None:
     paid = common.profile_is_paid()
     asked = [pair for _, _, pairs in planned for pair in pairs]
     if paid and mode != "keyword" and asked:
+        # The credential first, as an index run reads it: without it no
+        # search below could embed its query, whatever the answer.
+        refused = common.refuse_missing_credential()
+        if refused:
+            raise SystemExit(refused)
         # Before any search, on stderr so --json stays one payload: said and
         # run below confirm-spend, asked at or above it (as an index run is).
         estimate = common.estimated_embedding_cost_usd(sum(len(pair["query"]) for pair in asked))

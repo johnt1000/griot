@@ -72,7 +72,7 @@ def test_main_with_path_indexes_without_reading_repos_json(git_repo, monkeypatch
     git_repo.tag("v1.0.0", message="Release 1.0.0")
     calls = {}
 
-    def fake_index_documents(documents, desc="Indexing"):
+    def fake_index_documents(documents, desc="Indexing", unit="chunks"):
         calls["documents"] = documents
         return (len(documents), 0, 0)
 
@@ -106,7 +106,7 @@ def test_path_disambiguates_ids_for_same_basename_different_location(git_repo, t
 
     calls = []
 
-    def fake_index_documents(documents, desc="Indexing"):
+    def fake_index_documents(documents, desc="Indexing", unit="chunks"):
         calls.append(documents)
         return (len(documents), 0, 0)
 
