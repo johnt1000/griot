@@ -26,7 +26,21 @@ ENVIRONMENT_ONLY_NARROWS = False
 PROFILE_FROM_COMMAND_LINE: str | None = None
 
 
-class ConfigurationError(ValueError):
+class GriotError(Exception):
+    """An error griot raises on purpose, with text written for whoever reads
+    it: what happened and what to do. The MCP server sends this text to the
+    agent (as a ToolError, or a ResourceError for a resource), because from
+    mcp 2.2 on the SDK shows a client only those and replaces anything else
+    with a bare "Error executing tool <name>". Anything that is not one of
+    these is a crash, and keeps that masking: its text can carry internals.
+
+    A mixin beside the builtin each error always was (RuntimeError,
+    ValueError), so every `except RuntimeError` written before it still
+    catches the same errors. Defined here, not in common.py, for the reason
+    ConfigurationError is."""
+
+
+class ConfigurationError(GriotError, ValueError):
     """A setting griot cannot start with, or a configuration file it cannot
     write (a <config>/.env that is a link leading nowhere). The CLI turns it
     into one line with exit status 2. Defined here, not in common.py: it

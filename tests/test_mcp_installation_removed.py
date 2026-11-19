@@ -85,17 +85,20 @@ async def test_the_interpreter_prefix_removed_is_reported_the_same_way(
 
 
 @pytest.mark.anyio
-async def test_with_the_installation_in_place_the_error_reaches_the_agent_unchanged(
+async def test_with_the_installation_in_place_the_error_is_left_to_the_sdk(
         search_fails_like_the_removed_certifi):
     # Any other OSError (a real certificate problem, a full disk) is not ours
-    # to reinterpret: the agent gets it as it was.
+    # to reinterpret: it is not text griot wrote, so it is a crash, and the
+    # SDK masks it as it masks any (mcp >= 2.2). The call log keeps it whole.
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_search", {"query": "anything"})
 
     assert result.is_error is True
     text = _text(result)
-    assert CERT_ERROR in text, text
     assert "removed or replaced" not in text.lower(), text
+    assert CERT_ERROR not in text, text
+    [call] = [c for c in logdb.read_tool_calls(common.LOG_DIR, days=1) if c["tool"] == "griot_search"]
+    assert call["error"] == f"OSError: {CERT_ERROR}"
 
 
 @pytest.mark.anyio

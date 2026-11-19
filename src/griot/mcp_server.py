@@ -44,16 +44,19 @@ was later removed, and kept there because jobs.py is importable without the
 `mcp` SDK and its checks are now read twice: cheaply by this module before
 asking a human to confirm, then again when the job actually spawns.
 
-Errors: RuntimeError (e.g. the spend circuit breaker in
-check_spend_ceiling(), propagated by common.search()/embed_texts() when
-GRIOT_EMBED_PROFILE=gemini) propagates uncaught here — the conversion to
-isError is automatic when the call goes through mcp.client.client.Client
-(empirically confirmed, see the design notes); catching the exception
-here would only hide the actionable message common.py already writes with
-its reader (human OR agent) in mind. One exception, in _records_call: a
-failure while the installation this server runs from is gone is reworded to
-say so and to ask for a restart, with the original error kept in the text
-(see _installation_removed())."""
+Errors: a tool lets an error propagate rather than catching it into an
+answer, which would hide the actionable message common.py already writes
+with its reader (human OR agent) in mind. _records_call is the one place
+that decides what the agent sees of it. An error griot raised on purpose (a
+griot.GriotError: the spend circuit breaker, a busy collection, a refused
+filter, nothing indexed...) is sent as a ToolError (a ResourceError for a
+resource), the only kind whose text the SDK shows a client from mcp 2.2 on.
+Anything else is a crash and keeps the SDK's generic "Error executing tool
+<name>", whatever its class: a RuntimeError from the vector store is not
+griot's text. The call log records the original class and text either way.
+One exception: a failure while the installation this server runs from is
+gone is reworded to say so and to ask for a restart, with the original
+error kept in the text (see _installation_removed())."""
 
 import argparse
 import contextvars
@@ -92,11 +95,11 @@ from mcp.server.elicitation import (
     ElicitationResult,
 )
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.server.mcpserver.tools import Tool
 from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
-from mcp.shared.exceptions import MCPError
-from mcp.types import INTERNAL_ERROR, ToolAnnotations
+from mcp.types import ToolAnnotations
 
 import griot
 
@@ -319,7 +322,36 @@ GOLDEN_SET_NOTE = (
 )
 
 
-def _corrupt_golden_set(e: Exception) -> RuntimeError:
+# The errors this module raises on purpose, each a griot.GriotError so the
+# agent reads its text (see _records_call). Named, not plain RuntimeErrors:
+# the name is what tells them from a crash, and what griot stats groups a
+# failed call by.
+class ArgumentRefused(griot.GriotError, ValueError):
+    """An argument the tool cannot run with; the text says which and why."""
+
+
+class NothingIndexed(griot.GriotError, RuntimeError):
+    """The tool needs an index and the active profile has none yet."""
+
+
+class UnreadableFile(griot.GriotError, RuntimeError):
+    """A file of griot's that only a person can repair, named in the text."""
+
+
+class CheckIncomplete(griot.GriotError, RuntimeError):
+    """griot_quality_check stopped halfway; the text says what did run."""
+
+
+class SearchTimedOut(griot.GriotError, RuntimeError):
+    """griot_search did not finish within common.SEARCH_TIMEOUT_SECONDS."""
+
+
+class InstallationRemoved(griot.GriotError, RuntimeError):
+    """The installation this server runs from is gone; the text keeps the
+    original error and asks for a restart."""
+
+
+def _corrupt_golden_set(e: Exception) -> UnreadableFile:
     """Turns an unreadable quality_golden_set.json into an actionable error.
 
     Separate from a ValueError raised by add_case/remove_case VALIDATING its
@@ -327,7 +359,7 @@ def _corrupt_golden_set(e: Exception) -> RuntimeError:
     caller told "changed: false, Expecting property name" reads it as "my
     arguments were wrong" and rewrites its query, when the actual problem is a
     file only a person can repair."""
-    return RuntimeError(
+    return UnreadableFile(
         f"Could not read {common.GOLDEN_SET_PATH.name} ({common.GOLDEN_SET_PATH}): {e}. "
         "The file is corrupted — fix or delete it, then re-curate with `griot golden-set add`."
     )
@@ -805,6 +837,15 @@ def _records_call(fn, name: str | None = None):
     swallowed (with a warning), and a tool that raises still raises, after
     the failure is recorded.
 
+    It is also the one place where a failure becomes what the agent reads.
+    [real failure, 2026-10-25] From mcp 2.2 on the SDK shows a client the
+    text of a ToolError (ResourceError) only, and griot raised none: every
+    message written for the agent arrived as "Error executing tool
+    griot_search". A griot.GriotError is raised again as one, with the same
+    text. Nothing else is converted, because converting everything would
+    undo the masking the SDK applies to a crash so that internals stay in
+    the server log.
+
     [real bug, caught by a protocol-level check] An async tool needs its own
     wrapper: a sync one returns the coroutine WITHOUT awaiting it, so the
     SDK receives a coroutine where it expects the output dict, the call
@@ -829,11 +870,19 @@ def _records_call(fn, name: str | None = None):
                      client=_client_label(ctx) if ctx is not None else None)
 
     def failed(e, ctx, started_at):
+        """Records the failure and returns the error to raise in place of
+        `e`, or None to re-raise `e` as it is (a crash: the SDK masks it)."""
         explained = _explained_if_installation_removed(e)
-        # Recorded as the agent sees it: griot_stats then shows the cause too.
+        # Recorded by its own class (griot stats groups failures by it), not
+        # as the ToolError the agent is sent; with the explanation when there
+        # is one, so griot_stats shows the cause too.
         shown = explained or e
         record(False, ctx, started_at, error=f"{type(shown).__name__}: {shown}")
-        return explained
+        if not isinstance(shown, griot.GriotError):
+            return None
+        # A resource is recorded under its URI (`name`), and the SDK shows the
+        # text of a ResourceError there, not of a ToolError.
+        return (ToolError if name is None else ResourceError)(str(shown))
 
     def publish(wrapper):
         if inject:
@@ -852,9 +901,9 @@ def _records_call(fn, name: str | None = None):
             try:
                 result = await fn(*args, **kwargs)
             except Exception as e:
-                explained = failed(e, ctx, started_at)
-                if explained is not None:
-                    raise explained from e
+                reported = failed(e, ctx, started_at)
+                if reported is not None:
+                    raise reported from e
                 raise
             finally:
                 _tool_finished()
@@ -868,9 +917,9 @@ def _records_call(fn, name: str | None = None):
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
-            explained = failed(e, ctx, started_at)
-            if explained is not None:
-                raise explained from e
+            reported = failed(e, ctx, started_at)
+            if reported is not None:
+                raise reported from e
             raise
         finally:
             _tool_finished()
@@ -901,16 +950,16 @@ def _installation_removed() -> str | None:
     return None
 
 
-def _explained_if_installation_removed(error: Exception) -> Exception | None:
+def _explained_if_installation_removed(error: Exception) -> InstallationRemoved | None:
     """The error to raise in place of `error` when the installation this
     server runs from is gone, or None to let `error` through unchanged: any
     failure while the installation is in place (another OSError included) is
     not ours to reinterpret.
 
     The original error stays in the text, so the explanation adds the cause
-    without erasing the evidence. A resource raises MCPError on purpose (the
-    SDK would otherwise replace its text with a bare "Error reading
-    resource"), so that type is kept."""
+    without erasing the evidence. A griot.GriotError, so the agent reads it
+    whatever the original was: a crash with the installation gone is that,
+    not a bug to mask."""
     gone = _installation_removed()
     if gone is None:
         return None
@@ -920,9 +969,7 @@ def _explained_if_installation_removed(error: Exception) -> Exception | None:
         "Restart the griot MCP server so it starts from the griot installed now: reconnect it "
         "from the client (in Claude Code, /mcp) or restart the client."
     )
-    if isinstance(error, MCPError):
-        return MCPError(code=error.error.code, message=message)
-    return RuntimeError(message)
+    return InstallationRemoved(message)
 
 
 # The idle reaper below must never close the shard under a tool that is using
@@ -947,8 +994,8 @@ def _tool_finished() -> None:
 
 
 def _search_within_deadline(run):
-    """Runs `run` (the search) and returns its result, or raises a RuntimeError
-    that says what to do when it has not finished after
+    """Runs `run` (the search) and returns its result, or raises SearchTimedOut,
+    which says what to do when it has not finished after
     common.SEARCH_TIMEOUT_SECONDS. 0 runs it inline with no limit.
 
     [real failure, 2026-10-25] two searches took ~2600s, the client gave up
@@ -984,7 +1031,7 @@ def _search_within_deadline(run):
     worker.start()
     worker.join(limit)
     if worker.is_alive():
-        raise RuntimeError(
+        raise SearchTimedOut(
             f"griot_search did not finish within {limit:g} seconds. The machine may have been asleep, "
             "or the collection may be busy (another griot process or call has it open). Retry the "
             "search once; if it fails the same way, run `griot doctor`. A search with mode=vector "
@@ -1737,10 +1784,10 @@ def _repos_list() -> ReposListOutput:
         # raw JSONDecodeError at the MCP client. Swallowing it would be
         # worse than raising: an empty list is indistinguishable from "no
         # repos registered", so the agent would be told a lie instead of an
-        # error. RuntimeError is this server's established way to surface a
-        # real failure (it becomes isError automatically — see the module
-        # docstring), and naming the file is what lets the user go fix it.
-        raise RuntimeError(
+        # error. An UnreadableFile reaches the agent with its text (see the
+        # module docstring), and naming the file is what lets the user go
+        # fix it.
+        raise UnreadableFile(
             f"Could not read {common.REPOS_JSON_PATH.name} ({common.REPOS_JSON_PATH}): {e}. "
             "The file is missing or corrupted — fix or delete it, then re-register with `griot repos add`."
         ) from e
@@ -1813,7 +1860,7 @@ def griot_audit(repos: list[str] | None = None) -> AuditOutput:
     found = redaction.audit_index(repos=repos, max_points=AUDIT_MAX_POINTS)
     # Zero findings over zero points would read as a clean index.
     if not found["indexed"] or found["scanned"] == 0:
-        raise RuntimeError(nothing)
+        raise NothingIndexed(nothing)
     counts: dict[str | None, int] = {}
     for place in found["places"]:
         counts[place["repo"]] = counts.get(place["repo"], 0) + place["count"]
@@ -1893,7 +1940,7 @@ def griot_config_list() -> ConfigListOutput:
         rows = [(setting, config.running_with(setting)) for setting in config.SETTINGS]
         descriptions = config.template_settings()
     except (OSError, UnicodeError) as e:
-        raise RuntimeError(f"Could not read {common.ENV_PATH.name} ({common.ENV_PATH}): {e}. "
+        raise UnreadableFile(f"Could not read {common.ENV_PATH.name} ({common.ENV_PATH}): {e}. "
                            f"`griot config list` in a terminal reads the same file.") from e
     settings: list[ConfigEntry] = [{
         "name": setting.name, "variable": setting.variable,
@@ -2166,17 +2213,17 @@ def griot_golden_set_suggest(path: str, limit: int = 10,
     repository under the active profile: a case added now fails until it
     is. Costs nothing: no query is embedded."""
     if limit < 1:
-        raise ValueError(f"limit must be at least 1 (got {limit})")
+        raise ArgumentRefused(f"limit must be at least 1 (got {limit})")
     if max_commits < 1:
-        raise ValueError(f"max_commits must be at least 1 (got {max_commits})")
+        raise ArgumentRefused(f"max_commits must be at least 1 (got {max_commits})")
     refusal = jobs.repository_path_refusal(path)
     if refusal is not None:
-        raise ValueError(refusal)
+        raise ArgumentRefused(refusal)
     repo_path = Path(path).resolve()
     if common.shown(repo_path.name) != repo_path.name:
         # must_include names the repository exactly, to match the index. A
         # name that is altered on the way out cannot be given from here.
-        raise ValueError("The name of this repository's directory cannot be returned as it is (it holds a "
+        raise ArgumentRefused("The name of this repository's directory cannot be returned as it is (it holds a "
                          "credential-shaped part or a character that is not printable), so no case can name it "
                          "from here. `griot golden-set suggest <path>` in a terminal offers the same candidates.")
     found = golden_set.suggest_candidates(
@@ -2431,7 +2478,7 @@ def _stats(days: int, all_profiles: bool = False) -> StatsOutput:
     """griot_stats and the griot://stats resource (its default window and
     scope) both run this."""
     if days < 1:
-        raise ValueError(f"days must be at least 1 (got {days})")
+        raise ArgumentRefused(f"days must be at least 1 (got {days})")
     # The same function `griot stats` calls, so the two cannot drift apart:
     # this tool once omitted tool_calls the CLI passed (review finding).
     result = stats.report(days, all_profiles=all_profiles)
@@ -2474,7 +2521,7 @@ def _index_status(collection: str | None) -> IndexStatusOutput:
     # gives are accepted: the rule is "one of these", not "looks harmless".
     known = [common.collection_name_for(profile) for profile in common.EMBED_PROFILES]
     if collection is not None and collection not in known:
-        raise ValueError(f"Unknown collection {_shown(collection)}. The collections are: {', '.join(known)}.")
+        raise ArgumentRefused(f"Unknown collection {_shown(collection)}. The collections are: {', '.join(known)}.")
     status = common.get_index_status(collection)
     running = jobs.index_job_report()["running"]
     status["job"] = _job_out(running, time.time())
@@ -2519,15 +2566,10 @@ def _resource(uri: str, tool, description: str):
     converter = Tool.from_function(tool, structured_output=True).fn_metadata
     def register(fn):
         def read() -> str:
-            try:
-                value = fn()
-            except Exception as e:
-                # The SDK replaces any other error a resource raises with a
-                # bare "Error reading resource", which would hide the one
-                # thing the message is for: which file to fix. The tool's
-                # error reaches the agent as isError; this is the same text.
-                raise MCPError(code=INTERNAL_ERROR, message=str(e)) from e
-            return json.dumps(converter.convert_result(value).structured_content)
+            # An error is left to _records_call, as a tool's is: what griot
+            # wrote (which file to fix) reaches the reader as a ResourceError,
+            # a crash as the SDK's bare "Error reading resource".
+            return json.dumps(converter.convert_result(fn()).structured_content)
         read.__name__ = fn.__name__
         recorded = _records_call(read, name=uri)
         mcp.resource(uri, name=fn.__name__, description=description, mime_type="application/json")(recorded)
@@ -2892,7 +2934,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     on a local profile, billed on a paid one. The run is recorded for the
     trend griot_stats reports."""
     if sample_size < 1:
-        raise ValueError(f"sample_size must be at least 1 (got {sample_size})")
+        raise ArgumentRefused(f"sample_size must be at least 1 (got {sample_size})")
     # A check that samples nothing measured nothing. Returned as zeros with
     # no error it reads as "nothing failed", which is how an empty index got
     # a clean bill from the tool the health prompt recommends (the CLI had
@@ -2901,7 +2943,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     not_measured = (f"Quality was not measured: nothing is indexed for profile '{common.ACTIVE_PROFILE_NAME}'. "
                     f"Index a repository first (`griot index all`), then run this again.")
     if not common.collection_exists(common.COLLECTION_NAME):
-        raise RuntimeError(not_measured)
+        raise NothingIndexed(not_measured)
     if golden_set:
         cases, not_run = _curated_cases_to_run()
     else:
@@ -2909,7 +2951,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     result = quality_check.run_self_check(common.COLLECTION_NAME,
                                           min(sample_size, QUALITY_CHECK_SAMPLE_MAX))
     if result["sampled"] == 0:
-        raise RuntimeError(not_measured)
+        raise NothingIndexed(not_measured)
     golden_check = None
     if cases:
         try:
@@ -2918,7 +2960,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             # The self-check is done and paid for: recorded, and said. It
             # used to vanish with the error of the half that came after it.
             quality_check.record_for_trend(common.COLLECTION_NAME, result, None)
-            raise RuntimeError(
+            raise CheckIncomplete(
                 f"The curated golden set stopped before it finished: {common.sentence(str(e))} The self-check did run and is "
                 f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
