@@ -39,14 +39,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor declared in pyproject (requires-python >= 3.10), a current
+        # The floor declared in pyproject (requires-python >= 3.11), a current
         # release and the newest. The floor is the one that actually catches
         # things: syntax and typing that only newer Pythons accept would
         # otherwise ship broken to anyone on the version the package claims
         # to support. macOS because its BSD tools behave differently from
         # GNU's, which has caused real defects in the git hooks.
         include:
-          - {os: ubuntu-24.04, python: "3.10", label: py3.10}
+          - {os: ubuntu-24.04, python: "3.11", label: py3.11}
           - {os: ubuntu-24.04, python: "3.13", label: py3.13}
           - {os: ubuntu-24.04, python: "3.14", label: py3.14}
           - {os: macos-15, python: "3.13", label: "macos, py3.13"}

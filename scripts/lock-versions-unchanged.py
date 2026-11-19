@@ -15,11 +15,7 @@ Exit 0 when nothing installed differs, 1 naming each package that does, and
 2 when a file cannot be read (an error is never a pass)."""
 
 import sys
-
-try:
-    import tomllib
-except ImportError:  # Python 3.10, the floor griot supports
-    import tomli as tomllib
+import tomllib
 
 
 def _installed(path):
