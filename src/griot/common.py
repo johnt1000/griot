@@ -4776,6 +4776,18 @@ KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
 
 
+KEYWORD_BUILD_COMMAND = "griot index keywords"
+
+
+def keyword_search_missing_sentence(collection: str) -> str:
+    """The one sentence `griot doctor`, `griot stats` and griot_stats use for a
+    collection without keyword vectors, so the three never word it apart: what
+    is missing, the command that builds it, and that the command is free."""
+    return (f"keyword search is not built for collection '{collection}' (it was indexed before griot stored keyword "
+            f"vectors), so searches run by meaning only instead of the default hybrid: `{KEYWORD_BUILD_COMMAND}` "
+            f"builds it once (local, embeds nothing)")
+
+
 def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     """The mode a search of `query` runs, and a note to show with its results
     or None. An explicit `mode` is returned as it is, even where it cannot
@@ -4836,11 +4848,19 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
     if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
+        # Read by an agent first (the CLI shows the same words to a person), so
+        # it says what to do NOW, not only what is missing: vector search does
+        # not answer the queries that need a word match (measured: MRR@10 0.01
+        # for commit hashes in vector against 0.80 in hybrid), so the agent is
+        # told which tool does, and the refusal stays a refusal.
         raise SearchModeUnavailable(
             f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
-            f"stored keyword vectors. Run `griot index keywords` once to add them (local: it embeds nothing and "
-            f"costs nothing; while it runs it needs about as much free disk as the collection). Until then, "
-            f"use mode 'vector'.")
+            f"stored keyword vectors. Running `{KEYWORD_BUILD_COMMAND}` once builds it (local: it "
+            f"embeds nothing and costs nothing; while it runs it needs about as much free disk as the "
+            f"collection). Until then: for a commit hash, an error code or where a name is used, use grep or "
+            f"`git log` in the repository you are working in (they do not reach the other registered "
+            f"repositories or pull request text); for a descriptive question, retry with mode 'vector'. "
+            f"Vector search does not find exact strings, so do not use it for those.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = search_filter(client, repos, source_types)
