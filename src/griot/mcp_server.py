@@ -744,7 +744,9 @@ async def _confirmed(ctx, question, *, confirm: bool, cli_hint: str | None,
         run = ("ask the user to do it from a terminal by hand: a value contains control characters, "
                "so there is no command to paste.")
     else:
-        run = f"ask the user to run:\n{cli_hint}" + (f"\n{cli_note}" if cli_note else "")
+        # The note goes before the marker, never after the command: the
+        # command is the last line, where a reader pastes it from.
+        run = (f"{cli_note} " if cli_note else "") + f"ask the user to run:\n{cli_hint}"
 
     if isinstance(answer, AcceptedElicitation) and isinstance(answer.data, _Ask):
         return True, None

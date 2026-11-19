@@ -197,7 +197,16 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
         return _check("settings", FAIL, broken_detail + "; or set a valid value with griot config set NAME VALUE",
                       "\n".join(broken_fix))
     if error is not None:
-        return _check("settings", FAIL, f"the configuration did not load: {error}", None)
+        # The CLI's error ends with the commands that fix it, indented on lines
+        # of their own; they belong in the row's fix, where every reader of
+        # fixes (an agent, `griot update`, the fix guard) looks for them.
+        lines = str(error).splitlines()
+        cut = len(lines)
+        while cut and lines[cut - 1].startswith("  ") and lines[cut - 1].strip():
+            cut -= 1
+        prose = "\n".join(lines[:cut]).rstrip().rstrip(":")
+        commands = "\n".join(line.strip() for line in lines[cut:])
+        return _check("settings", FAIL, f"the configuration did not load: {prose}", commands or None)
     if not env_path.exists() and env_path.is_symlink():
         # Every command writes the template through a link whose target can
         # be created, so one still dangling here leads nowhere griot can
