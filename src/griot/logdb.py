@@ -87,7 +87,11 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     ok INTEGER NOT NULL,
     duration_seconds REAL,
     error TEXT,
-    project TEXT
+    project TEXT,
+    -- What a search ASKED for (before defaults) and which agent client made
+    -- the call: nullable, because rows from before these columns have neither.
+    mode TEXT,
+    client TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_timestamp ON tool_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
@@ -175,21 +179,28 @@ def _ensure_migrated(conn: sqlite3.Connection, log_dir: Path) -> None:
             pass
 
 
-def _has_project_column(conn: sqlite3.Connection) -> bool:
-    return any(row["name"] == "project" for row in conn.execute("PRAGMA table_info(tool_calls)"))
+# The columns tool_calls gained after its first version, in the order they were
+# added. A fixed list, not a parameter taken on trust: the name goes into DDL.
+_TOOL_CALLS_ADDED_COLUMNS = ("project", "mode", "client")
 
 
-def _ensure_tool_calls_project_column(conn: sqlite3.Connection) -> bool:
+def _tool_calls_columns(conn: sqlite3.Connection) -> set[str]:
+    return {row["name"] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+
+
+def _ensure_tool_calls_column(conn: sqlite3.Connection, column: str) -> bool:
     """CREATE TABLE IF NOT EXISTS leaves an existing tool_calls table as it was, so a
-    logs.db created before the `project` column gets it added in place, history kept.
+    logs.db created before a column existed gets it added in place, history kept.
     True when the column is there afterwards. False when the database cannot be
     written (a read-only file system): it could be READ before this column existed
     and still can, so that is not an error."""
-    if _has_project_column(conn):
+    if column not in _TOOL_CALLS_ADDED_COLUMNS:
+        raise ValueError(f"not a tool_calls column added after the first version: {column!r}")
+    if column in _tool_calls_columns(conn):
         return True
     try:
         with conn:
-            conn.execute("ALTER TABLE tool_calls ADD COLUMN project TEXT")
+            conn.execute(f"ALTER TABLE tool_calls ADD COLUMN {column} TEXT")
     except sqlite3.OperationalError as e:
         message = str(e).lower()
         if "duplicate column" in message:  # another griot process added it first
@@ -198,6 +209,10 @@ def _ensure_tool_calls_project_column(conn: sqlite3.Connection) -> bool:
             return False
         raise
     return True
+
+
+def _ensure_tool_calls_project_column(conn: sqlite3.Connection) -> bool:
+    return _ensure_tool_calls_column(conn, "project")
 
 
 def private_mkdir(path: Path) -> None:
@@ -263,7 +278,8 @@ def _connect(log_dir: Path) -> sqlite3.Connection:
     # connect, not just at creation.
     os.chmod(db_path, 0o600)
     conn.executescript(_SCHEMA)
-    _ensure_tool_calls_project_column(conn)
+    for column in _TOOL_CALLS_ADDED_COLUMNS:
+        _ensure_tool_calls_column(conn, column)
     _ensure_migrated(conn, log_dir)
     return conn
 
@@ -538,20 +554,25 @@ def migrate_legacy_spend_file(log_dir: Path, legacy_path: Path, today: str) -> N
 
 
 def write_tool_call(log_dir: Path, tool: str, *, ok: bool, duration_seconds: float | None = None,
-                    error: str | None = None, timestamp: str | None = None, project: str | None = None) -> None:
+                    error: str | None = None, timestamp: str | None = None, project: str | None = None,
+                    mode: str | None = None, client: str | None = None) -> None:
     """Records one MCP tool invocation. Deliberately narrow: which tool,
     whether it worked, how long, and why not — never the arguments or the
-    result. Arguments can carry the user's own question text and results
+    result. The one argument kept is `mode`, the search mode the caller ASKED
+    for (a failed search is in no other table, so without it a refused mode
+    cannot be told from any other failure); `client` is the agent client's
+    name and version, so "the agents stopped searching" can be told from "a
+    different client connected". Arguments can carry the user's own question text and results
     carry indexed source content; neither belongs in a usage counter, and
     griot_search already records what a search needs via log_query()."""
     conn = _connect(log_dir)
     try:
         with conn:
             conn.execute(
-                "INSERT INTO tool_calls (timestamp, tool, ok, duration_seconds, error, project) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tool_calls (timestamp, tool, ok, duration_seconds, error, project, mode, client) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (timestamp or datetime.now(timezone.utc).isoformat(), tool, 1 if ok else 0,
-                 duration_seconds, error, project),
+                 duration_seconds, error, project, mode, client),
             )
     finally:
         conn.close()
@@ -752,9 +773,11 @@ def prune_runs_beyond(log_dir: Path, keep: int) -> int:
 
 
 def _tool_call_rows(conn: sqlite3.Connection, cutoff: datetime) -> list[sqlite3.Row]:
-    project = "project" if _has_project_column(conn) else "NULL AS project"  # a database we could not migrate
+    # A database we could not migrate (read-only) reads the missing ones as NULL.
+    have = _tool_calls_columns(conn)
+    added = ", ".join(c if c in have else f"NULL AS {c}" for c in _TOOL_CALLS_ADDED_COLUMNS)
     return conn.execute(
-        f"SELECT timestamp, tool, ok, duration_seconds, error, {project} FROM tool_calls "
+        f"SELECT timestamp, tool, ok, duration_seconds, error, {added} FROM tool_calls "
         "WHERE timestamp >= ? ORDER BY timestamp",
         (cutoff.isoformat(),),
     ).fetchall()
@@ -771,6 +794,7 @@ def read_tool_calls(log_dir: Path, days: int, now: datetime | None = None) -> li
         conn.close()
     return [
         {"timestamp": r["timestamp"], "tool": r["tool"], "ok": bool(r["ok"]),
-         "duration_seconds": r["duration_seconds"], "error": r["error"], "project": r["project"]}
+         "duration_seconds": r["duration_seconds"], "error": r["error"], "project": r["project"],
+         "mode": r["mode"], "client": r["client"]}
         for r in rows
     ]

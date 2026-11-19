@@ -1,6 +1,6 @@
 ---
 name: griot-troubleshooting
-description: Symptom-to-fix reference for griot failures - a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built yet", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
+description: Symptom-to-fix reference for griot failures - the client cannot connect to griot (launcher "No such file" after a Python upgrade), a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built yet", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
 ---
 
 # griot troubleshooting
@@ -13,6 +13,37 @@ few more: the MCP registration, which read-only tools still ask, the
 variables a server would ignore), says ok / warn / FAIL per check with what
 to do, and changes no setting, index or file of yours. The entries here
 explain the failures it names.
+
+## The client cannot connect to griot, and the launcher says "No such file"
+
+**Symptom**: the agent client says it could not connect, or `Failed to
+reconnect to griot`, and the server's log shows the launcher failing with
+`exec: .../pipx/venvs/griot-rag/bin/python: cannot execute: No such file or
+directory`. In a terminal, `which griot` finds the launcher but `griot
+--version` ends with the same `No such file` error. Agents then simply go
+without griot: in the logs it looks like they stopped searching.
+
+**Cause**: the Python the pipx environment was built on was removed, usually
+by a Homebrew Python upgrade. The environment's `python` is a symlink into
+that installation, so it now points at nothing and griot never starts.
+Nothing from griot can warn about it, and `griot doctor` cannot run either,
+because the process that would say it is the one that does not start.
+
+**Fix**: reinstall the tool on the Python that exists now, then restart the
+agent session (a client does not retry a server it gave up on):
+
+```bash
+pipx reinstall griot-rag                  # pipx
+uv tool install --reinstall griot-rag     # uv tool
+griot --version                           # prints a version again
+griot doctor                              # the whole setup, read-only
+```
+
+Your configuration, credentials and index live outside that environment and
+are not touched.
+
+**Prevention**: after a Homebrew Python upgrade, run `pipx reinstall-all`
+(uv: `uv tool install --reinstall` for each tool you installed with it).
 
 ## Collection locked / "another griot process still has it open"
 
