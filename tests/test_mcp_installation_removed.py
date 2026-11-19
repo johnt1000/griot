@@ -67,11 +67,12 @@ async def test_a_search_after_the_package_files_were_removed_says_so_and_asks_fo
     _says_the_installation_went_away(text)
     # The path that is gone is named, so a person can see which install it was.
     assert str(package_removed) in text, text
-    # What failed is named by its class only: an error griot did not write
-    # keeps the SDK's masking even with the installation gone (its text can
-    # carry internals, like this path). The evidence is not erased: the call
-    # log keeps it whole (test_the_failed_call_is_recorded_with_the_cause).
-    assert "OSError" in text, text
+    # What failed is said as an internal error, never by its class (policy,
+    # section 2): an error griot did not write keeps the SDK's masking even
+    # with the installation gone (its text can carry internals, like this
+    # path). The evidence is not erased: the call log keeps it whole
+    # (test_the_failed_call_is_recorded_with_the_cause).
+    assert "an internal error" in text and "OSError" not in text, text
     assert CERT_ERROR not in text, text
 
 
@@ -88,7 +89,7 @@ async def test_a_griot_error_after_the_removal_keeps_its_text(monkeypatch, packa
         result = await client.call_tool("griot_search", {"query": "anything"})
 
     _says_the_installation_went_away(_text(result))
-    assert f"SearchModeUnavailable: {written}" in _text(result), _text(result)
+    assert written in _text(result) and "SearchModeUnavailable" not in _text(result), _text(result)
 
 
 @pytest.mark.anyio

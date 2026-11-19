@@ -345,15 +345,23 @@ class InstallationRemoved(griot.GriotError, RuntimeError):
 
 def _carried(error: Exception) -> str:
     """What a griot error that wraps `error` may say about it to the agent:
-    its text when griot wrote it, its class name otherwise.
+    its text when griot wrote it, "an internal error" otherwise (never a
+    class name: policy, section 2).
 
     [review finding] A GriotError reaches the agent whole, so wrapping a
     crash's text inside one would undo the SDK's masking (a vector-store
     error carries a path). The crash's text is not lost: _records_call writes
-    the cause into the call log whenever the agent's text left it out."""
+    the cause into the call log whenever the agent's text left it out.
+
+    Carried inside another sentence, so a command the text ends with on a
+    line of its own (every griot error does) is kept, backticked, in the
+    line: the wrapping text says its own step last."""
     if isinstance(error, griot.GriotError):
-        return common.sentence(str(error))
-    return f"{type(error).__name__}."
+        lines = str(error).splitlines()
+        prose = " ".join(line.strip() for line in lines if line.strip() and not line.startswith("  "))
+        commands = [line.strip() for line in lines if line.startswith("  ") and line.strip()]
+        return common.sentence(prose) + "".join(f" (`{command}`)" for command in commands)
+    return "an internal error."
 
 
 def _corrupt_golden_set(e: Exception) -> UnreadableFile:
@@ -546,6 +554,10 @@ class ProviderStatus(TypedDict):
 class AuthGuidanceOutput(TypedDict):
     providers: list[ProviderStatus]
     how_to_set: str
+    # What `how_to_set` does and where the key goes; a key added after
+    # `how_to_set` kept its value a command alone (a client that read the
+    # older shape still finds the same command there).
+    where_it_is_stored: str
     how_to_remove: str
     why_not_here: str
 
@@ -980,17 +992,16 @@ def _explained_if_installation_removed(error: Exception) -> InstallationRemoved 
 
     A griot.GriotError, so the agent reads it whatever the original was: a
     crash with the installation gone is that, not a bug to mask, and the
-    restart is what the agent can act on. [review finding] The original is
-    named by its class, and its text is shown only when griot wrote it (see
-    _carried): the certifi error that started this carries a venv path, and
+    restart is what the agent can act on. [review finding] The original's
+    text is shown only when griot wrote it, and is "an internal error"
+    otherwise, never a class name (see _carried): the certifi error that started this carries a venv path, and
     the explanation must not become a way around the SDK's masking. The
     evidence is not erased: the call log keeps the original whole (the
     wrapper chains it as the cause)."""
     gone = _installation_removed()
     if gone is None:
         return None
-    original = (f"{type(error).__name__}: {_carried(error)}" if isinstance(error, griot.GriotError)
-                else _carried(error))
+    original = _carried(error)
     message = (
         f"The griot installation this MCP server runs from was removed or replaced "
         f"({gone} no longer exists), so this call failed: {original} "
@@ -1061,10 +1072,10 @@ def _search_within_deadline(run):
     if worker.is_alive():
         raise SearchTimedOut(
             f"griot_search did not finish within {limit:g} seconds. The machine may have been asleep, "
-            "or the collection may be busy (another griot process or call has it open). Retry the "
-            "search once; if it fails the same way, run `griot doctor`. A search with mode=vector "
-            "needs no keyword index, so it is the one to try if a keyword index is being built. "
-            "Set GRIOT_SEARCH_TIMEOUT_SECONDS to change this limit (0 turns it off).")
+            "or the collection may be busy (another griot process or call has it open). "
+            "GRIOT_SEARCH_TIMEOUT_SECONDS changes this limit (0 turns it off). A search with mode=vector "
+            "needs no keyword index, so it is the one to try if a keyword index is being built. Retry the "
+            "search once; if it fails the same way, run `griot doctor`.")
     if "error" in outcome:
         raise outcome["error"]
     return outcome["value"]
@@ -2479,10 +2490,15 @@ def griot_auth_guidance() -> AuthGuidanceOutput:
         # `configured` is this process's view, and a server keeps what it
         # read: without this an agent sends the person to set a
         # key, calls again, and reports it still missing.
-        "how_to_set": ("griot auth set <provider>    # hidden prompt; stores in the OS keychain when one is "
-                       "reachable, else in <config>/.env (plaintext, 0600); `griot auth list` says which. "
-                       f"After a key is set or removed, {auth.RUNNING_SERVERS_KEEP_WHAT_THEY_READ} `configured` "
-                       "above is what this server read."),
+        # The command alone, and what it does in a field of its own: a '#'
+        # comment after the command (the MCP twin of debt 108) put
+        # `griot auth list` where a paste never runs it.
+        "how_to_set": "griot auth set <provider>",
+        "where_it_is_stored": ("griot auth set asks for the key with a hidden prompt and stores it in the OS "
+                               "keychain when one is reachable, else in <config>/.env (plaintext, 0600); "
+                               "`griot auth list` says which. After a key is set or removed, "
+                               f"{auth.RUNNING_SERVERS_KEEP_WHAT_THEY_READ} `configured` above is what this "
+                               "server read."),
         "how_to_remove": "griot auth remove <provider>",
         "why_not_here": (
             "Credentials are never set through MCP: a value typed into a chat reaches the "
@@ -3032,7 +3048,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             raise CheckIncomplete(
                 f"The curated golden set stopped before it finished: {_carried(e)} The self-check did run and is "
                 f"recorded{cost}: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
-                f"golden_set=false runs the self-check alone.") from e
+                f"Call griot_quality_check with golden_set=false to run the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
     # trend table is read by griot_stats and written by record_for_trend,
     # which only the CLI called — so a check run from here left no trace, and
@@ -3367,7 +3383,7 @@ def _missing_credential_reason() -> str | None:
     if missing is None:
         return None
     why, fix = missing
-    return f"{why[0].upper()}{why[1:]}. Nothing was started. A credential is set in a terminal:\n  {fix}"
+    return f"{why[0].upper()}{why[1:]}. Nothing was started. {common.SET_IN_A_TERMINAL}\n  {fix}"
 
 
 def _ask_index_repo(ctx: Context, path: str, sources=None, confirm: bool = False):
@@ -3627,7 +3643,7 @@ def main(argv=None) -> None:
         # that would be the hole this closes, with nothing said.
         raise griot.ConfigurationError(
             "The MCP server was started in a way that read its configuration before it knew it was a server. "
-            "Start it with `griot mcp` (or `python -m griot.mcp_server`).")
+            "Start it with griot mcp (or python -m griot.mcp_server):\n  griot mcp")
     _keep_stdout_for_the_protocol()
     for variable, ignored in common.ENVIRONMENT_IGNORED.items():
         # Now, not when the configuration loaded: stdout is the protocol's.

@@ -88,7 +88,7 @@ stderr once per collection (the ledger remembers it across commands), since a
 person reads every command; `griot search --json` puts it in the note every
 time, since a script or agent reading one document has nothing else to
 remember it by. Either way the ledger records it, so the closing
-``1 notice: run `griot doctor` `` line does not count it as news.
+`1 notice: griot doctor lists it with what to do.` footer does not count it as news.
 
 A filter that cannot match (`--repo` with nothing indexed) is an error on
 stderr with exit 2 and nothing on stdout, as without `--json`. `--limit` is
@@ -108,7 +108,7 @@ repositories among its results that are behind (`behind`, on every result; its
 server sees a repository fall behind or fall into another band of commits:
 1-9, 10-99, 100-999, 1000 or more, or a history rewritten), and `griot stats`
 and `griot doctor` list them every time. Other commands end, when something
-new needs attention, with one line on stderr, ``1 notice: run `griot doctor` `` (again a
+new needs attention, with a two-line footer on stderr, `1 notice: griot doctor lists it with what to do.` and then `griot doctor` alone on the next line (again a
 week later if nothing changed; `--quiet` silences it). Pull requests and issues live on the platform, so
 nothing local can say whether that source is behind.
 

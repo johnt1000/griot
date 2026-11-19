@@ -142,6 +142,31 @@ def test_a_version_that_cannot_be_compared_runs_nothing(world, capsys):
     assert "could not compare" in capsys.readouterr().err
 
 
+def test_a_version_that_cannot_be_compared_ends_with_the_upgrade_commands(world, monkeypatch, capsys):
+    """Nothing runs, and the step is still last: the installers' commands,
+    one per line, as when the method cannot be told."""
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    world["newest"] = "0.3.0rc1"
+
+    assert update.main(["--yes"]) == 1
+
+    captured = capsys.readouterr()
+    lines = captured.err.rstrip().splitlines()
+    assert captured.out == "" and "To upgrade anyway, run the one that installed griot:" in lines[0]
+    assert lines[1:] == ["  pipx upgrade griot-rag", "  uv tool upgrade griot-rag",
+                         "  python3 -m pip install --upgrade griot-rag"]
+
+
+def test_a_development_install_ends_with_the_checkout_s_pull(world, capsys):
+    """The same command the doctor's release row gives, last."""
+    world["development"] = "an editable install of file:///Users/you/code/my%20griot"
+
+    assert update.main(["--yes"]) == 1
+
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == "  git -C '/Users/you/code/my griot' pull"
+
+
 def test_pypi_is_asked_once_through_the_doctor_query(world):
     world["newest"] = "0.2.1"
 
@@ -513,7 +538,7 @@ def test_a_row_with_a_warning_of_its_own_beside_the_condition_is_counted(world, 
     condition is listed, and the row's own fix is not lost."""
     found = _keyword_missing()
     world["doctor"] = [_row("index", "warn", f"the last indexing run did not finish: boom; {found.sentence}",
-                            f"griot index all   # and read what it says\n{found.action}", [found])]
+                            f"griot index all\n{found.action}", [found])]
 
     update.main(["--yes"])
 
@@ -707,15 +732,26 @@ def test_a_failing_installer_says_where_the_reason_is_and_how_to_see_the_version
 
 
 @pytest.mark.parametrize("failure, cause", [
-    ("connection", "no network answer"),
-    ("timeout", "no network answer"),
+    ("connection", "no network connection to pypi.org"),
+    ("timeout", "PyPI did not answer within 3 seconds"),
+    ("proxy", "the proxy in HTTPS_PROXY refused the connection"),
+    ("tls", "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause"),
+    ("status", "PyPI answered HTTP 503"),
+    ("other", "no network answer"),
     ("json", "PyPI's answer could not be read"),
     ("value", "PyPI's answer could not be read"),
 ])
 def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, capsys, failure, cause):
     import requests
 
+    # Each cause has its own fix: a proxy is not the network, and a PyPI that
+    # answered with an error status did answer.
+    answered = requests.Response()
+    answered.status_code = 503
     world["newest"] = {"connection": requests.ConnectionError("offline"), "timeout": requests.Timeout("slow"),
+                       "proxy": requests.exceptions.ProxyError("refused"), "tls": requests.exceptions.SSLError("bad"),
+                       "status": requests.HTTPError("503", response=answered),
+                       "other": requests.exceptions.TooManyRedirects("loop"),
                        "json": requests.JSONDecodeError("Expecting value", "<html>", 0),
                        "value": ValueError("no version in PyPI's answer")}[failure]
 
@@ -738,7 +774,7 @@ def test_the_doctor_s_release_row_names_the_same_cause(monkeypatch):
 
     check = doctor.check_release(common)
     # The same fact as `griot update`'s error, in the same words.
-    assert check["detail"].startswith("could not ask PyPI for the newest release (no network answer); this is griot ")
+    assert check["detail"].startswith("could not ask PyPI for the newest release (no network connection to pypi.org); this is griot ")
     assert "ConnectionError" not in check["detail"]
 
 
@@ -826,7 +862,7 @@ def test_quiet_still_says_the_version_could_not_be_read(world, monkeypatch, caps
 def test_the_footer_is_not_said_after_the_check_ran(world, monkeypatch, capsys):
     from griot import cli, notices
 
-    monkeypatch.setattr(notices, "footer", lambda *a, **k: "2 notices: run `griot doctor`")
+    monkeypatch.setattr(notices, "footer", lambda *a, **k: "2 notices: griot doctor lists them with what to do.\n  griot doctor")
     world["doctor"] = OSError("no")
 
     assert cli.main(["update", "--yes"]) == 0
@@ -837,7 +873,7 @@ def test_the_footer_is_not_said_after_the_check_ran(world, monkeypatch, capsys):
 def test_the_footer_is_still_said_when_nothing_was_upgraded(world, monkeypatch, capsys):
     from griot import cli, notices
 
-    monkeypatch.setattr(notices, "footer", lambda *a, **k: "2 notices: run `griot doctor`")
+    monkeypatch.setattr(notices, "footer", lambda *a, **k: "2 notices: griot doctor lists them with what to do.\n  griot doctor")
     world["newest"] = "0.2.1"
 
     assert cli.main(["update", "--yes"]) == 0
@@ -1008,7 +1044,7 @@ def test_a_real_update_runs_the_real_new_doctor_and_counts_what_it_reports(tmp_p
     assert lines[0].startswith("MCP servers already running still run griot ")
     assert lines[-2].startswith("After the upgrade, griot ") and "'s checks report 0 failures, " in lines[-2]
     assert lines[-1] == "  griot doctor" and "checks report:\n" not in done.stderr
-    assert "notices: run" not in done.stderr, "no footer under it"
+    assert "griot doctor lists" not in done.stderr, "no footer under it"
     assert "Traceback" not in done.stderr
 
 

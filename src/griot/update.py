@@ -226,8 +226,12 @@ def main(argv=None) -> int:
         return 1
     mine, theirs = doctor.release_numbers(installed), doctor.release_numbers(newest)
     if mine is None or theirs is None:
+        # The candidates last, one per line as below: a person who knows the
+        # newest is newer can still upgrade with the installer's own command.
+        commands = doctor.upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)
         print(f"Error: could not compare {installed} (installed) with {newest!r} (newest on PyPI). "
-              f"Nothing was run.", file=sys.stderr)
+              f"Nothing was run. To upgrade anyway, run the one that installed griot:\n"
+              + "\n".join(f"  {command}" for command in commands), file=sys.stderr)
         return 1
     if mine == theirs:
         print(f"griot {installed} is up to date: it is the newest release on PyPI.")
@@ -238,9 +242,10 @@ def main(argv=None) -> int:
 
     development = doctor.development_install()
     if development is not None:
+        # The command last, the one the doctor's release check gives.
         print(f"Error: griot {newest} is out, but this is a development install: {development}. An installer "
-              f"would replace it with the release; update the checkout instead (git pull). Nothing was run.",
-              file=sys.stderr)
+              f"would replace it with the release. Nothing was run. Update the checkout instead:\n"
+              f"  {doctor.checkout_pull_command(development)}", file=sys.stderr)
         return 1
     argvs = doctor.upgrade_argvs(sys.prefix, sys.base_prefix, sys.executable)
     commands = doctor.upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)

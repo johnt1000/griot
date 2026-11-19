@@ -128,7 +128,7 @@ def test_a_setting_griot_starts_with_but_should_not_is_a_failure_too(tmp_path):
     done = _cli(tmp_path, file="GRIOT_GITLAB_API_BASE=ftp://gitlab.example.com/api/v4\n")
 
     assert done.returncode == 1 and "FAIL" in done.stdout and "GRIOT_GITLAB_API_BASE" in done.stdout
-    assert "https" in done.stdout and "griot config set gitlab-api-base" in done.stdout
+    assert "https" in done.stdout and "griot config unset gitlab-api-base" in done.stdout
 
 
 def test_a_profile_that_does_not_exist_is_a_failure_in_one_line(tmp_path):
@@ -145,7 +145,7 @@ def test_a_profile_set_in_the_environment_that_does_not_exist_names_the_environm
     done = _cli(tmp_path, exported={"GRIOT_EMBED_PROFILE": "nope"})
 
     assert done.returncode == 1 and "FAIL" in done.stdout and "nope" in done.stdout
-    assert "set in the environment" in done.stdout and "unset the variable" in done.stdout
+    assert "set in the environment" in done.stdout and "unset GRIOT_EMBED_PROFILE" in done.stdout
 
 
 def test_nothing_is_created_by_a_check(tmp_path):
@@ -174,7 +174,7 @@ def test_a_settings_file_open_to_others_is_reported_even_though_griot_closes_it_
 
     done = subprocess.run([sys.executable, "-m", "griot.cli", "doctor"], env=env, capture_output=True, text=True, timeout=180)
 
-    assert done.returncode == 0 and "warn  settings" in done.stdout and "0644" in done.stdout
+    assert done.returncode == 0 and "ok    settings" in done.stdout and "0644" in done.stdout, "repaired: ok with a note"
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600, "closed, as every command does, and said so"
     assert "closed it" in done.stdout
 
@@ -495,7 +495,7 @@ def test_a_settings_file_that_cannot_be_used_is_not_fixed_by_the_installer(monke
 
     check = _by_name(doctor.run_checks(home=tmp_path))["tool approval"]
 
-    assert "fix the file" in check["fix"] and "then" in check["fix"]
+    assert "fix the file" in check["detail"] and "then" in check["detail"] and check["fix"] == "griot assist install"
 
 
 def test_a_harness_directory_that_cannot_be_used_is_a_warning_with_the_reason(monkeypatch, claude_code, tmp_path):
@@ -504,7 +504,7 @@ def test_a_harness_directory_that_cannot_be_used_is_a_warning_with_the_reason(mo
 
     check = _by_name(doctor.run_checks(home=tmp_path))["tool approval"]
 
-    assert check["status"] == "warn" and "absolute" in check["detail"] and "CLAUDE_CONFIG_DIR" in check["fix"]
+    assert check["status"] == "warn" and "absolute" in check["detail"] and "CLAUDE_CONFIG_DIR" in check["detail"]
 
 
 def test_a_rule_the_person_denied_is_their_decision_not_a_warning(monkeypatch, claude_code, tmp_path):
@@ -905,7 +905,8 @@ def test_the_warning_lists_the_commands_when_it_cannot_tell(monkeypatch, pypi):
 
     fix = _release()["fix"]
 
-    assert "pipx upgrade griot-rag" in fix and "uv tool upgrade griot-rag" in fix and " or " in fix
+    assert "pipx upgrade griot-rag" in fix and "uv tool upgrade griot-rag" in fix
+    assert len(fix.splitlines()) == 3, "one command per line, as griot update lists them"
 
 
 def test_a_development_install_behind_the_release_is_told_to_update_the_checkout(monkeypatch, pypi):
@@ -919,7 +920,7 @@ def test_a_development_install_behind_the_release_is_told_to_update_the_checkout
     check = _release()
 
     assert check["status"] == "warn" and "9.0.0" in check["detail"]
-    assert "/Users/you/code/griot" in check["fix"] and "git pull" in check["fix"]
+    assert check["fix"] == "git -C /Users/you/code/griot pull"
     assert "install --upgrade" not in check["fix"] and "upgrade griot-rag" not in check["fix"]
 
 

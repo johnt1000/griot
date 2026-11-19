@@ -400,7 +400,7 @@ async def test_the_auth_tool_reads_no_keychain_and_does_not_promise_one(monkeypa
         profiles = await client.call_tool("griot_profiles_list", {})
 
     assert not result.is_error and not profiles.is_error
-    how = result.structured_content["how_to_set"]
+    how = result.structured_content["where_it_is_stored"]
     # It cannot know without reading the keychain, so it must not say the
     # keychain unconditionally: a reader with no backend would believe it.
     assert "OS keychain" in how and ".env" in how and "griot auth list" in how

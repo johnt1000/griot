@@ -220,12 +220,12 @@ def test_the_keyword_fact_has_one_wording_everywhere():
 def test_the_footer_is_said_once_per_set_of_fingerprints():
     notices.record({"behind"}, [notices.behind(_report("one", 3))])
 
-    assert notices.footer(now=NOW) == "1 notice: run `griot doctor`"
+    assert notices.footer(now=NOW) == "1 notice: griot doctor lists it with what to do.\n  griot doctor"
     assert notices.footer(now=NOW + timedelta(hours=1)) is None
     notices.record({"behind"}, [notices.behind(_report("one", 4))])  # same band: same state
     assert notices.footer(now=NOW + timedelta(hours=2)) is None
     notices.record({"keyword_vectors_missing"}, [notices.keyword_vectors_missing("c")])
-    assert notices.footer(now=NOW + timedelta(hours=3)) == "2 notices: run `griot doctor`"
+    assert notices.footer(now=NOW + timedelta(hours=3)) == "2 notices: griot doctor lists them with what to do.\n  griot doctor"
 
 
 def test_the_footer_comes_back_after_seven_days_unchanged():
@@ -233,7 +233,7 @@ def test_the_footer_comes_back_after_seven_days_unchanged():
     assert notices.footer(now=NOW) is not None
 
     assert notices.footer(now=NOW + timedelta(days=7) - timedelta(seconds=1)) is None
-    assert notices.footer(now=NOW + timedelta(days=7)) == "1 notice: run `griot doctor`"
+    assert notices.footer(now=NOW + timedelta(days=7)) == "1 notice: griot doctor lists it with what to do.\n  griot doctor"
     assert notices.footer(now=NOW + timedelta(days=8)) is None
 
 
@@ -265,7 +265,7 @@ def test_the_footer_is_silent_and_remembers_nothing_under_quiet(monkeypatch):
     monkeypatch.setenv("GRIOT_QUIET", "1")
     assert notices.footer(now=NOW) is None
     monkeypatch.delenv("GRIOT_QUIET")
-    assert notices.footer(now=NOW) == "1 notice: run `griot doctor`"
+    assert notices.footer(now=NOW) == "1 notice: griot doctor lists it with what to do.\n  griot doctor"
 
 
 def test_the_ledger_file_is_private():
@@ -293,10 +293,10 @@ def test_the_cli_says_one_footer_line_on_stderr_once_per_state(tmp_path):
     more = _cli(tmp_path, "repos", "list", extra_env={**OLD, "RAG_CHAT_MODEL": "x"})
 
     assert first.returncode == 0, first.stderr
-    assert first.stderr == "1 notice: run `griot doctor`\n"
+    assert first.stderr == "1 notice: griot doctor lists it with what to do.\n  griot doctor\n"
     assert "notice" not in first.stdout and "renamed" not in first.stdout
     assert second.stderr == "" and second.stdout == first.stdout
-    assert more.stderr == "1 notice: run `griot doctor`\n", "the same condition, a new fingerprint"
+    assert more.stderr == "1 notice: griot doctor lists it with what to do.\n  griot doctor\n", "the same condition, a new fingerprint"
 
 
 def test_the_footer_is_silent_under_quiet_and_never_on_stdout(tmp_path):
@@ -305,7 +305,7 @@ def test_the_footer_is_silent_under_quiet_and_never_on_stdout(tmp_path):
     spoken = _cli(tmp_path, "repos", "list", extra_env=OLD)
 
     assert quiet.stderr == "" and env_quiet.stderr == ""
-    assert spoken.stderr == "1 notice: run `griot doctor`\n", "silenced is not said: it still has to come"
+    assert spoken.stderr == "1 notice: griot doctor lists it with what to do.\n  griot doctor\n", "silenced is not said: it still has to come"
 
 
 def test_no_footer_after_a_failure_the_error_keeps_the_last_line(tmp_path):
@@ -582,13 +582,13 @@ def test_a_condition_doctor_did_not_list_is_still_news_for_the_footer(monkeypatc
     doctor.main(["--json"])
     capsys.readouterr()
 
-    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: run `griot doctor`"
+    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: griot doctor lists it with what to do.\n  griot doctor"
 
 
 def test_a_condition_the_footer_said_stays_said_when_doctor_could_not_list_it(monkeypatch, capsys):
     doctor = _quiet_doctor(monkeypatch)
     notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing(common.COLLECTION_NAME)])
-    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: run `griot doctor`"
+    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: griot doctor lists it with what to do.\n  griot doctor"
     monkeypatch.setattr(common, "get_index_status", lambda **kw: {
         "points_count": None, "points_error": "busy", "last_indexed": {}, "keyword_search": False,
         "collection": common.COLLECTION_NAME, "repositories": []})
@@ -749,7 +749,7 @@ def test_griot_index_drops_what_it_built_and_records_what_fell_behind(monkeypatc
 
     assert notices.stored_fingerprint(keyword.id) is None
     assert notices.stored_fingerprint("behind:one") == "10-99"
-    assert out.out == "" and out.err == "1 notice: run `griot doctor`\n"
+    assert out.out == "" and out.err == "1 notice: griot doctor lists it with what to do.\n  griot doctor\n"
 
 
 def test_a_command_says_a_condition_again_when_its_fingerprint_changed(monkeypatch, capsys):

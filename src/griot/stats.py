@@ -493,10 +493,14 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # do its job (the platform refused every fetch, say). A refusal the
         # line above already names is not said a second time.
         what = "did not finish" if last_indexed.get("indexed") is None else "failed"
-        attention.append(f"the last indexing run {what}: {last_indexed['error']}")
+        # The command last, as griot doctor's index row gives it.
+        attention.append(f"the last indexing run {what}: {last_indexed['error']}; run it again and read its first "
+                         f"error — griot index all")
     if index_status.get("spend_ceiling_exceeded"):
-        attention.append("today's spend reached the daily ceiling: paid calls are refused until "
-                         "tomorrow, or until the ceiling is raised")
+        # As griot doctor's spend row says it, with the same command.
+        attention.append("today's spend reached the daily ceiling: paid calls are refused until tomorrow; raising "
+                         "the ceiling asks first — griot config set spend-ceiling "
+                         + common.spend_ceiling_to_propose(common.get_spend_today(), None))
     attention.extend(notices.attention_lines([n for n in found if n.kind != notices.BEHIND]))
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")

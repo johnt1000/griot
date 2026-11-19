@@ -179,7 +179,12 @@ TOKEN_ENV = {platform: common.credential_env_vars()[platform]
 def _require_token(env_var: str) -> str:
     token = common.credential(env_var)
     if not token:
-        raise ValueError(f"{env_var} not found in the environment")
+        # credential() also looked in the file and the keychain: "not found
+        # in the environment" was not what happened. The command last.
+        platform = next((p for p, v in TOKEN_ENV.items() if v == env_var), None)
+        command = f"griot auth set {platform}" if platform else "griot doctor"
+        raise ValueError(f"{env_var} is not set (the {platform or 'platform'} token). "
+                         f"{common.SET_IN_A_TERMINAL}\n  {command}")
     return token
 
 

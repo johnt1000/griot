@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -361,7 +362,8 @@ def _env_file_behind_links() -> Path:
     target = Path(os.path.realpath(ENV_PATH))
     if ENV_PATH.is_symlink() and not target.exists() and (os.path.lexists(target) or not target.parent.is_dir()):
         raise ConfigurationError(f"{ENV_PATH} is a symbolic link that leads to {target}, which does not exist and "
-                                f"cannot be created there. Point the link at a file, or remove it.")
+                                 f"cannot be created there. Point the link at a file, or remove it:\n"
+                                 f"  {shlex.join(['rm', str(ENV_PATH)])}")
     return target
 
 
@@ -1342,11 +1344,18 @@ ACTIVE_PROFILE_NAME = os.getenv("GRIOT_EMBED_PROFILE", "jina-code")
 if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
     # A setting griot cannot start with, like a ceiling that is not a number:
     # one line that names it and says how to fix it, not a traceback.
+    # The command last and concrete: `unset` when the variable is exported
+    # (the environment wins over the file), else `profiles use` with the
+    # default profile, which runs before the configuration loads and writes
+    # the file.
     raise UnknownEmbedProfile(
         f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}.{unknown_profile_reason(ACTIVE_PROFILE_NAME)} "
         f"Options: {', '.join(EMBED_PROFILES)}. "
-        f"If the variable is exported in this environment, unset it or fix it there (the environment wins "
-        f"over the file); otherwise pick one with `griot profiles use <name>`, which writes {ENV_PATH}.",
+        + ("It is exported in this environment, which wins over the file: fix it where it is exported, or "
+           "unset it:\n  unset GRIOT_EMBED_PROFILE" if "GRIOT_EMBED_PROFILE" in ENVIRONMENT_BEFORE_ENV_FILE
+           else f"Pick one of them: griot profiles use writes {ENV_PATH} (an exported GRIOT_EMBED_PROFILE would "
+                f"win over the file, so if one is exported later, unset it there). This one is the default:\n"
+                f"  griot profiles use jina-code"),
         ACTIVE_PROFILE_NAME, list(EMBED_PROFILES), unknown_profile_reason(ACTIVE_PROFILE_NAME),
     )
 ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
@@ -1416,11 +1425,17 @@ CHAT_MODEL = os.getenv("GRIOT_CHAT_MODEL", "gemini-2.5-flash")
 # conservative estimate, so as to never UNDERestimate real spend against the
 # circuit breaker (the opposite would be dangerous). Adjust via env if you
 # know the exact contracted price.
-def _where_to_fix() -> str:
-    """The second half of every "this setting is not valid" error."""
-    return (f"It is set in the environment or in {ENV_PATH}: `griot config set <name> <value>` writes the file "
-            f"and `griot config unset <name>` removes the line, back to the default (<name> can be the "
-            f"variable itself; `griot config --help` lists the short names).")
+def _where_to_fix(variable: str) -> str:
+    """The second half of every "this setting is not valid" error: where it
+    is set, then the command that returns it to its default, last and
+    concrete (the variable is known; a `<name>` placeholder does not paste).
+    Exported, the environment wins over the file, so the command is the
+    shell's `unset`; otherwise `griot config unset`, which removes the line."""
+    if variable in ENVIRONMENT_BEFORE_ENV_FILE:
+        return (f"It is exported in the environment, which wins over {ENV_PATH}: fix it where it is exported, "
+                f"or unset it to use the file's value or the default:\n  unset {variable}")
+    return (f"It is set in {ENV_PATH}: griot config set writes a valid value, and griot config unset returns it "
+            f"to the default:\n  griot config unset {variable}")
 
 
 def _amount_env(name: str, default: str | None) -> float | None:
@@ -1440,7 +1455,7 @@ def _amount_env(name: str, default: str | None) -> float | None:
     except ValueError:
         value = math.nan
     if not math.isfinite(value) or value < 0:
-        raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). {_where_to_fix()}")
+        raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). {_where_to_fix(name)}")
     return value
 
 
@@ -1451,9 +1466,9 @@ def _count_env(name: str, default: str, minimum: int | None = None) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix()}") from None
+        raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix(name)}") from None
     if minimum is not None and value < minimum:
-        raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix()}")
+        raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix(name)}")
     return value
 
 
@@ -1519,7 +1534,7 @@ ACTIVE_CHAT_PROFILE_NAME = os.getenv("GRIOT_CHAT_PROFILE", "gemini")
 if ACTIVE_CHAT_PROFILE_NAME not in CHAT_PROFILES:
     raise ConfigurationError(
         f"Unknown GRIOT_CHAT_PROFILE={ACTIVE_CHAT_PROFILE_NAME!r}. Options: {', '.join(CHAT_PROFILES)}. "
-        f"{_where_to_fix()}"
+        f"{_where_to_fix('GRIOT_CHAT_PROFILE')}"
     )
 ACTIVE_CHAT_PROFILE = CHAT_PROFILES[ACTIVE_CHAT_PROFILE_NAME]
 
@@ -1942,12 +1957,29 @@ def _require_gemini_token() -> str:
     # the keychain is asked only here, when a gemini call is about to run.
     token = GEMINI_TOKEN or _keychain_value("GEMINI_TOKEN")
     if not token:
-        raise CredentialMissing(
-            f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
-            f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
-            f"and for ask.py's chat answer (direct call to Google's API)."
-        )
+        raise CredentialMissing(missing_credential_text("GEMINI_TOKEN", "paid profile 'gemini'"))
     return token
+
+
+# Said between what is missing and the command, on every surface that
+# refuses for a missing credential (the CLI, griot_index_repo, a search or an
+# answer that could not start): a secret is set in a terminal, never through
+# the MCP server.
+SET_IN_A_TERMINAL = "A credential is set in a terminal:"
+
+
+def missing_credential_text(env_var: str, profile_label: str) -> str:
+    """The one refusal for a credential that is set nowhere griot looks (the
+    environment, the configuration file, the keychain), for `profile_label`
+    ("paid profile 'gemini'", "chat profile 'openai'"): missing_credential()'s
+    sentence, that the API was not called, and the command last. A key no
+    provider of griot's names (a custom profile's) is not one `griot auth
+    set` stores: `griot doctor` says where it is read from instead (debt
+    102). "Nothing was sent" holds for an embedding and an answer alike:
+    the gemini key serves both."""
+    provider = _provider_of(env_var)
+    command = f"griot auth set {provider}" if provider else "griot doctor"
+    return f"{profile_label} needs {env_var}, and it is not set. Nothing was sent. {SET_IN_A_TERMINAL}\n  {command}"
 
 # Local spend circuit breaker — direct calls to Gemini (embedding and chat)
 # don't go through any external platform budget, so this is the ONLY
@@ -2073,7 +2105,7 @@ CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "multi")
 if CONCURRENCY_MODE not in ("single", "multi"):
     raise ConfigurationError(
         f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. Use 'multi' (default) or 'single'. "
-        f"{_where_to_fix()}"
+        f"{_where_to_fix('GRIOT_MCP_CONCURRENCY_MODE')}"
     )
 # Finite and zero or more, like an amount: an idle time of `nan` is never
 # reached, and the index would be held for as long as the server runs.
@@ -2252,10 +2284,14 @@ def check_spend_ceiling() -> None:
     # that is not a number compares False both ways, and must read as
     # reached, never as under.
     if not spend_today < SPEND_CEILING_USD:
+        # The words and amounts of doctor's spend row (format_usd for the
+        # spend, format_limit for the configured ceiling), and the command
+        # last: a plain number, since a `<usd>` placeholder does not paste.
         raise SpendCircuitBreakerError(
-            f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
-            f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
-            f"reason before continuing — if this is expected, raise the ceiling explicitly."
+            f"Local circuit breaker: today's estimated spend {format_usd(spend_today)} reached the "
+            f"{format_limit(SPEND_CEILING_USD)} daily ceiling, so paid calls are refused until tomorrow. Raising the "
+            f"ceiling asks first:\n"
+            f"  griot config set spend-ceiling {spend_ceiling_to_propose(spend_today, None)}"
         )
 
     now = time.time()
@@ -2263,10 +2299,11 @@ def check_spend_ceiling() -> None:
     if not velocity < SPEND_VELOCITY_CEILING_USD:
         raise SpendCircuitBreakerError(
             f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
-            f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
-            f"${SPEND_VELOCITY_CEILING_USD:.2f}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
+            f"({format_usd(velocity)}) is way above what's expected for sequential use (ceiling: "
+            f"{format_limit(SPEND_VELOCITY_CEILING_USD)}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
             f"indicates two processes running at once or a retry loop out of control "
-            f"(a burst of simultaneous calls). Stop and check before continuing."
+            f"(a burst of simultaneous calls). Stop and check before continuing; griot stats shows the "
+            f"recent runs:\n  griot stats"
         )
 
 
@@ -2297,7 +2334,8 @@ def record_spend(cost_usd: float) -> None:
         raise SpendCircuitBreakerError(
             f"Local circuit breaker: the cost of a paid call came out as {cost_usd!r}, which is not an "
             f"amount (the provider reported a token count that is not a number, or is negative). It was "
-            f"not added to today's total; stopping here rather than go on spending uncounted.")
+            f"not added to today's total; stopping here rather than go on spending uncounted. griot stats shows "
+            f"the recent runs:\n  griot stats")
     if cost_usd == 0:
         return
     _ensure_spend_state_migrated()
@@ -2416,6 +2454,13 @@ class CollectionBusyError(GriotError, RuntimeError):
         self.in_this_process = in_this_process
 
 
+# The last sentence of every CollectionBusyError: its text is what an MCP
+# tool hands the agent (the CLI says _busy_message() instead, with who holds
+# it and the command to run again), so it names the agent's next step.
+BUSY_AGENT_STEP = ("Call the tool again once the other call finishes (griot_index_status shows a running index "
+                   "run).")
+
+
 # The engine raises a bare exception for a lock collision, with no type to
 # catch (confirmed by introspection, see get_index_status()); the message is
 # all there is to recognise it by. If its wording ever changes, a held
@@ -2434,7 +2479,7 @@ def _load_shard(path: Path, *, retry: bool) -> "qe.EdgeShard":
         if _LOCK_COLLISION_SIGNATURE in str(e):
             raise CollectionBusyError(
                 COLLECTION_NAME, path,
-                f"Could not open collection '{COLLECTION_NAME}': another griot process has it open.",
+                f"Could not open collection '{COLLECTION_NAME}': another griot process has it open. {BUSY_AGENT_STEP}",
             ) from e
         raise
 
@@ -2461,7 +2506,7 @@ def _load_shard_with_retry(path: Path) -> "qe.EdgeShard":
                 raise CollectionBusyError(
                     COLLECTION_NAME, path,
                     f"Could not open collection '{COLLECTION_NAME}' after {attempts} "
-                    f"attempts — another griot process still has it open.",
+                    f"attempts — another griot process still has it open. {BUSY_AGENT_STEP}",
                 ) from e
             time.sleep(_LOCK_RETRY_DELAYS[i])
 
@@ -2508,7 +2553,8 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     if not _client_lock.acquire(timeout=CLIENT_LOCK_WAIT_SECONDS if wait else _STATUS_READ_PATIENCE):
         path = collection_path(COLLECTION_NAME)
         raise CollectionBusyError(COLLECTION_NAME, path,
-                                  f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
+                                  f"Collection '{COLLECTION_NAME}' is being opened by another call right now. "
+                                  f"{BUSY_AGENT_STEP}",
                                   in_this_process=True)
     try:
         if _client is None:
@@ -2919,10 +2965,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     api_key_env = ACTIVE_PROFILE["api_key_env"]
     api_key = credential(api_key_env)
     if not api_key:
-        raise CredentialMissing(
-            f"{api_key_env} not found in the environment — required for the "
-            f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
-        )
+        raise CredentialMissing(missing_credential_text(api_key_env, f"paid profile '{ACTIVE_PROFILE_NAME}'"))
     result: list[list[float] | None] = [None] * len(texts)
     limit = ACTIVE_PROFILE.get("request_token_limit", _DEFAULT_REQUEST_TOKEN_LIMIT)
     for number, positions in enumerate(_requests_within_the_limit(texts, limit)):
@@ -3027,10 +3070,8 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     profile = ACTIVE_CHAT_PROFILE
     api_key = credential(profile["api_key_env"])
     if not api_key:
-        raise CredentialMissing(
-            f"{profile['api_key_env']} not found in the environment — required for the "
-            f"{ACTIVE_CHAT_PROFILE_NAME!r} chat profile."
-        )
+        raise CredentialMissing(missing_credential_text(profile["api_key_env"],
+                                                        f"chat profile '{ACTIVE_CHAT_PROFILE_NAME}'"))
     price = profile.get("price_per_1m_tokens")
     if price is None:
         env_var = f"GRIOT_{ACTIVE_CHAT_PROFILE_NAME.upper()}_CHAT_PRICE_PER_1M_TOKENS"
@@ -5096,7 +5137,10 @@ def _filter_names(name: str, values) -> list[str]:
     if values is None:
         return []
     if not isinstance(values, (list, tuple)):
-        raise SearchFilterError(f"{name} must be a list of names, not {type(values).__name__}.")
+        # What the value is in words, never a Python type name: an agent
+        # reads this (policy, section 2).
+        raise SearchFilterError(f"{name} must be a list of names"
+                                + (", not a single string." if isinstance(values, str) else "."))
     if len(values) > SEARCH_FILTER_MAX_VALUES:
         raise SearchFilterError(f"{name} takes at most {SEARCH_FILTER_MAX_VALUES} names (got {len(values)}).")
     for value in values:
@@ -5142,11 +5186,15 @@ def search_filter(client, repos: list[str], source_types: list[str]):
             except (OSError, ValueError):
                 registered = []
             known = f" Registered repositories: {', '.join(shown(r) for r in registered)}." if registered else ""
+            # The command last: the one that indexes it when the name is a
+            # registered one (and can be printed as it is), else the list of
+            # what is registered.
+            command = (notices.index_repo_command(repo) if repo in registered and repo.isprintable()
+                       else "griot repos list")
             raise SearchFilterError(
                 f"Nothing is indexed for a repository named {printable(repr(repo))[:80]} with profile "
                 f"'{ACTIVE_PROFILE_NAME}'. Pass the directory name alone, spelled exactly (not a path). If the "
-                f"name is right, the repository has not been indexed with this profile yet: index it first."
-                f"{known}")
+                f"name is right, the repository has not been indexed with this profile yet.{known}\n  {command}")
     must = []
     if repos:
         must.append(qe.FieldCondition(key="repo", match=qe.MatchAny(any=repos)))
@@ -5373,7 +5421,10 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # or the None becomes a type error from the vector store.
             raise EmbeddingFailed(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
-                + sentence(last_embedding_failure() or "the embedding call returned nothing"))
+                + sentence(last_embedding_failure() or "the embedding call returned nothing")
+                # The reason may name a command mid-sentence (credential_hint):
+                # the one that checks the profile and its credential is last.
+                + "\n  griot doctor")
 
     def nearest(points: int) -> list:
         """The best `points` hits in the mode asked: a wider window when the

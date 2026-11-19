@@ -283,7 +283,9 @@ def test_doctor_names_the_envrc(project):
 
     check = next(c for c in doctor.run_checks() if c["check"] == "credentials")
 
-    assert f"{project}/.envrc:1" in check["detail"] and f"{project}/.envrc:1" in (check["fix"] or "")
+    assert f"{project}/.envrc:1" in check["detail"]
+    # direnv sets it again at the next prompt: no `unset` line for it.
+    assert "unset" not in (check["fix"] or "")
     _no_secret_in(repr(check))
 
 

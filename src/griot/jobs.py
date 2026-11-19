@@ -20,6 +20,7 @@ that exits — never inside the host.
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -668,7 +669,13 @@ def start_index_job(
     time.sleep(_LIVENESS_CHECK_SECONDS)
     if proc.poll() is not None:
         os.unlink(progress_path)
-        return {"started": False, "reason": f"process died immediately (exit code {proc.returncode}) — see {log_path}.", "path": None, "pid": None, "sources": None}
+        # The same run as typed in a terminal, without --yes (a person there
+        # is asked), last: the agent's next step is to have it run where its
+        # error shows.
+        in_a_terminal = shlex.join(["griot", *argv[3:-1]])
+        return {"started": False, "reason": f"The index run exited at once (exit code {proc.returncode}); its log says "
+                                            f"why: {log_path}. Run it from a terminal to see the error:\n  {in_a_terminal}",
+                "path": None, "pid": None, "sources": None}
 
     # What tells this process apart from a later one given the same pid,
     # for a host that reloads the record (_same_process_alive()). Read now,

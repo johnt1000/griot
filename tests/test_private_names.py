@@ -35,6 +35,8 @@ _SEAM = "a failure or a fake injected where no public call reaches"
 _TUNABLE = "a delay, interval or size shrunk so the test runs in milliseconds"
 _HELPER = "a helper checked on its own, where going through its callers would hide which case failed"
 _SHARED = "a value of the module the expectation is built from, so retuning it does not break the test"
+_RAISER = ("where an error text the message-policy guard reads is built (test_message_policy.py): reached "
+           "there, each text is checked where it is written, not through every caller")
 
 # The private names tests may reach, per module, and why.
 TESTS_MAY_REACH = {
@@ -100,6 +102,16 @@ TESTS_MAY_REACH = {
         "_GIT_ENV_ALLOWED": _HELPER,
         "_points_error": _HELPER,
         "_embed_one_openai_compatible_request": _HELPER,
+        "_chat_completion_openai_compatible": _RAISER,
+        "_checked_mode": _RAISER,
+        "_count_env": _RAISER,
+        "_embed_texts_openai_compatible": _RAISER,
+        "_env_file_behind_links": _RAISER,
+        "_filter_names": _RAISER,
+        "_keychain_value": _SEAM,
+        "_keyword_model": _SEAM,
+        "_keyword_query": _RAISER,
+        "_require_gemini_token": _RAISER,
     },
     "auth": {
         "_ensure_env_file": _HELPER,
@@ -113,6 +125,8 @@ TESTS_MAY_REACH = {
         "_end_with_notices": _HELPER,
         "_main": _SEAM,
         "_run_index_source": _SEAM,
+        "_busy_message": _RAISER,
+        "_cmd_profiles_delete": _RAISER,
     },
     "config": {
         "_in_file": _SEAM,
@@ -164,6 +178,7 @@ TESTS_MAY_REACH = {
         "_quality_check_lock": _STATE,
         "_run_dry_run": _SEAM,
         "_remove_progress_file": _HELPER,
+        "_repo_name_if_uniquely_registered": _SEAM,
     },
     "logdb": {
         "_connect": _STATE,
@@ -209,11 +224,15 @@ TESTS_MAY_REACH = {
         "_release_for_a_subprocess": _HELPER,
         "_release_if_idle": _HELPER,
         "_resolve_ask": _HELPER,
+        "_corrupt_golden_set": _RAISER,
+        "_explained_if_installation_removed": _RAISER,
+        "_search_within_deadline": _RAISER,
     },
     "platforms": {
         "_get_with_retry": _SEAM,
         "_warn_pages_capped": _HELPER,
         "_gitea_matches": _HELPER,
+        "_require_token": _RAISER,
     },
     "quality_check": {
         "_open_shard_for_sampling": _SEAM,

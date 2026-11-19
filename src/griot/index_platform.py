@@ -183,8 +183,16 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
             if fetches is not None:
                 fetches.append({"id": f"{key}:platform:{label}", "ok": True, "reason": None})
         except Exception as e:
-            common.log_and_print(f"Warning: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}. "
-                                  f"Run it again once that is fixed:\n  griot index platform", level="warning", silenceable=False)
+            # An error of griot's own may end with its command on a line of
+            # its own (a missing token: `griot auth set github`): kept as a
+            # command, before the one that runs this again, never mid-line.
+            said = str(e).splitlines() or [""]
+            prose = common.sentence(" ".join(line.strip() for line in said if not line.startswith("  ")))
+            commands = [line.strip() for line in said if line.startswith("  ")] + ["griot index platform"]
+            common.log_and_print(f"Warning: failed fetching {label} from {common.printable(project_id)} ({platform}): "
+                                 f"{prose} Run it again once that is fixed:\n"
+                                 + "\n".join(f"  {command}" for command in commands),
+                                 level="warning", silenceable=False)
             status = getattr(getattr(e, "response", None), "status_code", None)
             env_var = platforms.TOKEN_ENV.get(platform)
             if fetches is not None:

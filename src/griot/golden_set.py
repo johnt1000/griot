@@ -219,13 +219,15 @@ def vector_fallback_note(notice) -> str:
     return (f"The case(s) just added are checked in mode vector: {notice.sentence}. To check one in hybrid, "
             f"build it, then remove the case and add it again:\n  {notice.action}")
 
-# Said when a case made without a mode is a vector case because the
-# collection's config cannot be read: whether it can run hybrid is unknown,
-# and a hybrid case it cannot run would only ever be skipped.
-UNREADABLE_CONFIG_NOTE = (
-    "The case(s) just added are checked by meaning only (mode vector): this collection's config could not be read, "
-    "so whether the default, hybrid, can run on it is unknown (griot's log says why). To check a question in hybrid "
-    "once it reads, remove its case and add it again.")
+def unreadable_config_note(collection: str) -> str:
+    """Said when a case made without a mode is a vector case because the
+    config of `collection` cannot be read: whether it can run hybrid is
+    unknown, and a hybrid case it cannot run would only ever be skipped.
+    Shaped like vector_fallback_note(): the consequence for the cases, why,
+    and the command last, alone on its line (debt 104)."""
+    return (f"The case(s) just added are checked in mode vector: the config of collection '{collection}' could not "
+            f"be read, so whether hybrid can run on it is unknown. To check one in hybrid once it reads, remove the "
+            f"case and add it again. griot doctor says what is wrong with it:\n  griot doctor")
 
 
 def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
@@ -263,7 +265,7 @@ def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     if resolved == "vector":
         # The collection exists, the query can be matched and there is no
         # note: what is left is a config search_mode_for could not read.
-        return resolved, UNREADABLE_CONFIG_NOTE
+        return resolved, unreadable_config_note(common.COLLECTION_NAME)
     return resolved, None
 
 
@@ -594,10 +596,11 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
     if not found["candidates"]:
         print("No candidates found (no commit touched files that the index reads and that still exist in the "
               "working tree).")
+        # Notes, not the result: stderr (policy, section 5; debt 104).
         if found["problem"]:
-            print(common.printable(found["problem"]))
+            print(common.printable(found["problem"]), file=sys.stderr)
         if note:
-            print(note)
+            print(note, file=sys.stderr)
         return 0
 
     added, refused, mode_notes = 0, 0, []
@@ -644,14 +647,16 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
             mode_notes.append(mode_note)
 
     print(f"\n{_added_line(added)}")
+    # The count of cases added is the result (stdout); the rest are notes
+    # about it, on stderr (policy, section 5; debt 104).
     if refused:
-        print(f"{refused} approved candidate(s) not added (the reason is above).")
+        print(f"{refused} approved candidate(s) not added (the reason is above).", file=sys.stderr)
     # Once for the run, not once per case: every case of it was resolved
     # against the same collection.
     for mode_note in mode_notes:
-        print(mode_note)
+        print(mode_note, file=sys.stderr)
     if note:
-        print(note)
+        print(note, file=sys.stderr)
     return 0
 
 
@@ -726,7 +731,7 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
         return 1
     print(f"Case added to {common.GOLDEN_SET_PATH} ({mode} search).")
     if note:
-        print(note)
+        print(note, file=sys.stderr)  # a note about the result, not the result (debt 104)
     return 0
 
 

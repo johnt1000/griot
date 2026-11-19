@@ -16,14 +16,14 @@ def _fixes(report: str) -> list[str]:
 
 
 def test_each_command_of_a_row_is_on_its_own_line():
-    row = doctor._check("index", doctor.WARN, "the last indexing run died", "griot index all   # and read what it says")
+    row = doctor._check("index", doctor.WARN, "the last indexing run died", "griot index all")
     keyword = SimpleNamespace(id="keyword_vectors_missing", severity=doctor.WARN, sentence="keyword search is not built",
                               action="griot index keywords")
 
     fixes = _fixes(doctor.format_report([doctor._with_condition(row, keyword)]))
 
     assert "griot index keywords" in fixes
-    assert "griot index all   # and read what it says" in fixes
+    assert "griot index all" in fixes
 
 
 def test_no_command_follows_a_comment_on_the_same_line():
