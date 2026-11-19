@@ -2844,6 +2844,11 @@ def printable(text: str) -> str:
     return "".join(ch if ch.isprintable() else "?" for ch in text)
 
 
+# The longest caller- or client-chosen label (an agent client's name and
+# version, an error class) kept in the usage log and printed by griot stats.
+LOGGED_LABEL_MAX = 80
+
+
 def shown(name: str) -> str:
     """A name that comes from a repository (a path, a branch, a tag, a label
     built from them), as the CLI may print it: a credential-shaped part is

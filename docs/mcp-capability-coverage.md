@@ -507,5 +507,7 @@ URI and counted apart).
 The end-to-end MCP validation (see ROADMAP) produces exactly the evidence
 that decides this, and as of 2026-08-22 griot records it: the `tool_calls`
 table captures which tools are actually invoked, how often, and which fail, and (since 2026-09-30) which project
-the call came from.
+the call came from, which agent client (name and version) made it, and, for a
+search, the mode it asked for (`griot stats` groups failed calls by error
+class and counts calls by client).
 Revisit this document with that data in hand.
