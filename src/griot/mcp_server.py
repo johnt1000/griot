@@ -2261,11 +2261,50 @@ def _golden_set_add_question(query: str) -> str:
     return f"Add a test case for {_shown(query)} to the golden set. You can undo this by removing the case."
 
 
-def _ask_golden_set_add(ctx: Context, query: str, limit: int = 5, mode: str | None = None, confirm: bool = False):
-    # Resolved as the tool body resolves it: a default left as None here
-    # would read as a mode that cannot run, and no one would be asked.
+def _golden_set_cases() -> list[dict]:
+    """The curated cases, read before anyone is asked to change them: a file
+    that cannot be read is the UnreadableFile every golden-set tool raises."""
+    try:
+        return golden_set.checked_cases(golden_set.list_cases())
+    except (OSError, *golden_set.UNREADABLE) as e:
+        raise _corrupt_golden_set(e) from e
+
+
+def _ask_unless(refused) -> bool:
+    """True when the call can be put to a person: `refused()` found nothing
+    to refuse it for, and the golden set could be read. The tool body runs
+    the same checks again and says why it refused."""
+    try:
+        return refused() is None
+    except UnreadableFile:
+        return False
+
+
+def _golden_set_add_refusal(query: str, must_include, limit: int, mode: str | None) -> str | None:
+    # [review finding] Capped like griot_search's, and for a stronger reason:
+    # this value is PERSISTED and spent later by a `griot quality-check` the
+    # agent never ran — common.search() passes limit straight to the vector
+    # store. A curated case is durable, so an absurd value degrades a surface
+    # this tool does not own.
+    if limit < 1:
+        return (f"limit must be at least 1 (got {limit}) — a case that retrieves "
+                f"nothing reports every expected result as missing, forever.")
+    # The default (None) becomes hybrid, or vector where hybrid cannot run,
+    # exactly as the tool body resolves it: a default left as None would read
+    # as a mode that cannot run.
     mode, _ = golden_set.case_mode_for(query, mode)
-    if limit < 1 or golden_set.mode_refusal(query, mode):
+    # A case that could never fail or never run is known locally; so is a
+    # file the case could not be added to (UnreadableFile).
+    problem = golden_set.case_refusal(query, must_include, mode)
+    if problem:
+        return problem
+    _golden_set_cases()
+    return None
+
+
+def _ask_golden_set_add(ctx: Context, query: str, must_include: list[dict], limit: int = 5,
+                        mode: str | None = None, confirm: bool = False):
+    if not _ask_unless(lambda: _golden_set_add_refusal(query, must_include, limit, mode)):
         return _NO_CHANNEL
     return _resolve_ask(ctx, _golden_set_add_question(query), confirm=confirm, human_required=False)
 
@@ -2295,26 +2334,15 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     Confirmed like every state change, but with the confirm= fallback
     intact: curating widens no security boundary and destroys no indexed
     data, so a deliberate second call is proportionate here."""
-    # [review finding] Capped like griot_search's, and for a stronger reason:
-    # this value is PERSISTED and spent later by a `griot quality-check` the
-    # agent never ran — common.search() passes limit straight to the vector
-    # store. A curated case is durable, so an absurd value degrades a surface
-    # this tool does not own. Checked BEFORE asking anyone: the answer to a
-    # question about a call that cannot succeed is irrelevant either way
-    # (_ask_golden_set_add skips the question on the same condition).
-    if limit < 1:
-        return {"changed": False,
-                "message": f"limit must be at least 1 (got {limit}) — a case that retrieves "
-                           f"nothing reports every expected result as missing, forever."}
-    # The default (None) becomes hybrid, or vector where hybrid cannot run
-    # (golden_set.case_mode_for), before anything is checked or asked.
+    # Checked BEFORE asking anyone: the answer to a question about a call
+    # that cannot succeed is irrelevant either way (_ask_golden_set_add skips
+    # the question on the same checks), and an unchecked mode stays out of
+    # the hint.
+    refused = _golden_set_add_refusal(query, must_include, limit, mode)
+    if refused:
+        return {"changed": False, "message": refused}
     given = mode
     mode, fallback_note = golden_set.case_mode_for(query, mode)
-    # Same reason: a mode the case could never be checked in is known
-    # before anyone is asked (and keeps an unchecked value out of the hint).
-    unrunnable = golden_set.mode_refusal(query, mode)
-    if unrunnable:
-        return {"changed": False, "message": unrunnable}
     # The hint repeats the search in the case's mode, so a person at the
     # terminal approves results from the ranking the case will be held to.
     # A mode the agent gave is passed on as given: the command's default is
@@ -2346,7 +2374,20 @@ def _golden_set_remove_question(index: int) -> str:
             f"and the case can be added again.")
 
 
+def _golden_set_remove_refusal(index: int) -> str | None:
+    """Why case `index` cannot be removed (out of range), or None; raises
+    UnreadableFile for a file that cannot be read. What the CLI checks
+    before it asks."""
+    try:
+        golden_set.get_case(index, _golden_set_cases())
+    except ValueError as e:
+        return str(e)
+    return None
+
+
 def _ask_golden_set_remove(ctx: Context, index: int, confirm: bool = False):
+    if not _ask_unless(lambda: _golden_set_remove_refusal(index)):
+        return _NO_CHANNEL
     return _resolve_ask(ctx, _golden_set_remove_question(index), confirm=confirm, human_required=False)
 
 
@@ -2361,6 +2402,12 @@ async def griot_golden_set_remove(index: int, confirm: bool = False,
     Destructive only to curation — the indexed data is untouched, and the
     case can be curated again — so the confirm= fallback applies, unlike
     griot_profiles_delete."""
+    # Before asking, as the CLI does: a file that cannot be read or a case
+    # that is not there is refused for what it is, never put to a person or
+    # answered with "call again with confirm=true".
+    refused = _golden_set_remove_refusal(index)
+    if refused:
+        return {"changed": False, "message": refused}
     ok, refusal = await _confirmed(ctx, _golden_set_remove_question(index),
                                    confirm=confirm, cli_hint=_cli_command("golden-set", "remove", positional=[index]),
                                    answer=answer)

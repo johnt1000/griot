@@ -172,6 +172,7 @@ TESTS_MAY_REACH = {
         "_Ask": _SEAM,
         "_ask_assist_install": _SEAM,
         "_ask_golden_set_add": _SEAM,
+        "_ask_golden_set_remove": _SEAM,
         "_ask_index_repo": _SEAM,
         "_curated_cases_to_run": _SEAM,
         "_installation_removed": _SEAM,

@@ -334,10 +334,28 @@ def add_case(query: str, must_include: list[dict], limit: int = 5, mode: str = "
     `mode` is the search the case is checked with (see case_mode()): the one
     its results came from. Written only when it is not "vector", so a vector
     case is stored exactly as every case was before modes existed."""
+    problem = case_refusal(query, must_include, mode)
+    if problem:
+        raise ValueError(problem)
+
+    case = {"query": query, "limit": limit, "must_include": must_include}
+    if mode != "vector":
+        case["mode"] = mode
+    cases = _load()
+    cases.append(case)
+    _save(cases)
+    return case
+
+
+def case_refusal(query: str, must_include, mode) -> str | None:
+    """Why add_case() would refuse this case, or None. Local and free, so a
+    caller that asks a person first (griot_golden_set_add) asks this before:
+    the answer to a question about a case that is refused anyway cannot
+    change the outcome."""
     if not query.strip():
-        raise ValueError("query must not be empty.")
+        return "query must not be empty."
     if not must_include:
-        raise ValueError("must_include must not be empty.")
+        return "must_include must not be empty."
     # An entry that constrains nothing can never fail, and the golden set is
     # what tells the user their index still works — a case that always passes
     # makes it report success it never measured, and makes `griot
@@ -354,21 +372,10 @@ def add_case(query: str, must_include: list[dict], limit: int = 5, mode: str = "
     # curation mistake the user sees; unfalsifiable is one nobody sees.
     if any(not isinstance(entry, dict) or not has_effective_constraint(entry)
            for entry in must_include):
-        raise ValueError("each must_include entry must constrain at least one field "
-                         "to a non-null value (e.g. repo, source_type) — an entry of "
-                         "only null values matches every result and can never fail.")
-
-    problem = mode_refusal(query, mode)
-    if problem:
-        raise ValueError(problem)
-
-    case = {"query": query, "limit": limit, "must_include": must_include}
-    if mode != "vector":
-        case["mode"] = mode
-    cases = _load()
-    cases.append(case)
-    _save(cases)
-    return case
+        return ("each must_include entry must constrain at least one field "
+                "to a non-null value (e.g. repo, source_type) — an entry of "
+                "only null values matches every result and can never fail.")
+    return mode_refusal(query, mode)
 
 
 def remove_case(index: int) -> dict:
@@ -389,7 +396,9 @@ def get_case(index: int, cases: list[dict] | None = None) -> dict:
     anything."""
     cases = _load() if cases is None else cases
     if not (1 <= index <= len(cases)):
-        raise ValueError(f"index {index} out of range (1-{len(cases)}).")
+        # Ends with the list, which shows each case's number: the CLI and
+        # griot_golden_set_remove say this one text.
+        raise ValueError(f"index {index} out of range (1-{len(cases)}).\n  griot golden-set list")
     return cases[index - 1]
 
 

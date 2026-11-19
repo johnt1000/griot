@@ -614,3 +614,65 @@ async def test_mcp_repos_remove_of_a_path_not_registered_ends_with_the_list_comm
         "message": f"'{other.resolve()}' not found in {common.REPOS_JSON_PATH}.\n  griot repos list"}
     assert repos.main(["remove", str(other), "--yes"]) == 2
     assert capsys.readouterr().err == f"Error: {result.structured_content['message']}\n"
+
+
+# --- griot_golden_set_add / remove: nobody is asked about a call that will be refused ----------------------
+#
+# What is cheap to check (the file can be read, the case exists, the new case
+# is one that could fail) is checked BEFORE a person is asked, as the CLI and
+# the repos tools do: the answer to a question about a call that is refused
+# anyway cannot change the outcome.
+
+ONE_CASE = [{"query": "how is the retry policy chosen", "must_include": [{"repo": "alpha", "file_path": "a.py"}],
+             "limit": 5}]
+OUT_OF_RANGE = "index 99 out of range (1-1).\n  griot golden-set list"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", GOLDEN_SHAPES)
+@pytest.mark.parametrize("tool,arguments", [
+    ("griot_golden_set_add", {"query": "retry policy", "must_include": [{"repo": "alpha"}]}),
+    ("griot_golden_set_remove", {"index": 1}),
+])
+async def test_the_golden_set_write_tools_ask_nobody_about_an_unreadable_file(content, tool, arguments):
+    _write_golden(content)
+    async with Client(mcp_server.mcp, elicitation_callback=_never_asked) as client:
+        result = await client.call_tool(tool, arguments)
+    assert result.is_error
+    assert _golden_sentence(SHAPE) in result.content[0].text
+    assert json.loads(common.GOLDEN_SET_PATH.read_text()) == content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ask", [True, False], ids=["client-can-ask", "client-cannot-ask"])
+async def test_mcp_golden_set_remove_out_of_range_is_refused_before_asking_and_says_what_to_run(ask):
+    _write_golden(ONE_CASE)
+    callback = {"elicitation_callback": _never_asked} if ask else {}
+    async with Client(mcp_server.mcp, **callback) as client:
+        result = await client.call_tool("griot_golden_set_remove", {"index": 99})
+    # Refused for what it is, not offered confirm=true for a call that would fail.
+    assert result.structured_content == {"changed": False, "message": OUT_OF_RANGE}
+    assert json.loads(common.GOLDEN_SET_PATH.read_text()) == ONE_CASE
+
+
+def test_cli_golden_set_remove_out_of_range_says_the_same_as_the_tool(capsys):
+    _write_golden(ONE_CASE)
+    assert golden_set.main(["remove", "99", "--yes"]) == 1
+    assert capsys.readouterr() == ("", f"Error: {OUT_OF_RANGE}\n")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ask", [True, False], ids=["client-can-ask", "client-cannot-ask"])
+@pytest.mark.parametrize("must_include,reason", [
+    ([], "must_include must not be empty."),
+    ([{"repo": None}], "each must_include entry must constrain at least one field"),
+])
+async def test_mcp_golden_set_add_refuses_a_case_that_could_never_fail_before_asking(ask, must_include, reason):
+    _write_golden(ONE_CASE)
+    callback = {"elicitation_callback": _never_asked} if ask else {}
+    async with Client(mcp_server.mcp, **callback) as client:
+        result = await client.call_tool("griot_golden_set_add",
+                                        {"query": "retry policy", "must_include": must_include})
+    assert result.structured_content["changed"] is False
+    assert result.structured_content["message"].startswith(reason)
+    assert json.loads(common.GOLDEN_SET_PATH.read_text()) == ONE_CASE

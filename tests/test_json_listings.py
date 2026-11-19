@@ -708,7 +708,7 @@ def test_an_index_out_of_range_is_still_said_as_such(tmp_path):
     done = _run(tmp_path, "golden-set", "remove", "3", "--yes")
 
     assert done.returncode == 1
-    assert done.stderr == "Error: index 3 out of range (1-2).\n"
+    assert done.stderr == "Error: index 3 out of range (1-2).\n  griot golden-set list\n"
 
 
 @pytest.mark.parametrize("cases", GOLDEN_SHAPES)
