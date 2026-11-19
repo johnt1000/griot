@@ -94,6 +94,7 @@ from mcp.server.elicitation import (
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.server.mcpserver.tools import Tool
+from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
 from mcp.shared.exceptions import MCPError
 from mcp.types import INTERNAL_ERROR, ToolAnnotations
 
@@ -725,10 +726,61 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
     )
 
 
+# The search mode the caller ASKED for, set by griot_search as its first act and
+# read back by _records_call once the call is over, whether it returned or raised.
+# A contextvar because the wrapper must learn it without changing what the tool
+# takes or returns (the SDK builds the input schema from the signature), and
+# because a failed search reaches no other table. "default" means no mode was
+# asked for; None is any other tool. Each call resets it first, so one call's
+# mode never reads as the next one's. Each task (and each thread a sync tool
+# runs in) has its own copy of a contextvar, so searches in flight together
+# do not read each other's.
+_asked_mode: contextvars.ContextVar[str | None] = contextvars.ContextVar("griot_asked_mode", default=None)
+
+# What a search row records as its mode. The spec is the mode the caller ASKED
+# for, before defaults, so a search that named none is not recorded as the
+# mode it ran with. It gets a marker that is not a mode (a literal "default" or
+# "hybrid" from a caller can never read as "none asked"), and text that is not
+# one of common.SEARCH_MODES is replaced by a second marker rather than
+# written: it is caller-chosen text, and the log keeps no arguments.
+# NULL stays "not a search, or a row from before the column".
+MODE_NOT_ASKED = "(none asked)"
+MODE_INVALID = "(invalid)"
+
+
+def _asked_mode_label(mode) -> str:
+    if mode is None:
+        return MODE_NOT_ASKED
+    return mode if mode in common.SEARCH_MODES else MODE_INVALID
+
+# The keyword-only parameter _records_call adds to a tool that takes no Context
+# of its own, so the SDK injects one and the wrapper can read the client's name
+# and version from it. The SDK leaves a Context parameter out of the input
+# schema, but only when it is ANNOTATED as one (an unannotated `ctx` leaked into
+# the schema once, see CLAUDE.md), so the annotation is part of the contract.
+_CLIENT_CONTEXT_PARAM = "griot_ctx"
+
+
+def _client_label(ctx) -> str | None:
+    """"name version" of the agent client behind this call, from the clientInfo
+    of its initialize request, or None when there is no client or it sent none.
+    Printable characters only, with a credential-shaped part replaced, and cut
+    to common.LOGGED_LABEL_MAX: it is text a client chose, written to the log and
+    printed by griot stats."""
+    try:
+        info = ctx.session.client_params.client_info
+        label = " ".join(part for part in (info.name, info.version) if part)
+    except Exception:  # noqa: BLE001 — no context, no initialize: recorded as unknown, never a failure
+        return None
+    return common.shown(label)[:common.LOGGED_LABEL_MAX] or None
+
+
 def _records_call(fn, name: str | None = None):
     """Records one row per invocation of the decorated tool: which tool,
-    whether it worked, how long, and the error if not. `name` overrides the
-    function's own name: a resource is recorded under its URI.
+    whether it worked, how long, and the error if not, plus the mode a search
+    asked for and the agent client that called. `name` overrides the
+    function's own name: a resource is recorded under its URI (and records no
+    client: a resource takes no injected Context).
 
     [user-requested, before the first real-agent validation] griot exposes
     several tools that have never met a real agent. Which ones actually get
@@ -737,7 +789,17 @@ def _records_call(fn, name: str | None = None):
 
     functools.wraps is load-bearing, not tidiness: the MCP SDK builds each
     tool's input schema from its signature, so a wrapper that hid the real
-    parameters would silently break every agent's ability to call it.
+    parameters would silently break every agent's ability to call it. The
+    wrapper that adds a Context parameter (to read the client) therefore
+    publishes its own __signature__ with that one keyword-only, annotated
+    parameter appended, which the SDK injects and leaves out of the schema,
+    and takes it out of the kwargs before calling the tool. A tool that
+    already takes a Context is read through its own and passed it as before.
+
+    Elapsed time is time.monotonic(), not time.time(): on macOS the monotonic
+    clock does not advance while the machine sleeps, which is exactly why it
+    is used. With the wall clock a call that straddled a sleep was logged as a
+    search of ~2600 s (seen twice in real use).
 
     Recording never changes what the tool does — a storage failure is
     swallowed (with a warning), and a tool that raises still raises, after
@@ -750,48 +812,71 @@ def _records_call(fn, name: str | None = None):
     tests missed this because awaiting the returned coroutine themselves
     made it work — passing for the wrong reason."""
     label = name or fn.__name__
+    own_context = find_context_parameter(fn) if name is None else None
+    inject = name is None and own_context is None
+
+    def begin(kwargs):
+        """The context to read the client from (taken out of kwargs when the
+        wrapper added it), and the start of the clock."""
+        _asked_mode.set(None)
+        ctx = kwargs.pop(_CLIENT_CONTEXT_PARAM, None) if inject else kwargs.get(own_context)
+        _tool_started()
+        return ctx, time.monotonic()
+
+    def record(ok, ctx, started_at, error=None):
+        _record_call(label, ok=ok, elapsed=time.monotonic() - started_at, error=error,
+                     mode=_asked_mode.get() if label == "griot_search" else None,
+                     client=_client_label(ctx) if ctx is not None else None)
+
+    def failed(e, ctx, started_at):
+        explained = _explained_if_installation_removed(e)
+        # Recorded as the agent sees it: griot_stats then shows the cause too.
+        shown = explained or e
+        record(False, ctx, started_at, error=f"{type(shown).__name__}: {shown}")
+        return explained
+
+    def publish(wrapper):
+        if inject:
+            signature = inspect.signature(fn)
+            wrapper.__signature__ = signature.replace(parameters=[
+                *signature.parameters.values(),
+                inspect.Parameter(_CLIENT_CONTEXT_PARAM, inspect.Parameter.KEYWORD_ONLY,
+                                  default=None, annotation=Context)])
+            wrapper.__annotations__ = {**getattr(fn, "__annotations__", {}), _CLIENT_CONTEXT_PARAM: Context}
+        return wrapper
+
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapper(*args, **kwargs):
-            started_at = time.time()
-            _tool_started()
+            ctx, started_at = begin(kwargs)
             try:
                 result = await fn(*args, **kwargs)
             except Exception as e:
-                explained = _explained_if_installation_removed(e)
-                # Recorded as the agent sees it: griot_stats then shows the cause too.
-                shown = explained or e
-                _record_call(label, ok=False, elapsed=time.time() - started_at,
-                             error=f"{type(shown).__name__}: {shown}")
+                explained = failed(e, ctx, started_at)
                 if explained is not None:
                     raise explained from e
                 raise
             finally:
                 _tool_finished()
-            _record_call(label, ok=True, elapsed=time.time() - started_at)
+            record(True, ctx, started_at)
             return result
-        return async_wrapper
+        return publish(async_wrapper)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        started_at = time.time()
-        _tool_started()
+        ctx, started_at = begin(kwargs)
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
-            explained = _explained_if_installation_removed(e)
-            # Recorded as the agent sees it: griot_stats then shows the cause too.
-            shown = explained or e
-            _record_call(label, ok=False, elapsed=time.time() - started_at,
-                         error=f"{type(shown).__name__}: {shown}")
+            explained = failed(e, ctx, started_at)
             if explained is not None:
                 raise explained from e
             raise
         finally:
             _tool_finished()
-        _record_call(label, ok=True, elapsed=time.time() - started_at)
+        record(True, ctx, started_at)
         return result
-    return wrapper
+    return publish(wrapper)
 
 
 def _installation_removed() -> str | None:
@@ -1030,12 +1115,13 @@ def _start_idle_reaper(interval: float | None = None) -> threading.Event | None:
     return stop
 
 
-def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = None) -> None:
+def _record_call(tool: str, *, ok: bool, elapsed: float, error: str | None = None,
+                 mode: str | None = None, client: str | None = None) -> None:
     try:
         common.secure_mkdir(common.LOG_DIR)
         logdb.write_tool_call(common.LOG_DIR, tool, ok=ok,
                               duration_seconds=round(elapsed, 3), error=error,
-                              project=common.current_project())
+                              project=common.current_project(), mode=mode, client=client)
     except Exception as e:  # noqa: BLE001 — instrumentation must not break the tool
         common.log_and_print(f"Warning: could not record the {tool} call: {e}",
                              level="warning", echo=False)
@@ -1222,6 +1308,14 @@ class StatsOutput(_WhyNoPointCount):
     failure_reasons: dict[str, int]
     tool_calls: dict[str, int]
     failed_tool_calls: dict[str, int]
+    # Failed tool calls by error class (the text before the first colon),
+    # calls by agent client ("name version"; "unknown" before the column
+    # existed or when the client sent none) and searches by the mode they
+    # ASKED for. All three keys are required and always built by compute_stats
+    # (none is NotRequired); an undeclared key would kill the tool.
+    tool_failure_classes: dict[str, int]
+    calls_by_client: dict[str, int]
+    searches_by_asked_mode: dict[str, int]
     # Reads of the griot:// resources, counted apart from tool_calls: the two
     # share a log table, not a meaning.
     resource_reads: dict[str, int]
@@ -1555,6 +1649,7 @@ def griot_search(query: str, limit: int = SEARCH_LIMIT_DEFAULT, group_by_documen
     # makes no sense at all and is also clamped to the minimum). Applied
     # BEFORE common.search multiplies it for its wider fetch, so the
     # cap bounds what the agent gets rather than the internal fetch.
+    _asked_mode.set(_asked_mode_label(mode))  # read by _records_call, failed or not
     limit = max(1, min(limit, SEARCH_LIMIT_MAX))
     started_at = time.time()
     # None is the default (hybrid where it can run, vector where it cannot,
