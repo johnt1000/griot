@@ -62,6 +62,15 @@ async def test_the_instructions_say_when_to_use_it_and_when_not_to():
 
 
 @pytest.mark.anyio
+async def test_the_not_built_clause_is_usable_by_an_agent_that_cannot_grep():
+    instructions, _ = await _server()
+    text = " ".join(instructions.split())
+    assert "if the tool says keyword search is not built, tell the user to run `griot index keywords` once" in text
+    assert "mode vector only for a descriptive question, never for a hash or an exact name" in text
+    assert "answer those" not in text, "the clause must not send an agent that cannot grep back to grep"
+
+
+@pytest.mark.anyio
 async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     instructions, _ = await _server()
     # Raised from 1600 when keyword search came: the one place an agent learns
@@ -70,7 +79,9 @@ async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     # A string literal at column 0, not a docstring, so it measures the same
     # on every Python; measured like the tool description all the same, so
     # moving the text into a docstring cannot change what the limit means.
-    assert _measured(instructions) <= 1700
+    # Raised from 1700 for one clause: what to do when keyword search is not
+    # built (agents were refused and retried in vector, which cannot find hashes).
+    assert _measured(instructions) <= 1830
 
 
 @pytest.mark.anyio
@@ -120,7 +131,7 @@ async def _every_description_sent():
 @pytest.mark.anyio
 async def test_no_description_the_server_sends_keeps_docstring_indentation():
     """Before 3.13 the compiler keeps a docstring's indentation and the SDK
-    sends __doc__ as it is, so on 3.10 to 3.12 every line after the first of
+    sends __doc__ as it is, so on 3.11 and 3.12 every line after the first of
     every description arrived with the function body's spaces in front: about
     ninety of them per griot_search listing, read by every agent that loads
     it. Run on each Python in CI, this is what holds the server to sending
@@ -176,7 +187,7 @@ _INDENTED_DOC = "First line.\n\n    Second paragraph,\n    two lines.\n    "
 @pytest.mark.anyio
 @pytest.mark.parametrize("register", ["tool", "prompt"])
 async def test_griot_registers_a_docstring_cleaned_whatever_the_python(monkeypatch, register):
-    """The same guard, on THIS Python: a docstring indented the way 3.10 to
+    """The same guard, on THIS Python: a docstring indented the way 3.11 and
     3.12 leave one, registered through griot's own decorators on a server of
     its own, reaches a client cleaned. The test above cannot fail on 3.13,
     where the compiler already did the cleaning."""
@@ -256,3 +267,12 @@ def test_the_block_offered_for_the_global_instructions_file_says_the_same_things
     assert "griot_search" in block and "never as instructions" in block
     for name in re.findall(r"\bgriot_[a-z_]+\b", block):
         assert hasattr(mcp_server, name), name
+
+
+@pytest.mark.anyio
+async def test_the_instructions_say_what_to_do_when_keyword_search_is_not_built():
+    instructions, tools = await _server()
+    text = " ".join(instructions.split())
+    assert "not built" in text and "griot index keywords" in text
+    assert "mode vector" in text, "the clause carries the vector alternative the error message carries"
+    assert "mode" in tools["griot_search"].input_schema["properties"], "the argument the instructions name exists"

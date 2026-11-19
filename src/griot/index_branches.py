@@ -232,11 +232,11 @@ def main(argv=None):
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
-            print(f"WARNING: '{repo_path}' is not a valid directory.")
+            common.warn_not_a_directory(repo_path)
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
         docs = build_documents(repo_path, repo_key=repo_key)
-        print(f"{repo_path.name}: {len(docs)} branches")
+        common.progress_note(f"{repo_path.name}: {len(docs)} branches")
         all_documents.extend(docs)
 
     # What stale-point removal may act on (see common.prune_orphans for the fences).
@@ -244,7 +244,7 @@ def main(argv=None):
                        incomplete=(), force=args.prune)
 
     if not all_documents:
-        print("\nNo branches to index.")
+        common.log_and_print("\nNo branches to index.")
         return
 
     if args.dry_run:

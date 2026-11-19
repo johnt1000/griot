@@ -125,6 +125,34 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
+def _whole_sentence(head: str) -> str:
+    """The first line of a start-up warning ends on the lead-in to the command
+    ("Rename it:", "Move it (griot never moves it on its own):"). Doctor
+    prints the command as the fix, so the lead-in goes and what it carried
+    stays as a sentence."""
+    head = re.sub(r" Rename it:$", "", head)
+    return re.sub(r" Move it \(([^)]*)\):$", lambda m: f" {m.group(1)[:1].upper()}{m.group(1)[1:]}.", head)
+
+
+def check_old_settings(common) -> dict:
+    """Variables renamed and files moved by an earlier release, still there
+    and ignored. The same sentences griot prints once when it starts
+    (common.legacy_env_findings / legacy_layout_findings: one source); the
+    doctor lists them every time, the start-up warning only when the set
+    changes."""
+    findings = common.legacy_env_findings() + common.legacy_layout_findings()
+    if not findings:
+        return _check("old settings", OK, "no renamed variable is set and no file is left in the old layout")
+    # A sentence is "Warning: <what>.<how>:\n  <command>": the fix is the
+    # command(s), the detail is the rest.
+    details, fixes = [], []
+    for _, sentence in findings:
+        head, _, command = sentence.removeprefix("Warning: ").partition("\n  ")
+        details.append(_whole_sentence(head))
+        fixes.append(command)
+    return _check("old settings", WARN, " ".join(details), "; ".join(fixes))
+
+
 def _open_entries(data_dir: Path) -> list[str]:
     """What under the data directory other users can read or enter. The
     repair that closes the index's files is best-effort (a chmod that fails
@@ -264,13 +292,13 @@ def check_index(common) -> dict:
     detail = f"{count} points in {status.get('collection')}" + (
         f", {wrote} {last.get('timestamp')}" if last.get("timestamp") else "")
     if status.get("keyword_search") is False:
-        # Not a warning: every search still answers, the default by meaning
-        # alone instead of hybrid (common.search_mode_for), as before keyword
-        # search existed. Said so that a person learns what the default is
-        # missing here, and the one command that gives it back.
-        return _check("index", OK, detail + "; keyword search is not built for it yet, so searches run by "
-                      "meaning only instead of the default hybrid",
-                      "griot index keywords   # local, embeds nothing")
+        # A warning, not an OK with a hint inside it: every search still
+        # answers, but by meaning only, and an agent told to use mode=keyword
+        # for hashes and names is refused. The exit status stays 0 (only FAIL
+        # turns it red); the sentence is the one `griot stats` shows.
+        return _check("index", WARN, detail + "; " + common.keyword_search_missing_sentence(status.get("collection")
+                                                                                         or common.COLLECTION_NAME),
+                      common.KEYWORD_BUILD_COMMAND + "   # local, embeds nothing")
     return _check("index", OK, detail)
 
 
@@ -624,11 +652,12 @@ def run_checks(*, home: Path | None = None) -> list[dict]:
         checks.append(check_git())  # without the configuration: found or not
         skipped = "skipped: the configuration did not load"
         checks.extend(_check(name, SKIP, skipped) for name in
-                      ("directories", "profile", "credentials", "index", "repositories", "spend", "mcp registration",
+                      ("old settings", "directories", "profile", "credentials", "index", "repositories", "spend", "mcp registration",
                        "tool approval", "server environment", "log", RELEASE))
         return checks
     checks = [
         ("settings", lambda: check_settings(common.ENV_PATH, None, mode_before)),
+        ("old settings", lambda: check_old_settings(common)),
         ("directories", lambda: check_directories(common)),
         ("profile", lambda: check_profile(common)),
         ("credentials", lambda: check_credentials(common)),

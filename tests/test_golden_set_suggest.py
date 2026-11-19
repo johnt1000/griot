@@ -292,3 +292,9 @@ def test_a_golden_set_that_is_not_json_stops_the_run_at_the_first_write(git_repo
     assert common.GOLDEN_SET_PATH.read_text() == "{ not json"
     err = capsys.readouterr().err
     assert err.count("Error:") == 1 and str(common.GOLDEN_SET_PATH) in err and "not valid JSON" in err
+
+
+@pytest.fixture(autouse=True)
+def _a_person_is_at_the_terminal(monkeypatch):
+    """add and suggest ask a person and refuse without a terminal; input() is faked here."""
+    monkeypatch.setattr(common, "is_interactive", lambda: True)

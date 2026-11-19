@@ -1,4 +1,6 @@
 import atexit
+import contextlib
+import contextvars
 import functools
 import hashlib
 import http.cookiejar
@@ -23,7 +25,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
 import griot as _package
-from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, redaction
+from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -283,6 +285,7 @@ ENV_TEMPLATE_SETTINGS = [
     # pinning it after the default became `multi`.
     ("GRIOT_MCP_CONCURRENCY_MODE", "multi", "multi (default): griot mcp releases the collection after the idle window, so other sessions and shell indexing can use it; single keeps it open for the server's whole life (no reopen cost, but nothing else can use that profile meanwhile)", True),
     ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
+    ("GRIOT_SEARCH_TIMEOUT_SECONDS", "60", "seconds the griot_search MCP tool may run before it fails with an error telling the agent what to do; 0 turns the deadline off", False),
     ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
     ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
 ]
@@ -525,6 +528,19 @@ def is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def refuse_without_terminal(what: str, command: str) -> int:
+    """The refusal of a command that asks a person something, when nobody
+    can be asked. `what` completes "Error: ... and there is no terminal to
+    ask on" (it names the command and what it asks); `command` is the line to
+    run at a terminal and ends the message, so it can be pasted. Prints to
+    stderr and returns exit code 2 (incorrect use). Callers check this BEFORE
+    any search, scan or other work that costs something: asking about work
+    already done makes the refusal arrive too late."""
+    print(f"Error: {what}, and there is no terminal to ask on. Nothing was changed.\n"
+          f"Run it in an interactive terminal:\n  {command}", file=sys.stderr)
+    return 2
+
+
 def confirm(question: str, *, yes: bool | None = False) -> int:
     """Asks a yes/no question before a CLI command destroys or widens
     something. Returns 0 to proceed, otherwise the exit code the command
@@ -561,29 +577,175 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
     return 1
 
 
-# Where log_and_print() echoes. None is the terminal's stdout. The MCP server
-# points it at stderr for its whole life: there, stdout IS the JSON-RPC
-# stream, and one stray line in it corrupts what the client is reading.
+# Where log_and_print() echoes. None is stderr, looked up at each call (not at
+# import, so a test or a host that swaps sys.stderr is followed): stdout is
+# the result of a command, and a notice in it ends up inside
+# `griot stats --json` or a pipe's data. The MCP server points it at stderr
+# explicitly for its whole life: there stdout IS the JSON-RPC stream.
 _echo_stream = None
 
 
 def set_echo_stream(stream) -> None:
     """Where log_and_print() echoes from now on: a writable text stream, or
-    None for stdout."""
+    None for stderr."""
     global _echo_stream
     _echo_stream = stream
 
 
-def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def quiet() -> bool:
+    """True under `--quiet` / GRIOT_QUIET=1: notices, warnings and progress
+    are not shown. Errors, prompts and the result never consult this. Read at
+    each call: cli.py turns the flag into the variable before the first
+    import of this module, and a host may set it later.
+
+    Deliberately NOT in ENV_TEMPLATE_SETTINGS: it is a switch for one
+    invocation, not a setting. Written into .env it would silence every
+    warning of every run, including those of an MCP server started from this
+    configuration, and a person would never learn why a warning was missing."""
+    return os.environ.get("GRIOT_QUIET", "").strip().lower() in _TRUTHY
+
+
+def no_color(environ=None) -> bool:
+    """NO_COLOR as no-color.org defines it: present and not empty. The one
+    reader (the charts of `griot stats` ask it too); `environ` is for a caller
+    that holds the mapping it wants asked."""
+    return bool((os.environ if environ is None else environ).get("NO_COLOR"))
+
+
+def plain_output(stream=None) -> bool:
+    """True when nothing animated should be drawn on `stream` (default
+    stderr, where progress goes): NO_COLOR is set, or it is not a terminal.
+    griot emits no colour; what it animates is its progress bars (tqdm),
+    which is what this decides."""
+    stream = sys.stderr if stream is None else stream
+    try:
+        tty = stream.isatty()
+    except (AttributeError, ValueError, OSError):  # a replaced or closed stream
+        tty = False
+    return no_color() or not tty
+
+
+def progress_disabled() -> bool:
+    """For tqdm's `disable=`: no bar under --quiet, or where plain_output()."""
+    return quiet() or plain_output()
+
+
+# While capture_echo() is active, what log_and_print() would show is kept here
+# instead of being written anywhere. A context variable, not a module global:
+# another thread of the same process (an MCP tool running beside this one)
+# must still show its own lines, while a tool body that runs in a copy of the
+# context (asyncio.to_thread) keeps what it captured.
+_captured: contextvars.ContextVar = contextvars.ContextVar("griot_captured_echo", default=None)
+
+
+@contextlib.contextmanager
+def capture_echo():
+    """Collects what log_and_print() would show, as a list of lines, instead of
+    showing it. For a caller that wants the explanation of a function that
+    reports through log_and_print() (golden_set: why nothing was listed)
+    without printing it on top of its own result. Unlike redirecting a
+    stream, it does not depend on which stream the echo goes to (the MCP
+    server's differs) nor on --quiet."""
+    lines: list = []
+    token = _captured.set(lines)
+    try:
+        yield lines
+    finally:
+        _captured.reset(token)
+
+
+def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable: bool = True) -> None:
+    """Logs `msg` and, with `echo`, shows it on stderr (see _echo_stream).
+
+    `silenceable=False` is for a failure report (a batch that was not
+    written, a listing that is incomplete): --quiet hides notices, warnings
+    and progress, never something that says data is missing."""
     from tqdm import tqdm as _tqdm
     _ensure_log_handler()
+    captured = _captured.get()
+    if echo and captured is not None:
+        captured.append(msg)
+        getattr(_logger, level)(msg)
+        return
     # [shared config path] echo=False keeps the persistent log entry (audit trail
-    # intact) while omitting stdout — needed by `griot quality-check
-    # --json`, whose stdout contract is "JSON payload only" (jobs.py's
-    # subprocess caller parses it as such; any stray line would break that).
-    if echo:
-        _tqdm.write(msg, file=_echo_stream)
+    # intact) while omitting the console: `griot quality-check --json` and
+    # the log-only warnings rely on it.
+    if echo and not (silenceable and quiet()):
+        _tqdm.write(msg, file=sys.stderr if _echo_stream is None else _echo_stream)
     getattr(_logger, level)(msg)
+
+
+def progress_note(text: str, silenceable: bool = True) -> None:
+    """A line of progress (which repository is being read, what a source
+    found) on stderr, so the result a command prints stays alone on stdout.
+    Silenced by --quiet unless `silenceable=False` (something that says data
+    was not written or a value must be rotated); not written to the log (it
+    is not an event)."""
+    if not (silenceable and quiet()):
+        print(text, file=sys.stderr if _echo_stream is None else _echo_stream)
+
+
+def warn_not_a_directory(path) -> None:
+    """The one wording for a registered path the indexers skip, the same in
+    all five of them."""
+    shown = printable(str(path))
+    log_and_print(f"Warning: {shown} is not a directory, skipped. Update the list:\n  griot repos remove {shown}",
+                  level="warning")
+
+
+def network_cause(error: Exception) -> str:
+    """The cause of a failed request in words a person can act on, instead of
+    the exception's class name."""
+    return "timeout" if isinstance(error, requests.Timeout) else "network unreachable"
+
+
+def _announced_path() -> Path:
+    return DATA_DIR / "announced.json"
+
+
+def announce_once(kind: str, fingerprint: str | None, lines: list[str], *, level: str = "warning") -> bool:
+    """Shows `lines` (stderr) once per STATE of the condition `kind`, not once
+    per run: `fingerprint` is what the condition is about (the variable names,
+    the paths) and it is announced again only when that changes. None means
+    the condition is gone: it is forgotten, so it speaks again if it comes
+    back. `griot doctor` lists the same conditions every time.
+
+    Under --quiet nothing is shown and nothing is remembered: it was not said.
+    A state file that cannot be read or written only means it is said again;
+    it must never stop a command. It is called while this module is imported
+    (the start-up warnings), so importing common can write announced.json."""
+    path = _announced_path()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    if fingerprint is None:
+        if kind in state:
+            del state[kind]
+            _write_announced(path, state)
+        return False
+    if quiet() or state.get(kind) == fingerprint:
+        return False
+    for line in lines:
+        log_and_print(line, level=level)
+    state[kind] = fingerprint
+    _write_announced(path, state)
+    return True
+
+
+def _write_announced(path: Path, state: dict) -> None:
+    try:
+        secure_mkdir(path.parent)
+        # 0600 like the rest of the data directory: doctor flags anything
+        # other users can read, and this file is griot's own.
+        secure_write_text(path, json.dumps(state, sort_keys=True))
+    except OSError:
+        pass  # said again next time: the cost of a data directory that cannot be written
 
 
 def log_run_summary(**fields) -> None:
@@ -826,15 +988,15 @@ def _check_env_file_permissions(env_path: Path) -> None:
         return
     mode = stat.S_IMODE(env_path.stat().st_mode)
     if mode & 0o077:
-        log_and_print(
-            f"Warning: {env_path} has permission {oct(mode)} (more open than 0600) "
-            f"and holds secrets — fixing to 0600.",
-            level="warning",
-        )
         try:
             env_path.chmod(0o600)
         except OSError as e:
-            log_and_print(f"Warning: could not fix the permission of {env_path}: {e}", level="warning")
+            # Still open and it holds secrets: a warning, with the command last.
+            log_and_print(f"Warning: {env_path} is readable by others ({oct(mode)}) and griot could not close it "
+                          f"({e}). Close it:\n  chmod 600 {env_path}", level="warning", silenceable=False)
+            return
+        # Closed already: nothing for the person to do, so a note and not a warning.
+        log_and_print(f"Note: {env_path} was readable by others ({oct(mode)}); griot set it to 0600.")
 
 
 # griot reads only its own <config_dir>/.env, never another project's. If it
@@ -869,13 +1031,20 @@ _LEGACY_ENV_RENAMES = {
 }
 
 
+def legacy_env_findings() -> list[tuple[str, str]]:
+    """(old name, sentence) for each renamed variable still set. ONE source
+    for the sentence: the warning printed at start and the `griot doctor`
+    check both use it."""
+    return [(old, f"Warning: {old} was renamed and griot ignores it. Rename it:\n  export {new}=\"${old}\"")
+            for old, new in _LEGACY_ENV_RENAMES.items() if os.getenv(old) is not None]
+
+
 def warn_legacy_env_vars() -> None:
-    for old, new in _LEGACY_ENV_RENAMES.items():
-        if os.getenv(old) is not None:
-            log_and_print(
-                f"Warning: the env var {old} was renamed and is IGNORED — use {new}.",
-                level="warning",
-            )
+    """Said once per state: again only when the set of old names changes
+    (the sentence goes on being said by `griot doctor`, every time)."""
+    findings = legacy_env_findings()
+    announce_once("legacy_env", ",".join(sorted(old for old, _ in findings)) or None,
+                  [sentence for _, sentence in findings])
 
 
 warn_legacy_env_vars()
@@ -1694,12 +1863,17 @@ def _credential_hint(env_var: str) -> str:
     return f"{env_var} is not set; set it with {set_it}."
 
 
+class CredentialMissing(GriotError, ValueError):
+    """A paid call needs a credential that is set nowhere griot looks. A
+    ValueError, as these always were."""
+
+
 def _require_gemini_token() -> str:
     # GEMINI_TOKEN holds what the environment and the file gave at import;
     # the keychain is asked only here, when a gemini call is about to run.
     token = GEMINI_TOKEN or _keychain_value("GEMINI_TOKEN")
     if not token:
-        raise ValueError(
+        raise CredentialMissing(
             f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
             f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
             f"and for ask.py's chat answer (direct call to Google's API)."
@@ -1766,12 +1940,13 @@ LOCK_PATH = DATA_DIR / ".griot.lock"
 _LEGACY_ROOT = Path(__file__).resolve().parents[2]
 
 
-def warn_legacy_layout(legacy_root: Path | None = None) -> None:
-    """Warns (and ONLY warns) if files from the old layout are
-    still at the root of the code checkout, pointing to the new location."""
+def legacy_layout_findings(legacy_root: Path | None = None) -> list[tuple[str, str]]:
+    """(old path, sentence) for each file of the old layout still at the root
+    of the code checkout. One source for the warning printed at start and the
+    `griot doctor` check."""
     root = _LEGACY_ROOT if legacy_root is None else legacy_root
     if not root.is_dir():
-        return
+        return []
     legacy_items = {
         "repos.json": CONFIG_DIR,
         "quality_golden_set.json": CONFIG_DIR,
@@ -1779,13 +1954,19 @@ def warn_legacy_layout(legacy_root: Path | None = None) -> None:
         "qdrant_data": DATA_DIR,
         "logs": DATA_DIR,
     }
-    for name, new_dir in legacy_items.items():
-        if (root / name).exists():
-            log_and_print(
-                f"Warning: {root / name} is in the old layout and is IGNORED — the new location is "
-                f"{new_dir / name} (move it manually; griot never moves it on its own).",
-                level="warning",
-            )
+    return [(str(root / name),
+             f"Warning: {root / name} is in the old layout and griot ignores it. Move it "
+             f"(griot never moves it on its own):\n  mv {root / name} {new_dir / name}")
+            for name, new_dir in legacy_items.items() if (root / name).exists()]
+
+
+def warn_legacy_layout(legacy_root: Path | None = None) -> None:
+    """Warns (and ONLY warns) if files from the old layout are still at the
+    root of the code checkout, pointing to the new location. Said once per
+    state: again only when the set of paths changes."""
+    findings = legacy_layout_findings(legacy_root)
+    announce_once("legacy_layout", ",".join(sorted(path for path, _ in findings)) or None,
+                  [sentence for _, sentence in findings])
 
 
 def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
@@ -1835,6 +2016,13 @@ if CONCURRENCY_MODE not in ("single", "multi"):
 # Finite and zero or more, like an amount: an idle time of `nan` is never
 # reached, and the index would be held for as long as the server runs.
 IDLE_RELEASE_SECONDS = _amount_env("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30")
+# How long the griot_search MCP tool may run before it fails with an error that
+# says what to do, so an agent client never waits on a search that cannot
+# finish (a sleeping machine, a collection held elsewhere). 0 turns the
+# deadline off. Chosen well above a normal search (1 to 2 seconds, a cold
+# open of a big collection tens of seconds) and below the ~2 minutes after
+# which the clients seen so far give up on their own.
+SEARCH_TIMEOUT_SECONDS = _amount_env("GRIOT_SEARCH_TIMEOUT_SECONDS", "60")
 # [tuned after empirical validation with a real collision] local DISK
 # contention (another process with the WAL open), not network — a much
 # smaller budget than the 10-20s used for paid-API retries, but needs to
@@ -1978,6 +2166,12 @@ def _ensure_spend_state_migrated() -> None:
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
 
 
+class SpendCircuitBreakerError(GriotError, RuntimeError):
+    """The local circuit breaker stopped a paid call: a spend ceiling was
+    reached, or a call's cost could not be counted. A RuntimeError, as the
+    breaker always raised."""
+
+
 def check_spend_ceiling() -> None:
     """Two independent checks, run before ANY paid call directly to Gemini
     (embedding or chat — no LiteLLM in between, this is the only budget
@@ -1996,7 +2190,7 @@ def check_spend_ceiling() -> None:
     # that is not a number compares False both ways, and must read as
     # reached, never as under.
     if not spend_today < SPEND_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
             f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
             f"reason before continuing — if this is expected, raise the ceiling explicitly."
@@ -2005,7 +2199,7 @@ def check_spend_ceiling() -> None:
     now = time.time()
     velocity = logdb.read_spend_velocity(LOG_DIR, now - SPEND_VELOCITY_WINDOW_SECONDS)
     if not velocity < SPEND_VELOCITY_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
             f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
             f"${SPEND_VELOCITY_CEILING_USD:.2f}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
@@ -2038,7 +2232,7 @@ def record_spend(cost_usd: float) -> None:
         # and adding nothing would let the paid calls go on uncounted (a
         # negative cost used to be dropped as if the call had been free):
         # stop the run.
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: the cost of a paid call came out as {cost_usd!r}, which is not an "
             f"amount (the provider reported a token count that is not a number, or is negative). It was "
             f"not added to today's total; stopping here rather than go on spending uncounted.")
@@ -2086,7 +2280,7 @@ def _billed_tokens(answer, path: tuple[str, str], texts: list[str]) -> float:
         _estimated_spend_was_said = True
         log_and_print("Note: the API did not report how many tokens it billed for this call. Its cost is counted "
                       "from the size of the text instead, which is an estimate: the spend shown and the spend "
-                      "ceiling go by it.", level="warning")
+                      "ceiling go by it.")
     return max(1, math.ceil(size / FALLBACK_BYTES_PER_TOKEN))
 
 
@@ -2144,7 +2338,7 @@ def get_embed_model():
     return _embed_model
 
 
-class CollectionBusyError(RuntimeError):
+class CollectionBusyError(GriotError, RuntimeError):
     """The collection is open in another process. A normal condition on a
     machine running `griot mcp`, so callers can tell it apart from a broken
     collection and explain it instead of showing a traceback. A RuntimeError
@@ -2218,6 +2412,14 @@ _client_lock = threading.RLock()
 # How long a status read (get_client(wait=False)) waits for a call that is
 # opening the collection before it answers "busy".
 _STATUS_READ_PATIENCE = 0.5
+# How long a caller that needs the shard waits for the lock before giving up
+# with CollectionBusyError. The lock is held for a whole open: the ~12s retry
+# budget of _load_shard_with_retry plus the load of a large collection, so the
+# limit has to outlast that or a legitimate slow open turns into a spurious
+# failure for everyone queued behind it. It is still a limit: with
+# timeout=-1 (forever) a stuck open parked every later call with no sign of
+# it (2026-10-25: two searches took ~2600s).
+CLIENT_LOCK_WAIT_SECONDS = 120.0
 
 
 def get_client(*, wait: bool = True) -> "qe.EdgeShard":
@@ -2241,7 +2443,7 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     caller does not wait long behind another call that is opening it,
     either."""
     global _client, _client_last_used_at
-    if not _client_lock.acquire(timeout=-1 if wait else _STATUS_READ_PATIENCE):
+    if not _client_lock.acquire(timeout=CLIENT_LOCK_WAIT_SECONDS if wait else _STATUS_READ_PATIENCE):
         path = collection_path(COLLECTION_NAME)
         raise CollectionBusyError(COLLECTION_NAME, path,
                                   f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
@@ -2558,9 +2760,9 @@ def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: 
             raise GeminiUnavailable(f"HTTP error {status} from the Gemini API.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
-                raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+                raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({network_cause(e)})") from e
             connection_attempt += 1
-            log_and_print(f"Gemini API unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 20s...", level="warning")
+            log_and_print(f"Gemini API unreachable ({network_cause(e)}), attempt {connection_attempt}/{max_connection_retries}, waiting 20s...", level="warning")
             time.sleep(20)
 
 
@@ -2613,9 +2815,9 @@ def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict,
             raise DirectAPIUnavailable(f"HTTP error {status} on {url}.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
-                raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+                raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({network_cause(e)})") from e
             connection_attempt += 1
-            log_and_print(f"{url} unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 10s...", level="warning")
+            log_and_print(f"{url} unreachable ({network_cause(e)}), attempt {connection_attempt}/{max_connection_retries}, waiting 10s...", level="warning")
             time.sleep(10)
 
 
@@ -2655,7 +2857,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     api_key_env = ACTIVE_PROFILE["api_key_env"]
     api_key = credential(api_key_env)
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{api_key_env} not found in the environment — required for the "
             f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
         )
@@ -2678,7 +2880,8 @@ def _embed_one_openai_compatible_request(texts: list[str], api_key: str) -> list
             credential_env=credential_env_for_profile(ACTIVE_PROFILE_NAME, ACTIVE_PROFILE),
         )
     except DirectAPIUnavailable as e:
-        log_and_print(f"Error in the embedding batch ({ACTIVE_PROFILE_NAME}): {e}", level="warning")
+        log_and_print(f"Warning: an embedding batch failed ({ACTIVE_PROFILE_NAME}): {e}. It will be retried on "
+                      f"the next run:\n  griot index all", level="warning", silenceable=False)
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
@@ -2735,7 +2938,8 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
             ]},
         )
     except GeminiUnavailable as e:
-        log_and_print(f"Error in the embedding batch: {e}", level="warning")
+        log_and_print(f"Warning: an embedding batch failed: {e}. It will be retried on the next run:\n"
+                      f"  griot index all", level="warning", silenceable=False)
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
@@ -2761,7 +2965,7 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     profile = ACTIVE_CHAT_PROFILE
     api_key = credential(profile["api_key_env"])
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{profile['api_key_env']} not found in the environment — required for the "
             f"{ACTIVE_CHAT_PROFILE_NAME!r} chat profile."
         )
@@ -2844,6 +3048,11 @@ def printable(text: str) -> str:
     return "".join(ch if ch.isprintable() else "?" for ch in text)
 
 
+# The longest caller- or client-chosen label (an agent client's name and
+# version, an error class) kept in the usage log and printed by griot stats.
+LOGGED_LABEL_MAX = 80
+
+
 def shown(name: str) -> str:
     """A name that comes from a repository (a path, a branch, a tag, a label
     built from them), as the CLI may print it: a credential-shaped part is
@@ -2865,17 +3074,19 @@ def report_redactions() -> int:
     taken = take_redactions()
     if not taken:
         return 0
+    # Not silenceable: it says a real credential may sit in the repository and
+    # must be rotated, which is not noise a person asked not to see.
     places: dict[str, list[str]] = {}
     for where, rule in taken:
         places.setdefault(where, []).append(rule)
-    print(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):")
+    progress_note(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):", silenceable=False)
     for where, rules in list(places.items())[:20]:
         # The place is named by a path, a branch, a tag: a name can hold the
         # very kind of value this report is about, and control characters.
-        print(f"  {shown(where)} ({', '.join(sorted(set(rules)))})")
+        progress_note(f"  {shown(where)} ({', '.join(sorted(set(rules)))})", silenceable=False)
     if len(places) > 20:
-        print(f"  ... and {len(places) - 20} more place(s)")
-    print("They are not in the index. If one is real, it is still in that file or history: rotate it.")
+        progress_note(f"  ... and {len(places) - 20} more place(s)", silenceable=False)
+    progress_note("They are not in the index. If one is real, it is still in that file or history: rotate it.", silenceable=False)
     return len(taken)
 
 
@@ -3047,7 +3258,7 @@ def pending_summary(documents: list[dict], desc: str = "Checking") -> dict:
     client = get_client()
     pending = up_to_date = chars = 0
 
-    for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+    for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc, file=sys.stderr, disable=progress_disabled()):
         batch = documents[i:i + INDEX_BATCH_SIZE]
         to_embed = _split_pending(batch, client)
         pending += len(to_embed)
@@ -3580,7 +3791,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> tupl
                       level="info", echo=False)
     try:
         copied, kept_count, offset = 0, 0, None
-        with tqdm(total=total, desc="Adding keyword vectors") as progress:
+        with tqdm(total=total, desc="Adding keyword vectors", file=sys.stderr, disable=progress_disabled()) as progress:
             while True:
                 page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
                                                               with_payload=True, with_vector=["dense"]))
@@ -3739,7 +3950,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     # whole process — atexit (acquire_lock) stays registered as a safety
     # net for a crash that skips the finally block.
     try:
-        print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
+        progress_note(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
         # A collection made before keyword search has no room for the
         # keyword vector (the engine refuses a point naming a vector the
@@ -3757,7 +3968,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         global _last_run_failures
         _last_run_failures = []
 
-        for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+        for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc, file=sys.stderr, disable=progress_disabled()):
             batch = documents[i:i + INDEX_BATCH_SIZE]
             try:
                 to_embed = _split_pending(batch, client)
@@ -3811,7 +4022,8 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
                     client.flush()
                     indexed += len(points)
                 except Exception as e:
-                    log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
+                    log_and_print(f"Warning: a batch was not written to the index: {e}. It will be retried on "
+                                  f"the next run:\n  griot index all", level="warning", silenceable=False)
                     failed += len(points)
                     # A whole batch lost to one write error: the reason is the
                     # same for all of them, which is exactly why the itemized
@@ -3842,7 +4054,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         if refreshed:
             # Said, because nothing else shows it: these count as skipped
             # (nothing was embedded), and something stored did change.
-            print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
+            progress_note(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
         _secure_collection_dir(COLLECTION_NAME, full=True)
@@ -3996,14 +4208,14 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             continue
         name, why_not = _registration(path)
         if name is None:
-            print(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.")
+            progress_note(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.", silenceable=False)
         elif produced.get(name) and name not in incomplete and name not in names:
             names.append(name)
     if not names:
         return 0
     if failed:
-        print(f"Stale points were not removed: {failed} document(s) of this run failed, "
-              f"so what the index holds cannot be compared with what was read.")
+        progress_note(f"Stale points were not removed: {failed} document(s) of this run failed, "
+                      f"so what the index holds cannot be compared with what was read.", silenceable=False)
         return 0
 
     total = 0
@@ -4011,24 +4223,25 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
         try:
             acquire_lock()
         except RuntimeError as e:
-            print(f"Stale points were not removed: {e} The next run removes them.")
+            progress_note(f"Stale points were not removed: {e} The next run removes them.", silenceable=False)
             return 0
     try:
         client = get_client()
         for name in names:
             existing, foreign = _point_ids_written_under(client, name, source_type, name)
             if foreign:
-                print(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
-                      f"directory (--path) and are left alone.")
+                progress_note(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
+                              f"directory (--path) and are left alone.")
             stale = [point_id for point_id in existing if str(point_id) not in produced[name]]
             if not stale:
                 continue
             if (not force and len(stale) > _PRUNE_GUARD_MIN_POINTS
                     and len(stale) > len(existing) * _PRUNE_GUARD_FRACTION):
                 outcome = "they would not be removed" if dry_run else "nothing was removed"
-                print(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
-                      f"by this run. That is more than half, so {outcome}: it usually means another branch is "
-                      f"checked out or files went missing. If it is right, run again with --prune.")
+                progress_note(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
+                              f"by this run. That is more than half, so {outcome}: it usually means another branch is "
+                              f"checked out or files went missing. If it is right, run again with --prune.",
+                              silenceable=False)
                 # Counted for a caller that reads numbers and not this
                 # sentence: returned as zero, these looked like a clean index.
                 if report is not None:
@@ -4041,7 +4254,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
                 for i in range(0, len(stale), _PRUNE_PAGE):
                     client.update(qe.UpdateOperation.delete_points(stale[i:i + _PRUNE_PAGE]))
                 client.flush()
-                print(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
+                progress_note(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
             total += len(stale)
     finally:
         if not dry_run:
@@ -4131,11 +4344,11 @@ def _points_error(collection: str, error: Exception) -> str:
     if isinstance(error, CollectionBusyError) or _LOCK_COLLISION_SIGNATURE in str(error):
         holder = ("being opened by another call" if getattr(error, "in_this_process", False)
                   else "held by another process")
-        log_and_print(f"Warning: could not check points_count for '{collection}': "
-                      f"{holder} ({error})", level="warning")
+        log_and_print(f"Note: the point count of '{collection}' is not shown: the collection is {holder}. "
+                      f"It is counted when it is free; to see what holds it:\n  griot doctor")
         return "busy"
-    log_and_print(f"Warning: could not check points_count for '{collection}': "
-                  f"the collection could not be opened ({error})", level="warning")
+    log_and_print(f"Warning: the point count of '{collection}' is not shown: the collection could not be "
+                  f"opened ({error}). Check it:\n  griot doctor", level="warning")
     return f"unreadable: {error}"
 
 
@@ -4579,7 +4792,7 @@ SOURCE_TYPES = tuple(RESULT_FIELDS)
 SEARCH_FILTER_MAX_VALUES = 20
 
 
-class SearchFilterError(ValueError):
+class SearchFilterError(GriotError, ValueError):
     """A search filter that cannot be used: not a list of names, too many, a
     kind of source that does not exist, a repository with nothing indexed.
     Its own type so that a caller can tell "the arguments are wrong" from
@@ -4713,6 +4926,11 @@ def _fused(by_meaning: list, by_words: list, limit: int) -> list[FusedHit]:
     return sorted(fused.values(), key=lambda entry: entry.score, reverse=True)[:limit]
 
 
+class EmbeddingFailed(GriotError, RuntimeError):
+    """A search's query could not be embedded: the embedding API gave
+    nothing back, and the message says why (last_embedding_failure())."""
+
+
 class SearchModeUnavailable(SearchFilterError):
     """A keyword or hybrid search on a collection made before keyword
     search: an error rather than an empty result, which would read as
@@ -4771,6 +4989,18 @@ SEARCH_DEFAULT_MODE = "hybrid"
 KEYWORD_SEARCH_NOT_BUILT_NOTE = (
     "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
     "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
+
+
+KEYWORD_BUILD_COMMAND = "griot index keywords"
+
+
+def keyword_search_missing_sentence(collection: str) -> str:
+    """The one sentence `griot doctor`, `griot stats` and griot_stats use for a
+    collection without keyword vectors, so the three never word it apart: what
+    is missing, the command that builds it, and that the command is free."""
+    return (f"keyword search is not built for collection '{collection}' (it was indexed before griot stored keyword "
+            f"vectors), so searches run by meaning only instead of the default hybrid: `{KEYWORD_BUILD_COMMAND}` "
+            f"builds it once (local, embeds nothing)")
 
 
 def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
@@ -4833,11 +5063,19 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
     if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
+        # Read by an agent first (the CLI shows the same words to a person), so
+        # it says what to do NOW, not only what is missing: vector search does
+        # not answer the queries that need a word match (measured: MRR@10 0.01
+        # for commit hashes in vector against 0.80 in hybrid), so the agent is
+        # told which tool does, and the refusal stays a refusal.
         raise SearchModeUnavailable(
             f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
-            f"stored keyword vectors. Run `griot index keywords` once to add them (local: it embeds nothing and "
-            f"costs nothing; while it runs it needs about as much free disk as the collection). Until then, "
-            f"use mode 'vector'.")
+            f"stored keyword vectors. Running `{KEYWORD_BUILD_COMMAND}` once builds it (local: it "
+            f"embeds nothing and costs nothing; while it runs it needs about as much free disk as the "
+            f"collection). Until then: for a commit hash, an error code or where a name is used, use grep or "
+            f"`git log` in the repository you are working in (they do not reach the other registered "
+            f"repositories or pull request text); for a descriptive question, retry with mode 'vector'. "
+            f"Vector search does not find exact strings, so do not use it for those.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = search_filter(client, repos, source_types)
@@ -4849,7 +5087,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # right for a batch being indexed (the rest of the batch goes on). A
             # search has one text and nothing to go on with: say what happened,
             # or the None becomes a type error from the vector store.
-            raise RuntimeError(
+            raise EmbeddingFailed(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
                 + sentence(last_embedding_failure() or "the embedding call returned nothing"))
 

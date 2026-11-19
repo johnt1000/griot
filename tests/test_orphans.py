@@ -151,7 +151,7 @@ def test_a_run_with_failures_removes_nothing(tmp_path, capsys):
     common.index_documents(_docs("proj", ["a.py", "b.py", "c.py"]))
     assert _prune(_docs("proj", ["a.py", "b.py"]), path, failed=1) == 0
     assert len(_stored("proj")) == 3
-    assert "not removed" in capsys.readouterr().out
+    assert "not removed" in capsys.readouterr().err
 
 
 def test_a_repository_that_could_not_be_read_completely_is_skipped(tmp_path):
@@ -171,7 +171,7 @@ def test_more_than_half_of_a_repository_is_not_removed_without_being_told(tmp_pa
     now = _docs("proj", names[:4])
     assert _prune(now, path) == 0
     assert len(_stored("proj")) == 10
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "6 of 10" in out and "--prune" in out
     assert _prune(now, path, force=True) == 6
     assert _stored("proj") == sorted(names[:4])
@@ -219,7 +219,7 @@ def test_index_code_removes_the_points_of_a_deleted_and_a_shrunk_file(tmp_path, 
     _write(path, "big.py", "y = 2\n")
     index_code.main(["--repo", "proj"])
     assert _stored("proj") == ["big.py", "keep.py"]
-    assert "stale point" in capsys.readouterr().out
+    assert "stale point" in capsys.readouterr().err
 
 
 def test_index_code_dry_run_says_how_many_would_go(tmp_path, capsys):
@@ -339,7 +339,7 @@ def test_points_another_directory_of_the_same_name_wrote_are_never_removed(tmp_p
     common.index_documents(now + _docs("proj", ["gone.py"]))
     assert _prune(now, path) == 1
     assert _stored("proj") == ["a.py", "x.py", "y.py", "z.py"]
-    assert "3 point(s)" in capsys.readouterr().out
+    assert "3 point(s)" in capsys.readouterr().err
 
 
 def test_through_the_indexers_a_same_named_path_run_survives_the_registered_run(tmp_path):
@@ -480,7 +480,7 @@ def test_the_prune_flag_reaches_the_guard_through_an_indexer(tmp_path, monkeypat
     for i in range(1, 6):
         (path / f"f{i}.py").unlink()
     index_code.main(["--repo", "proj"])
-    assert len(_stored("proj")) == 6 and "--prune" in capsys.readouterr().out
+    assert len(_stored("proj")) == 6 and "--prune" in capsys.readouterr().err
     index_code.main(["--repo", "proj", "--prune"])
     assert _stored("proj") == ["f0.py"]
 
@@ -527,7 +527,7 @@ def test_a_taken_lock_skips_the_removal_and_the_run_is_still_recorded(tmp_path, 
     monkeypatch.setattr(common, "acquire_lock", second_call_fails)
     index_code.main(["--repo", "proj"])
     assert _stored("proj") == ["gone.py", "keep.py", "new.py"]
-    assert "not removed" in capsys.readouterr().out
+    assert "not removed" in capsys.readouterr().err
     from griot import logdb
     last = logdb.read_since(common.LOG_DIR, "runs", days=1)[-1]
     assert last["indexed"] == 1 and last["pruned"] == 0
@@ -540,7 +540,7 @@ def test_an_ambiguous_name_says_why_nothing_was_removed(tmp_path, capsys):
     common.index_documents(docs)
     capsys.readouterr()
     assert _prune(docs, path) == 0
-    assert "more than one registered repository is named 'proj'" in capsys.readouterr().out
+    assert "more than one registered repository is named 'proj'" in capsys.readouterr().err
 
 
 def test_a_repository_registered_through_a_symlink_is_pruned_under_the_name_it_is_indexed_as(tmp_path):
@@ -564,7 +564,7 @@ def test_the_guard_message_in_a_dry_run_does_not_claim_a_removal_was_stopped(tmp
     common.index_documents(_docs("proj", names))
     capsys.readouterr()
     assert _prune(_docs("proj", names[:4]), path, dry_run=True) == 0
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "would not be removed" in out and "nothing was removed" not in out
 
 
@@ -584,7 +584,7 @@ def test_a_directory_registered_twice_is_indexed_but_never_pruned(tmp_path, caps
     (real / "gone.py").unlink()
     capsys.readouterr()
     index_code.main(["--repo", "proj"])
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "registered more than once" in out
     assert _stored("proj") == ["a.py", "gone.py"] and _stored("link") == ["a.py", "gone.py"]
     from griot import logdb

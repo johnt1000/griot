@@ -437,6 +437,9 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if index_status.get("spend_ceiling_exceeded"):
         attention.append("today's spend reached the daily ceiling: paid calls are refused until "
                          "tomorrow, or until the ceiling is raised")
+    if index_status.get("keyword_search") is False:
+        attention.append(common.keyword_search_missing_sentence(index_status.get("collection") or collection
+                                                                or common.COLLECTION_NAME))
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
 
@@ -583,9 +586,30 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
             [f for r in runs for f in (r.get("failures") or [])], "reason"),
         "tool_calls": _count_by(tools, "tool"),
         "failed_tool_calls": _count_by([c for c in tools if not c.get("ok")], "tool"),
+        # Why the failed tool calls failed, by error CLASS: `failure_reasons`
+        # above is about documents that failed to INDEX, so a failed search
+        # was in no count at all. Rows from before the columns below carry
+        # None for them, and read as "unknown" (_count_by).
+        "tool_failure_classes": _count_by(
+            [{"class": _error_class(c.get("error"))} for c in tools if not c.get("ok")], "class"),
+        # Which agent client made the calls: "the agents stopped searching"
+        # and "a different client connected" look the same without it.
+        "calls_by_client": _count_by(tools, "client"),
+        # The mode each griot_search ASKED for (before defaults), failed or not.
+        "searches_by_asked_mode": _count_by([c for c in tools if c.get("tool") == "griot_search"], "mode"),
         "resource_reads": _count_by(reads, "tool"),
         "failed_resource_reads": _count_by([c for c in reads if not c.get("ok")], "tool"),
     }
+
+
+def _error_class(error: str | None) -> str:
+    """The class of a recorded tool error: the text before its first colon
+    ("SearchModeUnavailable: Keyword search is not built..."). Never the
+    message, which can hold names and paths; "unknown" for a row with no error
+    text or none in that shape. Printable, since it is printed."""
+    head, colon, _ = (error or "").partition(":")
+    head = common.shown(head.strip())[:common.LOGGED_LABEL_MAX] if colon else ""
+    return head or "unknown"
 
 
 def _is_resource_read(name: str | None) -> bool:
@@ -672,7 +696,7 @@ def _chart_width(stream=None, environ=None) -> int | None:
         tty = stream.isatty()
     except (AttributeError, ValueError, OSError):  # a replaced or closed stream
         tty = False
-    if not tty or environ.get("NO_COLOR"):
+    if not tty or common.no_color(environ):
         return None
     columns = shutil.get_terminal_size().columns
     if columns < _MIN_CHART_WIDTH:
@@ -914,6 +938,25 @@ def _mcp_section(lines: list[str], heading: str, event: str, kind: str,
         lines.append(f"{_INDENT}{name} {count}{suffix}")
 
 
+def _tool_failure_lines(lines: list[str], classes: dict[str, int], clients: dict[str, int],
+                        modes: dict[str, int] | None = None) -> None:
+    """Under the MCP tools section: why tool calls failed (by class, most
+    common first), which clients made the calls and which mode the searches
+    asked for. Nothing when there is nothing to say."""
+    if classes:
+        lines.append(f"{_INDENT}failed calls by class:")
+        for name, count in sorted(classes.items(), key=lambda kv: -kv[1]):
+            lines.append(f"{_INDENT}  {count}× {name}")
+    if clients:
+        by_volume = sorted(clients.items(), key=lambda kv: -kv[1])
+        lines.append(f"{_INDENT}by client: " + " · ".join(
+            f"{name} {count} call{'s' if count != 1 else ''}" for name, count in by_volume))
+    if modes:
+        by_volume = sorted(modes.items(), key=lambda kv: -kv[1])
+        lines.append(f"{_INDENT}searches by asked mode: " + " · ".join(
+            f"{name} {count}" for name, count in by_volume))
+
+
 def format_stats(s: dict, days: int, width: int | None = None) -> str:
     """The report as text. `width` None is the plain form, the same for
     every reader; a width (see _chart_width()) draws the trends as charts
@@ -1127,6 +1170,9 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
     # columns right of the item lines under it and of every other heading.
     _mcp_section(lines, "MCP tools:", "call", "tool",
                  s.get("tool_calls") or {}, s.get("failed_tool_calls") or {})
+    if s.get("tool_calls"):
+        _tool_failure_lines(lines, s.get("tool_failure_classes") or {}, s.get("calls_by_client") or {},
+                            s.get("searches_by_asked_mode") or {})
     _mcp_section(lines, "MCP reads:", "read", "resource",
                  s.get("resource_reads") or {}, s.get("failed_resource_reads") or {})
 

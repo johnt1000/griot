@@ -42,6 +42,7 @@ TESTS_MAY_REACH = {
         "_client": _STATE,
         "_keychain_cache": _STATE,
         "_client_last_used_at": _STATE,
+        "_client_lock": _STATE,
         "_embed_model": _STATE,
         "_echo_stream": _STATE,
         "_logger": _STATE,
@@ -96,6 +97,8 @@ TESTS_MAY_REACH = {
         "_estimated_spend_was_said": _HELPER,
         "_LEGACY_ENV_RENAMES": _HELPER,
         "_GIT_ENV_ALLOWED": _HELPER,
+        "_points_error": _HELPER,
+        "_embed_one_openai_compatible_request": _HELPER,
     },
     "auth": {
         "_ensure_env_file": _HELPER,
@@ -153,6 +156,7 @@ TESTS_MAY_REACH = {
     },
     "logdb": {
         "_connect": _STATE,
+        "_ensure_tool_calls_column": _HELPER,
         "_ensure_tool_calls_project_column": _HELPER,
         "_tool_call_rows": _HELPER,
     },
@@ -195,6 +199,7 @@ TESTS_MAY_REACH = {
     },
     "platforms": {
         "_get_with_retry": _SEAM,
+        "_warn_pages_capped": _HELPER,
         "_gitea_matches": _HELPER,
     },
     "quality_check": {

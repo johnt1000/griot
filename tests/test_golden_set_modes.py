@@ -386,3 +386,9 @@ async def test_the_mcp_tool_refuses_a_case_that_could_never_run_before_asking_an
                                                 ctx=_NoElicitCtx())
     assert out["changed"] is False and "mode" in out["message"]
     assert not common.GOLDEN_SET_PATH.exists()
+
+
+@pytest.fixture(autouse=True)
+def _a_person_is_at_the_terminal(monkeypatch):
+    """add and suggest ask a person and refuse without a terminal; input() is faked here."""
+    monkeypatch.setattr(common, "is_interactive", lambda: True)

@@ -139,7 +139,8 @@ def test_env_file_open_permissions_warns_and_chmods(caplog):
     common.ENV_PATH.write_text("GEMINI_TOKEN=fake\n")
     common.ENV_PATH.chmod(0o644)
 
-    with caplog.at_level(logging.WARNING, logger="griot"):
+    # A note, not a warning: griot closed it, so there is nothing to do.
+    with caplog.at_level(logging.INFO, logger="griot"):
         common._check_env_file_permissions(common.ENV_PATH)
 
     assert "0600" in caplog.text

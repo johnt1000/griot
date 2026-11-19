@@ -11,6 +11,23 @@ griot golden-set review          # curate cases from the questions actually aske
 griot golden-set add "query"     # curate a case from a real search
 ```
 
+`suggest`, `review` and `add` ask a person, so they need a terminal. Without
+one they change nothing and exit 2, before anything that costs: `add` runs
+its search (paid on a paid profile) only after it knows someone can answer.
+All three read the same answers:
+
+| Answer | Meaning |
+| --- | --- |
+| numbers (`1,3`) | pick those results (`add`, `review`) |
+| `y` | approve the suggestion (`suggest`) |
+| `s` or Enter | skip; in `add`, which has one query and nothing to skip to, add nothing and end |
+| `q` | quit; what was approved before is kept |
+| `n`, `no` | skip, as `s` does (`suggest`; it used to ask `[y/N]`, so a typed `n` still skips) |
+| `n`, `r` | none of them, never offer again (`review` only) |
+
+A bad answer asks again and names the choices. Ctrl-D counts as `q`; Ctrl-C
+stops the same way and exits 130.
+
 ## `griot quality-check`
 
 `griot quality-check` scores retrieval against your curated golden set —

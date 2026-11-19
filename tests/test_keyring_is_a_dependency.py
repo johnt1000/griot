@@ -16,17 +16,13 @@ credential: the real OS keychain is never reached."""
 import importlib.metadata
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 
 from griot import auth, common, doctor
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python < 3.11
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
@@ -105,7 +101,8 @@ def test_set_says_the_key_went_to_plaintext_and_why(fail_backend, monkeypatch, c
 
     assert auth.cmd_set("openai") == 0
 
-    _says_plaintext_and_why(capsys.readouterr().out)
+    out, err = capsys.readouterr()
+    _says_plaintext_and_why(out + err)  # the reason is a note, on stderr
 
 
 def test_list_says_the_keys_are_in_plaintext_and_why(fail_backend, capsys):

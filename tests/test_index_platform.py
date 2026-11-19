@@ -10,6 +10,21 @@ from griot import index_platform
 # mocked here so it doesn't depend on network/token, same pattern already
 # used by the other --path tests.
 
+
+def _final_error(err: str) -> str:
+    """The closing `Error:` report of a run. stderr also carries the
+    per-fetch warnings now (they were on stdout), which name the repository
+    that answered too; these tests are about the closing report."""
+    return err[err.index("\nError:") + 1:] if "\nError:" in err else err
+
+
+def _streams(capsys) -> str:
+    """Everything a run printed, on either stream: notices and progress are on
+    stderr now, the result on stdout; these tests are about the text, not the
+    stream (tests/test_streams_and_quiet.py is about the stream)."""
+    out, err = capsys.readouterr()
+    return out + err
+
 def test_main_with_path_indexes_without_reading_repos_json(git_repo, monkeypatch):
     calls = {}
 
@@ -80,7 +95,7 @@ def test_unrecognized_remote_is_skipped_with_warning(git_repo, monkeypatch, caps
     docs = index_platform.build_documents(git_repo.path)
 
     assert docs == []
-    assert "isn't from any recognized platform" in capsys.readouterr().out
+    assert "is not from a platform griot knows" in capsys.readouterr().err
 
 
 def test_no_remote_is_skipped_with_warning(git_repo, monkeypatch, capsys):
@@ -89,7 +104,7 @@ def test_no_remote_is_skipped_with_warning(git_repo, monkeypatch, capsys):
     docs = index_platform.build_documents(git_repo.path)
 
     assert docs == []
-    assert "'origin' remote" in capsys.readouterr().out
+    assert "'origin' remote" in capsys.readouterr().err
 
 
 # --- repos.json missing ----------------------------------------
@@ -327,7 +342,7 @@ def test_one_repository_refused_entirely_fails_the_run(two_repo_run, monkeypatch
     rc = index_platform.main([])
 
     assert rc == 1
-    err = capsys.readouterr().err
+    err = _final_error(capsys.readouterr().err)
     assert "bad" in err and "good" not in err
 
 
@@ -510,7 +525,7 @@ def test_every_repository_name_printed_is_made_printable(tmp_path, monkeypatch, 
 
     out, err = capsys.readouterr()
     assert "\x1b" not in out and "\x1b" not in err
-    assert "bad?[2Jx" in err and "bad?[2Jx" in out and "gone?[2J" in out
+    assert "bad?[2Jx" in err and "gone?[2J" in err
 
 
 def test_a_repository_name_asked_for_and_not_found_is_printed_printable(two_repo_run, monkeypatch, capsys):
@@ -525,7 +540,7 @@ def test_the_lines_of_a_repository_that_answered_are_printable(tmp_path, monkeyp
 
     index_platform.main([])
 
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "  bad?[2Jx [github:group/bad?[2Jx]: " in out
 
 
@@ -548,7 +563,7 @@ def test_a_repository_skipped_for_its_remote_is_named_printable(tmp_path, monkey
 
     index_platform.main([])
 
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "bad?[2Jx" in out
 
 
@@ -566,7 +581,7 @@ def gitlab_run(platform_run, monkeypatch):
 def test_a_gitlab_run_without_a_token_says_it_read_public_data_only(gitlab_run, capsys):
     index_platform.main(["--path", gitlab_run["path"]])
 
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "without a token" in out and "public" in out
 
 
@@ -575,7 +590,7 @@ def test_a_gitlab_run_with_a_token_says_nothing_about_reading_without_one(gitlab
 
     index_platform.main(["--path", gitlab_run["path"]])
 
-    assert "without a token" not in capsys.readouterr().out
+    assert "without a token" not in _streams(capsys)
 
 
 @pytest.mark.parametrize("status", [401, 404])
@@ -599,9 +614,9 @@ def test_a_private_gitlab_project_without_a_token_is_a_recorded_refusal(gitlab_r
 
     captured = capsys.readouterr()
     assert rc == 1
-    assert "griot auth set gitlab" in captured.out
+    assert "griot auth set gitlab" in captured.out + captured.err
     # The error already says what to do; the generic hint would repeat it.
-    assert "HINT-LINE" not in captured.out
+    assert "HINT-LINE" not in captured.out + captured.err
     (run,) = gitlab_run["runs"]
     assert {f["reason"] for f in run["failures"]} == {f"HTTP {status}"}
     assert "refused" in run["error"]
@@ -958,7 +973,7 @@ def test_a_platform_that_did_not_answer_or_failed_is_not_blamed_on_the_token(pla
 
     assert index_platform.main(["--path", platform_run["path"]]) == 1
 
-    err = capsys.readouterr().err
+    err = _final_error(capsys.readouterr().err)
     assert "Check the token" not in err and "not visible to the token" not in err
     [line] = [line for line in err.splitlines() if "group/project" in line]
     assert "did not answer or failed" in line and reason in line

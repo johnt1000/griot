@@ -298,6 +298,7 @@ def test_auth_remove_of_a_keychain_only_key_says_so(monkeypatch, capsys):
     assert auth.cmd_remove("openai") == 0
 
     assert common.keychain_get("GRIOT_OPENAI_API_KEY") is None
-    assert capsys.readouterr().err == ""
+    err = capsys.readouterr().err
+    assert "Warning" not in err and "Error" not in err  # only the restart note
 
 

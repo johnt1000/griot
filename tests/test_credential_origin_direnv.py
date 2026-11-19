@@ -262,7 +262,7 @@ def test_auth_set_list_and_remove_name_the_envrc(project, monkeypatch, capsys):
     auth.cmd_list()
     auth.cmd_remove("github")
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert out.count(f"{project}/.envrc:1") == 3
     _no_secret_in(out)
 
@@ -273,7 +273,7 @@ def test_auth_set_without_a_place_says_direnv_was_looked_at_too(project, monkeyp
 
     auth.cmd_set("github")
 
-    assert "no shell file or direnv file griot knows sets it" in capsys.readouterr().out
+    assert "no shell file or direnv file griot knows sets it" in "".join(capsys.readouterr())
 
 
 def test_doctor_names_the_envrc(project):

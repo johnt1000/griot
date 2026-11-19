@@ -18,6 +18,14 @@ import qdrant_edge as qe
 from griot import ask, common, index_code, index_commits, index_platform, logdb, redaction, repos
 
 
+
+def _streams(capsys) -> str:
+    """Everything a run printed, on either stream: notices and progress are on
+    stderr now, the result on stdout; these tests are about the text, not the
+    stream (tests/test_streams_and_quiet.py is about the stream)."""
+    out, err = capsys.readouterr()
+    return out + err
+
 def T(*parts: str) -> str:
     return "".join(parts)
 
@@ -143,7 +151,7 @@ def test_index_code_says_which_file_and_stores_no_value(tmp_path, capsys, _fake_
     (path / "config.yml").write_text("github:\n  token: " + TOKEN + "\n")
     (path / "clean.py").write_text("x = 1\n")
     index_code.main(["--repo", "proj"])
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "credential-looking" in out and "proj/config.yml" in out and "github-token" in out
     assert TOKEN not in out
     assert all(TOKEN not in c for c in _stored_contents()) and all(TOKEN not in t for t in _fake_embed)
@@ -154,7 +162,7 @@ def test_index_code_dry_run_says_it_too(tmp_path, capsys):
     path = _register(tmp_path)
     (path / "config.yml").write_text("token: " + TOKEN + "\n")
     index_code.main(["--repo", "proj", "--dry-run"])
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "credential-looking" in out and "proj/config.yml" in out
 
 
@@ -162,7 +170,7 @@ def test_a_clean_run_says_nothing_about_credentials(tmp_path, capsys):
     path = _register(tmp_path)
     (path / "clean.py").write_text("x = 1\n")
     index_code.main(["--repo", "proj"])
-    assert "credential" not in capsys.readouterr().out
+    assert "credential" not in _streams(capsys)
     assert logdb.read_since(common.LOG_DIR, "runs", days=1)[-1]["redacted"] == 0
 
 
@@ -171,7 +179,7 @@ def test_a_commit_message_is_covered(git_repo, capsys, _fake_embed):
     repos.add_repo(str(git_repo.path))
     index_commits.main(["--repo", git_repo.path.name])
     assert all(TOKEN not in c for c in _stored_contents()) and all(TOKEN not in t for t in _fake_embed)
-    assert sha[:12] in capsys.readouterr().out
+    assert sha[:12] in _streams(capsys)
 
 
 def test_platform_text_is_covered():
@@ -207,7 +215,7 @@ def test_search_in_the_cli_never_prints_a_stored_value(monkeypatch, capsys):
     from griot import cli
     monkeypatch.setattr(common, "search", lambda *a, **k: [_Hit("token: " + TOKEN)])
     cli.main(["search", "where is the token"])
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert TOKEN not in out and "[REDACTED:github-token]" in out
 
 
@@ -286,14 +294,14 @@ def test_a_token_in_a_branch_name_is_not_printed_by_the_run_report(capsys):
     common._split_pending([{"id": f"repo:branch:{name}", "content": f"Branch: {name}",
                             "metadata": {"source_type": "branch", "repo": "repo", "branch_name": name}}], common.get_client())
     common.report_redactions()
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert TOKEN not in out and "repo:branch:fix/[REDACTED:github-token]" in out
 
 
 def test_control_characters_in_a_name_do_not_reach_the_terminal_through_the_report(capsys):
     common.chunk_text("token " + TOKEN, where="repo/a\x1b[2J\x07\nNothing found.py")
     common.report_redactions()
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "\x07" not in out
     assert "\nNothing found" not in out
 
@@ -311,7 +319,7 @@ def test_audit_does_not_let_a_stored_name_write_to_the_terminal(capsys):
     _store_raw("r:code:x:0", "token: " + TOKEN, source_type="code", repo="r\nFAKE-LINE: clean",
                file_path="a\x1b[2J\x07\nFound nothing", chunk_index=0)
     assert redaction.main([]) == 1
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "\x07" not in out
     assert not any(line.startswith(("FAKE-LINE", "Found nothing")) for line in out.splitlines())
 
@@ -326,7 +334,7 @@ def test_search_in_the_cli_does_not_let_stored_text_write_to_the_terminal(monkey
 
     monkeypatch.setattr(common, "search", lambda *a, **k: [Hostile()])
     cli.main(["search", "anything"])
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "\x07" not in out and "first line" in out
 
 
@@ -334,7 +342,7 @@ def test_the_remote_url_warning_never_prints_the_credentials_in_it(monkeypatch, 
     monkeypatch.setattr(index_platform, "_remote_url",
                         lambda repo_path: "https://ci:" + TOKEN + "@git.internal.example/team/repo.git")
     assert index_platform.build_documents(tmp_path) == []
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert TOKEN not in out and "ci:" not in out and "git.internal.example" in out
 
 
@@ -352,9 +360,9 @@ def test_index_tags_reports_and_records(git_repo, capsys):
     repos.add_repo(str(git_repo.path))
     name = git_repo.path.name
     index_tags.main(["--repo", name, "--dry-run"])
-    assert "credential-looking" in capsys.readouterr().out
+    assert "credential-looking" in _streams(capsys)
     index_tags.main(["--repo", name])
-    assert "credential-looking" in capsys.readouterr().out and _last_run()["redacted"] == 1
+    assert "credential-looking" in _streams(capsys) and _last_run()["redacted"] == 1
     assert all(TOKEN not in c for c in _stored_contents())
 
 
@@ -370,9 +378,9 @@ def test_index_branches_reports_and_records(git_repo, capsys):
     repos.add_repo(str(git_repo.path))
     name = git_repo.path.name
     index_branches.main(["--repo", name, "--dry-run"])
-    assert "credential-looking" in capsys.readouterr().out
+    assert "credential-looking" in _streams(capsys)
     index_branches.main(["--repo", name])
-    assert "credential-looking" in capsys.readouterr().out and _last_run()["redacted"] >= 1
+    assert "credential-looking" in _streams(capsys) and _last_run()["redacted"] >= 1
     assert all(TOKEN not in c for c in _stored_contents())
 
 
@@ -381,9 +389,9 @@ def test_index_platform_reports_and_records(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(index_platform, "build_documents", lambda repo_path, repo_key=None, fetches=None: index_platform.build_chunks(
         "PR body with " + TOKEN, "proj:merge_request:7", {"source_type": "merge_request", "repo": "proj", "mr_iid": 7}))
     index_platform.main(["--repo", "proj", "--dry-run"])
-    assert "credential-looking" in capsys.readouterr().out
+    assert "credential-looking" in _streams(capsys)
     index_platform.main(["--repo", "proj"])
-    assert "credential-looking" in capsys.readouterr().out and _last_run()["redacted"] == 1
+    assert "credential-looking" in _streams(capsys) and _last_run()["redacted"] == 1
     assert all(TOKEN not in c for c in _stored_contents())
 
 
@@ -403,7 +411,7 @@ def test_audit_lists_where_stored_values_are_and_never_the_values(capsys):
     _store_raw("repo:code:config.yml:0", "token: " + TOKEN, source_type="code", repo="repo", file_path="config.yml", chunk_index=0)
     _store_raw("repo:code:clean.py:0", "x = 1", source_type="code", repo="repo", file_path="clean.py", chunk_index=0)
     assert redaction.main([]) == 1
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "repo/config.yml" in out and "github-token" in out and "clean.py" not in out
     assert TOKEN not in out
 
@@ -411,7 +419,7 @@ def test_audit_lists_where_stored_values_are_and_never_the_values(capsys):
 def test_audit_of_a_clean_index_exits_zero(capsys):
     _store_raw("repo:code:clean.py:0", "x = 1", source_type="code", repo="repo", file_path="clean.py", chunk_index=0)
     assert redaction.main([]) == 0
-    assert "nothing" in capsys.readouterr().out.lower()
+    assert "nothing" in _streams(capsys).lower()
 
 
 def test_audit_is_reachable_from_the_cli(capsys):
@@ -440,5 +448,5 @@ def test_every_place_the_cli_prints_a_name_goes_through_the_same_cleaning(where,
     else:
         (tmp_path / (hostile + ".sql")).write_text("x" * (index_code.MAX_FILE_BYTES + 1))
         index_code.discover_files(tmp_path)
-    out = capsys.readouterr().out
+    out = _streams(capsys)
     assert "\x1b" not in out and "\x07" not in out

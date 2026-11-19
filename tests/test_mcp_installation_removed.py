@@ -67,9 +67,28 @@ async def test_a_search_after_the_package_files_were_removed_says_so_and_asks_fo
     _says_the_installation_went_away(text)
     # The path that is gone is named, so a person can see which install it was.
     assert str(package_removed) in text, text
-    # The original error stays visible: it is what failed, and the
-    # explanation must not erase the evidence.
-    assert CERT_ERROR in text, text
+    # What failed is named by its class only: an error griot did not write
+    # keeps the SDK's masking even with the installation gone (its text can
+    # carry internals, like this path). The evidence is not erased: the call
+    # log keeps it whole (test_the_failed_call_is_recorded_with_the_cause).
+    assert "OSError" in text, text
+    assert CERT_ERROR not in text, text
+
+
+@pytest.mark.anyio
+async def test_a_griot_error_after_the_removal_keeps_its_text(monkeypatch, package_removed):
+    # Text griot wrote for the agent is shown with the installation gone too.
+    written = "Keyword search is not built yet: run `griot index keywords`."
+
+    def search(*args, **kwargs):
+        raise common.SearchModeUnavailable(written)
+    monkeypatch.setattr(common, "search", search)
+
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_search", {"query": "anything"})
+
+    _says_the_installation_went_away(_text(result))
+    assert f"SearchModeUnavailable: {written}" in _text(result), _text(result)
 
 
 @pytest.mark.anyio
@@ -85,17 +104,20 @@ async def test_the_interpreter_prefix_removed_is_reported_the_same_way(
 
 
 @pytest.mark.anyio
-async def test_with_the_installation_in_place_the_error_reaches_the_agent_unchanged(
+async def test_with_the_installation_in_place_the_error_is_left_to_the_sdk(
         search_fails_like_the_removed_certifi):
     # Any other OSError (a real certificate problem, a full disk) is not ours
-    # to reinterpret: the agent gets it as it was.
+    # to reinterpret: it is not text griot wrote, so it is a crash, and the
+    # SDK masks it as it masks any (mcp >= 2.2). The call log keeps it whole.
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_search", {"query": "anything"})
 
     assert result.is_error is True
     text = _text(result)
-    assert CERT_ERROR in text, text
     assert "removed or replaced" not in text.lower(), text
+    assert CERT_ERROR not in text, text
+    [call] = [c for c in logdb.read_tool_calls(common.LOG_DIR, days=1) if c["tool"] == "griot_search"]
+    assert call["error"] == f"OSError: {CERT_ERROR}"
 
 
 @pytest.mark.anyio
@@ -171,3 +193,5 @@ async def test_the_failed_call_is_recorded_with_the_cause(package_removed, searc
     [call] = [c for c in logdb.read_tool_calls(common.LOG_DIR, days=1) if c["tool"] == "griot_search"]
     assert not call["ok"]
     assert "removed or replaced" in call["error"], call["error"]
+    # The agent was shown only the class; the row keeps what it said.
+    assert f"OSError: {CERT_ERROR}" in call["error"], call["error"]
