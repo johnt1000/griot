@@ -51,6 +51,7 @@ TESTS_MAY_REACH = {
         "_progress": _STATE,
         "_progress_clock": _STATE,
         "_progress_chunks": _STATE,
+        "_said_stale_notes": _STATE,
         "_http_post": _SEAM,
         "_new_http_session": _SEAM,
         "_drop_http_session": _SEAM,
@@ -128,6 +129,8 @@ TESTS_MAY_REACH = {
         "_save": _HELPER,
         "_unlike_note": _HELPER,
         "_unlike_the_check": _HELPER,
+        "_refused_unreadable": _SEAM,
+        "_answer": _SEAM,
     },
     "harnesses": {
         "_griot_command": _SEAM,
@@ -137,6 +140,7 @@ TESTS_MAY_REACH = {
         "_which": _SEAM,
         "_write_settings": _SEAM,
         "_summary": _HELPER,
+        "_registration_lines": _HELPER,
         "_write_file": _HELPER,
     },
     "index_branches": {
@@ -204,6 +208,8 @@ TESTS_MAY_REACH = {
     "quality_check": {
         "_open_shard_for_sampling": _SEAM,
         "_matches": _HELPER,
+        "_history_targets": _HELPER,
+        "_NotMeasurable": _HELPER,
     },
     "repos": {
         "_load": _STATE,

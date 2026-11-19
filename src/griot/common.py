@@ -568,6 +568,45 @@ def unreadable_cause(error: BaseException) -> str:
     return "corrupted JSON"
 
 
+# What one of griot's own JSON files raises when it is there and cannot be
+# used, besides OSError: unreadable_cause() classifies each. Not ValueError
+# as a whole, which is also how the operations on these files refuse their
+# arguments ("already in", an index out of range): those are not the file's
+# fault, and must not be said as if it were.
+UNREADABLE_JSON = (json.JSONDecodeError, UnicodeDecodeError, WrongShape)
+
+# What registers the repositories again once an unreadable repos.json was
+# deleted, and what registers the first one.
+REGISTER_COMMAND = "griot repos add <path>"
+
+
+def repos_unreadable_detail(cause) -> str:
+    """What happened to repos.json, without the command: `griot doctor`
+    puts this in its detail column and REGISTER_COMMAND in its fix, so the
+    two read as repos_unreadable_sentence() does. `cause` is the exception
+    or its already classified text."""
+    if isinstance(cause, BaseException):
+        cause = unreadable_cause(cause)
+    return f"{REPOS_JSON_PATH} could not be read ({cause}). Fix it, or delete it and register again"
+
+
+def repos_unreadable_sentence(cause, *, before_command: str = "\n  ") -> str:
+    """The one wording for a repos.json that is there and cannot be used,
+    on every surface that reads it (`griot repos`, the indexers, doctor,
+    stats, quality-check, the MCP tools, `griot assist install`): the file,
+    why, and the command last. Here and not in repos.py because common and
+    harnesses, which may not import repos, say it too. `before_command` is
+    a line break so the command stands on a line of its own, a space inside
+    a one-line item."""
+    return f"{repos_unreadable_detail(cause)}:{before_command}{REGISTER_COMMAND}"
+
+
+def no_repository_sentence() -> str:
+    """The one wording for a repos.json that is not there: `griot repos
+    list`, `griot repos remove` and the indexers say it."""
+    return f"No repository registered in {REPOS_JSON_PATH}.\n  {REGISTER_COMMAND}"
+
+
 def refuse_without_terminal(what: str, command: str) -> int:
     """The refusal of a command that asks a person something, when nobody
     can be asked. `what` completes "Error: ... and there is no terminal to
@@ -1102,6 +1141,19 @@ def load_repos() -> list[str]:
     if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
         raise WrongShape("not a list of directory paths")
     return paths
+
+
+def load_repos_or_say() -> list[str] | None:
+    """load_repos() for an indexer: the paths, or None after the sentence
+    that says why there are none was printed on stderr (the caller exits 1).
+    One helper, so the five indexers cannot come to word it five ways."""
+    try:
+        return load_repos()
+    except FileNotFoundError:
+        print(f"Error: {no_repository_sentence()}", file=sys.stderr)
+    except (OSError, *UNREADABLE_JSON) as e:
+        print(f"Error: {repos_unreadable_sentence(e)}", file=sys.stderr)
+    return None
 
 
 # griot doesn't depend on LiteLLM/Docker at any point — indexing and
@@ -4108,6 +4160,25 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         release_lock()
 
 
+# The stale-point notes already said in this run of `griot index all` (see
+# prune_orphans and notes_said_once); None outside one, where each is said.
+_said_stale_notes: set[tuple[str, str]] | None = None
+
+
+@contextlib.contextmanager
+def notes_said_once():
+    """Within it, a stale-point note for the same repository and reason is
+    said once: `griot index all` runs every source in one process, and the
+    reason (repos.json, the registration) is the same for each, so the first
+    source named stands for the rest. Outside it, every run says its own."""
+    global _said_stale_notes
+    _said_stale_notes = set()
+    try:
+        yield
+    finally:
+        _said_stale_notes = None
+
+
 def _registration(repo_path) -> tuple[str | None, str | None]:
     """(name, None) when repo_path is registered under a name that belongs to
     it alone, otherwise (None, why). The name is the registered entry's own
@@ -4116,19 +4187,21 @@ def _registration(repo_path) -> tuple[str | None, str | None]:
     the same directory, so one registered through a symlink still counts."""
     try:
         entries = [Path(p) for p in load_repos()]
-    except (OSError, ValueError):
-        return None, "repos.json could not be read"
+    except (OSError, ValueError) as e:
+        # The sentence every other surface says, command last: the caller
+        # does not end it with a period.
+        return None, repos_unreadable_sentence(e)
     resolved = Path(repo_path).resolve()
     mine = [entry for entry in entries if entry.resolve() == resolved]
     if not mine:
-        return None, "it is not registered in repos.json"
+        return None, "it is not registered in repos.json."
     if len(mine) > 1:
         # By a symlink and by its real path, or the same line twice: each
         # entry indexes under its own name, so no single name stands for it.
-        return None, "that directory is registered more than once"
+        return None, "that directory is registered more than once."
     name = mine[0].name
     if len([entry for entry in entries if entry.name == name]) != 1:
-        return None, f"more than one registered repository is named '{name}'"
+        return None, f"more than one registered repository is named '{name}'."
     return name, None
 
 
@@ -4255,7 +4328,12 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             continue
         name, why_not = _registration(path)
         if name is None:
-            progress_note(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.", silenceable=False)
+            said = (str(Path(path).resolve()), why_not)
+            if _said_stale_notes is None or said not in _said_stale_notes:
+                if _said_stale_notes is not None:
+                    _said_stale_notes.add(said)  # see notes_said_once
+                progress_note(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}",
+                              silenceable=False)
         elif produced.get(name) and name not in incomplete and name not in names:
             names.append(name)
     if not names:

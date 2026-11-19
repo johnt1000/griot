@@ -272,7 +272,7 @@ def test_callers_that_pass_no_state_still_get_a_report():
 
 SELF = {"sampled": 10, "passed": 9, "failed": 1, "failures": [], "avg_score": 0.9}
 EMPTY_STATE = {"last_query_at": None, "last_index_change_at": None, "last_quality_check": None,
-               "last_golden_check": None, "golden_set": None, "golden_set_error": None}
+               "last_golden_check": None, "golden_set": None, "golden_set_error": None, "repos_error": None}
 
 
 def _write_golden_set(text: str) -> None:

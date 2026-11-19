@@ -153,8 +153,8 @@ async def test_an_unreadable_repos_json_reads_the_same_in_mcp_and_doctor(tmp_pat
     assert result.is_error
     assert sentence in result.content[0].text
     assert "missing" not in result.content[0].text
-    assert check["detail"] == f"{common.REPOS_JSON_PATH} could not be read (corrupted JSON)"
-    assert check["fix"] == f"griot repos add <path>   # after deleting {common.REPOS_JSON_PATH}, or fix it instead"
+    # The two parts of the same sentence, word for word.
+    assert f"{check['detail']}:\n  {check['fix']}" == sentence
 
 
 def test_an_unreadable_cause_is_classified(tmp_path):
@@ -608,7 +608,7 @@ async def test_a_repos_json_of_the_wrong_shape_reads_the_same_on_every_surface(p
     assert result.is_error
     assert _repos_sentence() in result.content[0].text
     check = doctor.check_repositories(common)
-    assert check["detail"] == f"{common.REPOS_JSON_PATH} could not be read (not a list of directory paths)"
+    assert f"{check['detail']}:\n  {check['fix']}" == _repos_sentence()
 
 
 def test_one_required_result_is_singular(capsys):
@@ -765,14 +765,31 @@ async def test_the_mcp_add_and_remove_of_a_wrong_shape_are_the_one_sentence(case
 
 
 @pytest.mark.parametrize("cases", GOLDEN_SHAPES)
-def test_the_quality_check_keeps_its_numbered_reason(cases):
-    """`griot quality-check` runs check_cases on the file as written: its
-    reason names the case at fault, and stays that precise."""
+def test_the_quality_check_calls_a_file_of_another_shape_what_every_reader_calls_it(cases):
+    """A file `golden-set remove` cannot read either is not answered with a
+    command to remove one case: check_cases says the shape, as list does."""
     _write_cases(cases)
 
-    with pytest.raises(ValueError) as raised:
+    with pytest.raises(common.WrongShape):
         golden_set.check_cases(golden_set.list_cases())
-    assert not isinstance(raised.value, common.WrongShape)
+
+
+@pytest.mark.parametrize("case", [
+    {"must_include": [{"repo": "alpha"}]},
+    {"query": " ", "must_include": [{"repo": "alpha"}]},
+    {"query": "q", "must_include": []},
+    {"query": "q", "must_include": [{"repo": "alpha"}], "limit": 0},
+    {"query": "q", "must_include": [{"repo": "alpha"}], "mode": "semantic"},
+])
+def test_a_case_the_quality_check_names_is_one_golden_set_remove_can_remove(case):
+    """The command the refusal ends with works: the file reads for remove."""
+    _write_cases([CASES[0], case])
+
+    with pytest.raises(golden_set.CaseError) as raised:
+        golden_set.check_cases(golden_set.list_cases())
+    assert raised.value.number == 2
+    assert golden_set.unrunnable_sentence(raised.value).endswith("\n  griot golden-set remove 2")
+    assert golden_set.remove_case(2)["must_include"] == case["must_include"]
 
 
 def test_the_catch_up_command_names_each_repository_quoted():

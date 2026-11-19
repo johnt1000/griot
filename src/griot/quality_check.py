@@ -386,8 +386,8 @@ def _history_targets(name: str | None) -> list[tuple[str, Path]]:
     except FileNotFoundError:
         registered = []
     except (OSError, ValueError) as e:
-        raise _NotMeasurable(f"{common.REPOS_JSON_PATH} cannot be read ({e}). Fix the file, or list what griot "
-                             f"sees:\n  `griot repos list`") from None
+        # Not "see `griot repos list`": it fails on the same file.
+        raise _NotMeasurable(common.repos_unreadable_sentence(e)) from None
     if name is None:
         if not registered:
             raise _NotMeasurable("No repository is registered, so there is no history to ask questions from. "
@@ -613,12 +613,17 @@ def main(argv=None):
     # missing key, after the self-check had been paid for. None = no file.
     golden_set = None
     if not args.skip_golden_set and common.GOLDEN_SET_PATH.exists():
+        # Errors, so stderr in either mode. A file that cannot be read is
+        # said as every other surface says it; a case at fault is named,
+        # with the command that removes it, as griot_quality_check says it.
         try:
             golden_set = golden_set_mod.list_cases()
             golden_set_mod.check_cases(golden_set)
-        except (OSError, ValueError) as e:
-            print(f"Error: {common.GOLDEN_SET_PATH} cannot be run: {e}. Fix the file, or remove the case with "
-                  f"`griot golden-set remove`.", file=sys.stderr if args.json else sys.stdout)
+        except (OSError, *golden_set_mod.UNREADABLE) as e:
+            print(f"Error: {golden_set_mod.unreadable_sentence(e)}", file=sys.stderr)
+            raise SystemExit(1)
+        except golden_set_mod.CaseError as e:
+            print(f"Error: {golden_set_mod.unrunnable_sentence(e)}", file=sys.stderr)
             raise SystemExit(1)
 
     if not args.json:

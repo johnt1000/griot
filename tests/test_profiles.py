@@ -102,8 +102,9 @@ def test_profiles_list_checks_each_paid_profiles_own_credential(monkeypatch, cap
     out = capsys.readouterr().out
     gemini_line = next(l for l in out.splitlines() if l.strip().startswith("gemini"))
     openai_line = next(l for l in out.splitlines() if l.strip().startswith("openai-small"))
-    assert "credential GEMINI_TOKEN not set" in gemini_line
-    assert "configured" in openai_line
+    # Worded as `griot doctor` words the same fact.
+    assert "its credential (GEMINI_TOKEN) is not configured" in gemini_line
+    assert openai_line.rstrip().endswith("configured") and "not configured" not in openai_line
 
 
 def test_profiles_list_suggests_griot_auth_set_for_missing_credential(monkeypatch, capsys):
@@ -119,9 +120,11 @@ def test_profiles_list_suggests_griot_auth_set_for_missing_credential(monkeypatc
     out = capsys.readouterr().out
     gemini_line = next(l for l in out.splitlines() if l.strip().startswith("gemini"))
     openai_line = next(l for l in out.splitlines() if l.strip().startswith("openai-small"))
-    assert "not set" in gemini_line and "not set" in openai_line
+    assert "not configured" in gemini_line and "not configured" in openai_line
     lines = out.splitlines()
-    assert "  griot auth set gemini" in lines and "  griot auth set openai" in lines
+    # The commands last, each naming the profiles it unlocks.
+    assert lines[-2:] == ["  griot auth set gemini   # for gemini",
+                          "  griot auth set openai   # for openai-small"]
 
 
 # --- --profile override -----------------------------------------------------

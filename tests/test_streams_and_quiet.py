@@ -405,7 +405,6 @@ def test_no_color_in_a_subprocess_leaves_no_bar_and_no_escape_codes(tmp_path):
     (["auth", "set", "nonesuch"], "Error: unknown provider 'nonesuch'"),
     (["auth", "remove", "nonesuch"], "Error: unknown provider 'nonesuch'"),
     (["repos", "add", "/Users/you/not-here"], "doesn't exist or isn't a directory"),
-    (["repos", "remove", "/Users/you/not-here"], "doesn't exist or is empty"),
     (["profiles", "use", "nonesuch"], "Error: unknown profile 'nonesuch'"),
     (["profiles", "delete", "nonesuch"], "Error: unknown profile 'nonesuch'"),
     (["--profile"], "Error: --profile requires a value. Example:"),
@@ -424,7 +423,8 @@ def test_incorrect_use_exits_two_with_an_error_line(tmp_path, argv, message):
 def test_the_refusal_ends_on_the_command_that_helps(tmp_path):
     assert _run(tmp_path, "auth", "set", "nonesuch").stderr.splitlines()[-1] == "  griot auth list"
     assert _run(tmp_path, "auth", "remove", "nonesuch").stderr.splitlines()[-1] == "  griot auth list"
-    assert _run(tmp_path, "repos", "remove", "/Users/you/x").stderr.splitlines()[-1] == "  griot repos list"
+    # Nothing registered: a conflict with the list (exit 1), answered as `griot repos list` answers it.
+    assert _run(tmp_path, "repos", "remove", "/Users/you/x").stderr.splitlines()[-1] == "  griot repos add <path>"
     assert _run(tmp_path, "profiles", "use", "nonesuch").stderr.splitlines()[-1] == "  griot profiles list"
     assert _run(tmp_path, "profiles", "delete", "nonesuch").stderr.splitlines()[-1] == "  griot profiles list"
 

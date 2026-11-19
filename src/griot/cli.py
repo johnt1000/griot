@@ -246,6 +246,13 @@ def _cmd_index(args) -> int:
     # up front so that what is still to come shows as pending.
     common.progress_begin(sources)
 
+    with common.notes_said_once():
+        return _run_index_all(sources, rest)
+
+
+def _run_index_all(sources, rest) -> int:
+    from griot import common
+
     # Stops at the FIRST error, saying which source failed — continuing to
     # index with a broken source would mask the problem, and the next run
     # would just re-pay the cost of discovering the error.

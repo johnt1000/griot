@@ -85,7 +85,7 @@ def _load() -> list[dict]:
 # What a golden-set file that cannot be read raises, besides OSError:
 # unreadable_sentence() says it. Not ValueError as a whole, which is also how
 # add_case and remove_case refuse their arguments (an index out of range).
-UNREADABLE = (json.JSONDecodeError, UnicodeDecodeError, common.WrongShape)
+UNREADABLE = common.UNREADABLE_JSON
 
 
 def _save(cases: list) -> None:
@@ -253,8 +253,27 @@ def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
     return resolved, None
 
 
+class CaseError(ValueError):
+    """One case of a file that reads fine cannot be run: `number` is its
+    number in `golden-set list`, so the person can be told which to fix or
+    remove (unrunnable_sentence)."""
+
+    def __init__(self, number: int, text: str):
+        super().__init__(text)
+        self.number = number
+
+
+def unrunnable_sentence(error: CaseError) -> str:
+    """The one wording for a golden set with a case that cannot be run, on
+    `griot quality-check` and griot_quality_check: the file, the case at
+    fault, and the command that removes it last."""
+    return (f"{common.GOLDEN_SET_PATH} cannot be run: {error}. Fix that case, or remove it:\n"
+            f"  griot golden-set remove {error.number}")
+
+
 def check_cases(cases) -> None:
-    """Raises ValueError when what the file holds cannot be run as cases.
+    """Raises CaseError when a case cannot be run, common.WrongShape when
+    the file holds no list of cases at all.
 
     add_case() guards what it writes, but the file is also edited by hand
     and written by cmd_suggest(): the point where the cases are RUN is the
@@ -264,24 +283,24 @@ def check_cases(cases) -> None:
 
     An entry that constrains nothing is not refused here: run_golden_set()
     fails that case by name, which closes the gate and still runs the rest."""
-    if not isinstance(cases, list):
-        raise ValueError("it must hold a list of cases")
+    # The shape first, as every other reader checks it: a file that is not a
+    # list of cases with a must_include list cannot have one case removed
+    # either (`golden-set remove` reads it through checked_cases), so it is
+    # said as unreadable, never with a remove command that would fail.
+    checked_cases(cases)
     for number, case in enumerate(cases, start=1):
-        if not isinstance(case, dict):
-            raise ValueError(f"case {number} is not an object with `query` and `must_include`")
         if not isinstance(case.get("query"), str) or not case["query"].strip():
-            raise ValueError(f"case {number} has no `query` text")
-        entries = case.get("must_include")
-        if not isinstance(entries, list) or not entries or not all(isinstance(entry, dict) for entry in entries):
-            raise ValueError(f"case {number} needs `must_include`: a list of at least one object")
+            raise CaseError(number, f"case {number} has no `query` text")
+        if not case["must_include"]:
+            raise CaseError(number, f"case {number} needs `must_include`: a list of at least one object")
         limit = case.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise ValueError(f"case {number} has a `limit` that is not a whole number of at least 1")
+            raise CaseError(number, f"case {number} has a `limit` that is not a whole number of at least 1")
         # Present means it was written on purpose: a null or a misspelling
         # is refused rather than read as "vector", which would run the case
         # in a mode nobody chose.
         if "mode" in case and (problem := _mode_problem(case["mode"])):
-            raise ValueError(f"case {number}: {problem}")
+            raise CaseError(number, f"case {number}: {problem}")
 
 
 def add_case(query: str, must_include: list[dict], limit: int = 5, mode: str = "vector") -> dict:
@@ -731,7 +750,7 @@ def cmd_remove(index: int) -> int:
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    query = removed.get("query", "")
+    query = str(removed.get("query", ""))  # a hand-edited case may hold any value there
     print(f"Removed: {query[:80]}")
     return 0
 
@@ -1191,8 +1210,9 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
     still keeps."""
     if rows is None:
         rows = logdb.read_since(common.LOG_DIR, "queries", days=common.LOG_RETENTION_DAYS)
-    covered = {query_key(case["query"]) for case in _load()
-               if isinstance(case, dict) and isinstance(case.get("query"), str)}
+    # _load() guarantees dicts; a case with no `query` text is still
+    # possible (checked_cases leaves that to check_cases, which names it).
+    covered = {query_key(case["query"]) for case in _load() if isinstance(case.get("query"), str)}
     rejected = _load_rejected()
     omitted = 0
     groups: dict[str, list[dict]] = {}

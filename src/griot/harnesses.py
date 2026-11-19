@@ -1428,18 +1428,27 @@ def _summary(done: list[dict], scope: str, copies: list[tuple[str, str]] = ()) -
         print(f"  griot's own configuration could not be read ({e}). `griot config list` shows the settings; "
               f"nothing more can be said about what to index until that is fixed.")
         return
-    try:
-        registered = common.load_repos()
-    except (OSError, ValueError):
-        registered = []
-    if registered:
-        print(f"  {len(registered)} repositor{'y is' if len(registered) == 1 else 'ies are'} registered: "
-              f"`griot index all` brings the index up to date (`--dry-run` first says what it would do).")
-    else:
-        print("  Nothing is registered to index yet: `griot repos add <path>` for each repository, then "
-              "`griot index all`.")
+    for line in _registration_lines(common):
+        print(line)
     print(f"  Active embedding profile: {common.ACTIVE_PROFILE_NAME} (`griot profiles list` shows the others, "
           f"`griot profiles use <name>` changes it).")
+
+
+def _registration_lines(common) -> list[str]:
+    """What the install summary says about repos.json. A file that is there
+    and cannot be used is said with the sentence every other surface says,
+    never as "nothing registered", which it is not; `common` is passed in
+    because this module imports it only where it is needed."""
+    try:
+        registered = common.load_repos()
+    except FileNotFoundError:
+        registered = []
+    except (OSError, ValueError) as e:
+        return [f"  {common.repos_unreadable_sentence(e)}"]
+    if registered:
+        return [f"  {len(registered)} repositor{'y is' if len(registered) == 1 else 'ies are'} registered: "
+                f"`griot index all` brings the index up to date (`--dry-run` first says what it would do)."]
+    return ["  Nothing is registered to index yet. For each repository:", f"    {common.REGISTER_COMMAND}"]
 
 
 def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, mcp: str = "ask",

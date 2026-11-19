@@ -1942,8 +1942,39 @@ def _repos_add_question(path: str) -> str:
             f"embedding API. You can undo this by removing the repo from the list.")
 
 
+def _repos_refusal(check, path: str) -> str | None:
+    """What is cheap to check before anyone is asked (repos.check_add or
+    repos.check_remove): None when the call can go on, the reason when the
+    argument is refused. A repos.json that cannot be used raises the
+    sentence griot_repos_list says: it is not the argument's fault, and an
+    agent told "changed: false, <parser text>" would rewrite its path."""
+    try:
+        check(path)
+    except (OSError, *repos.UNREADABLE) as e:
+        raise UnreadableFile(repos.unreadable_sentence(e)) from e
+    except repos.NothingRegistered as e:
+        return str(e)  # griot's own two lines, nothing of the agent's in them
+    except ValueError as e:
+        # One line that quotes the agent's path: nothing in it may start a
+        # line of its own or drive a terminal (see _shown).
+        return common.printable(str(e))
+    return None
+
+
+def _ask_unless_refused(ctx: Context, check, path: str, question: str, *, confirm: bool, human_required: bool):
+    """The resolver of a repos tool: nobody is asked about a call the check
+    refuses; the tool body runs the check again and says why."""
+    try:
+        if _repos_refusal(check, path) is not None:
+            return _NO_CHANNEL
+    except UnreadableFile:
+        return _NO_CHANNEL
+    return _resolve_ask(ctx, question, confirm=confirm, human_required=human_required)
+
+
 def _ask_repos_add(ctx: Context, path: str, confirm: bool = False):
-    return _resolve_ask(ctx, _repos_add_question(path), confirm=confirm, human_required=True)
+    return _ask_unless_refused(ctx, repos.check_add, path, _repos_add_question(path), confirm=confirm,
+                               human_required=True)
 
 
 @_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
@@ -1974,6 +2005,8 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
     AGENT supplies, so it guards against mistakes and not at all against a
     compromised one. Widening this boundary takes a person: a real
     elicitation, or the terminal."""
+    if (refused := _repos_refusal(repos.check_add, path)) is not None:
+        return {"changed": False, "message": refused}
     ok, refusal = await _confirmed(ctx, _repos_add_question(path),
                                    confirm=confirm, cli_hint=_cli_command("repos", "add", positional=[path]),
                                    human_required=True, answer=answer)
@@ -1981,7 +2014,10 @@ async def griot_repos_add(path: str, confirm: bool = False, ctx: Context = None,
         return {"changed": False, "message": refusal}
     try:
         resolved = repos.add_repo(path)
-    except (ValueError, OSError) as e:
+    except (OSError, *repos.UNREADABLE) as e:
+        # The file changed since the check above.
+        raise UnreadableFile(repos.unreadable_sentence(e)) from e
+    except ValueError as e:
         # add_repo() rejects an invalid or already-registered path with a
         # message written for a human — pass it through rather than raising,
         # so the agent gets the reason instead of a stack trace.
@@ -1995,7 +2031,8 @@ def _repos_remove_question(path: str) -> str:
 
 
 def _ask_repos_remove(ctx: Context, path: str, confirm: bool = False):
-    return _resolve_ask(ctx, _repos_remove_question(path), confirm=confirm, human_required=False)
+    return _ask_unless_refused(ctx, repos.check_remove, path, _repos_remove_question(path), confirm=confirm,
+                               human_required=False)
 
 
 @_tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
@@ -2008,6 +2045,8 @@ async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = No
     Only unregisters it: nothing already indexed is deleted, and the files
     on disk are untouched. Requires confirmation like every state change
     here."""
+    if (refused := _repos_refusal(repos.check_remove, path)) is not None:
+        return {"changed": False, "message": refused}
     ok, refusal = await _confirmed(ctx, _repos_remove_question(path),
                                    confirm=confirm, cli_hint=_cli_command("repos", "remove", positional=[path]),
                                    answer=answer)
@@ -2015,7 +2054,9 @@ async def griot_repos_remove(path: str, confirm: bool = False, ctx: Context = No
         return {"changed": False, "message": refusal}
     try:
         resolved = repos.remove_repo(path)
-    except (ValueError, OSError) as e:
+    except (OSError, *repos.UNREADABLE) as e:
+        raise UnreadableFile(repos.unreadable_sentence(e)) from e
+    except ValueError as e:
         return {"changed": False, "message": str(e)}
     return {"changed": True, "message": f"Unregistered {resolved}"}
 
@@ -2287,7 +2328,7 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     limit = min(limit, SEARCH_LIMIT_MAX)
     try:
         case = golden_set.add_case(query=query, must_include=must_include, limit=limit, mode=mode)
-    except golden_set.UNREADABLE as e:
+    except (OSError, *golden_set.UNREADABLE) as e:
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
         return {"changed": False, "message": str(e)}
@@ -2325,7 +2366,7 @@ async def griot_golden_set_remove(index: int, confirm: bool = False,
         return {"changed": False, "message": refusal}
     try:
         case = golden_set.remove_case(index)
-    except golden_set.UNREADABLE as e:
+    except (OSError, *golden_set.UNREADABLE) as e:
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
         return {"changed": False, "message": str(e)}
@@ -2788,8 +2829,12 @@ def _curated_cases_to_run() -> tuple[list[dict] | None, str | None]:
     try:
         cases = golden_set.list_cases()
         golden_set.check_cases(cases)
-    except (OSError, ValueError) as e:
+    except (OSError, *golden_set.UNREADABLE) as e:
         raise _corrupt_golden_set(e) from e
+    except golden_set.CaseError as e:
+        # A file that reads fine with one case at fault is not "corrupted
+        # JSON": the case is named, as `griot quality-check` names it.
+        raise UnreadableFile(golden_set.unrunnable_sentence(e)) from e
     if not cases:
         return None, ("no curated case exists yet, so nothing has measured whether this index answers a real "
                       "question. griot_golden_set_suggest proposes candidates from a repository's git log, and "

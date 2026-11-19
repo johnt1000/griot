@@ -60,24 +60,17 @@ def list_result() -> dict:
     return {"repos": entries, "count": len(entries)}
 
 
-# What registers the repositories again once an unreadable repos.json was deleted.
-_REGISTER = "griot repos add <path>"
+# The one wording for a repos.json that is there and cannot be used, and
+# what it raises then besides OSError; both live in common, which the
+# indexers and harnesses say it from too.
+unreadable_sentence = common.repos_unreadable_sentence
+UNREADABLE = common.UNREADABLE_JSON
 
 
-def unreadable_sentence(cause) -> str:
-    """The one wording for a repos.json that could not be read, on every
-    surface that reads it (`griot repos list`, griot_repos_list, `griot
-    doctor`): the file, why (common.unreadable_cause), and the command last.
-    `cause` is the exception or its already classified text."""
-    if isinstance(cause, BaseException):
-        cause = common.unreadable_cause(cause)
-    return (f"{common.REPOS_JSON_PATH} could not be read ({cause}). Fix it, or delete it and register again:\n"
-            f"  {_REGISTER}")
-
-
-def unreadable_fix() -> str:
-    """The fix `griot doctor` gives for the same file, in its fix column."""
-    return f"{_REGISTER}   # after deleting {common.REPOS_JSON_PATH}, or fix it instead"
+class NothingRegistered(ValueError):
+    """There is no repository to remove: a conflict with the list, not a
+    wrong request (exit 1). Its text is common.no_repository_sentence(),
+    which already ends with the command."""
 
 
 # How a registered path that is no longer a directory is named on the CLI
@@ -131,7 +124,7 @@ def check_remove(path: str) -> str:
     resolved = str(Path(path).resolve())
     paths = _load()
     if not paths:
-        raise UsageError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
+        raise NothingRegistered(common.no_repository_sentence())
     if resolved not in paths:
         raise UsageError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
     return resolved
@@ -139,8 +132,9 @@ def check_remove(path: str) -> str:
 
 def remove_repo(path: str) -> str:
     """Write half of repo_status() for removing one repo.
-    Returns the resolved path that was removed. Raises ValueError on a
-    missing repos.json or an unregistered path."""
+    Returns the resolved path that was removed. Raises NothingRegistered
+    on a missing or empty repos.json, ValueError on an unregistered path,
+    OSError or one of UNREADABLE on a file that cannot be used."""
     resolved = check_remove(path)
     paths = _load()
     paths.remove(resolved)
@@ -158,8 +152,19 @@ def _refuse(error: ValueError, next_command: str) -> int:
     a conflict with the list or a list that could not be read). The last line
     matches the cause: a path that is not a directory is answered with how to
     add one that is, not with the list."""
+    if isinstance(error, NothingRegistered):
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     print(f"Error: {error}\n  {next_command}", file=sys.stderr)
     return 2 if isinstance(error, UsageError) else 1
+
+
+def _refuse_unreadable(error: Exception) -> int:
+    """A repos.json that is there and cannot be used: the sentence every
+    surface says, never the parser's text, and never "see `griot repos
+    list`", which fails on the same file."""
+    print(f"Error: {unreadable_sentence(error)}", file=sys.stderr)
+    return 1
 
 
 def _next_after_refused_add(error: ValueError) -> str:
@@ -169,6 +174,8 @@ def _next_after_refused_add(error: ValueError) -> str:
 def cmd_add(path: str) -> int:
     try:
         resolved = add_repo(path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _next_after_refused_add(e))
     print(f"Added: {resolved}")
@@ -200,7 +207,7 @@ def cmd_list(as_json: bool = False) -> int:
         return 0
     statuses = result["repos"]
     if not statuses:
-        print(f"No repository registered in {common.REPOS_JSON_PATH}.\n  {_REGISTER}")
+        print(common.no_repository_sentence())
         return 0
 
     for status in statuses:
@@ -228,6 +235,8 @@ def remove_command(path: str) -> str:
 def cmd_remove(path: str) -> int:
     try:
         resolved = remove_repo(path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _LIST)
     print(f"Removed: {resolved}")
@@ -268,6 +277,8 @@ def main(argv=None) -> int:
     adding = args.action == "add"
     try:
         resolved = check_add(args.path) if adding else check_remove(args.path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _next_after_refused_add(e) if adding else _LIST)
     if adding:

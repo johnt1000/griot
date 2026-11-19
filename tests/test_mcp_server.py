@@ -436,6 +436,9 @@ async def test_removing_a_repo_still_allows_the_confirm_fallback(monkeypatch, tm
     abusing it causes annoyance, not exfiltration — so the fallback that
     keeps MCP usable everywhere is appropriate here."""
     monkeypatch.setattr(repos, "remove_repo", lambda p: p)
+    # Registered, so the check made before anyone is asked lets it through.
+    common.secure_mkdir(common.REPOS_JSON_PATH.parent)
+    common.REPOS_JSON_PATH.write_text(json.dumps([str(tmp_path.resolve())]))
 
     result = await mcp_server.griot_repos_remove(str(tmp_path), confirm=True, ctx=_FakeCtx())
 

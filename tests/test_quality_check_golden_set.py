@@ -329,8 +329,10 @@ def test_the_terminal_command_names_the_file_too_instead_of_a_missing_key(index,
         quality_check.main(["--sample-size", "1"])
     assert stop.value.code == 1
     out = capsys.readouterr()
-    assert common.GOLDEN_SET_PATH.name in out.out + out.err and "must_include" in out.out + out.err
-    assert "case 1" in out.out + out.err
+    # A case with no must_include list cannot be removed alone either (every
+    # reader refuses the file): said as unreadable, as `golden-set list` says it.
+    assert out.out == ""
+    assert out.err == f"Error: {golden_set.unreadable_sentence('not a list of cases, each with must_include')}\n"
     assert "Self-check" not in out.out, "refused before anything is embedded, as the tool does"
     assert index == []
 

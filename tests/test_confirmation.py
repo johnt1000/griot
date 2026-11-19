@@ -161,6 +161,7 @@ MODES = ["legacy", "2026-07-28"]
 async def _remove_via_client(mode, action, tmp_path, monkeypatch, with_callback=True):
     removed = []
     monkeypatch.setattr(repos, "remove_repo", lambda p: removed.append(p) or p)
+    monkeypatch.setattr(repos, "check_remove", lambda p: p)  # passes the check made before asking
 
     async def callback(ctx, params):
         return ElicitResult(action=action, content={})
@@ -210,6 +211,9 @@ def _effects(monkeypatch):
     calls = []
     monkeypatch.setattr(repos, "add_repo", lambda p: calls.append("repos_add") or p)
     monkeypatch.setattr(repos, "remove_repo", lambda p: calls.append("repos_remove") or p)
+    # The paths pass the checks made before anyone is asked.
+    monkeypatch.setattr(repos, "check_add", lambda p: p)
+    monkeypatch.setattr(repos, "check_remove", lambda p: p)
     monkeypatch.setattr(mcp_server.cli, "delete_profile", lambda name, **kw: calls.append("profiles_delete") or "deleted")
     monkeypatch.setattr(mcp_server.golden_set, "remove_case", lambda i: calls.append("golden_set_remove") or {"query": "q"})
     monkeypatch.setattr(mcp_server.golden_set, "add_case",

@@ -46,6 +46,7 @@ class _NoElicitCtx:
 @pytest.mark.parametrize("value", HOSTILE)
 async def test_repos_add_refusal_hint_survives_a_shell(monkeypatch, value):
     monkeypatch.setattr(repos, "add_repo", lambda p: p)
+    monkeypatch.setattr(repos, "check_add", lambda p: p)  # the path passes the check made before asking
     result = await mcp_server.griot_repos_add(value, confirm=False, ctx=_NoElicitCtx())
     hint = _command_in(result["message"])
     assert shlex.split(hint) == ["griot", "repos", "add", "--", value]
