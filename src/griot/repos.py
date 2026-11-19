@@ -146,16 +146,27 @@ _LIST = "griot repos list"
 _ADD = "griot repos add <directory>"
 
 
-def _refuse(error: ValueError, next_command: str) -> int:
-    """The one way a refused repos command ends: the sentence, the next
-    command last, and the exit status by kind (2 for a wrong request, 1 for
-    a conflict with the list or a list that could not be read). The last line
-    matches the cause: a path that is not a directory is answered with how to
-    add one that is, not with the list."""
+def refusal_text(error: ValueError, next_command: str) -> str:
+    """What a refused add or remove says, without "Error: ": the reason and
+    the next command last. Built once for `griot repos` and the MCP tools
+    (griot_repos_add, griot_repos_remove), so the same refusal reads the
+    same on both. NothingRegistered already ends with its command."""
     if isinstance(error, NothingRegistered):
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
-    print(f"Error: {error}\n  {next_command}", file=sys.stderr)
+        return str(error)
+    return f"{error}\n  {next_command}"
+
+
+def next_after_refused(error: ValueError, *, adding: bool) -> str:
+    """The command a refusal ends with: a path that is not a directory is
+    answered with how to add one that is, anything else with the list."""
+    return _next_after_refused_add(error) if adding else _LIST
+
+
+def _refuse(error: ValueError, next_command: str) -> int:
+    """The one way a refused repos command ends: refusal_text() on stderr,
+    and the exit status by kind (2 for a wrong request, 1 for a conflict
+    with the list or a list that could not be read)."""
+    print(f"Error: {refusal_text(error, next_command)}", file=sys.stderr)
     return 2 if isinstance(error, UsageError) else 1
 
 

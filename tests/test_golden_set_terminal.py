@@ -559,7 +559,7 @@ def test_add_at_a_terminal_says_the_file_cannot_be_read_before_searching(tmp_pat
 
     assert code == 1
     assert "Results for" not in out, "the search ran although its result could not be saved"
-    assert "could not be read (not a list of cases, each with must_include)" in out
+    assert "could not be read (not a list of cases)" in out
     assert out.rstrip().splitlines()[-1].strip() == "griot golden-set suggest <repo-path>"
     assert json.loads((tmp_path / "golden.json").read_text()) == {"a": 1}
 

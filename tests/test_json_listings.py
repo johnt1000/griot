@@ -538,13 +538,14 @@ def test_the_operations_skill_reads_the_json_listing_not_a_marker():
     assert text.count("griot repos list") == text.count("griot repos list --json")
 
 
-WRONG_GOLDEN_SETS = [{"a": 1}, {}, 5, None, [1], [{"query": "q"}], [{"query": "q", "must_include": [1]}],
-                     [{"query": "q", "must_include": "a.py"}], [{"query": "q", "must_include": None}],
-                     [{"query": "q", "must_include": {}}]]
+# A file that is not a list of cases. A list of cases where one has no
+# usable must_include is one case's defect, named by quality-check
+# (test_unreadable_files_one_sentence), not a file that cannot be read.
+WRONG_GOLDEN_SETS = [{"a": 1}, {}, 5, None, [1], [None], [[{"query": "q"}]]]
 
 
 def _golden_sentence(before_command="\n  "):
-    return (f"{common.GOLDEN_SET_PATH} could not be read (not a list of cases, each with must_include). Fix it, or "
+    return (f"{common.GOLDEN_SET_PATH} could not be read (not a list of cases). Fix it, or "
             f"delete it and curate again:{before_command}griot golden-set suggest <repo-path>")
 
 
@@ -662,7 +663,7 @@ GOLDEN_SHAPES = [{"a": 1}, ["a"], 5]
 
 
 def _corrupted_sentence():
-    return _golden_sentence().replace("not a list of cases, each with must_include", "corrupted JSON")
+    return _golden_sentence().replace("not a list of cases", "corrupted JSON")
 
 
 @pytest.mark.parametrize("cases", GOLDEN_SHAPES)

@@ -197,7 +197,8 @@ async def test_mcp_repos_add_refuses_an_already_registered_path_without_asking(t
         result = await client.call_tool("griot_repos_add", {"path": str(target)})
     assert result.is_error is False
     assert result.structured_content == {"changed": False,
-                                         "message": f"'{target.resolve()}' is already in {common.REPOS_JSON_PATH}."}
+                                         "message": f"'{target.resolve()}' is already in {common.REPOS_JSON_PATH}."
+                                                    f"\n  griot repos list"}
 
 
 @pytest.mark.anyio
@@ -221,7 +222,8 @@ async def test_mcp_repos_remove_of_an_unregistered_path_is_refused_before_offeri
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_repos_remove", {"path": str(tmp_path)})
     assert result.structured_content == {
-        "changed": False, "message": f"'{tmp_path.resolve()}' not found in {common.REPOS_JSON_PATH}."}
+        "changed": False,
+        "message": f"'{tmp_path.resolve()}' not found in {common.REPOS_JSON_PATH}.\n  griot repos list"}
 
 
 @pytest.mark.anyio
@@ -233,7 +235,14 @@ async def test_mcp_repos_refusal_quoting_the_agent_s_path_is_printable(tmp_path,
         result = await client.call_tool(tool, {"path": str(tmp_path / "a\u2028b\x1b[31m"), "confirm": True})
     message = result.structured_content["message"]
     assert result.structured_content["changed"] is False
-    assert message.isprintable(), repr(message)
+    # The agent's part is one printable line; the line after it is griot's
+    # own command, as the CLI ends the same refusal.
+    reason, command = message.split("\n")
+    assert reason.isprintable(), repr(message)
+    # The path does not exist: add answers with how to add a directory,
+    # remove (the path is not in the list) with the list, as the CLI does.
+    assert command == {"griot_repos_add": "  griot repos add <directory>",
+                       "griot_repos_remove": "  griot repos list"}[tool]
 
 
 # --- the indexers, doctor, stats, quality-check, the MCP allowlist, the install summary ----------------------
@@ -313,7 +322,7 @@ def test_the_install_summary_does_not_call_an_unusable_file_nothing_registered(u
 
 def test_the_install_summary_with_nothing_registered_ends_with_the_command():
     assert harnesses._registration_lines(common) == [
-        "  Nothing is registered to index yet. For each repository:", "    griot repos add <path>"]
+        f"  No repository registered in {common.REPOS_JSON_PATH}.\n  griot repos add <path>"]
 
 
 def test_the_stale_points_note_ends_with_the_sentence_once_per_run(tmp_path, capsys, monkeypatch):
@@ -342,9 +351,9 @@ def test_griot_index_all_says_a_stale_points_note_once_and_a_lone_source_each_ti
 
 GOLDEN_SHAPES = [
     pytest.param({"a": 1}, id="dict"),
-    pytest.param([{"query": "q"}], id="no-must-include"),
+    pytest.param(["q"], id="not-objects"),
 ]
-SHAPE = "not a list of cases, each with must_include"
+SHAPE = "not a list of cases"
 
 
 def _write_golden(content):
@@ -484,3 +493,124 @@ def test_quality_check_cli_says_the_unreadable_sentence_on_stderr(monkeypatch, c
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == f"Error: {_golden_sentence('corrupted JSON')}\n"
+
+
+def test_a_reason_that_ends_with_a_period_is_not_followed_by_another():
+    with pytest.raises(golden_set.CaseError) as raised:
+        golden_set.check_cases([{**RUNNABLE, "mode": "bogus"}])
+    assert golden_set.unrunnable_sentence(raised.value) == (
+        f"{common.GOLDEN_SET_PATH} cannot be run: case 1: `mode` must be one of vector, keyword, hybrid "
+        f"(got 'bogus'). Fix that case, or remove it:\n  griot golden-set remove 1")
+
+
+# --- one case at fault in a list of cases: that case is named, and it can be removed alone ----------------
+
+BROKEN_CASES = [
+    pytest.param({"query": "y"}, id="no-must-include"),
+    pytest.param({"query": "y", "must_include": "oops"}, id="a-string"),
+    pytest.param({"query": "y", "must_include": None}, id="null"),
+    pytest.param({"query": "y", "must_include": 5}, id="a-number"),  # not iterable: no TypeError either
+    pytest.param({"query": "y", "must_include": [1]}, id="not-objects"),
+    pytest.param({"query": "y", "must_include": []}, id="empty"),
+]
+
+
+def _needs_must_include(number):
+    # One wording for the one fact, whatever form the missing list takes.
+    return (f"{common.GOLDEN_SET_PATH} cannot be run: case {number} needs `must_include`: a list of at least one "
+            f"object. Fix that case, or remove it:\n  griot golden-set remove {number}")
+
+
+@pytest.mark.parametrize("broken", BROKEN_CASES)
+def test_a_case_without_a_must_include_list_is_named_not_the_whole_file(broken):
+    with pytest.raises(golden_set.CaseError) as raised:
+        golden_set.check_cases([RUNNABLE, broken])
+    assert raised.value.number == 2
+    assert golden_set.unrunnable_sentence(raised.value) == _needs_must_include(2)
+
+
+@pytest.mark.parametrize("broken", BROKEN_CASES)
+def test_the_quality_check_gate_names_the_case_on_both_surfaces(broken, monkeypatch, capsys):
+    _write_golden([RUNNABLE, broken])
+    with pytest.raises(mcp_server.UnreadableFile) as raised:
+        mcp_server._curated_cases_to_run()
+    assert str(raised.value) == _needs_must_include(2)
+    monkeypatch.setattr(common, "collection_exists", lambda name: True)
+    monkeypatch.setattr(quality_check, "run_self_check",
+                        lambda *a, **k: pytest.fail("the self-check ran before the file was checked"))
+    with pytest.raises(SystemExit):
+        quality_check.main([])
+    assert capsys.readouterr() == ("", f"Error: {_needs_must_include(2)}\n")
+
+
+@pytest.mark.parametrize("broken", BROKEN_CASES)
+def test_a_file_with_one_broken_case_still_lists_and_that_case_can_be_removed(tmp_path, broken):
+    _write_golden([RUNNABLE, broken])
+
+    listed = _run(tmp_path, "golden-set", "list")
+    assert (listed.returncode, listed.stderr) == (0, "")
+    assert "[1] fine" in listed.stdout and "[2] y" in listed.stdout
+    as_json = _run(tmp_path, "golden-set", "list", "--json")
+    assert (as_json.returncode, as_json.stderr) == (0, "")
+    assert json.loads(as_json.stdout)["count"] == 2
+    assert stats.load_state()["golden_set_error"] is None
+    assert stats.load_state()["golden_set"]["cases"] == 2
+
+    removed = _run(tmp_path, "golden-set", "remove", "2", "--yes")
+    assert (removed.returncode, removed.stderr) == (0, "")
+    assert json.loads(common.GOLDEN_SET_PATH.read_text()) == [RUNNABLE]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("broken", BROKEN_CASES)
+async def test_the_mcp_tools_list_a_file_with_one_broken_case_and_remove_that_case(broken):
+    _write_golden([RUNNABLE, broken])
+    async with Client(mcp_server.mcp) as client:
+        listed = await client.call_tool("griot_golden_set_list", {})
+        removed = await client.call_tool("griot_golden_set_remove", {"index": 2, "confirm": True})
+    assert not listed.is_error and listed.structured_content["count"] == 2
+    assert not removed.is_error and removed.structured_content["changed"] is True
+    assert json.loads(common.GOLDEN_SET_PATH.read_text()) == [RUNNABLE]
+
+
+# --- from-history: an error goes to stderr in either mode -------------------------------------------------
+
+@pytest.mark.parametrize("unusable_repos", _repos_params(), indirect=True)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_from_history_says_an_unusable_repos_json_on_stderr(unusable_repos, as_json, capsys):
+    import argparse
+    with pytest.raises(SystemExit) as raised:
+        quality_check.run_from_history(argparse.Namespace(mode="vector", limit=None, json=as_json, repo=None))
+    assert raised.value.code == 1
+    assert capsys.readouterr() == ("", f"Error: {_repos_sentence(unusable_repos)}\n")
+
+
+def test_from_history_with_nothing_registered_says_what_repos_list_says(capsys):
+    with pytest.raises(quality_check._NotMeasurable) as raised:
+        quality_check._history_targets(None)
+    assert str(raised.value) == common.no_repository_sentence()
+
+
+def test_from_history_ends_a_name_it_cannot_find_with_a_command_that_pastes(tmp_path):
+    common.secure_mkdir(common.REPOS_JSON_PATH.parent)
+    common.REPOS_JSON_PATH.write_text(json.dumps([str(tmp_path / "alpha")]))
+    with pytest.raises(quality_check._NotMeasurable) as raised:
+        quality_check._history_targets("nope")
+    assert str(raised.value).splitlines()[-1] == "  griot repos list"
+
+
+# --- griot_repos_remove: a path not in the list ends with what to do, as the CLI does ----------------------
+
+@pytest.mark.anyio
+async def test_mcp_repos_remove_of_a_path_not_registered_ends_with_the_list_command(tmp_path, capsys):
+    common.secure_mkdir(common.REPOS_JSON_PATH.parent)
+    common.REPOS_JSON_PATH.write_text(json.dumps([str(tmp_path / "alpha")]))
+    other = tmp_path / "beta"
+    other.mkdir()
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_repos_remove", {"path": str(other), "confirm": True})
+    assert result.structured_content == {
+        "changed": False,
+        "message": f"'{other.resolve()}' not found in {common.REPOS_JSON_PATH}.\n  griot repos list"}
+    assert repos.main(["remove", str(other), "--yes"]) == 2
+    assert capsys.readouterr().err == f"Error: {result.structured_content['message']}\n"

@@ -1448,7 +1448,9 @@ def _registration_lines(common) -> list[str]:
     if registered:
         return [f"  {len(registered)} repositor{'y is' if len(registered) == 1 else 'ies are'} registered: "
                 f"`griot index all` brings the index up to date (`--dry-run` first says what it would do)."]
-    return ["  Nothing is registered to index yet. For each repository:", f"    {common.REGISTER_COMMAND}"]
+    # The sentence `griot repos list` and the indexers say, laid out as the
+    # unreadable one above.
+    return [f"  {common.no_repository_sentence()}"]
 
 
 def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, mcp: str = "ask",

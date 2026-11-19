@@ -350,15 +350,24 @@ def test_a_fresh_install_has_an_empty_state_and_creates_nothing_but_the_log():
     assert not common.GOLDEN_SET_PATH.exists()
 
 
-@pytest.mark.parametrize("content", ["{not json", "{}", "[1, 2]", '[{"query": "a"}]',
-                                     '[{"query": "a", "must_include": null}]',
-                                     '[{"query": "a", "must_include": ["x"]}]'])
+@pytest.mark.parametrize("content", ["{not json", "{}", "[1, 2]"])
 def test_a_golden_set_file_that_is_there_and_unusable_is_reported_not_taken_for_none(content):
     _write_golden_set(content)
     state = stats.load_state()
     assert state["golden_set"] is None and state["golden_set_error"]
     result = stats.compute_stats([], [], {"points_count": 1, "embed_profile": "any"}, state=state)
     assert any(f"{common.GOLDEN_SET_PATH} could not be read" in item for item in result["attention"])
+
+
+@pytest.mark.parametrize("content", ['[{"query": "a"}]', '[{"query": "a", "must_include": null}]',
+                                     '[{"query": "a", "must_include": ["x"]}]'])
+def test_one_case_without_a_must_include_list_is_not_a_file_that_cannot_be_read(content):
+    """That case is quality-check's to name (by number, with the command
+    that removes it); the file reads, and the other cases still count."""
+    _write_golden_set(content)
+    state = stats.load_state()
+    assert state["golden_set_error"] is None
+    assert state["golden_set"] == {"cases": 1, "unregistered_repos": []}
 
 
 def test_without_a_registry_nothing_is_claimed_about_registration():

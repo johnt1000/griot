@@ -136,17 +136,28 @@ def list_result() -> dict:
 
 
 def checked_cases(cases) -> list[dict]:
-    """`cases` when it is what `add` writes (a list of cases, each with a
-    list of must_include entries); otherwise common.WrongShape. Checked on
-    read, where `griot golden-set list`, griot_golden_set_list and `griot
-    stats` all pass: a file edited by hand into {"a": 1} was listed as one
-    case named "a" with exit 0, and crashed the text listing."""
-    if not isinstance(cases, list) or not all(
-            isinstance(case, dict) and isinstance(case.get("must_include"), list)
-            and all(isinstance(entry, dict) for entry in case["must_include"])
-            for case in cases):
-        raise common.WrongShape("not a list of cases, each with must_include")
+    """`cases` when it is a list of cases (objects); otherwise
+    common.WrongShape. Checked on read, where `griot golden-set list`,
+    griot_golden_set_list and `griot stats` all pass: a file edited by hand
+    into {"a": 1} was listed as one case named "a" with exit 0, and crashed
+    the text listing.
+
+    Only the file's shape: what one case holds is check_cases()'s, which
+    names the case. A case with no usable `must_include` is one defect in a
+    file that is otherwise fine; refusing the whole file for it left only
+    "delete it", throwing away every good case, and made the case that
+    `golden-set remove N` would drop impossible to remove."""
+    if not isinstance(cases, list) or not all(isinstance(case, dict) for case in cases):
+        raise common.WrongShape("not a list of cases")
     return cases
+
+
+def required_entries(case: dict) -> list[dict]:
+    """The must_include entries of `case` that are objects: what a reader
+    that only counts or lists them can use, whatever a hand edit left
+    there. check_cases() refuses the case itself, by number."""
+    entries = case.get("must_include")
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
 
 
 def unreadable_sentence(cause, *, before_command: str = "\n  ") -> str:
@@ -267,7 +278,8 @@ def unrunnable_sentence(error: CaseError) -> str:
     """The one wording for a golden set with a case that cannot be run, on
     `griot quality-check` and griot_quality_check: the file, the case at
     fault, and the command that removes it last."""
-    return (f"{common.GOLDEN_SET_PATH} cannot be run: {error}. Fix that case, or remove it:\n"
+    # A reason may end with its own period (a mode refusal does): one only.
+    return (f"{common.GOLDEN_SET_PATH} cannot be run: {str(error).rstrip('.')}. Fix that case, or remove it:\n"
             f"  griot golden-set remove {error.number}")
 
 
@@ -284,14 +296,17 @@ def check_cases(cases) -> None:
     An entry that constrains nothing is not refused here: run_golden_set()
     fails that case by name, which closes the gate and still runs the rest."""
     # The shape first, as every other reader checks it: a file that is not a
-    # list of cases with a must_include list cannot have one case removed
-    # either (`golden-set remove` reads it through checked_cases), so it is
-    # said as unreadable, never with a remove command that would fail.
+    # list of cases cannot have one case removed either (`golden-set remove`
+    # reads it through checked_cases), so it is said as unreadable, never
+    # with a remove command that would fail. Below it, every defect is one
+    # case's, and `golden-set remove N` can drop that case.
     checked_cases(cases)
     for number, case in enumerate(cases, start=1):
         if not isinstance(case.get("query"), str) or not case["query"].strip():
             raise CaseError(number, f"case {number} has no `query` text")
-        if not case["must_include"]:
+        # Absent, not a list, empty, or not objects: one fact, one wording.
+        entries = case.get("must_include")
+        if not isinstance(entries, list) or not entries or not all(isinstance(e, dict) for e in entries):
             raise CaseError(number, f"case {number} needs `must_include`: a list of at least one object")
         limit = case.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -735,7 +750,7 @@ def cmd_list(as_json: bool = False) -> int:
         preview = query if len(query) <= 80 else query[:80] + "..."
         # The query may have been written by an agent: shown like the mode,
         # so nothing in it can drive the terminal or forge a line.
-        required = len(case["must_include"])
+        required = len(required_entries(case))
         print(f"  [{i}] {common.printable(preview)} ({required} required result{'' if required == 1 else 's'}, "
               f"{common.printable(str(case['mode']))[:20]} search)")
     return 0
@@ -1211,7 +1226,8 @@ def review_candidates(rows: list[dict] | None = None, *, limit: int = 10) -> dic
     if rows is None:
         rows = logdb.read_since(common.LOG_DIR, "queries", days=common.LOG_RETENTION_DAYS)
     # _load() guarantees dicts; a case with no `query` text is still
-    # possible (checked_cases leaves that to check_cases, which names it).
+    # possible (checked_cases leaves what a case holds to check_cases,
+    # which names it).
     covered = {query_key(case["query"]) for case in _load() if isinstance(case.get("query"), str)}
     rejected = _load_rejected()
     omitted = 0

@@ -1955,9 +1955,11 @@ def _repos_refusal(check, path: str) -> str | None:
     except repos.NothingRegistered as e:
         return str(e)  # griot's own two lines, nothing of the agent's in them
     except ValueError as e:
-        # One line that quotes the agent's path: nothing in it may start a
-        # line of its own or drive a terminal (see _shown).
-        return common.printable(str(e))
+        # The reason quotes the agent's path: made printable first, so
+        # nothing in it may start a line of its own or drive a terminal (see
+        # _shown). The next command is griot's own, the one the CLI ends with.
+        reason = ValueError(common.printable(str(e)))
+        return repos.refusal_text(reason, repos.next_after_refused(e, adding=check is repos.check_add))
     return None
 
 

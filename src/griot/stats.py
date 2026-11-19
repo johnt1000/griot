@@ -177,7 +177,9 @@ def _golden_set_state() -> tuple[dict | None, str | None]:
         cases = golden_set.checked_cases(golden_set.list_cases())
     except (OSError, ValueError) as e:
         return None, common.unreadable_cause(e)
-    expected = {exp["repo"] for case in cases for exp in case["must_include"]
+    # One case's defect (no must_include list) is quality-check's to name:
+    # here it only contributes no repository.
+    expected = {exp["repo"] for case in cases for exp in golden_set.required_entries(case)
                 if isinstance(exp.get("repo"), str) and exp["repo"]}
     # Compared with repos.json, not with the index: asking the index costs a
     # scan per name and needs the collection, which another process may

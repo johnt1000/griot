@@ -137,4 +137,7 @@ async def test_no_refusal_carries_a_non_printable_character_from_the_agent(value
     message = out["message"]
     assert all(line.isprintable() for line in message.split("\n")), repr(message)
     assert len(message.splitlines()) == len(message.split("\n"))
-    assert "griot repos add" not in message
+    # No command built from the agent's value; the refusal ends with griot's
+    # own placeholder, as `griot repos add` at a terminal ends it.
+    assert "griot repos add --" not in message
+    assert message.split("\n")[-1] == "  griot repos add <directory>"
