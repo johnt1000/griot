@@ -1,5 +1,6 @@
 import atexit
 import contextlib
+import contextvars
 import functools
 import hashlib
 import http.cookiejar
@@ -593,9 +594,11 @@ def quiet() -> bool:
     return os.environ.get("GRIOT_QUIET", "").strip().lower() in _TRUTHY
 
 
-def no_color() -> bool:
-    """NO_COLOR as no-color.org defines it: present and not empty."""
-    return bool(os.environ.get("NO_COLOR"))
+def no_color(environ=None) -> bool:
+    """NO_COLOR as no-color.org defines it: present and not empty. The one
+    reader (the charts of `griot stats` ask it too); `environ` is for a caller
+    that holds the mapping it wants asked."""
+    return bool((os.environ if environ is None else environ).get("NO_COLOR"))
 
 
 def plain_output(stream=None) -> bool:
@@ -617,8 +620,11 @@ def progress_disabled() -> bool:
 
 
 # While capture_echo() is active, what log_and_print() would show is kept here
-# instead of being written anywhere.
-_captured: list | None = None
+# instead of being written anywhere. A context variable, not a module global:
+# another thread of the same process (an MCP tool running beside this one)
+# must still show its own lines, while a tool body that runs in a copy of the
+# context (asyncio.to_thread) keeps what it captured.
+_captured: contextvars.ContextVar = contextvars.ContextVar("griot_captured_echo", default=None)
 
 
 @contextlib.contextmanager
@@ -629,12 +635,12 @@ def capture_echo():
     without printing it on top of its own result. Unlike redirecting a
     stream, it does not depend on which stream the echo goes to (the MCP
     server's differs) nor on --quiet."""
-    global _captured
-    previous, _captured = _captured, []
+    lines: list = []
+    token = _captured.set(lines)
     try:
-        yield _captured
+        yield lines
     finally:
-        _captured = previous
+        _captured.reset(token)
 
 
 def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable: bool = True) -> None:
@@ -645,8 +651,9 @@ def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable:
     and progress, never something that says data is missing."""
     from tqdm import tqdm as _tqdm
     _ensure_log_handler()
-    if echo and _captured is not None:
-        _captured.append(msg)
+    captured = _captured.get()
+    if echo and captured is not None:
+        captured.append(msg)
         getattr(_logger, level)(msg)
         return
     # [shared config path] echo=False keeps the persistent log entry (audit trail

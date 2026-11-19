@@ -672,7 +672,7 @@ def _chart_width(stream=None, environ=None) -> int | None:
         tty = stream.isatty()
     except (AttributeError, ValueError, OSError):  # a replaced or closed stream
         tty = False
-    if not tty or environ.get("NO_COLOR"):
+    if not tty or common.no_color(environ):
         return None
     columns = shutil.get_terminal_size().columns
     if columns < _MIN_CHART_WIDTH:

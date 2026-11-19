@@ -269,7 +269,8 @@ def _cmd_index(args) -> int:
             print(f"Error: 'griot index {source}' failed (exit {rc}) — pipeline stopped.", file=sys.stderr)
             return rc
         common.progress_source(source, "done")
-    print("=== griot index all: all sources completed ===")
+    # Progress, like the headers above it: a person piping stdout must not see a footer without them.
+    common.progress_note("=== griot index all: all sources completed ===")
     return 0
 
 
@@ -517,6 +518,11 @@ def delete_profile(profile_name: str, *, active_profile_name: str | None = None)
     return collection
 
 
+class ActiveProfileError(UsageError):
+    """The profile asked to delete is the active one: the step that fixes it
+    is a different `profiles use`, not a listing."""
+
+
 def check_delete_profile(profile_name: str, *, active_profile_name: str | None = None) -> str:
     """Read-only half of delete_profile(): the collection it would delete.
     Raises the same ValueError it would for an unknown profile, the active
@@ -533,7 +539,7 @@ def check_delete_profile(profile_name: str, *, active_profile_name: str | None =
             profile_name, common.unknown_profile_reason(profile_name), list(common.EMBED_PROFILES)))
     active = active_profile_name if active_profile_name is not None else common.ACTIVE_PROFILE_NAME
     if profile_name == active:
-        raise UsageError(f"'{profile_name}' is the active profile — switch to a different one first "
+        raise ActiveProfileError(f"'{profile_name}' is the active profile — switch to a different one first "
                          f"(`griot profiles use <name>`), then delete.")
     collection = common.collection_name_for(profile_name)
     if not common.collection_exists(collection):
@@ -552,7 +558,8 @@ def _cmd_profiles_delete(args) -> int:
         # The command that helps goes last. The sentence is shared with the MCP
         # tool, which has its own next step, so it is added here, and only
         # where the sentence does not end on one already.
-        tail = "\n  griot profiles list" if isinstance(e, UsageError) and "\n  griot " not in str(e) else ""
+        tail = ("\n  griot profiles use <name>" if isinstance(e, ActiveProfileError)
+                else "\n  griot profiles list" if isinstance(e, UsageError) and "\n  griot " not in str(e) else "")
         print(f"Error: {e}{tail}", file=sys.stderr)
         # A wrong request (unknown or active profile, nothing to delete) is
         # incorrect use; a run holding the lock is the operation not able to
@@ -666,7 +673,13 @@ def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str,
     """Adds to `parser`'s --help a section naming `flags`, which griot reads
     before that parser sees the command line. The section is laid out by
     argparse itself, on a parser that is only ever formatted, so it reads
-    like the options above it; `parser` parses exactly what it did."""
+    like the options above it; `parser` parses exactly what it did.
+
+    Every parser below `parser` (its subparsers, however deep, and the ones
+    added to it later) gets the section too, with --quiet alone: the help of a
+    leaf command is where a person who just saw a notice looks, and a list of
+    names kept by hand goes stale. Calling it again on a parser replaces its
+    section instead of adding a second one."""
     shown = argparse.ArgumentParser(prog=parser.prog, add_help=False)
     group = shown.add_argument_group("read by griot itself, anywhere on the command line")
     for flag, metavar, help_text in (*flags, QUIET_FLAG):
@@ -676,8 +689,45 @@ def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str,
             group.add_argument(flag, metavar=metavar, help=help_text)
     # Without its usage paragraph, which names only these flags.
     section = shown.format_help().split("\n\n", 1)[1]
-    format_help = parser.format_help
-    parser.format_help = lambda: f"{format_help().rstrip()}\n\n{section}"
+    base = getattr(parser, "_griot_format_help", None) or parser.format_help
+    parser._griot_format_help = base
+    parser.format_help = lambda: f"{base().rstrip()}\n\n{section}"
+    _cover_subparsers(parser)
+
+
+def _cover_subparsers(parser: argparse.ArgumentParser) -> None:
+    """Gives the parsers `parser` has, and will have, the --quiet section."""
+    def cover(child):
+        if not hasattr(child, "_griot_format_help"):
+            show_flags_read_by_griot(child)
+
+    def wrap(action):
+        add_parser = action.add_parser
+
+        def add_covered(*args, **kwargs):
+            child = add_parser(*args, **kwargs)
+            cover(child)
+            return child
+
+        action.add_parser = add_covered
+        for child in action.choices.values():
+            cover(child)
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction) and not getattr(action, "_griot_covered", False):
+            action._griot_covered = True
+            wrap(action)
+    if not getattr(parser, "_griot_covers_new_subparsers", False):
+        parser._griot_covers_new_subparsers = True
+        add_subparsers = parser.add_subparsers
+
+        def add_covered_subparsers(*args, **kwargs):
+            action = add_subparsers(*args, **kwargs)
+            action._griot_covered = True
+            wrap(action)
+            return action
+
+        parser.add_subparsers = add_covered_subparsers
 
 
 def _extract_profile_override(argv: list) -> tuple[list, str | None]:

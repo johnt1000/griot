@@ -402,7 +402,7 @@ def main(argv=None):
         rc = 1
 
     if not all_documents:
-        print("\nNo platform items to index.")
+        common.log_and_print("\nNo platform items to index.")
         if refused and not args.dry_run:
             _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused, **marked)
         return rc

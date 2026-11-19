@@ -144,7 +144,7 @@ def main(argv=None):
                        incomplete=(), force=args.prune)
 
     if not all_documents:
-        print("\nNo commits to index.")
+        common.log_and_print("\nNo commits to index.")
         return
 
     if args.dry_run:

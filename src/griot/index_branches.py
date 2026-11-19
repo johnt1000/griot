@@ -244,7 +244,7 @@ def main(argv=None):
                        incomplete=(), force=args.prune)
 
     if not all_documents:
-        print("\nNo branches to index.")
+        common.log_and_print("\nNo branches to index.")
         return
 
     if args.dry_run:

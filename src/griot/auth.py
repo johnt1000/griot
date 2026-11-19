@@ -192,7 +192,13 @@ def cmd_set(provider: str) -> int:
         return 2
     env_var = providers[provider]
 
-    key = getpass.getpass(f"Key for {provider} ({env_var}, hidden input): ")
+    try:
+        key = getpass.getpass(f"Key for {provider} ({env_var}, hidden input): ")
+    except EOFError:
+        # No terminal and nothing on stdin: incorrect use, not a crash.
+        print(f"Error: there is no terminal to type the key on. Nothing was changed. Run it in an interactive terminal:\n"
+              f"  griot auth set {provider}", file=sys.stderr)
+        return 2
     if not key.strip():
         print(f"Error: empty key, nothing was written. Try again:\n  griot auth set {provider}", file=sys.stderr)
         return 2

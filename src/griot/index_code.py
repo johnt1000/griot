@@ -91,8 +91,11 @@ def discover_files(repo_path: Path) -> list[Path]:
             # Fail closed. Walking here would read exactly what the rule
             # keeps out: a broken HEAD, a timeout or an ownership refusal
             # must not turn "not the ignored files" into "every file".
+            # Not silenceable: a registered repository contributes nothing,
+            # and --quiet must not turn that into "nothing to say".
             common.log_and_print(f"git could not list the files of {repo_path}, so nothing is read from it: walking it instead "
-                  f"would index files its .gitignore keeps out. `git -C {repo_path} status` shows what is wrong.")
+                                 f"would index files its .gitignore keeps out. To see what is wrong:\n  git -C {repo_path} status",
+                                 silenceable=False)
             return []
         candidates = _walked_files(repo_path)
     elif not candidates:
@@ -281,7 +284,7 @@ def main(argv=None):
                        incomplete=incomplete, force=args.prune)
 
     if not all_documents:
-        print("\nNo documents to index.")
+        common.log_and_print("\nNo documents to index.")
         return
 
     if args.dry_run:
