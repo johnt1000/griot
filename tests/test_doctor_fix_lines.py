@@ -17,7 +17,7 @@ def _fixes(report: str) -> list[str]:
 
 def test_each_command_of_a_row_is_on_its_own_line():
     row = doctor._check("index", doctor.WARN, "the last indexing run died", "griot index all   # and read what it says")
-    keyword = SimpleNamespace(severity=doctor.WARN, sentence="keyword search is not built",
+    keyword = SimpleNamespace(id="keyword_vectors_missing", severity=doctor.WARN, sentence="keyword search is not built",
                               action="griot index keywords")
 
     fixes = _fixes(doctor.format_report([doctor._with_condition(row, keyword)]))
@@ -27,8 +27,8 @@ def test_each_command_of_a_row_is_on_its_own_line():
 
 
 def test_no_command_follows_a_comment_on_the_same_line():
-    first = SimpleNamespace(severity=doctor.WARN, sentence="one", action="griot index all   # first")
-    second = SimpleNamespace(severity=doctor.WARN, sentence="two", action="griot index keywords")
+    first = SimpleNamespace(id="one", severity=doctor.WARN, sentence="one", action="griot index all   # first")
+    second = SimpleNamespace(id="two", severity=doctor.WARN, sentence="two", action="griot index keywords")
 
     for fix in _fixes(doctor.format_report([doctor._from_ledger("index", [first, second])])):
         if "#" in fix:

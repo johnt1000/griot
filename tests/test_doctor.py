@@ -94,6 +94,23 @@ def test_json_is_one_document_with_one_entry_per_check(tmp_path):
     assert {check["status"] for check in checks} <= {"ok", "warn", "FAIL", "skip"}
 
 
+def test_every_json_row_lists_its_ledger_conditions_as_data(tmp_path):
+    """`griot update` reads the upgraded doctor's --json across versions and
+    shows each condition's sentence and command; without them as fields it
+    would have to cut them out of the row's prose. Additive: the old keys
+    stay, and a row with no condition says so with an empty list."""
+    done = _cli(tmp_path, "--json", exported={"RAG_CHAT_MODEL": "some-model"})
+
+    rows = {row["check"]: row for row in json.loads(done.stdout)}
+    assert all(isinstance(row["notices"], list) for row in rows.values())
+    assert all({"check", "status", "detail", "fix"} <= set(row) for row in rows.values())
+    renamed = rows["old settings"]["notices"]
+    assert renamed == [{"id": "legacy_env", "severity": "warn",
+                        "sentence": "RAG_CHAT_MODEL was renamed and griot ignores it.",
+                        "action": 'export GRIOT_CHAT_MODEL="$RAG_CHAT_MODEL"'}]
+    assert rows["git"]["notices"] == []
+
+
 def test_a_setting_griot_cannot_start_with_is_a_failure_in_one_line(tmp_path):
     """The one command that must not die on a broken file: it is what says
     which line is broken."""
@@ -303,6 +320,21 @@ def test_repositories_behind_their_index_are_a_warning(tmp_path, monkeypatch):
 
     assert check["status"] == "warn" and "one" in check["detail"] and "4 commits" in check["detail"]
     assert "griot index all" in check["fix"]
+    # The condition as data too, as the ledger words it (griot update reads it).
+    assert [(n["id"], n["action"]) for n in check["notices"]] == [("behind:one", "griot index all --repo one")]
+
+
+def test_a_row_with_its_own_warning_keeps_the_ledger_condition_it_adds(monkeypatch):
+    """The index row of a run that died on a collection without keyword
+    vectors: two things in one row, and the condition is still listed."""
+    monkeypatch.setattr(common, "get_index_status", lambda **k: {
+        "points_count": 12, "points_error": None, "repositories": [], "keyword_search": False,
+        "collection": "griot_x", "last_indexed": {"timestamp": "2026-10-01T00:00:00+00:00", "error": "boom"}})
+
+    check = _by_name(doctor.run_checks())["index"]
+
+    assert "did not finish" in check["detail"]
+    assert [n["id"] for n in check["notices"]] == ["keyword_vectors_missing"]
 
 
 def test_a_repository_the_platform_refused_is_a_warning(tmp_path, monkeypatch):

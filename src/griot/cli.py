@@ -1301,7 +1301,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("audit", "Lists where the index holds credential-looking values (locations only, never the values)"),
         ("config", "Shows and changes griot's settings without editing the config .env (list/get/set/unset)"),
         ("doctor", "Checks the whole setup at once (settings, profile, index, repositories, MCP registration, a newer release); changes no setting, index or file of yours"),
-        ("update", "Upgrades griot to the newest release on PyPI with the installer that installed it (pipx, uv tool, pip); shows the command and asks first"),
+        ("update", "Upgrades griot to the newest release on PyPI with the installer that installed it (pipx, uv tool, pip); shows the command and asks first, then says what the new version needs done"),
     ]:
         # Registered ONLY so `griot --help` lists these with their help
         # text, and so an unknown command still gets argparse's normal
@@ -1397,6 +1397,10 @@ def _end_with_notices() -> None:
     collection has keyword vectors). A ledger that cannot be read or
     written must never fail a command that succeeded."""
     if _command is None or _command in _NO_FOOTER or _skipped or "griot.common" not in sys.modules:
+        return
+    if _command == "update" and getattr(sys.modules.get("griot.update"), "CHECKED_AFTER_UPGRADE", False):
+        # It just said what the new version needs done, or pointed at
+        # `griot doctor`: a footer would say the same again under it.
         return
     from griot import common, notices
 
