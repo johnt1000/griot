@@ -3430,7 +3430,8 @@ def _repair_mode(target: str, mode: int) -> bool:
 # spelling and that the text itself does not hold: a code chunk does not
 # contain its path, a commit message does not contain its hash. Numbers (a
 # pull request's) are left out: a bare number matches every text that
-# happens to hold it.
+# happens to hold it. The text of a pull request or issue names its number
+# itself, beside its kind (index_platform._numbered_title).
 _KEYWORD_DETAILS = ("file_path", "commit_hash", "last_commit_hash", "tag_name", "branch_name",
                     "source_branch", "target_branch")
 # A hash is written abbreviated more often than whole, and BM25 matches whole

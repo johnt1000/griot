@@ -62,12 +62,31 @@ def _author_field(item: dict) -> dict:
     return {"author": item["author"]} if item.get("author") else {}
 
 
+def _numbered_title(prefix: str, item: dict) -> str:
+    """The item's title with its number in front, on the same line.
+
+    The number used to live only in the payload (mr_iid, issue_iid), which
+    neither the embedding nor the keyword vector sees: "PR #14" found
+    nothing, or found the pull request that mentioned #14. In the text,
+    keyword search ranks it first by its number (an embedding model mostly
+    ignores a number: tests/test_numbered_items.py has what was measured).
+    On the title's line because `griot search` previews a result by its
+    first line. Changing it changes every item's text, and so re-embeds
+    every pull request and issue on the next platform run."""
+    title = item.get("title", "")
+    if item.get("iid") is None:
+        return title
+    return f"{prefix.format(n=item['iid'])}: {title}"
+
+
 def build_mr_documents(repo_name: str, platform: str, project_id: str, host: str | None, id_prefix: str | None = None) -> list[dict]:
     key = id_prefix or repo_name
     mrs = platforms.fetch_pull_requests(platform, project_id, host)
     documents = []
     for mr in mrs:
-        text = mr.get("title", "")
+        # Both spellings: GitHub and most platforms write #14, GitLab !14,
+        # and an agent asks "PR #14" of a GitLab project as often as not.
+        text = _numbered_title("PR #{n} (pull request / merge request !{n})", mr)
         if mr.get("description"):
             text += "\n\n" + mr["description"]
         documents.extend(build_chunks(text, f"{key}:mr:{mr.get('iid')}", {
@@ -108,7 +127,7 @@ def build_issue_documents(repo_name: str, platform: str, project_id: str, host: 
     issues = platforms.fetch_issues(platform, project_id, host)
     documents = []
     for issue in issues:
-        text = issue.get("title", "")
+        text = _numbered_title("Issue #{n}", issue)
         if issue.get("description"):
             text += "\n\n" + issue["description"]
         documents.extend(build_chunks(text, f"{key}:issue:{issue.get('iid')}", {

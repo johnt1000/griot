@@ -81,7 +81,26 @@ async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     # moving the text into a docstring cannot change what the limit means.
     # Raised from 1700 for one clause: what to do when keyword search is not
     # built (agents were refused and retried in vector, which cannot find hashes).
-    assert _measured(instructions) <= 1830
+    # Raised from 1830 for one clause: how to ask for a pull request by its
+    # number (an agent asked "PR #14 ..." in vain and fell back to `gh`).
+    assert _measured(instructions) <= 1970
+
+
+@pytest.mark.anyio
+async def test_the_instructions_say_how_to_ask_for_an_item_by_its_number():
+    """By number, only keyword search finds it first (tests/test_numbered_items.py
+    has why), and every name here must be what the tool takes."""
+    instructions, _ = await _server()
+    text = " ".join(instructions.split())
+    assert ('For one pull request, merge request or issue, pass its kind in `source_types`, '
+            'its number as the query ("PR #14") and `mode=keyword`.') in text
+    # The call the clause describes is one the tool takes (on an empty index:
+    # what is held here is the arguments, not the ranking).
+    async with Client(mcp_server.mcp) as client:
+        for kind in ("merge_request", "issue"):
+            result = await client.call_tool("griot_search", {"query": "PR #14", "source_types": [kind],
+                                                             "mode": "keyword"})
+            assert result.is_error is False, (kind, result.content)
 
 
 @pytest.mark.anyio
