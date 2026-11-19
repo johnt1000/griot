@@ -413,8 +413,8 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
             fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
     # In the words `griot index all --if-stale` says it has nothing to do,
-    # and only when it would have nothing to do: a source that never ran is
-    # something it indexes.
+    # and only when it would have nothing to do (freshness.stale_reason, the
+    # one rule both read).
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (f"; {notices.none_behind(len(reports))}"
                                           if reports and all(r.get("behind") is False

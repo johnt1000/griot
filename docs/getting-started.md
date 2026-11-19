@@ -77,8 +77,8 @@ remove, at no cost.
 
 `griot index all --if-stale` indexes only the registered repositories whose
 index is behind them: commits made since the last run, a rewritten history,
-changed tags or remote branches, or a source that never ran (pull requests and
-issues are not compared; see [whether the index is behind](search.md#whether-the-index-is-behind)).
+changed tags or remote branches, or code never indexed: what `griot doctor` reports
+(pull requests and issues are not compared; see [whether the index is behind](search.md#whether-the-index-is-behind)).
 When none is behind, or another griot process (an MCP server, another index
 run) holds the collection, it embeds nothing and exits 0, so a scheduler or a
 git hook can call it without reporting a routine overlap as a failure. Other

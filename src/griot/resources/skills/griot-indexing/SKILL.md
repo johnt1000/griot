@@ -56,8 +56,8 @@ Run one source directly instead of all five with `griot index <source>`
   which sources run.
 - On `griot index all` specifically, `--if-stale` indexes only the
   registered repositories whose index is behind them (commits since the
-  last run, a rewritten history, changed tags or remote branches, a source
-  that never ran; pull requests and issues are not compared). When none is
+  last run, a rewritten history, changed tags or remote branches, code
+  never indexed; pull requests and issues are not compared). When none is
   behind, or another griot process holds the collection, it embeds nothing
   and exits 0: made for a scheduler or a git hook (recipes in
   `docs/getting-started.md`; griot installs neither). `--repo` narrows it;

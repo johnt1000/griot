@@ -165,15 +165,32 @@ def test_nothing_behind_is_silent_with_quiet(tmp_path, two):
     assert _ran(rows) == []
 
 
-def test_doctor_does_not_say_none_behind_when_if_stale_would_index(tmp_path, two):
-    """A source that never ran is something --if-stale indexes: doctor must
-    not say there is nothing behind then."""
+def test_a_source_that_never_ran_beside_code_is_not_behind_on_any_surface(tmp_path, two):
+    """--if-stale acts on the conditions doctor, stats and griot_index_status
+    report (commits behind, a rewritten history, changed refs, code never
+    indexed) and on no other: a platform that never ran is not one of them,
+    so doctor saying nothing is behind and --if-stale doing nothing agree."""
     partial = _repo(tmp_path, "partial")
     _register(*two, partial)
     _indexed(partial, sources=SOURCES[:-1])  # platform never ran
     check = doctor.check_repositories(common)
-    assert check["status"] == "ok", check
-    assert "behind" not in check["detail"], check
+    assert check == {**check, "status": "ok", "detail": f"3 registered, all present; {notices.none_behind(3)}"}
+    done, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert done.returncode == 0, done.stderr
+    assert _ran(rows) == []
+    assert done.stderr.rstrip().splitlines()[-1] == f"Nothing to index: {notices.none_behind(3)}."
+
+
+def test_code_never_indexed_is_behind_as_doctor_says_it(tmp_path, two):
+    partial = _repo(tmp_path, "partial")
+    _register(*two, partial)
+    _indexed(partial, sources=SOURCES[1:])  # code never ran
+    check = doctor.check_repositories(common)
+    assert check["status"] == "warn" and "code never indexed in partial" in check["detail"], check
+    done, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert done.returncode == 0, done.stderr
+    assert _ran(rows) == [(source, "partial") for source in SOURCES]
+    assert "the ones behind: partial (code never indexed)." in done.stderr
 
 
 def test_the_nothing_behind_line_is_one_phrase_shared_with_doctor():
@@ -278,15 +295,89 @@ def test_a_platform_that_refused_every_fetch_is_not_retried_on_a_schedule(tmp_pa
     assert _ran(rows) == []
 
 
-def test_the_selection_counts_missing_platform_only_when_it_was_not_refused():
+def test_the_selection_counts_a_missing_source_only_when_it_is_code():
     report = {"repo": "one", "head": "a" * 40, "behind": False, "behind_sources": [], "commits_behind": 0,
               "missing_sources": ["platform"], "platform_refused": False}
-    assert freshness.stale_reason(report, SOURCES) == "platform never indexed"
-    assert freshness.stale_reason({**report, "platform_refused": True}, SOURCES) is None
+    assert freshness.stale_reason(report, SOURCES) is None
+    assert freshness.stale_reason({**report, "missing_sources": ["tags", "branches"]}, SOURCES) is None
+    assert freshness.stale_reason({**report, "missing_sources": ["code", "platform"]}, SOURCES) == "code never indexed"
+    never = {**report, "behind": None, "commits_behind": None, "missing_sources": list(SOURCES)}
+    assert freshness.stale_reason(never, SOURCES) == "never indexed"
     assert freshness.stale_reason({**report, "missing_sources": []}, SOURCES) is None
     assert freshness.stale_reason({**report, "head": None, "behind": None}, SOURCES) is None
     # A source left out by --sources is not a reason either.
-    assert freshness.stale_reason(report, ["code", "commits"]) is None
+    assert freshness.stale_reason({**report, "missing_sources": ["code"]}, ["commits"]) is None
+
+
+# --- a real run settles: no fixture writes the run log ----------------------------------------------
+
+
+def _runs_of(script):
+    return [run for run in logdb.read_recent(common.LOG_DIR, "runs", collection=common.COLLECTION_NAME, limit=500)
+            if run.get("script") == script]
+
+
+def test_after_a_real_run_with_nothing_for_some_sources_the_next_run_does_nothing(tmp_path):
+    """Repositories with no tags, no remote branches and no remote: the
+    tags, branches and platform sources find nothing. Their runs are still
+    recorded, so the next call is a no-op instead of indexing every source
+    of every repository again, every day, as never indexed."""
+    one, other = _repo(tmp_path, "one"), _repo(tmp_path, "other")
+    _register(one, other)
+    first, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert first.returncode == 0, first.stderr
+    assert sorted(_ran(rows)) == sorted((source, repo) for repo in ("one", "other") for source in SOURCES)
+    for source in ("tags", "branches", "platform"):
+        assert _runs_of(f"index_{source}.py"), f"the empty {source} run was not recorded"
+    reports = freshness.repository_freshness()
+    assert [(r["repo"], r["behind"], r["missing_sources"]) for r in reports] == [
+        ("one", False, []), ("other", False, [])]
+    again, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert again.returncode == 0, again.stderr
+    assert _ran(rows) == [] and _embedded(rows) == 0
+    assert again.stderr.rstrip().splitlines()[-1] == NONE_BEHIND
+    assert doctor.check_repositories(common)["detail"] == f"2 registered, all present; {notices.none_behind(2)}"
+
+
+def test_a_new_tag_after_an_empty_tags_run_is_behind(tmp_path):
+    one = _repo(tmp_path, "one")
+    _register(one)
+    first, _ = _run(tmp_path, "index", "all", "--if-stale")
+    assert first.returncode == 0, first.stderr
+    _git(one, "tag", "v1")
+    done, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert done.returncode == 0, done.stderr
+    assert "the ones behind: one (tags changed)." in done.stderr
+    assert ("tags", "one") in _ran(rows)
+
+
+def test_a_repository_with_no_file_to_index_has_its_code_run_recorded(tmp_path):
+    """Doctor would otherwise say "code never indexed" right after the
+    code run, and --if-stale would run every source of it again."""
+    blank = tmp_path / "repos" / "blank"
+    blank.mkdir(parents=True)
+    _git(blank, "init", "-q", "-b", "main")
+    (blank / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
+    _git(blank, "add", "logo.png")
+    _git(blank, "commit", "-q", "-m", "first")
+    _register(blank)
+    first, _ = _run(tmp_path, "index", "all", "--if-stale")
+    assert first.returncode == 0, first.stderr
+    assert "No documents to index." in first.stderr + first.stdout
+    assert _runs_of("index_code.py")
+    again, rows = _run(tmp_path, "index", "all", "--if-stale")
+    assert again.returncode == 0 and _ran(rows) == [], again.stderr
+
+
+@pytest.mark.parametrize("source", ["tags", "branches", "platform"])
+def test_an_empty_dry_run_records_nothing(tmp_path, source):
+    """A dry run writes no run (it would shadow the last real one in
+    griot_index_status), an empty one included."""
+    one = _repo(tmp_path, "one")
+    _register(one)
+    done, _ = _run(tmp_path, "index", source, "--dry-run")
+    assert done.returncode == 0, done.stderr
+    assert _runs_of(f"index_{source}.py") == []
 
 
 def test_the_flag_is_never_forwarded_to_a_source():

@@ -225,7 +225,7 @@ DRY_RUN_HELP = ("Says how many chunks would be (re)embedded and, on a paid profi
 
 
 IF_STALE_HELP = ("Index only the registered repositories whose index is behind them: commits made since the last "
-                 "run, a rewritten history, changed tags or remote branches, or a source that never ran. Pull "
+                 "run, a rewritten history, changed tags or remote branches, or code never indexed. Pull "
                  "requests and issues are not compared. When none is behind, or another griot process holds the "
                  "collection, it embeds nothing and exits 0. Made for a scheduler or a git hook. On a paid "
                  "profile with no terminal, a run at or above confirm-spend still needs --yes.")

@@ -826,6 +826,22 @@ def log_run_summary(**fields) -> None:
     prune_logs_if_due()
 
 
+def log_empty_run(script: str, args, repo_paths: list[str], start_time: float) -> None:
+    """Records a run that found nothing to index (no file it reads, no tags,
+    no remote branches, no platform items): it still ran, at those heads and refs.
+    Unrecorded, the freshness report reads the source as never run, and
+    `griot index all --if-stale` indexes every repository again on every
+    call to fill it; recorded, a tag added later still reads as changed.
+    A dry run records nothing, as everywhere else (cli._run_index_source)."""
+    import time
+
+    if args.dry_run:
+        return
+    log_run_summary(script=script, repo=args.repo or args.path or "all", repo_paths=repo_paths,
+                    indexed=0, skipped=0, failed=0, duration_seconds=round(time.time() - start_time, 2),
+                    spend_today_usd=get_spend_today())
+
+
 def log_questions_enabled() -> bool:
     """[finding M1 from the audit, 2026-08-19] queries.jsonl stores the full
     question forever — GRIOT_LOG_QUESTIONS=false allows turning off just the
