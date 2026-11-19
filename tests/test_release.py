@@ -12,17 +12,13 @@ version is declared in one place and read everywhere."""
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
 import griot
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # the floor griot supports
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]

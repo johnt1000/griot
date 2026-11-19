@@ -16,7 +16,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "johnt1000" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["rag", "vector-search", "git", "mcp", "mcp-server", "claude-code",
             "code-search", "semantic-search", "local-first", "developer-tools",
             "qdrant", "embeddings"]
@@ -27,7 +27,6 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -48,8 +47,10 @@ dependencies = [
     # qdrant-client itself is never imported — the vector store is
     # qdrant-edge-py, in-process. Pulled through the extra rather than
     # depending on fastembed directly because that is how the pinned,
-    # compatible pairing is published.
-    "qdrant-client[fastembed]",
+    # compatible pairing is published. At least 1.20: its extra needs
+    # fastembed 0.9, the first that allows Pillow 13, so no install can land
+    # on the Pillow 12 releases with open advisories.
+    "qdrant-client[fastembed]>=1.20",
     "psutil",
     # Both of the next two are held below the version that may change their
     # interface (a minor one before 1.0, a major one after): griot calls them
@@ -81,10 +82,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# packaging, tomli and pyyaml: imported by tests/test_supply_chain.py. Other
+# packaging and pyyaml: imported by tests/test_supply_chain.py. Other
 # packages bring them today; named for the same reason as typing-extensions
 # above.
-dev = ["pytest", "packaging", "pyyaml", "tomli; python_version < '3.11'"]
+dev = ["pytest", "packaging", "pyyaml"]
 # Empty on purpose: keyring is a default dependency now, and the extra stays
 # so the command older docs gave (`pip install "griot-rag[keychain]"`) keeps
 # installing without pip's "does not provide the extra" warning.

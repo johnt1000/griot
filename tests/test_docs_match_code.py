@@ -9,6 +9,7 @@ around it can change freely."""
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import anyio
@@ -19,11 +20,6 @@ from mcp.client.client import Client
 from griot import mcp_server, platforms
 
 import test_confirmation_policy_docs as policy_docs  # noqa: E402  the passages its tests hold counts in
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # the floor griot supports
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "griot" / "resources" / "skills"
