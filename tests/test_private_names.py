@@ -153,6 +153,7 @@ TESTS_MAY_REACH = {
     },
     "logdb": {
         "_connect": _STATE,
+        "_ensure_tool_calls_column": _HELPER,
         "_ensure_tool_calls_project_column": _HELPER,
         "_tool_call_rows": _HELPER,
     },

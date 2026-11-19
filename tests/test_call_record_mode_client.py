@@ -182,7 +182,7 @@ async def test_the_wrapper_adds_nothing_to_a_tools_input_schema():
 
     for tool in tools:
         names = set(tool.input_schema.get("properties", {}))
-        assert "ctx" not in names and not any(n.startswith("_griot") for n in names), tool.name
+        assert "ctx" not in names and "griot_ctx" not in names, tool.name
     search = next(t for t in tools if t.name == "griot_search")
     assert set(search.input_schema["properties"]) == {
         "query", "limit", "group_by_document", "repos", "source_types", "mode"}
@@ -327,10 +327,42 @@ def test_the_failures_and_clients_are_in_the_text_report():
     assert "claude-code 2.1" in text and "2 calls" in text
 
 
+def test_the_text_report_prints_searches_by_asked_mode_most_common_first():
+    calls = [_call(mode="keyword", ok=False), _call(mode="default"), _call(mode="default"),
+             _call(mode="(none asked)"), _call(tool="griot_stats", mode=None)]
+
+    text = stats.format_stats(stats.compute_stats([], [], _INDEX_STATUS, tool_calls=calls), days=30)
+
+    line = next(ln for ln in text.splitlines() if "by asked mode" in ln)
+    assert line.index("default 2") < line.index("keyword 1")
+    assert "(none asked) 1" in line and "search" in line
+    # griot_stats is not a search: only the three searches count
+    assert "unknown" not in line
+
+
+def test_the_text_report_orders_classes_and_clients_most_common_first():
+    calls = [_call(ok=False, error="Rare: x", client="small 1"),
+             _call(ok=False, error="Common: x", client="big 1"), _call(ok=False, error="Common: y", client="big 1")]
+
+    text = stats.format_stats(stats.compute_stats([], [], _INDEX_STATUS, tool_calls=calls), days=30)
+
+    assert text.index("2× Common") < text.index("1× Rare")
+    assert text.index("big 1 2 calls") < text.index("small 1 1 call")
+
+
+def test_an_error_class_is_bounded_in_length():
+    calls = [_call(ok=False, error="E" * 500 + ": boom")]
+
+    classes = stats.compute_stats([], [], _INDEX_STATUS, tool_calls=calls)["tool_failure_classes"]
+
+    assert [len(name) for name in classes] == [common.LOGGED_LABEL_MAX]
+
+
 def test_a_report_with_no_tool_calls_prints_neither_section():
     text = stats.format_stats(stats.compute_stats([], [], _INDEX_STATUS, tool_calls=[]), days=30)
 
     assert "by client" not in text and "failed calls by class" not in text
+    assert "by asked mode" not in text
 
 
 def test_error_text_in_the_report_is_only_the_class_so_a_message_cannot_forge_lines():

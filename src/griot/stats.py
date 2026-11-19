@@ -935,10 +935,11 @@ def _mcp_section(lines: list[str], heading: str, event: str, kind: str,
         lines.append(f"{_INDENT}{name} {count}{suffix}")
 
 
-def _tool_failure_lines(lines: list[str], classes: dict[str, int], clients: dict[str, int]) -> None:
+def _tool_failure_lines(lines: list[str], classes: dict[str, int], clients: dict[str, int],
+                        modes: dict[str, int] | None = None) -> None:
     """Under the MCP tools section: why tool calls failed (by class, most
-    common first) and which clients made the calls. Nothing when there is
-    nothing to say."""
+    common first), which clients made the calls and which mode the searches
+    asked for. Nothing when there is nothing to say."""
     if classes:
         lines.append(f"{_INDENT}failed calls by class:")
         for name, count in sorted(classes.items(), key=lambda kv: -kv[1]):
@@ -947,6 +948,10 @@ def _tool_failure_lines(lines: list[str], classes: dict[str, int], clients: dict
         by_volume = sorted(clients.items(), key=lambda kv: -kv[1])
         lines.append(f"{_INDENT}by client: " + " · ".join(
             f"{name} {count} call{'s' if count != 1 else ''}" for name, count in by_volume))
+    if modes:
+        by_volume = sorted(modes.items(), key=lambda kv: -kv[1])
+        lines.append(f"{_INDENT}searches by asked mode: " + " · ".join(
+            f"{name} {count}" for name, count in by_volume))
 
 
 def format_stats(s: dict, days: int, width: int | None = None) -> str:
@@ -1163,7 +1168,8 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
     _mcp_section(lines, "MCP tools:", "call", "tool",
                  s.get("tool_calls") or {}, s.get("failed_tool_calls") or {})
     if s.get("tool_calls"):
-        _tool_failure_lines(lines, s.get("tool_failure_classes") or {}, s.get("calls_by_client") or {})
+        _tool_failure_lines(lines, s.get("tool_failure_classes") or {}, s.get("calls_by_client") or {},
+                            s.get("searches_by_asked_mode") or {})
     _mcp_section(lines, "MCP reads:", "read", "resource",
                  s.get("resource_reads") or {}, s.get("failed_resource_reads") or {})
 
