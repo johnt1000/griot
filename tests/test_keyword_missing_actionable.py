@@ -24,7 +24,7 @@ def _refusal(mode="keyword"):
 @pytest.mark.parametrize("mode", ["keyword", "hybrid"])
 def test_the_refusal_names_the_command_and_what_to_do_now(legacy_index, mode):
     message = _refusal(mode)
-    assert "`griot index keywords`" in message
+    assert message.splitlines()[-1] == "  griot index keywords", "the command, last, on a line of its own"
     assert "grep" in message and "git log" in message, "an exact string is searched in the repository"
     assert "mode 'vector'" in message, "a descriptive question still has vector search"
     assert "free disk" in message, "the disk need stays"

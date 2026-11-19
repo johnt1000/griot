@@ -106,6 +106,10 @@ TESTS_MAY_REACH = {
         "_providers": _HELPER,
     },
     "cli": {
+        "_command": _STATE,
+        # The ledger step `griot index` ends with, checked on its own: a
+        # real index run would need a collection and an embedding model.
+        "_end_with_notices": _HELPER,
         "_main": _SEAM,
         "_run_index_source": _SEAM,
     },

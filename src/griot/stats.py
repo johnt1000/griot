@@ -264,6 +264,22 @@ def ledger(index_status: dict, state: dict | None, now: datetime | None = None, 
     return [*found, *legacy]
 
 
+def kinds_looked_at(index_status: dict, state: dict | None) -> set[str]:
+    """The kinds of condition ledger() can tell are gone, for
+    notices.record(): repositories behind when the status lists them,
+    keyword vectors when the collection's config could be read (None is
+    "cannot say"), the quality check when the state was read. The legacy
+    kinds are the caller's, which reads them itself."""
+    kinds = set()
+    if isinstance(index_status.get("repositories"), list):
+        kinds.add(notices.BEHIND)
+    if index_status.get("keyword_search") is not None:
+        kinds.add(notices.KEYWORD_VECTORS_MISSING)
+    if state is not None:
+        kinds.add(notices.QUALITY_OLDER_THAN_INDEX)
+    return kinds
+
+
 def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                   quality_checks: list[dict] | None = None,
                   tool_calls: list[dict] | None = None, *,
@@ -1341,9 +1357,10 @@ def report(days: int, *, all_profiles: bool = False) -> dict:
     return report_and_ledger(days, all_profiles=all_profiles)[0]
 
 
-def report_and_ledger(days: int, *, all_profiles: bool = False) -> tuple[dict, list]:
-    """report(), and the ledger's conditions it listed (ledger()), for the
-    command that records them as listed."""
+def report_and_ledger(days: int, *, all_profiles: bool = False) -> tuple[dict, list, set[str]]:
+    """report(), the ledger's conditions it listed (ledger()) and the kinds
+    it looked at (kinds_looked_at()), for the command that records them as
+    listed."""
     now = datetime.now(timezone.utc)
     runs, queries = load_window(days, now)
     status, state, legacy = common.get_index_status(), load_state(), notices.legacy(common)
@@ -1353,7 +1370,8 @@ def report_and_ledger(days: int, *, all_profiles: bool = False) -> tuple[dict, l
                            state=state, now=now,
                            collection=None if all_profiles else common.COLLECTION_NAME,
                            since=window_start(days, now), legacy=legacy)
-    return result, ledger(status, state, now, legacy=legacy)
+    kinds = kinds_looked_at(status, state) | {notices.LEGACY_ENV, notices.LEGACY_LAYOUT}
+    return result, ledger(status, state, now, legacy=legacy), kinds
 
 
 def main(argv=None) -> int:
@@ -1375,10 +1393,10 @@ def main(argv=None) -> int:
         # A window of no days is always empty, which reads as "no activity".
         parser.error(f"--days must be at least 1 (got {args.days})")
 
-    result, found = report_and_ledger(args.days, all_profiles=args.all_profiles)
-    # The report lists every condition: the CLI footer has nothing to add
-    # about them until one changes.
-    notices.listed(found)
+    result, found, kinds = report_and_ledger(args.days, all_profiles=args.all_profiles)
+    # The report lists every condition it could look at: the CLI footer has
+    # nothing to add about them until one changes.
+    notices.listed(found, kinds)
     # Both front ends, so `--json` and griot_stats say over how long the
     # search and tool-call counts can reach.
     result["log_retention_days"] = common.LOG_RETENTION_DAYS

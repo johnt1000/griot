@@ -188,6 +188,17 @@ async def test_the_tool_with_nothing_indexed_makes_a_hybrid_case_with_no_note():
 
 
 @pytest.mark.anyio
+async def test_the_tool_on_a_collection_without_keyword_vectors_ends_its_note_with_the_command(legacy_index):
+    """Read as the agent receives it: the command last, on its own line."""
+    async with Client(mcp_server.mcp) as client:
+        out = (await client.call_tool("griot_golden_set_add", {
+            "query": "acquire_lock", "must_include": [{"repo": "alpha"}], "confirm": True})).structured_content
+    assert out["changed"] is True
+    assert "The case(s) just added are checked in mode vector" in out["message"]
+    assert out["message"].rstrip().splitlines()[-1] == "  griot index keywords"
+
+
+@pytest.mark.anyio
 async def test_the_tool_with_an_unreadable_collection_config_makes_a_vector_case_and_says_why():
     _unreadable_collection()
     async with Client(mcp_server.mcp) as client:

@@ -64,7 +64,7 @@ repositories among its results that are behind (`behind`, on every result; its
 server sees a repository fall behind or fall into another band of commits:
 1-9, 10-99, 100-999, 1000 or more, or a history rewritten), and `griot stats`
 and `griot doctor` list them every time. Other commands end, when something
-new needs attention, with one line on stderr, `1 notice: griot doctor` (again a
+new needs attention, with one line on stderr, ``1 notice: run `griot doctor` `` (again a
 week later if nothing changed; `--quiet` silences it). Pull requests and issues live on the platform, so
 nothing local can say whether that source is behind.
 

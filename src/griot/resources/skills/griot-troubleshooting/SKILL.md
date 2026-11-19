@@ -1,6 +1,6 @@
 ---
 name: griot-troubleshooting
-description: Symptom-to-fix reference for griot failures - the client cannot connect to griot (launcher "No such file" after a Python upgrade), a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built yet", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
+description: Symptom-to-fix reference for griot failures - the client cannot connect to griot (launcher "No such file" after a Python upgrade), a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
 ---
 
 # griot troubleshooting

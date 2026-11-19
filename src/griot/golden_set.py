@@ -131,8 +131,10 @@ def mode_refusal(query: str, mode) -> str | None:
 # fact (notices.keyword_vectors_missing), the words griot doctor, griot stats
 # and a search use, then says what it means for the case.
 def vector_fallback_note(notice) -> str:
-    return (f"{notices.capitalized(notice.sentence)}. The case(s) just added are checked in mode vector; to check "
-            f"one in hybrid, after `{notice.action}`, remove it and add it again.")
+    # The consequence for the cases first, then the condition's sentence, and
+    # its command last, alone on its line, as notices.prose() ends one.
+    return (f"The case(s) just added are checked in mode vector: {notice.sentence}. To check one in hybrid, "
+            f"remove it and add it again after this:\n  {notice.action}")
 
 # Said when a case made without a mode is a vector case because the
 # collection's config cannot be read: whether it can run hybrid is unknown,

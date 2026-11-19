@@ -4930,12 +4930,14 @@ def keyword_search_unavailable(collection: str) -> "SearchModeUnavailable":
     # not answer the queries that need a word match (measured: MRR@10 0.01
     # for commit hashes in vector against 0.80 in hybrid), so the agent is
     # told which tool does, and the refusal stays a refusal.
+    # The ledger sentence already says what building it costs; the command
+    # is the last line, alone, as prose() puts it (policy, section 2).
     return SearchModeUnavailable(
-        f"{notices.capitalized(sentence)}. Running `{KEYWORD_BUILD_COMMAND}` once builds it (it costs nothing; "
-        f"while it runs it needs about as much free disk as the collection). Until then: for a commit hash, an "
-        f"error code or where a name is used, use grep or `git log` in the repository you are working in (they do "
-        f"not reach the other registered repositories or pull request text); for a descriptive question, retry "
-        f"with mode 'vector'. Vector search does not find exact strings, so do not use it for those.")
+        f"{notices.capitalized(sentence)}. While it runs it needs about as much free disk as the collection. "
+        f"Until then: for a commit hash, an error code or where a name is used, use grep or `git log` in the "
+        f"repository you are working in (they do not reach the other registered repositories or pull request "
+        f"text); for a descriptive question, retry with mode 'vector', which does not find exact strings. "
+        f"Build it once:\n  {KEYWORD_BUILD_COMMAND}")
 
 
 def search_mode_for(query: str, mode: str | None) -> tuple[str, "notices.Notice | None"]:

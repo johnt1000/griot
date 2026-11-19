@@ -130,7 +130,8 @@ def test_stats_lists_every_condition_with_the_ledger_sentence_and_action():
                 notices.quality_older_than_index("2026-11-17T12:00:00+00:00", "2026-11-19T09:00:00+00:00", NOW),
                 legacy[0]]
     for found in expected:
-        assert f"{found.sentence} — {found.action}" in s["attention"], found.id
+        assert found.line() in s["attention"], found.id
+        assert found.sentence.removesuffix(".") in found.line()
 
 
 def test_the_report_says_each_fact_once():
@@ -208,10 +209,10 @@ def test_the_keyword_fact_has_one_wording_everywhere():
     assert not hasattr(common, "KEYWORD_SEARCH_NOT_BUILT_NOTE")
     assert not hasattr(common, "keyword_search_missing_sentence")
     assert notices.keyword_fallback_text(notices.keyword_vectors_missing(collection)).startswith(
-        "This search ran by meaning only (mode vector). " + sentence[:1].upper() + sentence[1:])
+        "This search ran in mode vector. " + sentence[:1].upper() + sentence[1:])
     refused = common.keyword_search_unavailable(collection)
     assert isinstance(refused, common.SearchModeUnavailable)
-    assert str(refused).startswith(sentence[:1].upper() + sentence[1:] + ". Running `griot index keywords` once")
+    assert str(refused).startswith(sentence[:1].upper() + sentence[1:] + ". While it runs")
 
 
 # --- the CLI footer: once per state, again after 7 days, quiet, stderr ------------------------------------------
@@ -219,12 +220,12 @@ def test_the_keyword_fact_has_one_wording_everywhere():
 def test_the_footer_is_said_once_per_set_of_fingerprints():
     notices.record({"behind"}, [notices.behind(_report("one", 3))])
 
-    assert notices.footer(now=NOW) == "1 notice: griot doctor"
+    assert notices.footer(now=NOW) == "1 notice: run `griot doctor`"
     assert notices.footer(now=NOW + timedelta(hours=1)) is None
     notices.record({"behind"}, [notices.behind(_report("one", 4))])  # same band: same state
     assert notices.footer(now=NOW + timedelta(hours=2)) is None
     notices.record({"keyword_vectors_missing"}, [notices.keyword_vectors_missing("c")])
-    assert notices.footer(now=NOW + timedelta(hours=3)) == "2 notices: griot doctor"
+    assert notices.footer(now=NOW + timedelta(hours=3)) == "2 notices: run `griot doctor`"
 
 
 def test_the_footer_comes_back_after_seven_days_unchanged():
@@ -232,7 +233,7 @@ def test_the_footer_comes_back_after_seven_days_unchanged():
     assert notices.footer(now=NOW) is not None
 
     assert notices.footer(now=NOW + timedelta(days=7) - timedelta(seconds=1)) is None
-    assert notices.footer(now=NOW + timedelta(days=7)) == "1 notice: griot doctor"
+    assert notices.footer(now=NOW + timedelta(days=7)) == "1 notice: run `griot doctor`"
     assert notices.footer(now=NOW + timedelta(days=8)) is None
 
 
@@ -264,7 +265,7 @@ def test_the_footer_is_silent_and_remembers_nothing_under_quiet(monkeypatch):
     monkeypatch.setenv("GRIOT_QUIET", "1")
     assert notices.footer(now=NOW) is None
     monkeypatch.delenv("GRIOT_QUIET")
-    assert notices.footer(now=NOW) == "1 notice: griot doctor"
+    assert notices.footer(now=NOW) == "1 notice: run `griot doctor`"
 
 
 def test_the_ledger_file_is_private():
@@ -292,10 +293,10 @@ def test_the_cli_says_one_footer_line_on_stderr_once_per_state(tmp_path):
     more = _cli(tmp_path, "repos", "list", extra_env={**OLD, "RAG_CHAT_MODEL": "x"})
 
     assert first.returncode == 0, first.stderr
-    assert first.stderr == "1 notice: griot doctor\n"
+    assert first.stderr == "1 notice: run `griot doctor`\n"
     assert "notice" not in first.stdout and "renamed" not in first.stdout
     assert second.stderr == "" and second.stdout == first.stdout
-    assert more.stderr == "1 notice: griot doctor\n", "the same condition, a new fingerprint"
+    assert more.stderr == "1 notice: run `griot doctor`\n", "the same condition, a new fingerprint"
 
 
 def test_the_footer_is_silent_under_quiet_and_never_on_stdout(tmp_path):
@@ -304,7 +305,7 @@ def test_the_footer_is_silent_under_quiet_and_never_on_stdout(tmp_path):
     spoken = _cli(tmp_path, "repos", "list", extra_env=OLD)
 
     assert quiet.stderr == "" and env_quiet.stderr == ""
-    assert spoken.stderr == "1 notice: griot doctor\n", "silenced is not said: it still has to come"
+    assert spoken.stderr == "1 notice: run `griot doctor`\n", "silenced is not said: it still has to come"
 
 
 def test_no_footer_after_a_failure_the_error_keeps_the_last_line(tmp_path):
@@ -320,7 +321,7 @@ def test_doctor_and_stats_list_the_condition_and_never_print_the_footer(tmp_path
     doctor_run = _cli(tmp_path, "doctor", "--json", extra_env=OLD)
 
     attention = json.loads(stats_run.stdout)["attention"]
-    assert 'RAG_EMBED_PROFILE was renamed and griot ignores it. — export GRIOT_EMBED_PROFILE="$RAG_EMBED_PROFILE"' \
+    assert 'RAG_EMBED_PROFILE was renamed and griot ignores it — export GRIOT_EMBED_PROFILE="$RAG_EMBED_PROFILE"' \
         in attention
     assert "notice" not in stats_run.stderr and "notice" not in doctor_run.stderr
     checks = {c["check"]: c for c in json.loads(doctor_run.stdout)}
@@ -470,3 +471,290 @@ def test_the_process_memory_says_a_fingerprint_once_and_again_when_it_changes():
     assert memory.first_time(notices.behind(_report(commits=None))) is True
     memory.forget("behind:one")
     assert memory.first_time(three) is True
+
+
+# --- a kind not looked at stays as it was (round 2) ---------------------------------------------------------
+
+def _quiet_doctor(monkeypatch):
+    """doctor.main() with the checks that reach the network or the machine's
+    harnesses stubbed out: only the ledger's checks matter here."""
+    from griot import doctor
+
+    for name in ("check_release", "check_mcp_registration", "check_tool_approval"):
+        monkeypatch.setattr(doctor, name, lambda *a, **k: {"check": "stub", "status": doctor.SKIP, "detail": "stub", "fix": None})
+    return doctor
+
+
+@pytest.mark.parametrize("status", [
+    {"points_count": None, "points_error": "busy", "last_indexed": {}},
+    {"points_count": 0, "points_error": None, "last_indexed": {}},
+    {"points_count": 10, "points_error": None,
+     "last_indexed": {"error": "killed", "indexed": None, "timestamp": "2026-11-19T09:00:00+00:00"}},
+    {"points_count": None, "points_error": "unreadable: broken", "last_indexed": {}},
+], ids=["busy", "empty", "last run died", "unreadable"])
+def test_doctor_keeps_a_keyword_condition_it_did_not_look_at(monkeypatch, capsys, status):
+    """doctor returns before the keyword check in these states: it cannot say
+    the condition is gone, so it must not drop it (record()'s contract), or
+    the footer would call it new again later."""
+    doctor = _quiet_doctor(monkeypatch)
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **status, "keyword_search": False, "collection": common.COLLECTION_NAME, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(keyword.id) == keyword.fingerprint
+
+
+@pytest.mark.parametrize("status", [
+    {"points_count": None, "points_error": "busy", "last_indexed": {}},
+    {"points_count": 0, "points_error": None, "last_indexed": {}},
+    {"points_count": 10, "points_error": None,
+     "last_indexed": {"error": "killed", "indexed": None, "timestamp": "2026-11-19T09:00:00+00:00"}},
+], ids=["busy", "empty", "last run died"])
+def test_doctor_shows_the_keyword_condition_whatever_the_collection_is_doing(monkeypatch, capsys, status):
+    """The keyword fact is read from the collection's config file, known
+    while another process holds it, while it is empty and after a run that
+    died: doctor lists it in those states too, as stats does, and the
+    footer then has nothing new to say about it (round 3)."""
+    doctor = _quiet_doctor(monkeypatch)
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **status, "keyword_search": False, "collection": common.COLLECTION_NAME, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    found = []
+    row = doctor.check_index(common, found, set())
+    assert keyword.sentence in row["detail"] and keyword.action in (row["fix"] or "")
+    assert row["status"] == "warn" and keyword in found
+    assert row["detail"].count(keyword.sentence) == 1
+
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    doctor.main(["--json"])
+    capsys.readouterr()
+    assert notices.footer(now=datetime.now(timezone.utc)) is None, "listed by doctor: not news"
+
+
+def test_doctor_still_drops_a_keyword_condition_it_looked_at_and_did_not_find(monkeypatch, capsys):
+    doctor = _quiet_doctor(monkeypatch)
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **_status_with_everything(common.COLLECTION_NAME), "keyword_search": True, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(keyword.id) is None
+
+
+def test_doctor_keeps_behind_conditions_when_it_could_not_read_the_repositories(monkeypatch, capsys):
+    doctor = _quiet_doctor(monkeypatch)
+    behind = notices.behind(_report("one", 3))
+    notices.record({notices.BEHIND}, [behind])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: _status_with_everything(common.COLLECTION_NAME))
+
+    def unreadable():
+        raise ValueError("not JSON")
+
+    monkeypatch.setattr(common, "load_repos", unreadable)
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(behind.id) == behind.fingerprint
+
+
+def test_a_condition_doctor_did_not_list_is_still_news_for_the_footer(monkeypatch, capsys):
+    """Kept, but not marked as said: doctor did not show it in that run (a
+    collection that cannot be read, where the keyword fact is not read)."""
+    doctor = _quiet_doctor(monkeypatch)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing(common.COLLECTION_NAME)])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        "points_count": None, "points_error": "unreadable: broken", "last_indexed": {}, "keyword_search": None,
+        "collection": common.COLLECTION_NAME, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: run `griot doctor`"
+
+
+def test_a_condition_the_footer_said_stays_said_when_doctor_could_not_list_it(monkeypatch, capsys):
+    doctor = _quiet_doctor(monkeypatch)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing(common.COLLECTION_NAME)])
+    assert notices.footer(now=datetime.now(timezone.utc)) == "1 notice: run `griot doctor`"
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        "points_count": None, "points_error": "busy", "last_indexed": {}, "keyword_search": False,
+        "collection": common.COLLECTION_NAME, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.footer(now=datetime.now(timezone.utc)) is None, "already said, and nothing changed"
+
+
+def test_doctor_keeps_a_keyword_condition_when_the_collection_config_cannot_be_read(monkeypatch, capsys):
+    doctor = _quiet_doctor(monkeypatch)
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **_status_with_everything(common.COLLECTION_NAME), "keyword_search": None, "repositories": []})
+    monkeypatch.setattr(common, "load_repos", lambda: [])
+
+    doctor.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(keyword.id) == keyword.fingerprint
+
+
+def test_stats_keeps_a_keyword_condition_when_the_collection_config_cannot_be_read(monkeypatch, capsys):
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **_status_with_everything(common.COLLECTION_NAME), "keyword_search": None, "repositories": []})
+
+    stats.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(keyword.id) == keyword.fingerprint
+
+
+def test_stats_drops_a_keyword_condition_it_looked_at_and_did_not_find(monkeypatch, capsys):
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+    monkeypatch.setattr(common, "get_index_status", lambda **kw: {
+        **_status_with_everything(common.COLLECTION_NAME), "keyword_search": True, "repositories": []})
+
+    stats.main(["--json"])
+    capsys.readouterr()
+
+    assert notices.stored_fingerprint(keyword.id) is None
+
+
+def test_the_kinds_a_status_lets_a_report_look_at():
+    assert notices.KEYWORD_VECTORS_MISSING not in stats.kinds_looked_at({"keyword_search": None, "repositories": []},
+                                                                        {})
+    assert notices.KEYWORD_VECTORS_MISSING in stats.kinds_looked_at({"keyword_search": False, "repositories": []}, {})
+    assert notices.KEYWORD_VECTORS_MISSING in stats.kinds_looked_at({"keyword_search": True, "repositories": []}, {})
+    assert notices.QUALITY_OLDER_THAN_INDEX not in stats.kinds_looked_at({"keyword_search": True}, None)
+    assert notices.QUALITY_OLDER_THAN_INDEX in stats.kinds_looked_at({"keyword_search": True}, {})
+    assert notices.BEHIND not in stats.kinds_looked_at({"keyword_search": True}, {})
+    assert notices.BEHIND in stats.kinds_looked_at({"keyword_search": True, "repositories": []}, {})
+
+
+# --- the refusal and the golden-set note end with the command (round 2) -------------------------------------
+
+def test_the_keyword_refusal_says_the_cost_once_and_ends_with_the_command():
+    collection = common.COLLECTION_NAME
+    sentence = notices.keyword_vectors_missing(collection).sentence
+    text = str(common.keyword_search_unavailable(collection))
+
+    assert text.startswith(notices.capitalized(sentence) + ".")
+    assert text.splitlines()[-1] == "  griot index keywords"
+    assert text.count("griot index keywords") == 1
+    assert "costs nothing" not in text, "the ledger sentence already says it embeds nothing"
+    assert "retry with mode 'vector'" in text and "grep" in text, "what to do until then stays"
+    assert len(text) < 2000
+
+
+def test_the_golden_set_fallback_note_ends_with_the_command():
+    from griot import golden_set
+
+    note = golden_set.vector_fallback_note(notices.keyword_vectors_missing("c"))
+
+    assert note.startswith("The case(s) just added are checked in mode vector")
+    assert note.splitlines()[-1] == "  griot index keywords"
+    assert note.count("griot index keywords") == 1
+
+
+def test_a_line_has_no_period_before_its_action():
+    """The legacy sentences end with their own period (they are joined with a
+    space when there are several); the line form must not read '. —'."""
+    for notice in (notices.legacy_env([("RAG_CHAT_MODEL", "GRIOT_CHAT_MODEL")]),
+                   notices.legacy_layout([("/Users/you/griot/.env", "/Users/you/.config/griot/.env")])):
+        assert ". —" not in notice.line()
+        assert notice.line().endswith(" — " + notice.action)
+
+
+# --- `griot index` records what an index run changes (round 3) -----------------------------------------------
+
+def _end_index(monkeypatch, capsys, keyword_search, reports):
+    from griot import cli, freshness
+
+    monkeypatch.setattr(cli, "_command", "index")
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: reports)
+    monkeypatch.setattr(common, "keyword_search_status", lambda collection: keyword_search)
+    cli._end_with_notices()
+    return capsys.readouterr()
+
+
+def test_griot_index_keeps_a_keyword_condition_when_the_config_cannot_be_read(monkeypatch, capsys):
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+
+    _end_index(monkeypatch, capsys, None, [])
+
+    assert notices.stored_fingerprint(keyword.id) == keyword.fingerprint
+
+
+def test_griot_index_drops_what_it_built_and_records_what_fell_behind(monkeypatch, capsys):
+    keyword = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [keyword])
+
+    out = _end_index(monkeypatch, capsys, True, [_report("one", 12)])
+
+    assert notices.stored_fingerprint(keyword.id) is None
+    assert notices.stored_fingerprint("behind:one") == "10-99"
+    assert out.out == "" and out.err == "1 notice: run `griot doctor`\n"
+
+
+def test_a_command_says_a_condition_again_when_its_fingerprint_changed(monkeypatch, capsys):
+    """say_once(): a profile switch onto another collection without keyword
+    vectors is a new state, said again; the same one is not."""
+    monkeypatch.delenv("GRIOT_QUIET", raising=False)
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing("first")])
+    other = notices.keyword_vectors_missing("second")
+
+    assert notices.say_once(other, notices.KEYWORD_VECTORS_MISSING) is True
+    said = capsys.readouterr()
+    assert said.out == "" and "'second'" in said.err and said.err.rstrip().endswith(other.action)
+    assert notices.say_once(other, notices.KEYWORD_VECTORS_MISSING) is False
+    assert capsys.readouterr().err == ""
+
+
+def test_doctor_indexes_all_when_one_repository_is_behind_and_another_was_refused(monkeypatch, tmp_path):
+    """The refused repository needs an index run too, once its token is
+    fixed: a fix naming only the one behind would leave it out."""
+    from griot import doctor, freshness
+
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(common, "load_repos", lambda: [str(tmp_path / "one"), str(tmp_path / "two")])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        {**_report("one", 3), "missing_sources": []},
+        {"repo": "two", "path": str(tmp_path / "two"), "behind": False, "commits_behind": 0, "behind_sources": [],
+         "missing_sources": [], "platform_refused": True}])
+
+    row = doctor.check_repositories(common)
+
+    assert "griot auth list" in row["fix"]
+    assert row["fix"].endswith(notices.INDEX_ALL), row["fix"]
+    assert "--repo" not in row["fix"]
+
+
+def test_doctor_indexes_the_one_repository_behind_when_nothing_else_needs_it(monkeypatch, tmp_path):
+    from griot import doctor, freshness
+
+    (tmp_path / "one").mkdir()
+    monkeypatch.setattr(common, "load_repos", lambda: [str(tmp_path / "one")])
+    monkeypatch.setattr(freshness, "repository_freshness", lambda *a, **k: [
+        {**_report("one", 3), "missing_sources": []}])
+
+    assert doctor.check_repositories(common)["fix"] == "griot index all --repo one"

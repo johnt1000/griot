@@ -43,10 +43,10 @@ KEYWORD_VECTORS_MISSING = "keyword_vectors_missing"
 QUALITY_OLDER_THAN_INDEX = "quality_older_than_index"
 LEGACY_ENV = "legacy_env"
 LEGACY_LAYOUT = "legacy_layout"
-ALL_KINDS = frozenset({BEHIND, KEYWORD_VECTORS_MISSING, QUALITY_OLDER_THAN_INDEX, LEGACY_ENV, LEGACY_LAYOUT})
 
-# Said before the keyword sentence when a default search fell back.
-FELL_BACK = "This search ran by meaning only (mode vector)."
+# Said before the keyword sentence when a default search fell back. Not
+# "by meaning only": the sentence that follows says that already.
+FELL_BACK = "This search ran in mode vector."
 
 
 @dataclass(frozen=True)
@@ -72,8 +72,10 @@ class Notice:
         return self.id.split(":", 1)[0]
 
     def line(self) -> str:
-        """The form doctor's fix arrow and the stats attention list share."""
-        return f"{self.sentence} — {self.action}"
+        """The form doctor's fix arrow and the stats attention list share.
+        The legacy sentences keep their own final period (several are joined
+        with a space); before the dash it would read '. —'."""
+        return f"{self.sentence.removesuffix('.')} — {self.action}"
 
 
 def capitalized(text: str) -> str:
@@ -256,7 +258,12 @@ _UNSTORED: dict[str, dict] = {}
 
 def _load() -> dict:
     """The stored ledger. A file that cannot be read, or holds something
-    else, only means it is said again: it must never stop a command."""
+    else, only means it is said again: it must never stop a command.
+
+    Read, changed and written with no lock across processes, on purpose: two
+    griot commands ending at the same moment can lose one's update, and the
+    cost is a notice said once more. A lock would let a stuck process hold
+    every command's last line."""
     path = _store_path()
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -314,7 +321,9 @@ def _current(conditions: dict) -> list[str]:
 
 
 def footer_text(count: int) -> str:
-    return f"{count} notice{'s' if count != 1 else ''}: griot doctor"
+    # The wording the maintainer gave in the brief of this change; the
+    # backticks set the command apart on a line that is otherwise a count.
+    return f"{count} notice{'s' if count != 1 else ''}: run `griot doctor`"
 
 
 # The ids of the conditions this process said in prose (say_once()): the
@@ -369,20 +378,27 @@ def footer(now: datetime | None = None, spoken: set[str] | frozenset[str] | None
     return footer_text(len(current))
 
 
-def listed(found: list[Notice], now: datetime | None = None) -> None:
-    """`griot doctor` or `griot stats` listed every condition: they are the
-    ledger now, and the footer has nothing new to say about them. Only into
-    a data directory that is already there: looking is not writing, and a
-    doctor run on a new installation must leave nothing behind (the next
-    command that writes says it once, in its footer)."""
+def listed(found: list[Notice], kinds: set[str] | frozenset[str], now: datetime | None = None) -> None:
+    """`griot doctor` or `griot stats` listed what they found of the kinds
+    they looked at (`kinds`): those are the ledger now, and the footer has
+    nothing new to say about them. A kind they could not look at (doctor
+    stops before the keyword check on a busy collection, say) stays stored
+    and, if the footer never said it, is still news: it was not on screen.
+    Only into a data directory that is already there: looking is not
+    writing, and a doctor run on a new installation must leave nothing
+    behind (the next command that writes says it once, in its footer)."""
     from griot import common
 
     if not common.DATA_DIR.is_dir():
         return
-    record(ALL_KINDS, found)
+    record(kinds, found)
     state = _load()
     current = _current(state["conditions"])
-    state["footer"] = {"shown": current, "at": (now or datetime.now(timezone.utc)).isoformat()} if current else {}
+    shown_before = state["footer"].get("shown")
+    shown_before = shown_before if isinstance(shown_before, list) else []
+    on_screen = {notice.id for notice in found}
+    shown = [entry for entry in current if entry in shown_before or entry.split("=", 1)[0] in on_screen]
+    state["footer"] = {"shown": shown, "at": (now or datetime.now(timezone.utc)).isoformat()} if current else {}
     _save(state)
 
 

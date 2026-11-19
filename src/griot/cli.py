@@ -935,9 +935,11 @@ def _end_with_notices() -> None:
         if _command == "index":
             from griot import freshness, stats
 
-            kinds |= {notices.BEHIND, notices.KEYWORD_VECTORS_MISSING}
-            found += stats.ledger({"repositories": freshness.repository_freshness(),
-                                   "keyword_search": common.keyword_search_status(common.COLLECTION_NAME)}, None)
+            status = {"repositories": freshness.repository_freshness(),
+                      "keyword_search": common.keyword_search_status(common.COLLECTION_NAME)}
+            # A config that cannot be read leaves a stored keyword fact as it was.
+            kinds |= stats.kinds_looked_at(status, None)
+            found += stats.ledger(status, None)
         notices.record(kinds, found)
         line = notices.footer()
     except Exception as e:  # whatever the ledger could not foresee: logged, never raised

@@ -20,8 +20,8 @@ from griot import common, cli, platforms, repos
 OLD_VARIABLE = "RAG_EMBED_PROFILE"
 # What the CLI says of a renamed variable since the notices ledger: one footer
 # line, the sentence itself being listed by `griot doctor` and `griot stats`.
-FOOTER = "1 notice: griot doctor"
-OLD_LINE = f'{OLD_VARIABLE} was renamed and griot ignores it. — export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
+FOOTER = "1 notice: run `griot doctor`"
+OLD_LINE = f'{OLD_VARIABLE} was renamed and griot ignores it — export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
 
 
 def _run(tmp_path, *args, extra_env=None, stdin=subprocess.DEVNULL):
