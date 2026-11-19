@@ -437,6 +437,9 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if index_status.get("spend_ceiling_exceeded"):
         attention.append("today's spend reached the daily ceiling: paid calls are refused until "
                          "tomorrow, or until the ceiling is raised")
+    if index_status.get("keyword_search") is False:
+        attention.append(common.keyword_search_missing_sentence(index_status.get("collection") or collection
+                                                                or common.COLLECTION_NAME))
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
 

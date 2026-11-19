@@ -42,6 +42,7 @@ TESTS_MAY_REACH = {
         "_client": _STATE,
         "_keychain_cache": _STATE,
         "_client_last_used_at": _STATE,
+        "_client_lock": _STATE,
         "_embed_model": _STATE,
         "_echo_stream": _STATE,
         "_logger": _STATE,
