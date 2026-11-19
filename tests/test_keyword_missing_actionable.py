@@ -54,6 +54,15 @@ def test_the_doctor_warns_with_the_command_and_stays_exit_zero(legacy_index):
     assert doctor.exit_status([check]) == 0, "a warning does not turn the install red"
 
 
+def test_the_doctor_row_carries_the_condition_as_data(legacy_index):
+    """What `griot update` shows after an upgrade: the ledger's own sentence
+    and command, as fields, not cut out of the row's detail."""
+    check = {c["check"]: c for c in doctor.run_checks()}["index"]
+    found = notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    assert check["notices"] == [{"id": found.id, "severity": "warn", "sentence": found.sentence,
+                                 "action": found.action}]
+
+
 def test_the_doctor_is_ok_when_keyword_vectors_are_built(index):
     check = {c["check"]: c for c in doctor.run_checks()}["index"]
     assert check["status"] == "ok" and "keyword" not in check["detail"]

@@ -214,10 +214,14 @@ def cmd_set(provider: str) -> int:
     return 0
 
 
+# How a running MCP server is made to read again: said after a credential
+# changes and after `griot update`, in the same words.
+RECONNECT_SERVERS = "Reconnect them from the client (in Claude Code, /mcp) or restart the client."
+
 RUNNING_SERVERS_KEEP_WHAT_THEY_READ = (
     "running griot MCP servers keep the credentials they already read until they are restarted (each reads "
     "<config_dir>/.env when it starts and asks the keychain once for each credential, keeping that answer, "
-    "a missing key included). Reconnect them from the client (in Claude Code, /mcp) or restart the client."
+    f"a missing key included). {RECONNECT_SERVERS}"
 )
 
 

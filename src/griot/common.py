@@ -4703,6 +4703,12 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
                 points_count = other_shard.info().points_count
             finally:
                 other_shard.close()
+                # The engine rewrites edge_config.json and segment.json
+                # with the process umask on this close too, as it does on
+                # release_client()'s: the same repair after it, or a status
+                # read (griot doctor, run on its own by griot update)
+                # leaves files open that the next doctor warns about.
+                _secure_collection_dir(collection)
         except Exception as e:
             points_count, points_error = None, _points_error(collection, e)
     else:

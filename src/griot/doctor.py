@@ -9,12 +9,14 @@ before every search. This runs every check, says ok / warn / FAIL / skip for
 each with what to do, and changes nothing. The exit status is 1 only for a
 FAIL: a warning is something to know, not something broken.
 
-It reads. It changes no setting, no index and no file of yours. Two things
-happen on the way, and both are said: the configuration loading closes a
-configuration file left open to other users, as every griot command does
-(reported under settings); and asking a harness which server it has
-registered may start that server for a moment, as `griot assist install`
-does when it asks the same. One goes to the network: the release check asks
+It changes no setting, no index and no file of yours. Three things happen
+on the way: the configuration loading closes a configuration file left open
+to other users, as every griot command does (reported under settings);
+counting the collection's points lets the engine rewrite its own small
+files, closed to other users again as on every open (so nothing says it
+only reads: `griot update` runs it on its own); and asking a harness which
+server it has registered may start that server for a moment, as
+`griot assist install` does when it asks the same. One goes to the network: the release check asks
 PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off); the only
 other griot command that makes that request is `griot update`, which a person
 runs to upgrade and which that setting does not govern.
@@ -53,8 +55,37 @@ OTHERS = 0o077
 OPEN_ENTRIES_NAMED = 3
 
 
-def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict:
-    return {"check": name, "status": status, "detail": detail, "fix": fix}
+def _check(name: str, status: str, detail: str, fix: str | None = None, notices=()) -> dict:
+    """A row of the report. `notices` are the ledger conditions the row
+    lists (notices.py), carried as data beside the prose: `griot update`
+    reads them from the upgraded doctor's --json to show each one's sentence
+    and command, which it could not cut out of `detail` without parsing it.
+    The --json shape is read across versions from then on (the previous
+    release's `griot update` parses this one's rows): add keys, never change
+    or drop one."""
+    return {"check": name, "status": status, "detail": detail, "fix": fix, "notices": [_notice_data(n) for n in notices]}
+
+
+def _notice_data(notice) -> dict:
+    return {"id": notice.id, "severity": notice.severity, "sentence": notice.sentence, "action": notice.action}
+
+
+def counts_phrase(failures: int, warnings: int) -> str:
+    """`1 failure, 2 warnings`: how the report's last line counts, and how
+    `griot update` counts what the new version's checks report."""
+    return f"{failures} failure{'s' if failures != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}"
+
+
+def pypi_failure_cause(error: BaseException) -> str:
+    """Why PyPI gave no answer, in words, never the exception's class: the
+    release check and `griot update` say it the same way. A JSON error from
+    requests is both a RequestException and a ValueError; what went wrong is
+    the answer, so ValueError is asked first."""
+    import requests
+
+    if isinstance(error, requests.RequestException) and not isinstance(error, ValueError):
+        return "no network answer"
+    return "PyPI's answer could not be read"
 
 
 def _env_path_without_the_configuration() -> Path:
@@ -134,7 +165,7 @@ def _from_ledger(name: str, found: list, detail_before: str = "") -> dict:
     # Actions one per line, never "; "-joined: a fix that ends in a shell
     # comment would swallow every command pasted after it on the same line.
     return _check(name, severity, detail_before + "; ".join(n.sentence for n in found),
-                  "\n".join(n.action for n in found))
+                  "\n".join(n.action for n in found), found)
 
 
 def _looked(looked: set | None, kind: str) -> None:
@@ -284,8 +315,9 @@ def _with_condition(row: dict, notice) -> dict:
         return row
     rank = {OK: 0, WARN: 1, FAIL: 2}
     status = max(row["status"], notice.severity, key=lambda s: rank.get(s, 0))
-    return _check(row["check"], status, f"{row['detail']}; {notice.sentence}",
-                  "\n".join(part for part in (row["fix"], notice.action) if part))
+    return {**_check(row["check"], status, f"{row['detail']}; {notice.sentence}",
+                     "\n".join(part for part in (row["fix"], notice.action) if part)),
+            "notices": row["notices"] + [_notice_data(notice)]}
 
 
 def check_index(common, found: list | None = None, looked: set | None = None) -> dict:
@@ -411,7 +443,7 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
             fix += ("; where the platform did not answer or failed, " + stats.FAILURE_CHECK)
         if checks:
             fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
-        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
+        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix, behind)
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
 
@@ -700,8 +732,8 @@ def check_release(common) -> dict:
     # answer, there is none, and the doctor's guard would turn the rest into
     # a FAIL about an installation that has nothing wrong with it.
     except Exception as e:
-        return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({type(e).__name__}); "
-                                     f"this is {installed}")
+        return _check(RELEASE, SKIP, f"could not ask PyPI for the newest release ({pypi_failure_cause(e)}); "
+                                     f"this is griot {installed}")
     mine, theirs = release_numbers(installed), release_numbers(newest)
     if mine is None or theirs is None:
         return _check(RELEASE, SKIP, f"could not compare {installed} (installed) with {newest!r} (newest on PyPI)")
@@ -783,7 +815,7 @@ def format_report(checks: list[dict]) -> str:
     failures = sum(check["status"] == FAIL for check in checks)
     warnings = sum(check["status"] == WARN for check in checks)
     lines.append("")
-    lines.append(f"{failures} failure{'s' if failures != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}"
+    lines.append(counts_phrase(failures, warnings)
                  + (": fix the failures first" if failures else "" if warnings else ": griot is ready"))
     return "\n".join(lines)
 
@@ -794,9 +826,12 @@ def main(argv=None) -> int:
         description="Checks griot's setup: settings, profile and credential, index, repositories, spend, the MCP "
                     "registration and tool approval, the environment a server would obey, git, the log, and whether "
                     "a newer griot was released (asks PyPI; `griot config set update-check false` turns that off). "
-                    "Reads only (changes no setting, index or file of yours). Exit status 1 only when a check fails.")
+                    "Changes no setting, index or file of yours. Exit status 1 only when a check fails.")
     show_flags_read_by_griot(parser, PROFILE_FLAG)
-    parser.add_argument("--json", action="store_true", help="One JSON document instead of the report")
+    parser.add_argument("--json", action="store_true",
+                        help="One JSON document instead of the report: a list of rows with check, status, detail, "
+                             "fix and notices (the conditions the row lists, each with id, severity, sentence and "
+                             "action)")
     args = parser.parse_args(argv)
     found, looked = [], set()
     checks = run_checks(found=found, looked=looked)
