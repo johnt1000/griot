@@ -235,7 +235,9 @@ def test_only_the_repository_behind_is_indexed(tmp_path, two):
     lines = done.stderr.splitlines()
     assert "Behind, 1 of 2 registered repositories: other (3 commits)." in lines
     assert "=== griot index code: other ===" in lines
-    assert "=== griot index all --if-stale: other indexed (1 of 2 registered) ===" in lines
+    # The summary is the run's result: on stdout, where a scheduler's log
+    # keeps it, not with the progress on stderr.
+    assert "=== griot index all --if-stale: other indexed (1 of 2 registered) ===" in done.stdout.splitlines()
     # The run recorded the new HEAD: the next call finds nothing behind.
     again, rows = _run(tmp_path, "index", "all", "--if-stale")
     assert again.returncode == 0 and _ran(rows) == [], again.stderr
@@ -267,6 +269,17 @@ def test_a_source_that_never_ran_is_named_in_the_phrase_doctor_uses():
     assert notices.never_indexed(["tags", "platform"]) == "tags and platform never indexed"
     assert notices.never_indexed(list(freshness.SOURCES)) == "never indexed"
     assert tuple(notices.SOURCES) == freshness.SOURCES, "the copy follows the sources"
+
+
+def test_quiet_keeps_which_repositories_were_indexed(tmp_path, two):
+    """--quiet silences progress, never the result (the interaction policy):
+    a scheduled `--if-stale --quiet` run must still say what it indexed."""
+    _, other = two
+    _advance(other, 1)
+    done, rows = _run(tmp_path, "index", "all", "--if-stale", "--quiet")
+    assert done.returncode == 0, done.stderr
+    assert _ran(rows) == [(source, "other") for source in SOURCES]
+    assert "=== griot index all --if-stale: other indexed (1 of 2 registered) ===" in done.stdout.splitlines()
 
 
 def test_only_the_sources_asked_for_count(tmp_path, two):

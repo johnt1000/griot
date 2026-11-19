@@ -418,8 +418,11 @@ def _run_index_stale(sources, rest, selected, typed: bool, registered: int, comm
             common.progress_source(source, "done")
             done.setdefault(shown, []).append(source)
     names = ", ".join(common.printable(name) for name in selected)
-    common.progress_note(f"=== griot index all --if-stale: {names} indexed ({len(selected)} of {registered} "
-                         f"registered) ===")
+    # The run's result, so stdout and never silenced by --quiet (the
+    # interaction policy): a scheduled `--if-stale --quiet` run is read from
+    # its log, and this is the line that says which repositories it indexed.
+    print(f"=== griot index all --if-stale: {names} indexed ({len(selected)} of {registered} registered) ===",
+          flush=True)
     return 0
 
 
