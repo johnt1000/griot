@@ -26,6 +26,16 @@ ENVIRONMENT_ONLY_NARROWS = False
 PROFILE_FROM_COMMAND_LINE: str | None = None
 
 
+def is_interactive() -> bool:
+    """True when a person can be asked: both ends are a terminal. The one
+    check for every command that asks something (common.confirm and the
+    others in common.py, `griot assist install`). Here, not in common.py,
+    which re-exports it: `griot assist install` must still ask, and still
+    finish, when the configuration common.py reads cannot be loaded."""
+    import sys
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 class GriotError(Exception):
     """An error griot raises on purpose, with text written for whoever reads
     it: what happened and what to do. The MCP server sends this text to the

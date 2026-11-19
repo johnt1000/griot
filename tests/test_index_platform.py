@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import GitRepo
-from griot import index_platform
+from griot import common, index_platform
 
 
 # --- --path (mutually exclusive with --repo, skips repos.json) -------------
@@ -118,7 +118,7 @@ def test_main_without_repos_json_prints_friendly_error(monkeypatch, capsys):
     assert index_platform.main([]) == 1
 
     out = capsys.readouterr().err  # an error: stderr and a failing exit status
-    assert "not found" in out
+    assert out == f"Error: No repository registered in {common.REPOS_JSON_PATH}.\n  griot repos add <path>\n"
 
 
 # --- a fetch the platform refuses is a failure of the run --------------------

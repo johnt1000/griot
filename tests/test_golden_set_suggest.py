@@ -277,9 +277,9 @@ def test_a_run_where_every_approved_case_was_written_says_nothing_was_left_out(g
     assert "not added" not in capsys.readouterr().out.lower()
 
 
-def test_a_golden_set_that_is_not_json_stops_the_run_at_the_first_write(git_repo, monkeypatch, capsys):
-    """Every candidate would fail the same way, so it is said once and no
-    one is asked about the rest; the file is left as it was."""
+def test_a_golden_set_that_is_not_json_stops_the_run_before_anyone_is_asked(git_repo, monkeypatch, capsys):
+    """Every candidate would fail the same way, so it is said once, before
+    the first question; the file is left as it was."""
     _commit_files(git_repo, "Fix the login bug", {"auth.py": "x = 2"})
     _commit_files(git_repo, "Fix the search bug", {"search.py": "x = 2"})
     common.GOLDEN_SET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -288,10 +288,9 @@ def test_a_golden_set_that_is_not_json_stops_the_run_at_the_first_write(git_repo
 
     assert cli.main(["golden-set", "suggest", str(git_repo.path)]) == 1
 
-    assert len(asked) == 1
+    assert asked == []
     assert common.GOLDEN_SET_PATH.read_text() == "{ not json"
-    err = capsys.readouterr().err
-    assert err.count("Error:") == 1 and str(common.GOLDEN_SET_PATH) in err and "not valid JSON" in err
+    assert capsys.readouterr().err == f"Error: {golden_set.unreadable_sentence('corrupted JSON')}\n"
 
 
 @pytest.fixture(autouse=True)

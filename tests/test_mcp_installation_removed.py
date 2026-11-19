@@ -127,9 +127,11 @@ async def test_an_async_tool_failing_after_the_removal_says_so_too(monkeypatch, 
     def remove_case(index):
         raise ModuleNotFoundError("No module named 'griot.something_lazy'")
     monkeypatch.setattr(golden_set, "remove_case", remove_case)
+    # A case that is there: one that is not is refused before the removal runs.
+    monkeypatch.setattr(golden_set, "get_case", lambda index, cases=None: {"query": "q"})
 
     async with Client(mcp_server.mcp) as client:
-        result = await client.call_tool("griot_golden_set_remove", {"index": 0, "confirm": True})
+        result = await client.call_tool("griot_golden_set_remove", {"index": 1, "confirm": True})
 
     assert result.is_error is True
     _says_the_installation_went_away(_text(result))
@@ -150,7 +152,7 @@ async def test_a_resource_read_after_the_removal_says_so(monkeypatch, package_re
 
     text = raised.value.error.message
     _says_the_installation_went_away(text)
-    assert "Could not read repos.json" in text, text
+    assert "repos.json could not be read" in text, text
     assert CERT_ERROR in text, text
 
 

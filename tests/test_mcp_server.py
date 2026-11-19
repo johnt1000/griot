@@ -436,6 +436,9 @@ async def test_removing_a_repo_still_allows_the_confirm_fallback(monkeypatch, tm
     abusing it causes annoyance, not exfiltration — so the fallback that
     keeps MCP usable everywhere is appropriate here."""
     monkeypatch.setattr(repos, "remove_repo", lambda p: p)
+    # Registered, so the check made before anyone is asked lets it through.
+    common.secure_mkdir(common.REPOS_JSON_PATH.parent)
+    common.REPOS_JSON_PATH.write_text(json.dumps([str(tmp_path.resolve())]))
 
     result = await mcp_server.griot_repos_remove(str(tmp_path), confirm=True, ctx=_FakeCtx())
 
@@ -827,10 +830,19 @@ def test_golden_set_list_names_the_file_when_it_is_corrupt(monkeypatch):
         mcp_server.griot_golden_set_list()
 
 
+def _two_cases():
+    # The case a remove names has to be there: it is checked before anyone
+    # is asked.
+    common.secure_mkdir(common.GOLDEN_SET_PATH.parent)
+    common.GOLDEN_SET_PATH.write_text(json.dumps(
+        [{"query": f"case {n}", "must_include": [{"repo": "r"}], "limit": 5} for n in (1, 2)]))
+
+
 @pytest.mark.anyio
 async def test_golden_set_remove_removes_once_confirmed(monkeypatch):
     """[review finding] the only state-changing tool whose SUCCESS path had no
     test — the refusal was covered, the effect was not."""
+    _two_cases()
     removed = []
     monkeypatch.setattr(golden_set, "remove_case",
                         lambda index: removed.append(index) or {"query": "an old case"})
@@ -847,14 +859,22 @@ async def test_golden_set_add_reports_a_validation_error(monkeypatch):
     monkeypatch.setattr(golden_set, "add_case",
                         lambda **kw: (_ for _ in ()).throw(ValueError("query cannot be empty")))
 
-    result = await mcp_server.griot_golden_set_add("", [], confirm=True, ctx=_FakeCtx())
+    result = await mcp_server.griot_golden_set_add("retry policy", [{"repo": "r"}], confirm=True, ctx=_FakeCtx())
 
     assert result["changed"] is False
     assert "query cannot be empty" in result["message"]
 
 
 @pytest.mark.anyio
+async def test_golden_set_add_refuses_an_empty_query_before_confirming():
+    result = await mcp_server.griot_golden_set_add("", [{"repo": "r"}], ctx=_FakeCtx())
+
+    assert result == {"changed": False, "message": "query must not be empty."}
+
+
+@pytest.mark.anyio
 async def test_golden_set_remove_waits_for_confirmation(monkeypatch):
+    _two_cases()
     called = []
     monkeypatch.setattr(golden_set, "remove_case", lambda i: called.append(i) or {"query": "q"})
 

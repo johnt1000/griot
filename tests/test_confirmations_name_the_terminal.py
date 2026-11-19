@@ -14,6 +14,7 @@ import re
 
 import pytest
 
+import griot
 from griot import cli, common, config, harnesses, repos
 
 
@@ -72,7 +73,7 @@ def test_shortening_the_log_retention_refusal_names_the_terminal(no_terminal, ca
 @pytest.fixture
 def claude(monkeypatch, tmp_path):
     """The real harness, its user directory moved under tmp_path."""
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     real = next(h for h in harnesses.HARNESSES if h.id == "claude-code")
     return dataclasses.replace(
         real, user_dir_problem=None,

@@ -359,12 +359,15 @@ already surface as `isError` with an actionable message.
 ## CLI and MCP, side by side
 
 Verified by reading the CLI's subparsers and calling `list_tools()` on a
-live server; last on 2026-10-09. The table is the mapping; counts are left
-out on purpose, because every one written here went stale.
+live server; last on 2026-11-19. The table is the mapping; counts are left
+out on purpose, because every one written here went stale. `--json` on `search`,
+`repos list`, `profiles list` and `golden-set list` prints the tool's own
+document, built by the same function (`profiles list` adds RAM and price
+fields to each entry).
 
 | Operation | CLI | MCP | Confirmation |
 |---|---|---|---|
-| Search (by meaning, by keyword, or both) | `search` | `griot_search` (`group_by_document`, `repos`, `source_types`, `mode`; `--group-by-document`, `--repo`, `--source-type`, `--mode` on the CLI) | — |
+| Search (by meaning, by keyword, or both) | `search` (`--json`) | `griot_search` (`group_by_document`, `repos`, `source_types`, `mode`; `--group-by-document`, `--repo`, `--source-type`, `--mode` on the CLI) | — |
 | Add keyword vectors to an older index | `index keywords` | — *(rewrites the whole collection; a person runs it)* | — |
 | Index status | *(part of `stats`)* | `griot_index_status` (with the progress of a run this server started) | — |
 | Follow an index run | *(the run prints its own progress)* | `griot_index_wait` (with `griot_index_repo`; progress notifications) | — |
@@ -372,9 +375,9 @@ out on purpose, because every one written here went stale.
 | Usage report | `stats` | `griot_stats`, prompt `stats` | — |
 | Guided investigation | `ask` *(paid synthesis)* | prompt `history` *(synthesis in the caller's own LLM)* | — |
 | Quality check | `quality-check` *(self-check **and** golden set)* | `griot_quality_check` *(both; `golden_set=false` for the self-check alone)* | — |
-| List repos | `repos list` | `griot_repos_list` | — |
-| List profiles | `profiles list` | `griot_profiles_list` | — |
-| List golden set | `golden-set list` | `griot_golden_set_list` | — |
+| List repos | `repos list` (`--json`) | `griot_repos_list` | — |
+| List profiles | `profiles list` (`--json`) | `griot_profiles_list` | — |
+| List golden set | `golden-set list` (`--json`) | `griot_golden_set_list` | — |
 | Audit of stored values | `audit` *(the whole index)* | `griot_audit` *(a bounded number of stored points per call; `repos` reads one repository at a time; asked about each time)* | — |
 | Settings | `config list`, `config get` *(what a new process would use)* | `griot_config_list` *(what this server runs with, and whether the file changed since it started)* | — |
 | Register a repo | `repos add` | `griot_repos_add` | **human only** |
