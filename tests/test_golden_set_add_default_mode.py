@@ -182,3 +182,9 @@ async def test_a_query_with_no_word_to_match_falls_back_to_vector_as_search_does
     assert out["changed"] is True and "vector" in out["message"]
     assert "griot index keywords" not in out["message"], "the collection has keyword vectors: nothing to build"
     assert "mode" not in _cases()[0]
+
+
+@pytest.fixture(autouse=True)
+def _a_person_is_at_the_terminal(monkeypatch):
+    """add and suggest ask a person and refuse without a terminal; input() is faked here."""
+    monkeypatch.setattr(common, "is_interactive", lambda: True)

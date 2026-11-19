@@ -220,3 +220,9 @@ async def test_the_suggest_tool_says_a_candidate_added_without_a_mode_is_hybrid(
     async with Client(mcp_server.mcp) as client:
         tool = {t.name: t for t in (await client.list_tools()).tools}["griot_golden_set_suggest"]
     assert "hybrid" in tool.description
+
+
+@pytest.fixture(autouse=True)
+def _a_person_is_at_the_terminal(monkeypatch):
+    """add and suggest ask a person and refuse without a terminal; input() is faked here."""
+    monkeypatch.setattr(common, "is_interactive", lambda: True)

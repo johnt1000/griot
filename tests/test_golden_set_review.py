@@ -358,7 +358,7 @@ def test_a_bad_answer_is_asked_again(terminal, capsys):
     golden_set.cmd_review()
 
     assert _cases()[0]["must_include"] == [CODE]
-    assert "out of range" in capsys.readouterr().out.lower()
+    assert "out of range" in capsys.readouterr().err.lower()
 
 
 def test_older_queries_without_results_can_be_shown_but_not_made_cases(terminal, capsys):
