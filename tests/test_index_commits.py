@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import GitRepo
-from griot import index_commits
+from griot import common, index_commits
 
 
 def test_list_commits_empty_repo(git_repo):
@@ -139,4 +139,4 @@ def test_main_without_repos_json_prints_friendly_error(monkeypatch, capsys):
     assert index_commits.main([]) == 1
 
     out = capsys.readouterr().err  # an error: stderr and a failing exit status
-    assert "not found" in out
+    assert out == f"Error: No repository registered in {common.REPOS_JSON_PATH}.\n  griot repos add <path>\n"

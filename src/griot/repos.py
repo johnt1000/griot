@@ -6,6 +6,7 @@ hand-editing the JSON.
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -15,7 +16,8 @@ from griot import UsageError, common
 def _load() -> list[str]:
     if not common.REPOS_JSON_PATH.exists():
         return []
-    return json.loads(common.REPOS_JSON_PATH.read_text())
+    # common's reader, so a file of the wrong shape is refused here too.
+    return common.load_repos()
 
 
 def _save(paths: list[str]) -> None:
@@ -47,6 +49,34 @@ def repo_status() -> list[dict]:
         {"name": Path(path).name, "path": path, "exists": Path(path).is_dir(), "is_git": is_git_repo(path)}
         for path in _load()
     ]
+
+
+def list_result() -> dict:
+    """What `griot repos list --json`, the griot_repos_list tool and the
+    griot://repos resource return, built here so the three cannot come to
+    disagree: {repos: repo_status(), count}. Raises OSError or ValueError
+    when repos.json cannot be read (unreadable_sentence() says it)."""
+    entries = repo_status()
+    return {"repos": entries, "count": len(entries)}
+
+
+# The one wording for a repos.json that is there and cannot be used, and
+# what it raises then besides OSError; both live in common, which the
+# indexers and harnesses say it from too.
+unreadable_sentence = common.repos_unreadable_sentence
+UNREADABLE = common.UNREADABLE_JSON
+
+
+class NothingRegistered(ValueError):
+    """There is no repository to remove: a conflict with the list, not a
+    wrong request (exit 1). Its text is common.no_repository_sentence(),
+    which already ends with the command."""
+
+
+# How a registered path that is no longer a directory is named on the CLI
+# surfaces (`griot repos list`, `griot doctor`); `exists: false` in the JSON
+# of `griot repos list --json` and griot_repos_list.
+GONE = "registered but no longer on disk"
 
 
 def check_add(path: str) -> str:
@@ -94,7 +124,7 @@ def check_remove(path: str) -> str:
     resolved = str(Path(path).resolve())
     paths = _load()
     if not paths:
-        raise UsageError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
+        raise NothingRegistered(common.no_repository_sentence())
     if resolved not in paths:
         raise UsageError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
     return resolved
@@ -102,8 +132,9 @@ def check_remove(path: str) -> str:
 
 def remove_repo(path: str) -> str:
     """Write half of repo_status() for removing one repo.
-    Returns the resolved path that was removed. Raises ValueError on a
-    missing repos.json or an unregistered path."""
+    Returns the resolved path that was removed. Raises NothingRegistered
+    on a missing or empty repos.json, ValueError on an unregistered path,
+    OSError or one of UNREADABLE on a file that cannot be used."""
     resolved = check_remove(path)
     paths = _load()
     paths.remove(resolved)
@@ -115,14 +146,36 @@ _LIST = "griot repos list"
 _ADD = "griot repos add <directory>"
 
 
+def refusal_text(error: ValueError, next_command: str) -> str:
+    """What a refused add or remove says, without "Error: ": the reason and
+    the next command last. Built once for `griot repos` and the MCP tools
+    (griot_repos_add, griot_repos_remove), so the same refusal reads the
+    same on both. NothingRegistered already ends with its command."""
+    if isinstance(error, NothingRegistered):
+        return str(error)
+    return f"{error}\n  {next_command}"
+
+
+def next_after_refused(error: ValueError, *, adding: bool) -> str:
+    """The command a refusal ends with: a path that is not a directory is
+    answered with how to add one that is, anything else with the list."""
+    return _next_after_refused_add(error) if adding else _LIST
+
+
 def _refuse(error: ValueError, next_command: str) -> int:
-    """The one way a refused repos command ends: the sentence, the next
-    command last, and the exit status by kind (2 for a wrong request, 1 for
-    a conflict with the list or a list that could not be read). The last line
-    matches the cause: a path that is not a directory is answered with how to
-    add one that is, not with the list."""
-    print(f"Error: {error}\n  {next_command}", file=sys.stderr)
+    """The one way a refused repos command ends: refusal_text() on stderr,
+    and the exit status by kind (2 for a wrong request, 1 for a conflict
+    with the list or a list that could not be read)."""
+    print(f"Error: {refusal_text(error, next_command)}", file=sys.stderr)
     return 2 if isinstance(error, UsageError) else 1
+
+
+def _refuse_unreadable(error: Exception) -> int:
+    """A repos.json that is there and cannot be used: the sentence every
+    surface says, never the parser's text, and never "see `griot repos
+    list`", which fails on the same file."""
+    print(f"Error: {unreadable_sentence(error)}", file=sys.stderr)
+    return 1
 
 
 def _next_after_refused_add(error: ValueError) -> str:
@@ -132,6 +185,8 @@ def _next_after_refused_add(error: ValueError) -> str:
 def cmd_add(path: str) -> int:
     try:
         resolved = add_repo(path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _next_after_refused_add(e))
     print(f"Added: {resolved}")
@@ -149,10 +204,21 @@ def cmd_add(path: str) -> int:
     return 0
 
 
-def cmd_list() -> int:
-    statuses = repo_status()
+def cmd_list(as_json: bool = False) -> int:
+    try:
+        result = list_result()
+    except (OSError, ValueError) as e:
+        # A file that is there and cannot be read is not "nothing
+        # registered": an error on stderr, and stdout stays empty so that a
+        # script reading --json does not take it for an empty list.
+        print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
+        return 1
+    if as_json:
+        common.print_json(result)
+        return 0
+    statuses = result["repos"]
     if not statuses:
-        print(f"No repo configured in {common.REPOS_JSON_PATH} (empty).")
+        print(common.no_repository_sentence())
         return 0
 
     for status in statuses:
@@ -161,14 +227,27 @@ def cmd_list() -> int:
         # from another host) — silently invalid until `griot index` actually
         # tries them. Warning here, on read, is cheaper than discovering it
         # in the middle of a batch indexing run.
-        marker = "✓" if status["exists"] else "✗ doesn't exist"
+        marker = "✓" if status["exists"] else f"✗ {GONE}"
         print(f"  {marker}  {status['path']}")
+    # The fix last, as `griot doctor` gives it, one command per path.
+    for status in statuses:
+        if not status["exists"]:
+            print(f"  {remove_command(status['path'])}")
     return 0
+
+
+def remove_command(path: str) -> str:
+    """The command that unregisters `path`, quoted so it can be pasted as it
+    is: a path with a space otherwise reached argparse as two arguments.
+    Said by `griot repos list` and `griot doctor`."""
+    return f"griot repos remove {shlex.quote(path)}"
 
 
 def cmd_remove(path: str) -> int:
     try:
         resolved = remove_repo(path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _LIST)
     print(f"Removed: {resolved}")
@@ -176,7 +255,7 @@ def cmd_remove(path: str) -> int:
 
 
 def main(argv=None) -> int:
-    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
+    from griot.cli import json_flag_help, show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot repos",
         description="Manages the list of repos indexed in bulk (repos.json).",
@@ -191,7 +270,8 @@ def main(argv=None) -> int:
                     "flag that answers: run from a script or an agent's shell, with no terminal, it changes nothing.")
     p_add.add_argument("path")
 
-    sub.add_parser("list", help="Lists configured repos, flagging the ones that no longer exist on disk")
+    p_list = sub.add_parser("list", help="Lists configured repos, flagging the ones that no longer exist on disk")
+    p_list.add_argument("--json", action="store_true", help=json_flag_help("docs/getting-started.md"))
 
     p_remove = sub.add_parser("remove", help="Removes a repo from the list")
     p_remove.add_argument("path")
@@ -199,7 +279,7 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
     if args.action == "list":
-        return cmd_list()
+        return cmd_list(as_json=args.json)
 
     # Confirmation lives here, in the command-line entry, and not in
     # cmd_add()/cmd_remove(): those stay the plain operation. What is cheap
@@ -208,6 +288,8 @@ def main(argv=None) -> int:
     adding = args.action == "add"
     try:
         resolved = check_add(args.path) if adding else check_remove(args.path)
+    except (OSError, *UNREADABLE) as e:
+        return _refuse_unreadable(e)
     except ValueError as e:
         return _refuse(e, _next_after_refused_add(e) if adding else _LIST)
     if adding:

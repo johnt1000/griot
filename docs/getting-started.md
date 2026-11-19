@@ -28,6 +28,7 @@ tagged commit before a release builds.
 # 1. register the repos you want to index (asks you to confirm, in a terminal)
 griot repos add ~/code/my-app
 griot repos add ~/code/my-lib
+griot repos list            # what is registered; --json for a script
 
 # 2. see what would be indexed (never spends anything)
 griot index all --repo my-app --dry-run
@@ -51,6 +52,13 @@ griot doctor
 # 8. upgrade griot to the newest release (shows the command, asks first)
 griot update
 ```
+
+`griot repos list --json` prints what `griot_repos_list` returns, built by the
+same function: `repos`, each with `name` (the directory name, what `--repo`
+and a result's `repo` use), `path`, `exists` (`false` is what the text output
+and `griot doctor` call "registered but no longer on disk") and `is_git`, and
+`count`. Nothing registered is `"repos": []`; a `repos.json` that cannot be
+read is an error on stderr, exit 1, nothing on stdout.
 
 `griot index all` runs the sources in order: `code`, `commits`, `tags`,
 `branches`, `platform`. Filter with `--sources code,commits`. Index an

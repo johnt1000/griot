@@ -329,8 +329,11 @@ def test_the_terminal_command_names_the_file_too_instead_of_a_missing_key(index,
         quality_check.main(["--sample-size", "1"])
     assert stop.value.code == 1
     out = capsys.readouterr()
-    assert common.GOLDEN_SET_PATH.name in out.out + out.err and "must_include" in out.out + out.err
-    assert "case 1" in out.out + out.err
+    # One case's defect: that case is named, with the command that removes
+    # it alone (the file reads, so `golden-set remove 1` works).
+    assert out.out == ""
+    assert out.err == (f"Error: {common.GOLDEN_SET_PATH} cannot be run: case 1 needs `must_include`: a list of at "
+                       f"least one object. Fix that case, or remove it:\n  griot golden-set remove 1\n")
     assert "Self-check" not in out.out, "refused before anything is embedded, as the tool does"
     assert index == []
 

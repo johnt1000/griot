@@ -23,7 +23,17 @@ in a server's own `env`, wins over the file.
 | `gemini` | Gemini API | paid | needs `GEMINI_TOKEN` |
 
 `griot profiles list` shows every profile with RAM estimates and credential
-status. `griot profiles delete <profile>` permanently deletes that profile's
+status. `griot profiles list --json` prints the same as one JSON document on
+stdout (notices stay on stderr): `active` (the active profile), `ram_gb`
+(this machine's RAM) and `profiles`, sorted by name, each with the keys of
+`griot_profiles_list` (`profile`, `is_active`, `paid`,
+`credential_configured`, `collection`; built by the same function, so the two
+never disagree on a credential) plus `dim`, `ram_tier`, `rss_max_mb` and
+`fits` (local profiles; `null` for a paid one: `fits` is whether this
+machine's RAM reaches the tier's floor of 8, 16 or 32 GB),
+`price_per_1m_tokens` (paid ones; `null` for a local one), `credential_env`
+(the variable a paid profile reads) and `fix` (the command that sets a missing
+credential, otherwise `null`). `griot profiles delete <profile>` permanently deletes that profile's
 on-disk collection to reclaim disk space (refuses the active profile, and
 refuses while any indexing run is in progress). It asks for confirmation at an
 interactive terminal and has no `--yes`.

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from mcp.client.client import Client
 
+import griot
 from griot import harnesses, mcp_server
 
 
@@ -28,7 +29,7 @@ def claude():
 @pytest.fixture
 def terminal(monkeypatch):
     """An interactive terminal whose person answers what the test says."""
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     asked = []
 
     def answer(text):
@@ -139,7 +140,7 @@ def test_anything_but_a_yes_writes_nothing(claude, tmp_path, terminal, answer):
 
 
 def test_without_a_terminal_nobody_is_asked_and_nothing_is_written(claude, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked without a terminal"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "not-interactive"
     assert not _settings(tmp_path).exists()
@@ -207,7 +208,7 @@ def test_when_every_rule_is_there_nobody_is_asked(claude, tmp_path, monkeypatch,
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"permissions": {"allow": harnesses.tool_rules(claude)}}))
     before = path.read_text()
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although there is nothing to add"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "current"
     assert path.read_text() == before
@@ -219,7 +220,7 @@ def test_a_rule_that_already_allows_the_whole_server_is_enough(claude, tmp_path,
     path = _settings(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"permissions": {"allow": [covering]}}))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although the server is allowed"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "current"
 
@@ -249,7 +250,7 @@ def test_a_server_the_user_denies_or_wants_asked_is_not_offered_at_all(claude, t
     path = _settings(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"permissions": {listed: ["mcp__griot"]}}))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although the user decided otherwise"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "current"
     assert "Left out" in capsys.readouterr().out
@@ -262,7 +263,7 @@ def test_a_file_that_is_not_settings_as_griot_understands_them_is_left_alone(cla
     path = _settings(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(content)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked about a file it cannot edit safely"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "malformed"
     assert path.read_text() == content
@@ -274,7 +275,7 @@ def test_a_file_that_is_not_utf8_is_left_alone(claude, tmp_path, monkeypatch):
     path = _settings(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_bytes(b"\xff\xfe{}")
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "malformed"
     assert path.read_bytes() == b"\xff\xfe{}"
 
@@ -346,7 +347,7 @@ def test_a_file_with_a_key_given_twice_is_left_alone(claude, tmp_path, monkeypat
     path.parent.mkdir(parents=True)
     content = '{"model": "opus", "model": "sonnet", "permissions": {"allow": []}}'
     path.write_text(content)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked about a file it cannot edit safely"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "malformed"
     assert path.read_text() == content and "twice" in capsys.readouterr().out
@@ -360,7 +361,7 @@ def test_a_file_the_user_protected_is_left_alone(claude, tmp_path, monkeypatch, 
     path.parent.mkdir(parents=True)
     path.write_text('{"model": "opus"}')
     path.chmod(mode)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked about a file it must not edit"))
     try:
         assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "malformed"
@@ -393,7 +394,7 @@ def test_an_allow_pattern_for_griots_tools_is_enough(claude, tmp_path, monkeypat
     path = _settings(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"permissions": {"allow": ["mcp__griot__griot_*"]}}))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although the tools are allowed"))
     assert harnesses.offer_tool_approval(claude, "global", home=tmp_path, cwd=tmp_path) == "current"
 
@@ -523,7 +524,7 @@ def test_the_command_offers_it_after_installing(claude, tmp_path, terminal, monk
 
 def test_the_flag_that_skips_the_question_skips_it(tmp_path, monkeypatch):
     _quiet_install(monkeypatch)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although told not to"))
     assert harnesses.main(["install", "--scope", "global", "--harness", "claude-code", "--no-allow-tools"]) == 0

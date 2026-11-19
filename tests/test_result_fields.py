@@ -25,7 +25,7 @@ from griot import (common, index_branches, index_code, index_commits, index_plat
 
 URI = "griot://result-fields"
 
-# Beside `metadata` in a result rather than inside it (mcp_server._NOT_METADATA).
+# Beside `metadata` in a result rather than inside it (search_result.NOT_METADATA).
 _TOP_LEVEL = {"repo", "source_type"}
 
 

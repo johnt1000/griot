@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import griot
 from griot import harnesses
 
 
@@ -459,7 +460,7 @@ def test_no_temporary_file_is_left_behind(monkeypatch, tmp_path):
 
 def _offer(monkeypatch, tmp_path, *, answer, interactive=True, scope="global", ask=True, harness=None):
     monkeypatch.setattr(harnesses, "_resources_root", lambda: _instr_root(tmp_path))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: interactive)
+    monkeypatch.setattr(griot, "is_interactive", lambda: interactive)
     prompts = []
 
     def fake_input(prompt=""):
@@ -589,7 +590,7 @@ def test_install_and_install_many_never_write_the_instructions_file(monkeypatch,
 def test_main_offers_the_block_only_after_installing_and_only_when_asked_to(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(harnesses, "_resources_root", lambda: _instr_root(tmp_path))
     monkeypatch.setattr(harnesses, "HARNESSES", [_instr_harness()])
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     answers = iter(["y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))

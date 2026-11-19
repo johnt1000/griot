@@ -508,6 +508,18 @@ def index_job_refusal(path: str | None, *, allow_env_roots: bool = True) -> str 
     return repository_path_refusal(path, allow_env_roots=allow_env_roots)
 
 
+def _repos_unreadable() -> str | None:
+    """The sentence for a repos.json that is there and cannot be used, or
+    None (read fine, or not there: nothing registered is just that)."""
+    try:
+        common.load_repos()
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        return common.repos_unreadable_sentence(e)
+    return None
+
+
 def repository_path_refusal(path: str, *, allow_env_roots: bool = True) -> str | None:
     """Why `path` is not a repository griot may read on an agent's request,
     or None: the allowlist and the "is a git work tree" check, without the
@@ -522,12 +534,20 @@ def repository_path_refusal(path: str, *, allow_env_roots: bool = True) -> str |
     # refusal doesn't work as a filesystem-enumeration oracle (the
     # same concern behind the collapsed message just below).
     if not index_path_allowed(repo_path, allow_env_roots=allow_env_roots):
+        # Still refused (fail closed), but a repos.json that cannot be read
+        # is said as such: the path may well be registered, and "register
+        # it" would send the person to `griot repos add`, which fails on the
+        # same file. Naming griot's own config file reveals nothing about
+        # the filesystem, so the oracle concern below does not apply.
+        if (unreadable := _repos_unreadable()) is not None:
+            return unreadable
         if allow_env_roots:
-            return "path outside the allowed repo list — register it with `griot repos add <path>` or include a parent directory in GRIOT_MCP_INDEX_ROOTS (':'-separated list)."
+            return ("path outside the allowed repo list. Register it, or add a parent directory to "
+                    f"GRIOT_MCP_INDEX_ROOTS:\n  {common.REGISTER_COMMAND}")
         # [jobs] this caller doesn't honor GRIOT_MCP_INDEX_ROOTS
         # (decision C) — mentioning it here would be actionable-sounding
         # advice that doesn't actually work for this caller.
-        return "path outside the allowed repo list — register it first with `griot repos add <path>`."
+        return f"path outside the allowed repo list. Register it first:\n  {common.REGISTER_COMMAND}"
 
     # [review — carried over from mcp_server.py] the 3
     # original error messages ("doesn't exist" vs "not a directory" vs

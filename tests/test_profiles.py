@@ -102,13 +102,15 @@ def test_profiles_list_checks_each_paid_profiles_own_credential(monkeypatch, cap
     out = capsys.readouterr().out
     gemini_line = next(l for l in out.splitlines() if l.strip().startswith("gemini"))
     openai_line = next(l for l in out.splitlines() if l.strip().startswith("openai-small"))
-    assert "missing GEMINI_TOKEN" in gemini_line
-    assert "configured" in openai_line
+    # Worded as `griot doctor` words the same fact.
+    assert "its credential (GEMINI_TOKEN) is not configured" in gemini_line
+    assert openai_line.rstrip().endswith("configured") and "not configured" not in openai_line
 
 
 def test_profiles_list_suggests_griot_auth_set_for_missing_credential(monkeypatch, capsys):
-    """the status column for a paid profile missing its
-    credential suggests the command to configure it, not just states that it's missing."""
+    """A paid profile missing its credential is followed by the command
+    that configures it, on a line of its own after the list (the command
+    last, ready to paste), not just a statement that it is missing."""
     _mock_ram(monkeypatch, 16)
     monkeypatch.setattr(common, "GEMINI_TOKEN", None)
     monkeypatch.delenv("GRIOT_OPENAI_API_KEY", raising=False)
@@ -118,8 +120,11 @@ def test_profiles_list_suggests_griot_auth_set_for_missing_credential(monkeypatc
     out = capsys.readouterr().out
     gemini_line = next(l for l in out.splitlines() if l.strip().startswith("gemini"))
     openai_line = next(l for l in out.splitlines() if l.strip().startswith("openai-small"))
-    assert "griot auth set gemini" in gemini_line
-    assert "griot auth set openai" in openai_line
+    assert "not configured" in gemini_line and "not configured" in openai_line
+    lines = out.splitlines()
+    # The commands last, each naming the profiles it unlocks.
+    assert lines[-2:] == ["  griot auth set gemini   # for gemini",
+                          "  griot auth set openai   # for openai-small"]
 
 
 # --- --profile override -----------------------------------------------------

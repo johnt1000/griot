@@ -29,11 +29,11 @@ missing binary by guessing paths or reinstalling without asking.
 ## 2. Check what's already registered
 
 ```bash
-griot repos list
+griot repos list --json
 ```
 
-If repos are already registered, note which ones exist on disk (the
-command marks missing ones with `✗ doesn't exist`) and ask the user whether
+If repos are already registered, note which ones exist on disk (an entry
+that no longer does has `"exists": false`) and ask the user whether
 they want to index those, register a new one, or both — don't assume.
 
 If nothing is registered yet, the USER registers the repo(s) they want
@@ -50,7 +50,7 @@ griot repos add <path>
 
 Give an absolute path if the user gave a relative one and you're not certain
 of the current working directory. Then wait, and confirm with
-`griot repos list` that the path is there before going on. The command warns
+`griot repos list --json` that the path is there (`"exists": true`) before going on. The command warns
 (non-fatally) if the target has no `.git`; ask the user whether that warning
 appeared, since it means commit/tag/branch history won't be indexable for
 that path even though code still will be.
