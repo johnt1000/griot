@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
-PACKAGE_PATH = re.compile(r"^\s*(from|import)\s+tests\.", re.M)
+PACKAGE_PATH = re.compile(r"^\s*(from|import)\s+tests\b", re.M)
 
 
 def test_no_test_imports_a_helper_through_the_tests_package():
