@@ -84,7 +84,7 @@ between minor versions. Breaking changes are called out explicitly.
   griot-troubleshooting skill and the getting-started guide say how to
   reinstall, restart the session and confirm, and how to prevent it (#158).
 - `GRIOT_SEARCH_TIMEOUT_SECONDS` is listed with the other settings in the
-  configuration guide.
+  configuration guide (#163).
 
 ## [0.6.0] — 2026-10-09
 
