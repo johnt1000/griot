@@ -76,9 +76,9 @@ import anyio  # the MCP SDK's own async layer (declared in pyproject.toml: it is
 # TypedDict from typing_extensions, not typing: pydantic (which the MCP SDK
 # builds every tool's schema with) rejects a typing.TypedDict on Python < 3.12,
 # where the runtime cannot tell required from non-required keys. The package
-# declares support from 3.10, so importing from typing made every tool in this
-# module fail to load on the two oldest versions it claims to support — found
-# by running the suite on 3.10 while setting up CI, not by any test. Already a
+# declares support from 3.11, so importing from typing would make every tool in
+# this module fail to load on the oldest version it claims to support — found
+# (on 3.10, the floor then) while setting up CI, not by any test. Already a
 # transitive dependency of pydantic, so this adds nothing to install.
 from typing_extensions import NotRequired, TypedDict
 

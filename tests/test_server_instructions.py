@@ -120,7 +120,7 @@ async def _every_description_sent():
 @pytest.mark.anyio
 async def test_no_description_the_server_sends_keeps_docstring_indentation():
     """Before 3.13 the compiler keeps a docstring's indentation and the SDK
-    sends __doc__ as it is, so on 3.10 to 3.12 every line after the first of
+    sends __doc__ as it is, so on 3.11 and 3.12 every line after the first of
     every description arrived with the function body's spaces in front: about
     ninety of them per griot_search listing, read by every agent that loads
     it. Run on each Python in CI, this is what holds the server to sending
@@ -176,7 +176,7 @@ _INDENTED_DOC = "First line.\n\n    Second paragraph,\n    two lines.\n    "
 @pytest.mark.anyio
 @pytest.mark.parametrize("register", ["tool", "prompt"])
 async def test_griot_registers_a_docstring_cleaned_whatever_the_python(monkeypatch, register):
-    """The same guard, on THIS Python: a docstring indented the way 3.10 to
+    """The same guard, on THIS Python: a docstring indented the way 3.11 and
     3.12 leave one, registered through griot's own decorators on a server of
     its own, reaches a client cleaned. The test above cannot fail on 3.13,
     where the compiler already did the cleaning."""
