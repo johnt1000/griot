@@ -906,7 +906,7 @@ def test_index_status_of_a_collection_that_does_not_exist():
 def test_doctor_says_how_to_build_keyword_search(legacy_index):
     common.release_client()
     check = doctor.check_index(common)
-    assert check["status"] == doctor.OK
+    assert check["status"] == doctor.WARN
     assert "keyword" in check["detail"]
     assert "griot index keywords" in (check["fix"] or "")
 

@@ -264,13 +264,13 @@ def check_index(common) -> dict:
     detail = f"{count} points in {status.get('collection')}" + (
         f", {wrote} {last.get('timestamp')}" if last.get("timestamp") else "")
     if status.get("keyword_search") is False:
-        # Not a warning: every search still answers, the default by meaning
-        # alone instead of hybrid (common.search_mode_for), as before keyword
-        # search existed. Said so that a person learns what the default is
-        # missing here, and the one command that gives it back.
-        return _check("index", OK, detail + "; keyword search is not built for it yet, so searches run by "
-                      "meaning only instead of the default hybrid",
-                      "griot index keywords   # local, embeds nothing")
+        # A warning, not an OK with a hint inside it: every search still
+        # answers, but by meaning only, and an agent told to use mode=keyword
+        # for hashes and names is refused. The exit status stays 0 (only FAIL
+        # turns it red); the sentence is the one `griot stats` shows.
+        return _check("index", WARN, detail + "; " + common.keyword_search_missing_sentence(status.get("collection")
+                                                                                         or common.COLLECTION_NAME),
+                      common.KEYWORD_BUILD_COMMAND + "   # local, embeds nothing")
     return _check("index", OK, detail)
 
 

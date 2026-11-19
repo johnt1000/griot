@@ -16,17 +16,12 @@ The workflows are read as YAML, not matched line by line: a check that goes
 by how a line is written is passed by writing the line another way."""
 
 import re
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 from packaging.requirements import Requirement
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # the floor griot supports
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = ROOT / ".github" / "workflows"

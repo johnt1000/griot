@@ -34,7 +34,7 @@ griot remembers what your repositories have been through.
   on everything it writes, no credential ever follows a redirect. See
   [SECURITY.md](https://github.com/johnt1000/griot/blob/main/SECURITY.md).
 
-**Status:** v0.6.0, beta. One maintainer, used daily by its author. The CLI
+**Status:** v0.7.0, beta. One maintainer, used daily by its author. The CLI
 surface and the on-disk layout may still change between 0.x releases.
 
 ## Installation
@@ -44,7 +44,7 @@ pipx install griot-rag    # the distribution is griot-rag; the command is griot
 griot update              # later: upgrade griot to the newest release (shows the command, asks first)
 ```
 
-Requires Python ≥ 3.10 and `git`. **The first run of a local profile downloads
+Requires Python ≥ 3.11 and `git`. **The first run of a local profile downloads
 its ONNX model from Hugging Face** (~1.1 GB for the default `jina-code`) and
 caches it under your data directory; `griot profiles list` shows each
 profile's RAM tier against the RAM you actually have.

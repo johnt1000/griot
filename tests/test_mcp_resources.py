@@ -254,10 +254,11 @@ async def test_the_resources_do_not_reach_into_the_sdks_private_tool_manager(mon
 @pytest.mark.anyio
 async def test_a_key_the_tool_may_leave_out_reads_as_null_on_both_surfaces(monkeypatch):
     """points_error, repositories and keyword_search may be absent from what
-    the tool's function returns. The tool's structured output gives an absent
-    one the value null; the resource has to do the same, not drop the key (a
-    plain serializer of the TypedDict would drop it, and the two surfaces
-    would disagree exactly when the answer is degraded)."""
+    the tool's function returns. What the tool's structured output does with
+    an absent one is the SDK's choice (mcp 2.0 gave it null, mcp 2.3 leaves
+    it out); the resource has to make the same one, through the same
+    conversion, or the two surfaces would disagree exactly when the answer
+    is degraded."""
     monkeypatch.setattr(common, "get_index_status", lambda collection=None: {
         "points_count": 3, "collection": "c", "embed_profile": "p", "running": False,
         "pid": None, "path": None, "last_indexed": None, "spend_ceiling_exceeded": False})
@@ -267,4 +268,5 @@ async def test_a_key_the_tool_may_leave_out_reads_as_null_on_both_surfaces(monke
 
     assert tool.is_error is False
     assert read == tool.structured_content
-    assert "points_error" in read and read["points_error"] is None
+    assert ("points_error" in read) == ("points_error" in tool.structured_content)
+    assert read.get("points_error") is None
