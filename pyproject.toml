@@ -47,8 +47,10 @@ dependencies = [
     # qdrant-client itself is never imported — the vector store is
     # qdrant-edge-py, in-process. Pulled through the extra rather than
     # depending on fastembed directly because that is how the pinned,
-    # compatible pairing is published.
-    "qdrant-client[fastembed]",
+    # compatible pairing is published. At least 1.20: its extra needs
+    # fastembed 0.9, the first that allows Pillow 13, so no install can land
+    # on the Pillow 12 releases with open advisories.
+    "qdrant-client[fastembed]>=1.20",
     "psutil",
     # Both of the next two are held below the version that may change their
     # interface (a minor one before 1.0, a major one after): griot calls them

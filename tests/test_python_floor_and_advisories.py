@@ -70,6 +70,18 @@ def test_the_lock_holds_the_fastembed_that_allows_pillow_13():
     assert all(v >= Version("0.9.1") for v in versions), f"fastembed: {versions} below 0.9.1"
 
 
+def test_an_install_from_the_wheel_cannot_land_on_the_fastembed_that_caps_pillow():
+    """The lock is not what a `pipx install griot-rag` reads: the wheel's own
+    requirement is. qdrant-client 1.20 is the first whose fastembed extra
+    needs fastembed 0.9, the first that allows Pillow 13; without the lower
+    bound a resolver or a cache could still hand an install fastembed 0.8 and
+    Pillow 12, with the advisories the lock no longer has."""
+    declared = [Requirement(each) for each in PROJECT["project"]["dependencies"]]
+    qdrant = [each for each in declared if each.name == "qdrant-client"]
+    assert qdrant, "qdrant-client is not a dependency"
+    assert "1.19.99" not in qdrant[0].specifier and "1.20.0" in qdrant[0].specifier
+
+
 def test_the_lock_holds_what_an_install_from_the_wheel_can_resolve():
     """No override or constraint of the lock's own: whatever it holds, a
     `pipx install griot-rag` could resolve too, so CI tests what users run."""
