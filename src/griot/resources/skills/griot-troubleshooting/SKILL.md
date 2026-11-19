@@ -103,6 +103,11 @@ or:
 > of control (a burst of simultaneous calls). Stop and check before
 > continuing.`
 
+A `griot index` or `griot quality-check --from-history` run checks the
+daily ceiling before it starts: when today's spend already reached it, or
+the run's estimate would pass it, it stops with nothing embedded and ends
+with `griot config set spend-ceiling <usd>`.
+
 **Cause**: griot enforces two independent, atomic, on-disk spend ceilings
 before any call to a paid provider — a **daily** ceiling
 (`GRIOT_SPEND_CEILING_USD`, default $3) and a **5-minute velocity** ceiling

@@ -101,7 +101,8 @@ def test_run_self_check_on_nonexistent_collection_is_empty_not_error():
     run_self_check must not propagate an exception, just report 'nothing
     sampled'."""
     result = quality_check.run_self_check("codebase__never-indexed", sample_size=10)
-    assert result == {"sampled": 0, "passed": 0, "failed": 0, "failures": [], "avg_score": None}
+    assert result == {"sampled": 0, "passed": 0, "failed": 0, "failures": [], "avg_score": None,
+                      "embedded_chars": 0}
 
 
 def test_run_self_check_counts_a_blank_sample_as_failed(monkeypatch):
@@ -202,7 +203,8 @@ def test_main_exits_with_error_on_nonexistent_collection(capsys):
     with pytest.raises(SystemExit) as exc_info:
         quality_check.main(["--collection", "codebase__this-does-not-exist"])
     assert exc_info.value.code == 1
-    assert "does not exist" in capsys.readouterr().out
+    out, err = capsys.readouterr()
+    assert "does not exist" in err and out == "", "an error is not the result"
 
 
 def test_main_happy_path_self_check_only(monkeypatch, capsys):

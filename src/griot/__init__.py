@@ -24,6 +24,9 @@ ENVIRONMENT_ONLY_NARROWS = False
 # the command a person approves when a server is registered, which the `env`
 # beside it is not, so it is not treated as the environment's.
 PROFILE_FROM_COMMAND_LINE: str | None = None
+# Whether `--quiet` (or -q) was typed, as opposed to GRIOT_QUIET=1 in the
+# environment: a command griot rebuilds for a person to paste keeps it.
+QUIET_FROM_COMMAND_LINE = False
 
 
 class GriotError(Exception):

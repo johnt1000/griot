@@ -80,7 +80,8 @@ mixed with the self-check and golden-set rates, and the next run with the
 same repository, mode and `--limit` shows the previous numbers beside its
 own, saying whether the questions were the same. It runs neither the
 self-check nor the golden set. On a paid profile it first prints the
-estimated cost of embedding the commit messages, on stderr, and goes on.
+estimated cost of embedding the commit messages, on stderr; at or above
+confirm-spend ($0.50 by default) it asks, and `--yes` answers.
 
 ## `griot golden-set review`
 

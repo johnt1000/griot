@@ -369,7 +369,10 @@ def check_spend(common) -> dict:
     if not today < ceiling:
         return _check("spend", WARN, f"today's estimated spend ${today:.2f} reached the ${ceiling:.2f} daily ceiling: "
                                      f"paid calls are refused until tomorrow", "griot config set spend-ceiling <usd>   # asks first")
-    return _check("spend", OK, f"${today:.2f} today of a ${ceiling:.2f} daily ceiling")
+    # The threshold only where it can ask: on a local profile nothing does.
+    asks = (f"; a paid run estimated at {common.format_usd(common.CONFIRM_SPEND_USD)} or more asks first"
+            if common.profile_is_paid() else "")
+    return _check("spend", OK, f"${today:.2f} today of a ${ceiling:.2f} daily ceiling{asks}")
 
 
 def _present_harnesses():

@@ -6,8 +6,8 @@ where it comes from (the environment, the file, or the default), checks a
 value before writing it, and asks a person before a change that widens what
 griot may do, spend, or send a credential to, or that deletes history.
 
-Classified by effect, like the rest of the CLI: raising a spend ceiling,
-turning on indexing through MCP, widening the directories an agent may
+Classified by effect, like the rest of the CLI: raising a spend ceiling or
+the amount a paid run may cost without asking (confirm-spend), turning on indexing through MCP, widening the directories an agent may
 index, pointing a platform token at another host, and shortening the log
 retention (the next search then deletes older history) are answered at an
 interactive terminal, with no flag that answers instead. Everything else is
@@ -39,7 +39,7 @@ class NotValid(ValueError):
 class Setting:
     name: str
     variable: str
-    # amount | ceiling | count | flag | enable | choice | model | url | hosts | roots | text
+    # amount | ceiling | threshold | count | flag | enable | choice | model | url | hosts | roots | text
     kind: str
     choices: tuple[str, ...] = ()
     # Why `set`/`unset` do not apply to it here, when they do not.
@@ -66,6 +66,10 @@ SETTINGS = [
     Setting("groq-chat-price", "GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS", "amount"),
     Setting("spend-ceiling", "GRIOT_SPEND_CEILING_USD", "ceiling"),
     Setting("spend-velocity-ceiling", "GRIOT_SPEND_VELOCITY_CEILING_USD", "ceiling"),
+    # Its own kind: not a cap on what is spent (the question of a ceiling would
+    # be false for it), and not a plain amount, because raising it widens what
+    # griot spends without asking.
+    Setting("confirm-spend", "GRIOT_CONFIRM_SPEND_USD", "threshold"),
     Setting("max-failed-batches", "GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "count"),
     Setting("log-questions", "GRIOT_LOG_QUESTIONS", "flag"),
     Setting("update-check", "GRIOT_UPDATE_CHECK", "flag"),
@@ -112,7 +116,7 @@ def normalized(setting: Setting, raw: str) -> str:
     a value accepted here is one the next run can start with."""
     text = raw.strip()
     kind = setting.kind
-    if kind in ("amount", "ceiling"):
+    if kind in ("amount", "ceiling", "threshold"):
         try:
             number = float(text)
         except ValueError:
@@ -179,7 +183,7 @@ def normalized(setting: Setting, raw: str) -> str:
 
 # By kind: a value every reader accepts, for the kinds whose readers refuse
 # to start on a bad one (see before_configuration_loads, `unset`).
-_STAND_IN = {"amount": "0", "ceiling": "0", "count": "1", "choice": "first choice"}
+_STAND_IN = {"amount": "0", "ceiling": "0", "threshold": "0", "count": "1", "choice": "first choice"}
 
 # What the REAL environment said for each setting, taken before common.py
 # loaded the file into the process (and before `set` put its value in force,
@@ -367,7 +371,7 @@ def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, s
         if name == (old or "").strip() or chosen["backend"] == "local":
             return None, name  # the person's own choice, or nothing leaves the machine
         return "that profile sends what is indexed and searched to an API", raw
-    if setting.kind not in ("ceiling", "enable", "roots", "url", "hosts", "count") \
+    if setting.kind not in ("ceiling", "threshold", "enable", "roots", "url", "hosts", "count") \
             and setting.variable not in _OFF_STAYS_OFF:
         return None, raw
     try:
@@ -407,7 +411,9 @@ def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, 
         return ("it sends the GitLab token to another host" if new != (old or default_of(setting)) else None), new
     if _question(setting, old, new) is None:
         return None, new
-    return {"ceiling": "it raises a spend ceiling", "enable": "it turns on indexing through MCP",
+    return {"ceiling": "it raises a spend ceiling",
+            "threshold": "it raises what a paid run may cost without asking",
+            "enable": "it turns on indexing through MCP",
             "roots": "it adds a directory an agent may index",
             "hosts": "it sends the Gitea token to another host"}[setting.kind], new
 
@@ -429,7 +435,7 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
     sends a credential somewhere else, or deletes usage history."""
     if new is None or new == old:
         return None
-    if setting.kind == "ceiling":
+    if setting.kind in ("ceiling", "threshold"):
         # When what is in the file is not a number griot could not even
         # start, and this is the repair: measured against the default then,
         # so that back to it or below is not a raise.
@@ -437,6 +443,11 @@ def _question(setting: Setting, old: str | None, new: str | None) -> str | None:
         if before is None:
             before = _amount(default_of(setting)) or 0.0
         raised = float(new) > before
+        if setting.kind == "threshold":
+            # Written like common.format_usd at a cent or more; that module is
+            # not imported here (see the module docstring).
+            return (f"Raise {setting.name} from {old} to {new}? A paid run estimated below ${float(new):,.2f} "
+                    f"then starts without asking.") if raised else None
         window = "in any 5 minutes" if "VELOCITY" in setting.variable else "in a day"
         return (f"Raise {setting.name} from {old} to {new}? Up to ${new} can then be spent {window} before griot "
                 f"stops paid calls.") if raised else None

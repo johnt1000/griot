@@ -117,10 +117,15 @@ one that calls an API is ignored.
    read `notes`), plus an estimated cost; it embeds and removes nothing, and
    lets go of the server's handle itself (once no other griot tool call is
    using the index). From a shell,
-   `griot index all --repo <name> --dry-run` does the same (free, but it
-   opens the collection too, so the Step 1 rule applies). Tell the user the
-   numbers before the real run. Re-indexing an unchanged repo embeds almost
-   nothing (content-hash reuse).
+   `griot index all --repo <name> --dry-run` does the same, estimate
+   included (free, but it opens the collection too, so the Step 1 rule
+   applies). Tell the user the numbers before the real run. Re-indexing an
+   unchanged repo embeds almost nothing (content-hash reuse).
+4. On a paid profile a real `griot index` run says its estimated cost on
+   stderr and, at or above confirm-spend ($0.50 unless set), asks. Your shell
+   has no terminal, so there it stops with exit 2, nothing spent, and prints
+   the command with `--yes`. Tell the user the estimate, and add `--yes`
+   only after they agree.
 
 ## Path A — `griot_index_repo`
 
