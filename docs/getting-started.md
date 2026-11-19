@@ -46,7 +46,7 @@ griot ask "how does authentication work in this codebase?" --show-sources
 # 6. keep an eye on usage and spend
 griot stats
 
-# 7. when something does not work: every check at once, reads only
+# 7. when something does not work: every check at once
 griot doctor
 
 # 8. upgrade griot to the newest release (shows the command, asks first)
@@ -83,10 +83,12 @@ active profile's collection, the one its state lines describe;
 ## When something does not work: `griot doctor`
 
 `griot doctor` checks the whole setup in one go and says what to do about each
-finding. It changes no setting, index or file of yours; two things happen on
-the way and are said: loading the configuration closes a `.env` left open to
-other users, as every griot command does, and asking the harness which server
-it has registered may start that server for a moment, as
+finding. It changes no setting, index or file of yours; three things happen
+on the way: loading the configuration closes a `.env` left open to other
+users (and says so), as every griot command does; counting the
+collection's points lets the search engine rewrite its own small files, which
+griot closes to other users again, as on every open; and asking the harness
+which server it has registered may start that server for a moment, as
 `griot assist install` does. It checks settings the file holds that griot
 cannot start with, the configuration file, the directories and everything the
 data directory holds (the model cache aside) closed to other users, the active
@@ -129,23 +131,24 @@ not check and exits non-zero. It refuses an editable or development install
 (update the checkout instead) and an installation whose method it cannot tell
 (it prints the candidate commands instead of guessing). The installer's output
 is shown as it runs and its exit status is the command's; afterwards it prints
-the version now installed and runs the new version's `griot doctor` (it only
-reads). Each condition that needs an action is shown with its command last:
-for example keyword search not built for a collection indexed before an
-upgrade made hybrid the default, followed by `griot index keywords`; the
-doctor's other warnings and failures are counted, pointing at `griot doctor`.
-With none it says nothing else needs doing. `griot update` runs none of those
-commands itself. If the check cannot run (or its report cannot be read) it
-says so and points to `griot doctor`; the upgrade still exits 0. Under
-`--quiet` the conditions and a check that could not run are still shown (the
-doctor records what it found as said, so no later notice would say it
-again); the restart advice, the line saying the checks are running and the
+the version now installed and runs the new version's `griot doctor`. Each
+condition that needs an action is shown with its command last: for example
+keyword search not built for a collection indexed before an upgrade made
+hybrid the default, followed by `griot index keywords`; the doctor's other
+warnings and failures are counted, pointing at `griot doctor`. With none it
+says nothing else needs doing. `griot update` runs none of those commands
+itself. If the check cannot run (or its report cannot be read) it says so and
+points to `griot doctor`; the upgrade still exits 0. Under `--quiet` the
+conditions, the count of the doctor's other warnings and failures, and a
+check that could not run are still shown: each names something to do, and
+the doctor records what it found as said, so no later notice would say it
+again. The restart advice, the line saying the checks are running and the
 "nothing else" line are not. If the installer itself cannot be started, it
 says why and shows the upgrade command to run once it can. Running the
-doctor means what it always means: it asks PyPI unless `update-check` is
-off, and its registration check may start the MCP server for a moment. The check exists
-from the upgrade after the release that ships it: an older `griot update`
-does not run it. MCP servers already running keep the old version until they
-are restarted: reconnect them from the client (in Claude Code, `/mcp`) or
-restart the client. It is a command for you, not an MCP tool: an agent does
-not upgrade the tool it is using.
+doctor means what it always means (see above): it asks PyPI unless
+`update-check` is off, and its registration check may start the MCP server
+for a moment. The check exists from the upgrade after the release that ships
+it: an older `griot update` does not run it. MCP servers already running keep
+the old version until they are restarted: reconnect them from the client (in
+Claude Code, `/mcp`) or restart the client. It is a command for you, not an
+MCP tool: an agent does not upgrade the tool it is using.

@@ -416,6 +416,25 @@ def test_a_keyword_build_that_fails_with_the_collection_open_leaves_nothing_open
     assert _open_to_others(path) == []
 
 
+def test_a_status_read_that_opens_the_collection_apart_leaves_nothing_open(monkeypatch, loose_umask):
+    """`griot doctor` counts points with its own read-only handle, apart from
+    the cached one, and the engine rewrites edge_config.json and segment.json
+    with the process umask when that handle closes. `griot update` runs the
+    doctor on its own after an upgrade: without the repair, the next doctor
+    would warn about files the first one opened."""
+    monkeypatch.setattr(common, "embed_texts", lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts])
+    common.index_documents(_ONE_DOC)
+    common.release_lock()
+    common.release_client()
+    path = common.collection_path(common.COLLECTION_NAME)
+    assert _open_to_others(path) == []
+
+    status = common.get_index_status(reuse_active_handle=False)
+
+    assert status["points_count"] == 1
+    assert _open_to_others(path) == []
+
+
 # --- a chmod that fails ------------------------------------------------------------------------
 
 

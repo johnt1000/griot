@@ -8,6 +8,7 @@ guess is printed, never run. The suite never touches the network nor runs a
 real installer: the PyPI query and every subprocess are stubbed."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -260,7 +261,11 @@ def test_no_terminal_and_no_yes_refuses_saying_so(world, capsys):
     assert update.main([]) == 2
 
     assert world["calls"] == []
-    assert "no terminal" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no terminal" in err and "Nothing was changed" in err
+    # The way on is a command to paste, not prose about a flag.
+    assert err.rstrip().splitlines()[-1] == "  griot update --yes"
+    assert err.splitlines()[0].startswith("Error: upgrading griot to 0.3.0 needs a confirmation, and there is no")
 
 
 def test_at_a_terminal_it_asks_and_a_yes_runs_it(world):
@@ -400,7 +405,32 @@ def test_the_check_is_the_upgraded_doctor_in_a_new_process(world):
     assert _doctor_calls(world) == [DOCTOR_CALL]
     assert world["calls"].index(DOCTOR_CALL) > world["calls"].index(["pipx", "upgrade", "griot-rag"])
     assert world["doctor_kwargs"].get("capture_output") and world["doctor_kwargs"].get("timeout") >= 120
-    assert world["doctor_kwargs"].get("env") is None, "the environment is inherited: same directories and profile"
+    env = world["doctor_kwargs"].get("env")
+    assert env is not None and env.get("GRIOT_CONFIG_DIR") == os.environ["GRIOT_CONFIG_DIR"], "same directories"
+
+
+def test_the_check_gets_the_environment_as_it_was_before_the_settings_file(world, monkeypatch):
+    """[found on the real flow, 2026-11-19] This process read its settings
+    file into its environment: handed on, the file's values (an empty
+    GRIOT_MCP_INDEX_ROOTS=, say) reach the doctor as if exported, and its
+    "server environment" check warns about variables nobody exported. What
+    this process set itself (--quiet), and what was exported, are kept."""
+    from griot import common
+
+    monkeypatch.setattr(common, "EXPORTED_BEFORE_ENV_FILE", {k: "digest" for k in os.environ})
+    common.ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    common.ENV_PATH.write_text("GRIOT_MCP_INDEX_ROOTS=\nGRIOT_QUIET=0\nGRIOT_SOMETHING_EXPORTED=same\n")
+    monkeypatch.setenv("GRIOT_SOMETHING_EXPORTED", "same")  # exported, and the file says the same
+    common.EXPORTED_BEFORE_ENV_FILE["GRIOT_SOMETHING_EXPORTED"] = "digest"
+    monkeypatch.setenv("GRIOT_MCP_INDEX_ROOTS", "")  # as load_dotenv left it
+    monkeypatch.setenv("GRIOT_QUIET", "1")  # set by --quiet after the file was read
+
+    update.main(["--yes"])
+
+    env = world["doctor_kwargs"]["env"]
+    assert "GRIOT_MCP_INDEX_ROOTS" not in env
+    assert env["GRIOT_QUIET"] == "1" and env["GRIOT_SOMETHING_EXPORTED"] == "same"
+    assert env["GRIOT_DATA_DIR"] == os.environ["GRIOT_DATA_DIR"]
 
 
 def test_a_condition_the_new_version_reports_is_said_with_its_command_last(world, capsys):
@@ -417,11 +447,11 @@ def test_a_condition_the_new_version_reports_is_said_with_its_command_last(world
     captured = capsys.readouterr()
     assert captured.out.strip().splitlines()[-1] == "griot 0.3.0 is now installed (this was 0.2.1).", "stdout: the result"
     err = captured.err
-    assert "griot 0.3.0 reports 1 thing to do after the upgrade:\n" in err
+    assert "After the upgrade, griot 0.3.0's checks report:\n" in err
     # The ledger's own sentence, in the form every CLI notice has.
     assert notices.prose(found) in err
     assert err.rstrip().splitlines()[-1] == "  griot index keywords"
-    assert err.index("MCP servers already running") < err.index("reports 1 thing"), "after the restart advice"
+    assert err.index("MCP servers already running") < err.index("checks report:"), "after the restart advice"
     assert "Nothing else needs doing" not in err and "could not run" not in err
 
 
@@ -433,7 +463,7 @@ def test_a_condition_already_in_the_rows_prose_is_not_counted_again(world, capsy
     update.main(["--yes"])
 
     lines = capsys.readouterr().err.rstrip().splitlines()
-    assert "griot 0.3.0 reports 1 thing to do after the upgrade:" in lines
+    assert "After the upgrade, griot 0.3.0's checks report:" in lines
     assert "  griot doctor" not in lines and lines[-1] == "  griot index keywords"
 
 
@@ -472,7 +502,7 @@ def test_other_warnings_and_failures_are_counted_in_one_closing_item(world, caps
     err = capsys.readouterr().err
     # The header counts the ledger's conditions; the doctor's other rows are
     # one count of their own, not one more "thing".
-    assert "griot 0.3.0 reports 1 thing to do after the upgrade:" in err
+    assert "After the upgrade, griot 0.3.0's checks report:" in err
     assert "griot doctor also reports 1 failure, 1 warning besides these:\n  griot doctor" in err
     assert err.rstrip().splitlines()[-1] == "  griot doctor"
     assert "griot auth set openai" not in err and "chmod" not in err, "the doctor's own fixes stay in the doctor"
@@ -488,7 +518,7 @@ def test_a_row_with_a_warning_of_its_own_beside_the_condition_is_counted(world, 
     update.main(["--yes"])
 
     err = capsys.readouterr().err
-    assert "griot 0.3.0 reports 1 thing to do after the upgrade:" in err
+    assert "After the upgrade, griot 0.3.0's checks report:" in err
     assert "griot doctor also reports 0 failures, 1 warning besides these:" in err
 
 
@@ -498,10 +528,10 @@ def test_only_other_warnings_are_said_without_also(world, capsys):
     update.main(["--yes"])
 
     err = capsys.readouterr().err
-    # No condition: no "1 thing" header over a count of 1 warning, one line.
+    # No condition: no header over a count of 1 warning, one line.
     assert err.rstrip().splitlines()[-2:] == ["After the upgrade, griot 0.3.0's checks report 0 failures, 1 warning:",
                                               "  griot doctor"]
-    assert "thing to do" not in err
+    assert "checks report:" not in err
 
 
 def test_a_warning_with_no_fix_and_no_condition_is_still_counted(world, capsys):
@@ -559,7 +589,7 @@ def test_a_progress_line_says_the_checks_are_running_before_the_pause(world, cap
     update.main(["--yes"])
 
     err = capsys.readouterr().err
-    assert "Running griot 0.3.0's checks (they only read)...\n" in err
+    assert "Running griot 0.3.0's checks...\n" in err
     assert err.index("MCP servers already running") < err.index("Running griot") < err.index("Nothing else")
 
 
@@ -598,7 +628,7 @@ def test_a_check_that_cannot_run_is_one_message_and_the_upgrade_still_succeeds(w
     captured = capsys.readouterr()
     assert "0.3.0 is now installed" in captured.out
     lines = captured.err.rstrip().splitlines()
-    assert lines[-2:] == [f"The upgraded griot's checks could not run ({cause}); they only read, so run them yourself:",
+    assert lines[-2:] == [f"The upgraded griot's checks could not run ({cause}); run them yourself:",
                           "  griot doctor"]
     assert "Error" not in captured.err and "Traceback" not in captured.err.replace(str(answer), "")
     assert "OSError" not in captured.err and "TimeoutExpired" not in captured.err
@@ -775,7 +805,7 @@ def test_quiet_still_says_a_check_that_could_not_run(world, monkeypatch, capsys,
 
     captured = capsys.readouterr()
     assert captured.err.splitlines() == [
-        f"The upgraded griot's checks could not run ({cause}); they only read, so run them yourself:",
+        f"The upgraded griot's checks could not run ({cause}); run them yourself:",
         "  griot doctor"]
     assert "0.3.0 is now installed" in captured.out
 
@@ -820,7 +850,10 @@ def test_the_help_says_it_runs_the_new_version_s_checks(capsys):
         update.main(["--help"])
 
     text = " ".join(capsys.readouterr().out.split())
-    assert "runs the new version's `griot doctor` (reads only)" in text
+    assert "runs the new version's `griot doctor` and shows what needs doing" in text
+    # The doctor opens the collection, and the engine rewrites its own files
+    # on that close: nothing here may promise it only reads.
+    assert "reads only" not in text and "only read" not in text
     assert "never indexes or builds anything itself" in text
     assert "--quiet does not hide those" in text
 
@@ -899,6 +932,44 @@ def _real_update_at_a_terminal(tmp_path, keys):
     return code, out.decode(errors="replace").replace("\r\n", "\n")
 
 
+_BUILD = r'''
+import os
+os.umask(0o022)
+from griot import common
+common.embed_texts = lambda texts, **k: [[0.1] * common.EMBED_DIM for _ in texts]
+common.index_documents([{"id": "repo:code:a.py:0", "content": "a",
+                         "metadata": {"source_type": "code", "repo": "repo", "file_path": "a.py", "chunk_index": 0}}])
+'''
+
+
+def test_a_real_update_s_check_leaves_nothing_for_the_next_check_to_warn_about(tmp_path):
+    """[review, 2026-11-19] The doctor griot update runs on its own opened a
+    collection apart and closed it, and the engine rewrote its files with
+    the process umask: the next run counted two warnings more, one of them
+    the permission warning the first run caused. Both runs now count the
+    same, and nothing in the collection is open to other users."""
+    import os
+    import stat
+
+    env = _real_env(tmp_path)
+    built = subprocess.run([sys.executable, "-c", _BUILD], env=env, capture_output=True, text=True, timeout=120,
+                           cwd=tmp_path)
+    assert built.returncode == 0, built.stderr
+
+    def run():
+        done = subprocess.run([sys.executable, "-c", _DRIVER, "--yes"], env=env, capture_output=True, text=True,
+                              timeout=300, stdin=subprocess.DEVNULL, cwd=tmp_path, umask=0o022)
+        assert done.returncode == 0, done.stderr
+        return [line for line in done.stderr.splitlines() if "checks report" in line or "also reports" in line]
+
+    first, second = run(), run()
+
+    assert first and first == second
+    collection = tmp_path / "data" / "griot" / "qdrant_data"
+    assert [os.path.join(r, n) for r, ds, fs in os.walk(collection) for n in ds + fs
+            if stat.S_IMODE(os.stat(os.path.join(r, n)).st_mode) & 0o077] == []
+
+
 def test_at_a_real_terminal_a_yes_upgrades_and_then_says_what_is_left(tmp_path):
     code, out = _real_update_at_a_terminal(tmp_path, b"y\n")
 
@@ -912,7 +983,7 @@ def test_at_a_real_terminal_a_no_runs_neither_the_upgrade_nor_the_check(tmp_path
 
     assert code == 1, out
     assert "Nothing was changed" in out
-    assert "the installer would run" not in out and "to do after the upgrade" not in out
+    assert "the installer would run" not in out and "After the upgrade" not in out
 
 
 def test_with_no_terminal_and_no_yes_nothing_runs(tmp_path):
@@ -920,6 +991,7 @@ def test_with_no_terminal_and_no_yes_nothing_runs(tmp_path):
 
     assert done.returncode == 2
     assert "Nothing was changed" in done.stderr and "the installer would run" not in done.stdout
+    assert done.stderr.rstrip().splitlines()[-1] == "  griot update --yes"
     assert "after the upgrade" not in done.stderr and "Nothing else" not in done.stderr
 
 
@@ -935,7 +1007,7 @@ def test_a_real_update_runs_the_real_new_doctor_and_counts_what_it_reports(tmp_p
     lines = done.stderr.rstrip().splitlines()
     assert lines[0].startswith("MCP servers already running still run griot ")
     assert lines[-2].startswith("After the upgrade, griot ") and "'s checks report 0 failures, " in lines[-2]
-    assert lines[-1] == "  griot doctor" and "thing to do" not in done.stderr
+    assert lines[-1] == "  griot doctor" and "checks report:\n" not in done.stderr
     assert "notices: run" not in done.stderr, "no footer under it"
     assert "Traceback" not in done.stderr
 
@@ -960,8 +1032,7 @@ def test_a_real_quiet_update_whose_doctor_report_cannot_be_read_still_says_so(tm
 
     assert done.returncode == 0, done.stderr
     assert done.stderr.splitlines()[-2:] == [
-        "The upgraded griot's checks could not run (their report could not be read); they only read, so run them "
-        "yourself:", "  griot doctor"]
+        "The upgraded griot's checks could not run (their report could not be read); run them yourself:", "  griot doctor"]
 
 
 # --- where it is reachable ------------------------------------------------------------------------

@@ -9,12 +9,14 @@ before every search. This runs every check, says ok / warn / FAIL / skip for
 each with what to do, and changes nothing. The exit status is 1 only for a
 FAIL: a warning is something to know, not something broken.
 
-It reads. It changes no setting, no index and no file of yours. Two things
-happen on the way, and both are said: the configuration loading closes a
-configuration file left open to other users, as every griot command does
-(reported under settings); and asking a harness which server it has
-registered may start that server for a moment, as `griot assist install`
-does when it asks the same. One goes to the network: the release check asks
+It changes no setting, no index and no file of yours. Three things happen
+on the way: the configuration loading closes a configuration file left open
+to other users, as every griot command does (reported under settings);
+counting the collection's points lets the engine rewrite its own small
+files, closed to other users again as on every open (so nothing says it
+only reads: `griot update` runs it on its own); and asking a harness which
+server it has registered may start that server for a moment, as
+`griot assist install` does when it asks the same. One goes to the network: the release check asks
 PyPI for the newest version (GRIOT_UPDATE_CHECK=false turns it off); the only
 other griot command that makes that request is `griot update`, which a person
 runs to upgrade and which that setting does not govern.
@@ -824,7 +826,7 @@ def main(argv=None) -> int:
         description="Checks griot's setup: settings, profile and credential, index, repositories, spend, the MCP "
                     "registration and tool approval, the environment a server would obey, git, the log, and whether "
                     "a newer griot was released (asks PyPI; `griot config set update-check false` turns that off). "
-                    "Reads only (changes no setting, index or file of yours). Exit status 1 only when a check fails.")
+                    "Changes no setting, index or file of yours. Exit status 1 only when a check fails.")
     show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.add_argument("--json", action="store_true",
                         help="One JSON document instead of the report: a list of rows with check, status, detail, "

@@ -26,8 +26,10 @@ UPGRADED interpreter as a subprocess because this process still holds the
 old modules: an import here would check with the old code. The doctor exits
 1 on any failure, which is its report, not a failed check; a check that
 cannot run is one message pointing at `griot doctor` (shown under --quiet
-too) and never changes the exit status of an upgrade that succeeded. It
-only reads: `griot update` never indexes or builds anything itself.
+too) and never changes the exit status of an upgrade that succeeded.
+`griot update` never indexes or builds anything itself. It does not say the
+checks "only read": the doctor opens the collection to count its points,
+and the engine rewrites its own small files when that handle closes.
 
 The --json rows (and their `notices` field) are therefore read across
 versions: this release's `griot update` parses the next release's doctor,
@@ -60,6 +62,9 @@ DOCTOR_TIMEOUT_S = 120
 # may still end with a footer.
 CHECKED_AFTER_UPGRADE = False
 
+# The ledger's severities that need an action (policy section 3). Read
+# strictly: a severity a later ledger adds is not shown here until this list
+# names it; test_doctor's contract test is what keeps the two in step.
 _SEVERE = ("warn", "FAIL")
 
 
@@ -94,13 +99,34 @@ def _report(stdout: str) -> list[dict]:
     return rows
 
 
+def _environment_for_the_doctor() -> dict[str, str]:
+    """This process's environment without what its settings file put there.
+
+    load_dotenv copied the file into os.environ; handed on as it is, a value
+    only the file holds (an empty GRIOT_MCP_INDEX_ROOTS=, say) reaches the
+    doctor as if it had been exported, and its "server environment" check
+    warns about variables nobody exported. A name the file gave and that
+    still holds the file's value goes; what was exported, and what this
+    process set itself afterwards (--quiet), stays. The doctor reads the
+    file again on its own."""
+    import os
+
+    from dotenv import dotenv_values
+
+    from griot import common
+
+    in_file = dotenv_values(common.ENV_PATH) if common.ENV_PATH.exists() else {}
+    return {name: value for name, value in os.environ.items()
+            if name in common.EXPORTED_BEFORE_ENV_FILE or in_file.get(name) != value}
+
+
 def _run_new_doctor(executable: str) -> list[dict] | str:
     """The upgraded doctor's rows, or why there are none (a phrase)."""
     try:
-        # The environment is inherited: the same configuration and data
-        # directories, the same profile, --quiet included.
+        # Otherwise the environment is this one: the same configuration and
+        # data directories, the same profile, --quiet included.
         done = subprocess.run([executable, *DOCTOR_ARGS], capture_output=True, text=True, timeout=DOCTOR_TIMEOUT_S,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, env=_environment_for_the_doctor())
     except subprocess.TimeoutExpired:
         return f"they took longer than {DOCTOR_TIMEOUT_S} s"
     except (OSError, subprocess.SubprocessError):
@@ -139,8 +165,7 @@ def _after_upgrade(rows: list[dict], now: str) -> tuple[str, bool]:
     if not listed and not failures and not warnings:
         return (f"Nothing else needs doing: griot {now}'s checks report {doctor.counts_phrase(0, 0)}.", False)
     if not listed:
-        # Only the doctor's own rows: one line, not a "1 thing" header over
-        # a count of several warnings.
+        # Only the doctor's own rows: one count line, no list.
         return (f"After the upgrade, griot {now}'s checks report {doctor.counts_phrase(failures, warnings)}:\n"
                 f"  griot doctor", True)
     # Printable line by line: the text came from another process, and a
@@ -154,10 +179,10 @@ def _after_upgrade(rows: list[dict], now: str) -> tuple[str, bool]:
         # there, not reworded as if they were commands.
         counted = doctor.counts_phrase(failures, warnings)
         items.append(f"griot doctor also reports {counted} besides these:\n  griot doctor")
-    # The header counts the conditions; the doctor's other rows are their
-    # own count, under them.
-    return ("\n".join([f"griot {now} reports {len(listed)} thing{'s' if len(listed) != 1 else ''} to do after the "
-                       f"upgrade:", *items]), True)
+    # No count in the header: the doctor's other rows are things to do as
+    # well, counted under the conditions, and a count of the conditions
+    # alone would read as the whole of it.
+    return ("\n".join([f"After the upgrade, griot {now}'s checks report:", *items]), True)
 
 
 def _installed_version(executable: str) -> str | None:
@@ -178,7 +203,7 @@ def main(argv=None) -> int:
                     "pip in a virtual environment), shows the exact command and asks before running it. Refuses "
                     "a development install (update the checkout instead) and an installation whose method it "
                     "cannot tell (it prints the candidates). After upgrading, it runs the new version's `griot "
-                    "doctor` (reads only) and shows what needs doing, each with its command; it never indexes or "
+                    "doctor` and shows what needs doing, each with its command; it never indexes or "
                     "builds anything itself, and --quiet does not hide those. Running MCP servers keep the old "
                     "version until they are restarted.")
     show_flags_read_by_griot(parser)
@@ -227,7 +252,8 @@ def main(argv=None) -> int:
 
     print(f"griot {installed} is installed; {newest} is the newest release on PyPI.")
     print(f"This runs: {commands[0]}", flush=True)
-    status = common.confirm("Run it?", yes=args.yes)
+    status = common.confirm("Run it?", yes=args.yes, what=f"upgrading griot to {newest} needs a confirmation",
+                            command="griot update")
     if status:
         return status
     # Once the installer runs, this is what to run: the command it shows.
@@ -267,7 +293,8 @@ def _say_what_is_left(installed: str, now: str | None) -> int:
     run is also said: it is data that is missing, and a doctor whose report
     could not be read may already have recorded its conditions as said, so
     `griot doctor` is the only place left that lists them. Silenced: the
-    restart advice, the progress line and the "nothing else" line."""
+    restart advice, the progress line and the "nothing else" line. The
+    count of the doctor's own warnings is kept: it names something to do."""
     global CHECKED_AFTER_UPGRADE
     from griot import auth, common
 
@@ -287,11 +314,11 @@ def _say_what_is_left(installed: str, now: str | None) -> int:
         print(advice, file=sys.stderr)
         # The doctor takes seconds (up to its timeout): said, so the pause
         # is not a hang.
-        print(f"Running griot {now}'s checks (they only read)...", file=sys.stderr, flush=True)
+        print(f"Running griot {now}'s checks...", file=sys.stderr, flush=True)
     report = _run_new_doctor(sys.executable)
     if isinstance(report, str):
-        message, shown = (f"The upgraded griot's checks could not run ({report}); they only read, so run them "
-                          f"yourself:\n  griot doctor"), True
+        message = f"The upgraded griot's checks could not run ({report}); run them yourself:\n  griot doctor"
+        shown = True
     else:
         message, shown = _after_upgrade(report, now)
     if shown or not common.quiet():
