@@ -23,6 +23,8 @@ three answer in ONE vocabulary (read by `_answer`, the one loop):
     s or Enter     skip: the non-committal answer; `add` has one query and
                    nothing to skip to, so there it adds nothing and ends
     q = quit       stop; what was approved before is kept (review, suggest)
+    n, no          skip, as s does                        (suggest: it used
+                   to be [y/N], so a typed n still means skip)
     n, r           none of them / never offer again       (review only: it
                    alone has a log of candidates to remember)
 
@@ -411,16 +413,16 @@ def _answer(prompt: str, words: dict[str, str], hint: str, *, count: int = 0, ve
         if answer in words:
             return words[answer]
         if not count:
-            print(f"  Answer with {hint}.")
+            print(f"  Answer with {hint}.", file=sys.stderr)
             continue
         try:
             picked = sorted({int(part) for part in answer.split(",") if part.strip()})
         except ValueError:
-            print(f"  Answer with {hint}.")
+            print(f"  Answer with {hint}.", file=sys.stderr)
             continue
         wrong = [j for j in picked if not 1 <= j <= count]
         if not picked or wrong:
-            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{count}).")
+            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{count}).", file=sys.stderr)
             continue
         if vet is not None and not vet(picked):
             continue
@@ -439,11 +441,15 @@ def _interrupted(added: int) -> int:
     return 130
 
 
-def _quoted_query(query: str) -> str:
-    """A query as a pasteable, shortened shell argument."""
-    lines = common.shown(query).splitlines()
-    text = lines[0][:80] if lines else ""
-    return '"' + "".join("\\" + c if c in '\\"$`' else c for c in text) + '"'
+def _add_command(query: str, limit: int, mode: str | None) -> str:
+    """The `golden-set add` line a person can paste, with the whole query and
+    the flags they gave. Never a cut query: pasting it would curate a
+    different case without saying so. A query that cannot be one pasteable
+    line (it has a line break, a tab or a control character) gets a
+    placeholder instead, which cannot be mistaken for the real one."""
+    text = shlex.quote(query) if query.isprintable() else "'<your query>'"
+    flags = (f" --mode {mode}" if mode else "") + (f" --limit {limit}" if limit != 5 else "")
+    return f"griot golden-set add {text}{flags}"
 
 
 def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int = 10) -> int:
@@ -484,7 +490,7 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         print(f"  must_include: {len(files)} file(s) — {', '.join(files)}")
         try:
             answer = _answer("Approve this case? y = add it, s or Enter = skip, q = quit: ", _SUGGEST_WORDS,
-                             "y, s or q")
+                             "y, s (or n) or q")
         except KeyboardInterrupt:
             return _interrupted(added)
         if answer == "quit":
@@ -540,7 +546,7 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     if not common.is_interactive():
         return common.refuse_without_terminal(
             "griot golden-set add asks a person which results are the right ones",
-            f"griot golden-set add {_quoted_query(query)}")
+            _add_command(query, limit, mode))
 
     # None is the default: hybrid, or vector where hybrid cannot run
     # (case_mode_for). Resolved once, before the search, so the results shown
@@ -552,6 +558,10 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     from griot import quality_check  # lazy: quality_check imports this module
     try:
         results = common.search(query, limit=limit, mode=mode, diverse=quality_check.GOLDEN_SET_DIVERSE)
+    except KeyboardInterrupt:
+        # The search is the slow (and possibly paid) step: Ctrl-C there ends
+        # like Ctrl-C at a prompt, since nothing was written yet either.
+        return _interrupted(0)
     except common.SearchFilterError as e:
         # A mode this collection cannot run yet, or a query it cannot match:
         # what to do instead, not a traceback.
@@ -567,8 +577,7 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
         print(f'Error: the {mode} search for "{shown_query}" returned no results, so there is nothing to '
               f"approve. Nothing was changed. Either the repository is not indexed yet (`griot index all`) or the "
               f"words do not match what was indexed; another mode may find it (vector = by meaning, keyword = "
-              f"the exact words, hybrid = both).\nTry:\n  griot golden-set add {_quoted_query(query)} "
-              f"--mode {other}", file=sys.stderr)
+              f"the exact words, hybrid = both).\nTry:\n  {_add_command(query, limit, other)}", file=sys.stderr)
         return 1
 
     print(f'Results for "{query}":')
@@ -583,7 +592,7 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     except KeyboardInterrupt:
         return _interrupted(0)
     if picked == "quit":
-        print("Nothing added.", file=sys.stderr)
+        print("Nothing was changed.", file=sys.stderr)
         return 0
     must_include = [_must_include_entry(results[i - 1].payload or {}) for i in picked]
 

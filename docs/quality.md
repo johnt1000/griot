@@ -21,6 +21,7 @@ All three read the same answers:
 | `y` | approve the suggestion (`suggest`) |
 | `s` or Enter | skip; in `add`, which has one query and nothing to skip to, add nothing and end |
 | `q` | quit; what was approved before is kept |
+| `n`, `no` | skip, as `s` does (`suggest`; it used to ask `[y/N]`, so a typed `n` still skips) |
 | `n`, `r` | none of them, never offer again (`review` only) |
 
 A bad answer asks again and names the choices. Ctrl-D counts as `q`; Ctrl-C

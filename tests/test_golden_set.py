@@ -172,7 +172,7 @@ def test_cmd_add_invalid_number_format_asks_again(monkeypatch, capsys):
     rc = golden_set.cmd_add("question")
 
     assert rc == 0
-    assert "answer with numbers 1-1" in capsys.readouterr().out.lower()
+    assert "answer with numbers 1-1" in capsys.readouterr().err.lower()
     assert len(json.loads(common.GOLDEN_SET_PATH.read_text())) == 1
 
 
@@ -185,7 +185,7 @@ def test_cmd_add_out_of_range_index_asks_again(monkeypatch, capsys):
     rc = golden_set.cmd_add("question")
 
     assert rc == 0
-    assert "out of range" in capsys.readouterr().out.lower()
+    assert "out of range" in capsys.readouterr().err.lower()
     assert not common.GOLDEN_SET_PATH.exists()
 
 

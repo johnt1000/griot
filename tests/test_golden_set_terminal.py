@@ -130,7 +130,7 @@ def test_add_without_a_terminal_refuses_before_searching(no_terminal, no_search,
     out, err = capsys.readouterr()
     assert out == ""
     assert "no terminal to ask on" in err and "Nothing was changed." in err
-    assert err.rstrip().splitlines()[-1] == '  griot golden-set add "how does login work"'
+    assert err.rstrip().splitlines()[-1] == "  griot golden-set add 'how does login work'"
     assert _cases() == []
 
 
@@ -218,7 +218,7 @@ def test_add_quits_with_enter_q_s_and_end_of_input(tmp_path, keys):
 
     assert code == 0, out
     assert cases == []
-    assert "Nothing added." in out and "Traceback" not in out
+    assert "Nothing was changed." in out and "Traceback" not in out
 
 
 def test_add_end_of_input_does_not_print_a_traceback_or_ask_twice(tmp_path):
@@ -251,7 +251,7 @@ def test_suggest_in_a_terminal_asks_again_after_a_bad_answer(tmp_path, git_repo)
     code, out, cases = _in_a_terminal(tmp_path, ["suggest", str(git_repo.path)], b"maybe\nyes\nskip\n")
 
     assert code == 0, out
-    assert "Answer with y, s or q." in out
+    assert "Answer with y, s (or n) or q." in out
     assert len(cases) == 1
 
 
@@ -362,7 +362,7 @@ def test_add_without_results_says_why_and_ends_on_the_command(terminal, monkeypa
     assert out == ""
     assert 'the vector search for "lock release" returned no results' in err
     assert "Nothing was changed." in err
-    assert err.rstrip().splitlines()[-2:] == ["Try:", '  griot golden-set add "lock release" --mode keyword']
+    assert err.rstrip().splitlines()[-2:] == ["Try:", "  griot golden-set add 'lock release' --mode keyword"]
 
 
 def test_add_without_results_in_keyword_mode_suggests_vector(terminal, monkeypatch, capsys):
@@ -370,7 +370,7 @@ def test_add_without_results_in_keyword_mode_suggests_vector(terminal, monkeypat
 
     golden_set.cmd_add("lock release", mode="keyword")
 
-    assert capsys.readouterr().err.rstrip().splitlines()[-1] == '  griot golden-set add "lock release" --mode vector'
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == "  griot golden-set add 'lock release' --mode vector"
 
 
 def test_a_search_refusal_stays_exit_1(terminal, monkeypatch, capsys):
@@ -390,7 +390,7 @@ def test_add_quitting_says_so_on_stderr_not_stdout(terminal, monkeypatch, capsys
     assert golden_set.cmd_add("q") == 0
 
     out, err = capsys.readouterr()
-    assert "Nothing added." in err and "Nothing added." not in out
+    assert "Nothing was changed." in err and "Nothing was changed." not in out
 
 
 def test_suggest_enter_skips_and_adds_nothing(terminal, git_repo, monkeypatch, capsys):
@@ -435,3 +435,115 @@ def test_the_mcp_add_also_refuses_a_bad_limit_before_asking_or_writing(no_search
 def test_the_answer_vocabulary_is_documented_in_one_place():
     doc = golden_set.__doc__ or ""
     assert "ANSWERS" in doc and "q = quit" in doc
+
+
+# --- round 2: the pasteable command, Ctrl-C in the search, stderr hints ------------
+
+
+def test_add_refusal_command_is_the_whole_query_not_a_cut_one(no_terminal, no_search, capsys):
+    query = "a" * 120 + " two"
+
+    golden_set.cmd_add(query)
+
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == f"  griot golden-set add '{query}'"
+
+
+def test_add_refusal_command_keeps_the_flags_the_person_gave(no_terminal, no_search, capsys):
+    golden_set.cmd_add("lock release", limit=8, mode="keyword")
+
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == (
+        "  griot golden-set add 'lock release' --mode keyword --limit 8")
+
+
+def test_add_refusal_quotes_what_the_shell_would_expand(no_terminal, no_search, capsys):
+    golden_set.cmd_add("what is $HOME and `id`")
+
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == "  griot golden-set add 'what is $HOME and `id`'"
+
+
+@pytest.mark.parametrize("query", ["first line\nsecond line", "tab\there", "esc\x1b[31mred"])
+def test_add_refusal_for_a_query_that_cannot_be_pasted_says_so_instead_of_cutting_it(
+        no_terminal, no_search, capsys, query):
+    golden_set.cmd_add(query)
+
+    last = capsys.readouterr().err.rstrip().splitlines()[-1]
+    assert last == "  griot golden-set add '<your query>'"
+    assert "first line" not in last and "\x1b" not in last
+
+
+def test_add_no_results_try_line_is_the_whole_query(terminal, monkeypatch, capsys):
+    monkeypatch.setattr(common, "search", lambda q, limit=5, mode=None, diverse=False: [])
+    query = "b" * 120 + " end"
+
+    golden_set.cmd_add(query, mode="vector", limit=3)
+
+    assert capsys.readouterr().err.rstrip().splitlines()[-1] == (
+        f"  griot golden-set add '{query}' --mode keyword --limit 3")
+
+
+def test_add_ctrl_c_during_the_search_ends_cleanly_with_130(terminal, monkeypatch, capsys):
+    def search(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(common, "search", search)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("asked after Ctrl-C"))
+
+    assert golden_set.cmd_add("q") == 130
+
+    out, err = capsys.readouterr()
+    assert out == "" and "Nothing was changed." in err
+    assert _cases() == []
+
+
+def test_add_quitting_and_ctrl_c_say_the_same_sentence(terminal, monkeypatch, capsys):
+    monkeypatch.setattr(common, "search", lambda q, limit=5, mode=None, diverse=False: HITS)
+    monkeypatch.setattr("builtins.input", lambda *a: "q")
+    golden_set.cmd_add("q")
+    quit_err = capsys.readouterr().err
+    monkeypatch.setattr("builtins.input", _raises(KeyboardInterrupt()))
+    golden_set.cmd_add("q")
+    interrupted_err = capsys.readouterr().err
+
+    assert "Nothing was changed." in quit_err and "Nothing was changed." in interrupted_err
+    assert "Nothing added" not in quit_err
+
+
+def test_a_bad_answer_hint_goes_to_stderr_in_add(terminal, monkeypatch, capsys):
+    monkeypatch.setattr(common, "search", lambda q, limit=5, mode=None, diverse=False: HITS)
+    answers = iter(["x", "9", "q"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+
+    golden_set.cmd_add("q")
+
+    out, err = capsys.readouterr()
+    assert "Answer with numbers 1-2" in err and "9 out of range (1-2)." in err
+    assert "Answer with" not in out and "out of range" not in out
+
+
+def test_a_bad_answer_hint_goes_to_stderr_in_suggest(terminal, git_repo, monkeypatch, capsys):
+    _two_commits(git_repo)
+    answers = iter(["maybe", "q"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+
+    golden_set.cmd_suggest(str(git_repo.path))
+
+    out, err = capsys.readouterr()
+    assert "Answer with" in err and "Answer with" not in out
+
+
+def test_the_suggest_hint_names_every_word_it_accepts(terminal, git_repo, monkeypatch, capsys):
+    _two_commits(git_repo)
+    answers = iter(["maybe", "q"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+
+    golden_set.cmd_suggest(str(git_repo.path))
+
+    assert "Answer with y, s (or n) or q." in capsys.readouterr().err
+
+
+def test_the_docs_table_lists_n_as_a_skip_in_suggest():
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "quality.md").read_text()
+    assert "`n`, `no`" in doc and "(`suggest`" in doc.split("`n`, `no`")[1].splitlines()[0]
+    assert "`n`, `no`" in golden_set.__doc__ or "n, no" in golden_set.__doc__
