@@ -97,6 +97,18 @@ the only other command that asks PyPI is `griot update`, which you run to
 upgrade. Exit status 1 only when a check fails; a warning is something to
 know.
 
+### The agent cannot connect to griot at all
+
+If the client says `Failed to reconnect to griot` and the server's log shows
+`cannot execute: No such file or directory` for the `python` inside
+`.../pipx/venvs/griot-rag/bin/`, `griot doctor` cannot help: griot never
+starts. A Python upgrade (typically Homebrew's) removed the interpreter the
+installation was built on. Reinstall with `pipx reinstall griot-rag` (or
+`uv tool install --reinstall griot-rag`), check that `griot --version`
+prints a version, run `griot doctor`, and restart the agent session. After a
+Homebrew Python upgrade, `pipx reinstall-all` avoids it. The
+`griot-troubleshooting` skill has the full entry.
+
 ## Upgrading: `griot update`
 
 `griot update` runs that upgrade: it asks PyPI for the newest `griot-rag`

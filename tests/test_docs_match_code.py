@@ -467,3 +467,26 @@ def test_the_getting_started_guide_says_when_ci_runs():
     assert ("release" in paragraph) == ("workflow_call" in triggers), paragraph
 
 
+# --- the launcher whose interpreter was removed ------------------------------------
+
+
+def test_the_dangling_launcher_has_a_fix_where_a_person_reads_when_the_server_will_not_connect():
+    """A Homebrew Python upgrade removed the interpreter a pipx venv's python
+    linked to, so the launcher died with 'cannot execute: No such file' before
+    griot could run: no griot error or `griot doctor` can say it, only these
+    texts. Each must name the symptom and both reinstall commands, and the
+    skill must say what prevents it."""
+    texts = {"griot-troubleshooting": SKILLS / "griot-troubleshooting" / "SKILL.md",
+             "docs/getting-started.md": ROOT / "docs" / "getting-started.md"}
+    for name, path in texts.items():
+        text = _flat(path)
+        assert "cannot execute: No such file" in text, f"{name}: the launcher's error is not named"
+        assert "Failed to reconnect to griot" in text, f"{name}: the client symptom"
+        assert "pipx reinstall griot-rag" in text, f"{name}: the pipx fix"
+        assert "uv tool install --reinstall griot-rag" in text, f"{name}: the uv tool fix"
+        # The symptom also names `griot --version`; the fix must use it too.
+        assert re.search(r"griot --version`? (?:# )?prints a version", text), f"{name}: no way to confirm the fix"
+    skill = _flat(texts["griot-troubleshooting"])
+    assert "pipx reinstall-all" in skill, "the prevention after a Python upgrade"
+
+
