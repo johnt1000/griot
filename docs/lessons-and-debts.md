@@ -376,9 +376,59 @@ raised toward the open's length without losing the check, and a longer
 open would slow every test that uses the fixture, so it was left; it is
 the one timing bound in that file a loaded machine can still trip. Resolved: the slow open lasts 10 s and the test asserts the read returned before it finished; two more fixed timings found by the sweep now take their bound from the wait they guard (#139).
 
+### 87. Code kept only for Python 3.10
+
+Python 3.11 is the minimum since #159, but two things still exist only for
+3.10: the walk past a skipped midnight in `stats.py`'s `window_start`
+(3.10's `datetime.combine` answers 23:00 of the day before) with the test
+that simulates it, and a `total=False` base in `mcp_server.py` that worked
+around 3.10 not knowing `NotRequired`. Both still work; removing them is a
+refactor nobody needed for the floor change, so it was left out of it.
+
+### 88. Two texts say that the keyword index is missing
+
+`KEYWORD_SEARCH_NOT_BUILT_NOTE` (the note a default search shows when it
+falls back to vector) and `keyword_search_missing_sentence` (the refusal,
+`griot doctor` and `griot stats`, #156) say nearly the same thing in two
+places. Merging them changes what a default search shows and needs its own
+sweep of the readers.
+
+### 89. Only `griot_search` has a deadline
+
+#155 bounds `griot_search` and the wait for the collection lock (120 s). The
+other MCP tools that open the collection are bounded only by that lock
+wait, and `griot search` in a terminal has no deadline at all, on purpose:
+a person sees the wait and can interrupt it.
+
+### 90. The `uv` advice for a launcher that no longer starts is unverified
+
+The fix for a launcher whose Python was removed (#158) was checked for
+`pipx` on a real broken environment; the `uv tool` equivalent was checked
+only against `uv tool install --help`.
+
+### 91. A crash whose text is empty loses its cause in the call log
+
+Since the MCP fix of this round, a griot error that wraps a crash adds
+` [cause: Class: text]` to the call log row unless the row already holds
+that text. An exception with an empty message (`KeyError()`) counts as
+already held, so the row names no cause.
+
 ---
 
 ## Lessons
+
+### CI tests the lock; users run the newest release the requirements allow
+
+The lock held mcp 2.0.0 and every check was green, while `mcp>=2.0.0,<3`
+let a fresh install resolve 2.3.0, where the SDK stopped passing any
+exception's text to the client. For weeks the messages griot writes for
+agents ("index a repository first", "run `griot index keywords`") reached
+them as `Error executing tool griot_search`, and nothing in CI could see
+it. A Dependabot pull request for mcp 2.2 failed for exactly that reason
+and sat open. When a dependency's behaviour is part of what griot promises,
+the floor in `pyproject.toml` is the promise, not the lock: raise the floor
+to the version tested (`mcp>=2.2`, `qdrant-client>=1.20`), and read a
+failing dependency update as a report about what users already run.
 
 ### An agent that has to be told, and has to ask, does not search
 
