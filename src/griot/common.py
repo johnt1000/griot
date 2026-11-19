@@ -826,6 +826,22 @@ def log_run_summary(**fields) -> None:
     prune_logs_if_due()
 
 
+def log_empty_run(script: str, args, repo_paths: list[str], start_time: float) -> None:
+    """Records a run that found nothing to index (no file it reads, no tags,
+    no remote branches, no platform items): it still ran, at those heads and refs.
+    Unrecorded, the freshness report reads the source as never run, and
+    `griot index all --if-stale` indexes every repository again on every
+    call to fill it; recorded, a tag added later still reads as changed.
+    A dry run records nothing, as everywhere else (cli._run_index_source)."""
+    import time
+
+    if args.dry_run:
+        return
+    log_run_summary(script=script, repo=args.repo or args.path or "all", repo_paths=repo_paths,
+                    indexed=0, skipped=0, failed=0, duration_seconds=round(time.time() - start_time, 2),
+                    spend_today_usd=get_spend_today())
+
+
 def log_questions_enabled() -> bool:
     """[finding M1 from the audit, 2026-08-19] queries.jsonl stores the full
     question forever — GRIOT_LOG_QUESTIONS=false allows turning off just the
@@ -2183,6 +2199,28 @@ def _lock_owner_is_alive(info: dict) -> bool:
     return True
 
 
+class IndexLockHeldError(RuntimeError):
+    """griot's index lock is held by another live run (`pid`), or was taken
+    by one that started at the same moment (`pid` None). Typed so that
+    `griot index all --if-stale` can tell this routine overlap (a scheduler
+    and a git hook starting together) from a real failure; a RuntimeError,
+    with the message it always had, so every caller that catches
+    RuntimeError reads it as before. Not a GriotError: that would change
+    what the MCP server sends an agent, which this type is not about."""
+
+    def __init__(self, message: str, *, pid: int | None = None, started: float | None = None):
+        super().__init__(message)
+        self.pid = pid
+        self.started = started
+
+    def held_by(self) -> str:
+        """Who holds the lock, as the skip line of --if-stale says it."""
+        if self.pid is None:
+            return "another griot index run started at the same moment and holds griot's lock"
+        when = f", started {time.strftime('%H:%M', time.localtime(self.started))}" if self.started else ""
+        return f"another griot index run holds griot's lock (PID {self.pid}{when})"
+
+
 def acquire_lock(label: str | None = None) -> None:
     """label: optional description of what's being indexed (e.g. a repo's
     path) — forward-looking for griot_index_repo (section 2.7 of the MCP
@@ -2194,10 +2232,11 @@ def acquire_lock(label: str | None = None) -> None:
     if LOCK_PATH.exists():
         info = _read_lock()
         if info is not None and _lock_owner_is_alive(info):
-            raise RuntimeError(
+            raise IndexLockHeldError(
                 f"A griot process is already running (PID {info['pid']}). Wait for it to finish, or delete "
                 f"{LOCK_PATH} if you're sure the process died without clearing the lock "
-                f"(e.g. kill -9 / OOM)."
+                f"(e.g. kill -9 / OOM).",
+                pid=info["pid"], started=info["start_time"],
             )
         # lock without valid info (corrupted/old format) or orphaned (owner
         # dead or PID recycled) — proceed and overwrite it.
@@ -2214,7 +2253,7 @@ def acquire_lock(label: str | None = None) -> None:
         # designed to receive a repo path) — same M2 contract as the other files
         fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        raise RuntimeError(
+        raise IndexLockHeldError(
             f"Another process created {LOCK_PATH} at the same instant (a race between two "
             f"indexers starting together). Run it again."
         )
