@@ -1,4 +1,5 @@
 import atexit
+import contextlib
 import functools
 import hashlib
 import http.cookiejar
@@ -583,7 +584,12 @@ def quiet() -> bool:
     """True under `--quiet` / GRIOT_QUIET=1: notices, warnings and progress
     are not shown. Errors, prompts and the result never consult this. Read at
     each call: cli.py turns the flag into the variable before the first
-    import of this module, and a host may set it later."""
+    import of this module, and a host may set it later.
+
+    Deliberately NOT in ENV_TEMPLATE_SETTINGS: it is a switch for one
+    invocation, not a setting. Written into .env it would silence every
+    warning of every run, including those of an MCP server started from this
+    configuration, and a person would never learn why a warning was missing."""
     return os.environ.get("GRIOT_QUIET", "").strip().lower() in _TRUTHY
 
 
@@ -610,6 +616,27 @@ def progress_disabled() -> bool:
     return quiet() or plain_output()
 
 
+# While capture_echo() is active, what log_and_print() would show is kept here
+# instead of being written anywhere.
+_captured: list | None = None
+
+
+@contextlib.contextmanager
+def capture_echo():
+    """Collects what log_and_print() would show, as a list of lines, instead of
+    showing it. For a caller that wants the explanation of a function that
+    reports through log_and_print() (golden_set: why nothing was listed)
+    without printing it on top of its own result. Unlike redirecting a
+    stream, it does not depend on which stream the echo goes to (the MCP
+    server's differs) nor on --quiet."""
+    global _captured
+    previous, _captured = _captured, []
+    try:
+        yield _captured
+    finally:
+        _captured = previous
+
+
 def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable: bool = True) -> None:
     """Logs `msg` and, with `echo`, shows it on stderr (see _echo_stream).
 
@@ -618,6 +645,10 @@ def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable:
     and progress, never something that says data is missing."""
     from tqdm import tqdm as _tqdm
     _ensure_log_handler()
+    if echo and _captured is not None:
+        _captured.append(msg)
+        getattr(_logger, level)(msg)
+        return
     # [shared config path] echo=False keeps the persistent log entry (audit trail
     # intact) while omitting the console: `griot quality-check --json` and
     # the log-only warnings rely on it.
@@ -626,11 +657,13 @@ def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable:
     getattr(_logger, level)(msg)
 
 
-def progress_note(text: str) -> None:
+def progress_note(text: str, silenceable: bool = True) -> None:
     """A line of progress (which repository is being read, what a source
     found) on stderr, so the result a command prints stays alone on stdout.
-    Silenced by --quiet; not written to the log (it is not an event)."""
-    if not quiet():
+    Silenced by --quiet unless `silenceable=False` (something that says data
+    was not written or a value must be rotated); not written to the log (it
+    is not an event)."""
+    if not (silenceable and quiet()):
         print(text, file=sys.stderr if _echo_stream is None else _echo_stream)
 
 
@@ -661,7 +694,8 @@ def announce_once(kind: str, fingerprint: str | None, lines: list[str], *, level
 
     Under --quiet nothing is shown and nothing is remembered: it was not said.
     A state file that cannot be read or written only means it is said again;
-    it must never stop a command."""
+    it must never stop a command. It is called while this module is imported
+    (the start-up warnings), so importing common can write announced.json."""
     path = _announced_path()
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -686,7 +720,9 @@ def announce_once(kind: str, fingerprint: str | None, lines: list[str], *, level
 def _write_announced(path: Path, state: dict) -> None:
     try:
         secure_mkdir(path.parent)
-        path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        # 0600 like the rest of the data directory: doctor flags anything
+        # other users can read, and this file is griot's own.
+        secure_write_text(path, json.dumps(state, sort_keys=True))
     except OSError:
         pass  # said again next time: the cost of a data directory that cannot be written
 
@@ -2986,17 +3022,19 @@ def report_redactions() -> int:
     taken = take_redactions()
     if not taken:
         return 0
+    # Not silenceable: it says a real credential may sit in the repository and
+    # must be rotated, which is not noise a person asked not to see.
     places: dict[str, list[str]] = {}
     for where, rule in taken:
         places.setdefault(where, []).append(rule)
-    print(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):")
+    progress_note(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):", silenceable=False)
     for where, rules in list(places.items())[:20]:
         # The place is named by a path, a branch, a tag: a name can hold the
         # very kind of value this report is about, and control characters.
-        print(f"  {shown(where)} ({', '.join(sorted(set(rules)))})")
+        progress_note(f"  {shown(where)} ({', '.join(sorted(set(rules)))})", silenceable=False)
     if len(places) > 20:
-        print(f"  ... and {len(places) - 20} more place(s)")
-    print("They are not in the index. If one is real, it is still in that file or history: rotate it.")
+        progress_note(f"  ... and {len(places) - 20} more place(s)", silenceable=False)
+    progress_note("They are not in the index. If one is real, it is still in that file or history: rotate it.", silenceable=False)
     return len(taken)
 
 
@@ -3847,7 +3885,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     # whole process — atexit (acquire_lock) stays registered as a safety
     # net for a crash that skips the finally block.
     try:
-        print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
+        progress_note(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
         # A collection made before keyword search has no room for the
         # keyword vector (the engine refuses a point naming a vector the
@@ -3951,7 +3989,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         if refreshed:
             # Said, because nothing else shows it: these count as skipped
             # (nothing was embedded), and something stored did change.
-            print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
+            progress_note(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
         _secure_collection_dir(COLLECTION_NAME, full=True)
@@ -4105,14 +4143,14 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             continue
         name, why_not = _registration(path)
         if name is None:
-            print(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.")
+            progress_note(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.", silenceable=False)
         elif produced.get(name) and name not in incomplete and name not in names:
             names.append(name)
     if not names:
         return 0
     if failed:
-        print(f"Stale points were not removed: {failed} document(s) of this run failed, "
-              f"so what the index holds cannot be compared with what was read.")
+        progress_note(f"Stale points were not removed: {failed} document(s) of this run failed, "
+                      f"so what the index holds cannot be compared with what was read.", silenceable=False)
         return 0
 
     total = 0
@@ -4120,24 +4158,25 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
         try:
             acquire_lock()
         except RuntimeError as e:
-            print(f"Stale points were not removed: {e} The next run removes them.")
+            progress_note(f"Stale points were not removed: {e} The next run removes them.", silenceable=False)
             return 0
     try:
         client = get_client()
         for name in names:
             existing, foreign = _point_ids_written_under(client, name, source_type, name)
             if foreign:
-                print(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
-                      f"directory (--path) and are left alone.")
+                progress_note(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
+                              f"directory (--path) and are left alone.")
             stale = [point_id for point_id in existing if str(point_id) not in produced[name]]
             if not stale:
                 continue
             if (not force and len(stale) > _PRUNE_GUARD_MIN_POINTS
                     and len(stale) > len(existing) * _PRUNE_GUARD_FRACTION):
                 outcome = "they would not be removed" if dry_run else "nothing was removed"
-                print(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
-                      f"by this run. That is more than half, so {outcome}: it usually means another branch is "
-                      f"checked out or files went missing. If it is right, run again with --prune.")
+                progress_note(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
+                              f"by this run. That is more than half, so {outcome}: it usually means another branch is "
+                              f"checked out or files went missing. If it is right, run again with --prune.",
+                              silenceable=False)
                 # Counted for a caller that reads numbers and not this
                 # sentence: returned as zero, these looked like a clean index.
                 if report is not None:
@@ -4150,7 +4189,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
                 for i in range(0, len(stale), _PRUNE_PAGE):
                     client.update(qe.UpdateOperation.delete_points(stale[i:i + _PRUNE_PAGE]))
                 client.flush()
-                print(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
+                progress_note(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
             total += len(stale)
     finally:
         if not dry_run:

@@ -549,7 +549,11 @@ def _cmd_profiles_delete(args) -> int:
     try:
         check_delete_profile(args.profile)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        # The command that helps goes last. The sentence is shared with the MCP
+        # tool, which has its own next step, so it is added here, and only
+        # where the sentence does not end on one already.
+        tail = "\n  griot profiles list" if isinstance(e, UsageError) and "\n  griot " not in str(e) else ""
+        print(f"Error: {e}{tail}", file=sys.stderr)
         # A wrong request (unknown or active profile, nothing to delete) is
         # incorrect use; a run holding the lock is the operation not able to
         # run now.
@@ -581,9 +585,14 @@ def _extract_switch(argv: list, *spellings: str) -> tuple[list, bool]:
     """Takes a flag that has no value (`--quiet`, `-q`) out of argv, wherever
     it is, for the same reason _extract_flag does it: the passthrough
     subcommands forward everything to their own parser, which must not see
-    it. `--quiet=1` is not a spelling: the flag takes no value."""
-    found = any(arg in spellings for arg in argv)
-    return [arg for arg in argv if arg not in spellings], found
+    it. `--quiet=1` is not a spelling: the flag takes no value. No subcommand
+    has an argument of its own called `-q` or `--quiet`, so nothing legitimate
+    is taken."""
+    # Past `--` everything is data (a search query or a path that is named
+    # `-q`), as it is for any command line: left alone.
+    stop = argv.index("--") if "--" in argv else len(argv)
+    head = [arg for arg in argv[:stop] if arg not in spellings]
+    return head + argv[stop:], len(head) != stop
 
 
 def _extract_flag(argv: list, flag: str) -> tuple[list, str | None]:

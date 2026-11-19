@@ -199,7 +199,7 @@ def test_a_detail_that_changed_while_the_text_stayed_is_written_without_embeddin
     indexed, skipped, failed = common.index_documents([_doc("merged")])
     assert (indexed, skipped, failed) == (0, 1, 0) and embedded == []
     assert _stored("repo:merge_request:7")["state"] == "merged"
-    assert "Updated the stored details of 1 unchanged point" in capsys.readouterr().out
+    assert "Updated the stored details of 1 unchanged point" in capsys.readouterr().err
 
 
 def test_nothing_is_written_when_nothing_changed(embedded, capsys, monkeypatch):

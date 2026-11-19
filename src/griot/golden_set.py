@@ -14,8 +14,6 @@ person at a terminal picks which logged result was right. `list`/`remove`
 round out the CRUD, same pattern as `griot repos`."""
 
 import argparse
-import contextlib
-import io
 import json
 import sys
 from pathlib import Path
@@ -314,8 +312,7 @@ def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit
     qrels = retrieval_eval.build_qrels_from_git(top, repo_name, max_commits=max_commits)
     # What it reports about files it skips is for an index run. Kept only to
     # say why nothing was listed, when nothing was.
-    said = io.StringIO()
-    with contextlib.redirect_stdout(said):
+    with common.capture_echo() as said:
         indexable = {path.relative_to(repo_path).as_posix(): path for path in index_code.discover_files(repo_path)}
     root = repo_path.resolve()
     has_text: dict[str, bool] = {}
@@ -349,7 +346,7 @@ def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit
             })
     return {"repo": repo_name, "candidates": candidates, "commits": len(qrels),
             "not_indexable": not_indexable, "too_many_files": too_many_files, "no_message": no_message,
-            "problem": " ".join(said.getvalue().split()) or None if not indexable else None}
+            "problem": " ".join(" ".join(said).split()) or None if not indexable else None}
 
 
 def left_out_note(found: dict) -> str | None:

@@ -208,7 +208,7 @@ def test_doctor_lists_the_renamed_variable_every_time(tmp_path):
         checks = {c["check"]: c for c in json.loads(done.stdout)}
 
         assert checks["old settings"]["status"] == "warn"
-        assert OLD_SENTENCE.removeprefix("Warning: ").split("\n")[0] in checks["old settings"]["detail"]
+        assert checks["old settings"]["detail"] == f"{OLD_VARIABLE} was renamed and griot ignores it."
         assert checks["old settings"]["fix"] == f'export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
 
 

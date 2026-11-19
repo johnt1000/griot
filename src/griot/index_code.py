@@ -179,7 +179,7 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
     filtered_files = discover_files(repo_path)
 
     if not filtered_files:
-        print(f"No supported file found in {repo_path.name}.")
+        common.progress_note(f"No supported file found in {repo_path.name}.")
         return []
 
     from tqdm import tqdm

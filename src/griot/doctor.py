@@ -125,6 +125,15 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
+def _whole_sentence(head: str) -> str:
+    """The first line of a start-up warning ends on the lead-in to the command
+    ("Rename it:", "Move it (griot never moves it on its own):"). Doctor
+    prints the command as the fix, so the lead-in goes and what it carried
+    stays as a sentence."""
+    head = re.sub(r" Rename it:$", "", head)
+    return re.sub(r" Move it \(([^)]*)\):$", lambda m: f" {m.group(1)[:1].upper()}{m.group(1)[1:]}.", head)
+
+
 def check_old_settings(common) -> dict:
     """Variables renamed and files moved by an earlier release, still there
     and ignored. The same sentences griot prints once when it starts
@@ -139,7 +148,7 @@ def check_old_settings(common) -> dict:
     details, fixes = [], []
     for _, sentence in findings:
         head, _, command = sentence.removeprefix("Warning: ").partition("\n  ")
-        details.append(head)
+        details.append(_whole_sentence(head))
         fixes.append(command)
     return _check("old settings", WARN, " ".join(details), "; ".join(fixes))
 

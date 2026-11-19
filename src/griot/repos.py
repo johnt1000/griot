@@ -60,14 +60,16 @@ def check_add(path: str) -> str:
     resolved = str(repo_path.resolve())
     registered = _load()
     if resolved in registered:
-        raise UsageError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
+        # A conflict with what the list holds, not a wrong argument: the
+        # command was well formed and did not run (exit 1).
+        raise ValueError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
     # The directory name is what a repository's points and ids are keyed on.
     # Two registered repositories with the same one overwrite each other's
     # points on every run, re-embed them each time, and both report success.
     name = Path(resolved).name
     same_name = [p for p in registered if Path(p).name == name]
     if same_name:
-        raise UsageError(
+        raise ValueError(
             f"another registered repository is already named '{name}' ({same_name[0]}). griot tells "
             f"repositories apart by directory name: rename one of the directories, or index this one "
             f"on its own with `griot index all --path`.")
@@ -109,22 +111,29 @@ def remove_repo(path: str) -> str:
     return resolved
 
 
+_LIST = "griot repos list"
+_ADD = "griot repos add <directory>"
+
+
 def _refuse(error: ValueError, next_command: str) -> int:
     """The one way a refused repos command ends: the sentence, the next
-    command last, and the exit status by kind (2 for a wrong request, 1 for a
-    list that could not be read)."""
-    if isinstance(error, UsageError):
-        print(f"Error: {error}\n  {next_command}", file=sys.stderr)
-        return 2
-    print(f"Error: {error}", file=sys.stderr)
-    return 1
+    command last, and the exit status by kind (2 for a wrong request, 1 for
+    a conflict with the list or a list that could not be read). The last line
+    matches the cause: a path that is not a directory is answered with how to
+    add one that is, not with the list."""
+    print(f"Error: {error}\n  {next_command}", file=sys.stderr)
+    return 2 if isinstance(error, UsageError) else 1
+
+
+def _next_after_refused_add(error: ValueError) -> str:
+    return _ADD if isinstance(error, UsageError) else _LIST
 
 
 def cmd_add(path: str) -> int:
     try:
         resolved = add_repo(path)
     except ValueError as e:
-        return _refuse(e, "griot repos list")
+        return _refuse(e, _next_after_refused_add(e))
     print(f"Added: {resolved}")
     if not is_git_repo(resolved):
         # [security review finding] 'index all' walks every registered path
@@ -161,7 +170,7 @@ def cmd_remove(path: str) -> int:
     try:
         resolved = remove_repo(path)
     except ValueError as e:
-        return _refuse(e, "griot repos list")
+        return _refuse(e, _LIST)
     print(f"Removed: {resolved}")
     return 0
 
@@ -200,7 +209,7 @@ def main(argv=None) -> int:
     try:
         resolved = check_add(args.path) if adding else check_remove(args.path)
     except ValueError as e:
-        return _refuse(e, "griot repos list")
+        return _refuse(e, _next_after_refused_add(e) if adding else _LIST)
     if adding:
         # No --yes on purpose: registering widens what may be sent to the
         # embedding API (see common.confirm and griot_repos_add).

@@ -238,7 +238,7 @@ def _say_where_it_went(env_var: str, where: str) -> None:
     keychain = common.keychain_status()
     if keychain["available"]:
         common.log_and_print(f"Note: the OS keychain ({keychain['backend']}) refused it, so it went to the file; "
-              f"`griot auth migrate` retries.")
+                             f"`griot auth migrate` retries.")
     else:
         common.log_and_print(f"Note: {keychain_phrase(keychain)}.")
 
