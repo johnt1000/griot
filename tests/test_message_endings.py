@@ -6,6 +6,7 @@ after N attempts). A message that appended "." after it read "..".  Each test
 here pins the exact ending, for both kinds of reason."""
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from griot import common, mcp_server, quality_check
 
@@ -102,7 +103,9 @@ def _golden_set_that_stops(monkeypatch, error):
     monkeypatch.setattr(quality_check, "record_for_trend", lambda *a, **k: None)
 
     def stops(cases):
-        raise RuntimeError(error)
+        # Text griot wrote (what a failed embedding raises): carried whole.
+        # A crash's text is not; see test_tool_errors_reach_the_agent.py.
+        raise common.EmbeddingFailed(error)
 
     monkeypatch.setattr(quality_check, "run_golden_set", stops)
 
@@ -113,7 +116,8 @@ def _golden_set_that_stops(monkeypatch, error):
 ])
 def test_the_stopped_golden_set_carries_the_error_with_one_period(monkeypatch, error, carried):
     _golden_set_that_stops(monkeypatch, error)
-    with pytest.raises(RuntimeError) as raised:
+    # Raised again as the ToolError the agent reads, with the same text.
+    with pytest.raises(ToolError) as raised:
         mcp_server.griot_quality_check()
     assert str(raised.value).startswith(
         f"The curated golden set stopped before it finished: {carried} The self-check did run")
