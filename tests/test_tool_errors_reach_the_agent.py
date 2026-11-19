@@ -214,6 +214,81 @@ async def test_griot_stats_groups_the_failures_by_their_original_class(monkeypat
     assert stats.structured_content["tool_failure_classes"] == {"SearchModeUnavailable": 1, "KeyError": 1}
 
 
+# --- a griot error that carries another error -----------------------------------------------------
+
+
+PRIVATE = "qdrant: shard /Users/you/private/path is corrupted"
+
+
+def _golden_set_that_stops(monkeypatch, error: Exception) -> None:
+    """griot_quality_check with the self-check done and the curated half
+    stopped by `error`."""
+    from griot import quality_check
+    monkeypatch.setattr(common, "collection_exists", lambda collection: True)
+    monkeypatch.setattr(quality_check, "run_self_check",
+                        lambda collection, sample_size: {"sampled": 2, "passed": 2, "failed": 0,
+                                                         "avg_score": 0.99, "failures": []})
+    monkeypatch.setattr(mcp_server, "_curated_cases_to_run",
+                        lambda: ([{"query": "q", "must_include": [{"repo": "r"}]}], None))
+    monkeypatch.setattr(quality_check, "record_for_trend", lambda *a, **k: None)
+
+    def stops(cases):
+        raise error
+    monkeypatch.setattr(quality_check, "run_golden_set", stops)
+
+
+async def _quality_check_error() -> str:
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_quality_check", {})
+    assert result.is_error is True, result
+    return _text(result)
+
+
+@pytest.mark.anyio
+async def test_a_crash_inside_the_golden_set_run_does_not_reach_the_agent(monkeypatch):
+    # CheckIncomplete is griot's text, but what stopped the run was a crash:
+    # its text stays masked, only its class is named.
+    _golden_set_that_stops(monkeypatch, RuntimeError(PRIVATE))
+
+    text = await _quality_check_error()
+
+    assert "/Users/you/private/path" not in text, text
+    assert "The self-check did run and is recorded" in text, text
+    assert "RuntimeError" in text, text
+    # The crash's text is not lost: the call log keeps it.
+    recorded = _recorded_error("griot_quality_check")
+    assert recorded.startswith("CheckIncomplete: "), recorded
+    assert f"RuntimeError: {PRIVATE}" in recorded, recorded
+
+
+@pytest.mark.anyio
+async def test_a_griot_error_inside_the_golden_set_run_reaches_the_agent(monkeypatch):
+    error = common.SpendCircuitBreakerError("Local circuit breaker: the daily ceiling was reached.")
+    _golden_set_that_stops(monkeypatch, error)
+
+    text = await _quality_check_error()
+
+    assert str(error) in text, text
+    assert "The self-check did run and is recorded" in text, text
+    # Said once in the log row too: the cause is already in the text.
+    assert _recorded_error("griot_quality_check").count(str(error)) == 1
+
+
+@pytest.mark.anyio
+async def test_a_cause_the_text_already_says_is_not_logged_twice():
+    # A corrupt golden-set file: UnreadableFile carries the parse error on
+    # purpose (it says where the file breaks), so the row has it once.
+    common.GOLDEN_SET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    common.GOLDEN_SET_PATH.write_text("{ not json")
+    async with Client(mcp_server.mcp) as client:
+        result = await client.call_tool("griot_golden_set_list", {})
+
+    assert result.is_error is True
+    recorded = _recorded_error("griot_golden_set_list")
+    assert recorded.startswith("UnreadableFile: "), recorded
+    assert "[cause:" not in recorded, recorded
+
+
 # --- resources -------------------------------------------------------------------------------------
 
 

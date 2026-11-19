@@ -103,7 +103,9 @@ def _golden_set_that_stops(monkeypatch, error):
     monkeypatch.setattr(quality_check, "record_for_trend", lambda *a, **k: None)
 
     def stops(cases):
-        raise RuntimeError(error)
+        # Text griot wrote (what a failed embedding raises): carried whole.
+        # A crash's text is not; see test_tool_errors_reach_the_agent.py.
+        raise common.EmbeddingFailed(error)
 
     monkeypatch.setattr(quality_check, "run_golden_set", stops)
 

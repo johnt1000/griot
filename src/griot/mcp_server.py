@@ -347,8 +347,21 @@ class SearchTimedOut(griot.GriotError, RuntimeError):
 
 
 class InstallationRemoved(griot.GriotError, RuntimeError):
-    """The installation this server runs from is gone; the text keeps the
-    original error and asks for a restart."""
+    """The installation this server runs from is gone; the text names the
+    original error (whole only when griot wrote it) and asks for a restart."""
+
+
+def _carried(error: Exception) -> str:
+    """What a griot error that wraps `error` may say about it to the agent:
+    its text when griot wrote it, its class name otherwise.
+
+    [review finding] A GriotError reaches the agent whole, so wrapping a
+    crash's text inside one would undo the SDK's masking (a vector-store
+    error carries a path). The crash's text is not lost: _records_call writes
+    the cause into the call log whenever the agent's text left it out."""
+    if isinstance(error, griot.GriotError):
+        return common.sentence(str(error))
+    return f"{type(error).__name__}."
 
 
 def _corrupt_golden_set(e: Exception) -> UnreadableFile:
@@ -873,11 +886,21 @@ def _records_call(fn, name: str | None = None):
         """Records the failure and returns the error to raise in place of
         `e`, or None to re-raise `e` as it is (a crash: the SDK masks it)."""
         explained = _explained_if_installation_removed(e)
+        if explained is not None:
+            explained.__cause__ = e
         # Recorded by its own class (griot stats groups failures by it), not
         # as the ToolError the agent is sent; with the explanation when there
         # is one, so griot_stats shows the cause too.
         shown = explained or e
-        record(False, ctx, started_at, error=f"{type(shown).__name__}: {shown}")
+        recorded = f"{type(shown).__name__}: {shown}"
+        # A griot error that wraps a crash names only the crash's class for
+        # the agent (_carried): the row keeps the crash's text, the one place
+        # it is not masked, so whoever reads the log can still see what broke.
+        # Left out when the text already says it (a corrupt file's parse error).
+        cause = shown.__cause__
+        if cause is not None and str(cause) not in recorded:
+            recorded += f" [cause: {type(cause).__name__}: {cause}]"
+        record(False, ctx, started_at, error=recorded)
         if not isinstance(shown, griot.GriotError):
             return None
         # A resource is recorded under its URI (`name`), and the SDK shows the
@@ -956,16 +979,22 @@ def _explained_if_installation_removed(error: Exception) -> InstallationRemoved 
     failure while the installation is in place (another OSError included) is
     not ours to reinterpret.
 
-    The original error stays in the text, so the explanation adds the cause
-    without erasing the evidence. A griot.GriotError, so the agent reads it
-    whatever the original was: a crash with the installation gone is that,
-    not a bug to mask."""
+    A griot.GriotError, so the agent reads it whatever the original was: a
+    crash with the installation gone is that, not a bug to mask, and the
+    restart is what the agent can act on. [review finding] The original is
+    named by its class, and its text is shown only when griot wrote it (see
+    _carried): the certifi error that started this carries a venv path, and
+    the explanation must not become a way around the SDK's masking. The
+    evidence is not erased: the call log keeps the original whole (the
+    wrapper chains it as the cause)."""
     gone = _installation_removed()
     if gone is None:
         return None
+    original = (f"{type(error).__name__}: {_carried(error)}" if isinstance(error, griot.GriotError)
+                else _carried(error))
     message = (
         f"The griot installation this MCP server runs from was removed or replaced "
-        f"({gone} no longer exists), so this call failed: {type(error).__name__}: {error}. "
+        f"({gone} no longer exists), so this call failed: {original} "
         "Restart the griot MCP server so it starts from the griot installed now: reconnect it "
         "from the client (in Claude Code, /mcp) or restart the client."
     )
@@ -2960,8 +2989,10 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             # The self-check is done and paid for: recorded, and said. It
             # used to vanish with the error of the half that came after it.
             quality_check.record_for_trend(common.COLLECTION_NAME, result, None)
+            # A crash is named by its class only (_carried): CheckIncomplete
+            # reaches the agent whole, its cause must not ride along unmasked.
             raise CheckIncomplete(
-                f"The curated golden set stopped before it finished: {common.sentence(str(e))} The self-check did run and is "
+                f"The curated golden set stopped before it finished: {_carried(e)} The self-check did run and is "
                 f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
