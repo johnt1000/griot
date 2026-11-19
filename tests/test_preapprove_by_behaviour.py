@@ -210,7 +210,9 @@ class _World:
             "griot_repos_remove": {"path": str(self.repository.path)},
             "griot_profiles_delete": {"profile": "openai-small"},
             "griot_golden_set_add": {"query": "where is login", "must_include": [{"repo": name}]},
-            "griot_golden_set_remove": {"index": 0},
+            # The world's one case: a case that is not there is refused
+            # before anyone is asked, and would look safe for that alone.
+            "griot_golden_set_remove": {"index": 1},
             "griot_assist_install": {"harness": "claude-code", "scope": "global"},
         }
         if tool.name in given:

@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 from mcp.client.client import Client
 
+import griot
 from griot import harnesses, mcp_server
 
 
@@ -380,7 +381,7 @@ def test_a_global_claude_code_copy_does_not_cover_a_local_install(opencode, home
 
 
 def test_the_command_says_why_and_how_to_get_a_copy_anyway(home, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr(harnesses, "detect_harnesses", lambda candidates=None: list(harnesses.HARNESSES))
     assert harnesses.cmd_install("global", "all", skills_only=True, home=home) == 0
     out = capsys.readouterr().out
@@ -391,7 +392,7 @@ def test_the_command_says_why_and_how_to_get_a_copy_anyway(home, monkeypatch, ca
 
 
 def test_the_command_skips_them_whichever_harness_comes_first(home, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr(harnesses, "detect_harnesses",
                         lambda candidates=None: [_harness("opencode"), _harness("claude-code")])
     assert harnesses.cmd_install("global", "all", skills_only=True, home=home) == 0
@@ -400,7 +401,7 @@ def test_the_command_skips_them_whichever_harness_comes_first(home, monkeypatch,
 
 
 def test_the_summary_says_how_many_when_only_some_are_read_from_elsewhere(home, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     one = _skill_files()[0]
     (home / ".claude" / "skills" / one).parent.mkdir(parents=True)
     (home / ".claude" / "skills" / one).write_text("x")
@@ -419,7 +420,7 @@ def test_the_first_directory_opencode_reads_is_the_one_named(opencode, home):
 
 def _terminal(monkeypatch, *, interactive, answers=()):
     """A terminal (or none) that answers in turn, recording each question."""
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: interactive)
+    monkeypatch.setattr(griot, "is_interactive", lambda: interactive)
     prompts, queue = [], list(answers)
 
     def fake_input(prompt=""):

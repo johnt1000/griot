@@ -161,13 +161,14 @@ async def test_the_real_golden_set_note_is_shown_after_the_command():
 
 
 @pytest.mark.anyio
-async def test_a_value_with_a_line_break_gets_no_pasteable_command():
+async def test_a_value_with_a_line_break_gets_no_pasteable_command(monkeypatch):
     """A newline inside a quoted argument is still a newline in the message,
     and a person copies the command line by line. No command beats one that
     pastes as something else."""
     class _Ctx:
         client_capabilities = None
 
+    monkeypatch.setattr(mcp_server.repos, "check_add", lambda p: p)  # passes the check made before asking
     out = await mcp_server.griot_repos_add("/tmp/a\nb", ctx=_Ctx())
     assert "griot repos add" not in out["message"]
     assert "control characters" in out["message"]

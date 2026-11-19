@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from mcp.client.client import Client
 
+import griot
 from griot import harnesses, mcp_server
 
 
@@ -77,7 +78,7 @@ def test_a_global_install_lands_where_the_harness_reads(claude, tmp_path, reloca
 
 
 def test_the_instructions_block_and_the_tool_rules_follow(claude, tmp_path, relocated, monkeypatch):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     home = tmp_path / "home"
 
@@ -98,7 +99,7 @@ def test_the_harness_is_detected_by_its_relocated_directory(claude, tmp_path, re
 
 
 def test_the_command_says_where_it_wrote(claude, tmp_path, relocated, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     assert harnesses.cmd_install("global", "claude-code", mcp="no", home=tmp_path / "home") == 0
     assert str(relocated / "skills") in capsys.readouterr().out
 
@@ -184,7 +185,7 @@ def test_with_a_bad_value_nothing_falls_back_to_dot_claude(claude, tmp_path, mon
     """Falling back would be the old bug: files where the harness does not look."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "cfg")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     home = tmp_path / "home"
     assert harnesses.cmd_install("global", "claude-code", mcp="no", home=home) == 1
@@ -266,7 +267,7 @@ def test_installing_does_not_change_the_mode_of_a_directory_that_was_already_the
 
 
 def test_the_command_says_the_variable_decided_the_place(claude, tmp_path, relocated, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     harnesses.cmd_install("global", "claude-code", mcp="no", home=tmp_path / "home")
     assert "CLAUDE_CONFIG_DIR" in capsys.readouterr().out
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")

@@ -105,9 +105,8 @@ one that calls an API is ignored.
 ## Step 2 — before spending anything
 
 1. Confirm the repo is registered: `griot_repos_list` (usable means
-   `exists` and `is_git` are both true) or `griot repos list` (its `✓` only
-   says the directory exists, not that it is a git repo). `--repo` takes the
-   repo's **directory name**, not the path.
+   `exists` and `is_git` are both true) or `griot repos list --json` (the
+   same keys). `--repo` takes the repo's **directory name**, not the path.
 2. Know the active profile: `griot profiles list` (or `griot_index_status`
    → `embed_profile`). `openai-small` and `gemini` are paid.
 3. On a paid profile, get the size first. With the MCP server attached,

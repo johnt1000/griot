@@ -310,14 +310,17 @@ def check_repositories(common) -> dict:
     except FileNotFoundError:
         paths = []  # nothing registered yet: the file is written by the first `griot repos add`
     except (OSError, ValueError) as e:
-        return _check("repositories", FAIL, f"repos.json could not be read: {e}", None)
+        # The sentence every other surface says, split into what happened
+        # (detail) and the command (fix): the two parts of it, word for word.
+        return _check("repositories", FAIL, common.repos_unreadable_detail(e), common.REGISTER_COMMAND)
     if not paths:
         return _check("repositories", WARN, "no repository registered: nothing to index",
-                      "griot repos add <path>")
+                      common.REGISTER_COMMAND)
     gone = [p for p in paths if not Path(p).is_dir()]
     if gone:
-        return _check("repositories", FAIL, "registered but not there: " + ", ".join(gone),
-                      "; ".join(f"griot repos remove {p}" for p in gone))
+        from griot import repos
+        return _check("repositories", FAIL, f"{repos.GONE}: " + ", ".join(gone),
+                      "; ".join(repos.remove_command(p) for p in gone))
     reports = freshness.repository_freshness()
     behind = [r for r in reports if r.get("behind")]
     without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]

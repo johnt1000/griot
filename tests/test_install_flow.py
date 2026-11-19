@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import griot
 from griot import common, harnesses
 
 GRIOT = "/opt/tools/griot"
@@ -75,7 +76,7 @@ def machine(tmp_path, monkeypatch):
     # with a directory in it is a file that is not there.
     monkeypatch.setattr(harnesses, "_which", lambda name: None if "/" in name else f"/usr/local/bin/{name}")
     monkeypatch.setattr(harnesses, "_griot_command", lambda: GRIOT)
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
 
     def use(cli):
@@ -146,7 +147,7 @@ def test_without_the_server_the_tools_and_the_instructions_are_not_offered(machi
 
 def test_without_a_terminal_nothing_is_asked_and_the_command_is_shown(machine, monkeypatch, capsys):
     cli = machine.use(_Cli())
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked without a terminal"))
     assert _install() == 0
     out = " ".join(capsys.readouterr().out.split())
@@ -411,7 +412,7 @@ def test_a_dead_project_file_registration_is_not_said_to_be_replaceable(machine,
 
 def test_without_a_terminal_a_dead_registration_is_not_summed_up_as_none(machine, monkeypatch, capsys):
     machine.use(_Cli(registered=("user", "/gone/griot")))
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     assert _install() == 0
     out = " ".join(capsys.readouterr().out.split())
     summary = out[out.index("Summary"):]

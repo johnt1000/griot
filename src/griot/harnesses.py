@@ -37,6 +37,8 @@ from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Callable
 
+import griot as griot_package  # light: is_interactive, the one check common.py re-exports (a local is named `griot`)
+
 
 def _resources_root() -> Path:
     """Resolved via importlib.resources so this works both for an editable
@@ -715,10 +717,6 @@ def apply_instructions(path: Path, block: str) -> str:
     return outcome
 
 
-def _is_interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
-
-
 def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: Path | None = None) -> str:
     """Asks whether to put griot's block in the harness's global instructions file.
     Returns n/a | skipped | unsafe | current | malformed | not-interactive | declined |
@@ -742,7 +740,7 @@ def offer_instructions(harness: Harness, scope: str, *, ask: bool = True, home: 
     if state == "malformed":
         print(f"  instructions: NOT touched. The griot markers in {path} are damaged, or it is not UTF-8 text; fix or remove them by hand.")
         return "malformed"
-    if not _is_interactive():
+    if not griot_package.is_interactive():
         print(f"  instructions: {path} has no up-to-date griot block. Run `griot assist install` "
               f"in a terminal to be asked; there is no flag that answers, and nothing is written without your answer.")
         return "not-interactive"
@@ -949,7 +947,7 @@ def offer_mcp_server(harness: Harness, scope: str, *, mode: str = "ask") -> str:
                if in_environment else None)
     remove = harness.mcp_unregister(replacing["scope"]) if replacing and harness.mcp_unregister else None
     if mode != "yes":
-        if not _is_interactive():
+        if not griot_package.is_interactive():
             what = (f"registered, but it runs {replacing['command']}, which is not there any more"
                     if replacing else "not registered")
             steps = "".join(f"\n    {step}" for step in ([shlex.join(remove)] if remove else []) + [command])
@@ -1246,7 +1244,7 @@ def offer_tool_approval(harness: Harness, scope: str, *, ask: bool = True, home:
         if kept_out:
             print(kept_out)
         return "current"
-    if not _is_interactive():
+    if not griot_package.is_interactive():
         print(f"  tool approval: {harness.display_name} asks before each griot tool call. Run "
               f"`griot assist install{'' if everywhere else ' --scope local'}` in a terminal to be asked "
               f"whether the read-only ones may run without that; there is no flag that answers, and nothing is "
@@ -1335,7 +1333,7 @@ def offer_copies_removal(entry: dict, harness_list: list[Harness], scope: str, *
         return "none"
     if not ask:
         return "skipped"
-    if not _is_interactive():
+    if not griot_package.is_interactive():
         return "not-interactive"
     try:
         answer = input(f"  Remove these {len(entry['paths'])} file(s)? [y/N] ")
@@ -1430,18 +1428,29 @@ def _summary(done: list[dict], scope: str, copies: list[tuple[str, str]] = ()) -
         print(f"  griot's own configuration could not be read ({e}). `griot config list` shows the settings; "
               f"nothing more can be said about what to index until that is fixed.")
         return
-    try:
-        registered = common.load_repos()
-    except (OSError, ValueError):
-        registered = []
-    if registered:
-        print(f"  {len(registered)} repositor{'y is' if len(registered) == 1 else 'ies are'} registered: "
-              f"`griot index all` brings the index up to date (`--dry-run` first says what it would do).")
-    else:
-        print("  Nothing is registered to index yet: `griot repos add <path>` for each repository, then "
-              "`griot index all`.")
+    for line in _registration_lines(common):
+        print(line)
     print(f"  Active embedding profile: {common.ACTIVE_PROFILE_NAME} (`griot profiles list` shows the others, "
           f"`griot profiles use <name>` changes it).")
+
+
+def _registration_lines(common) -> list[str]:
+    """What the install summary says about repos.json. A file that is there
+    and cannot be used is said with the sentence every other surface says,
+    never as "nothing registered", which it is not; `common` is passed in
+    because this module imports it only where it is needed."""
+    try:
+        registered = common.load_repos()
+    except FileNotFoundError:
+        registered = []
+    except (OSError, ValueError) as e:
+        return [f"  {common.repos_unreadable_sentence(e)}"]
+    if registered:
+        return [f"  {len(registered)} repositor{'y is' if len(registered) == 1 else 'ies are'} registered: "
+                f"`griot index all` brings the index up to date (`--dry-run` first says what it would do)."]
+    # The sentence `griot repos list` and the indexers say, laid out as the
+    # unreadable one above.
+    return [f"  {common.no_repository_sentence()}"]
 
 
 def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = True, mcp: str = "ask",

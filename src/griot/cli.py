@@ -393,6 +393,13 @@ def _cmd_index(args) -> int:
     # up front so that what is still to come shows as pending.
     common.progress_begin(sources)
 
+    with common.notes_said_once():
+        return _run_index_all(sources, rest)
+
+
+def _run_index_all(sources, rest) -> int:
+    from griot import common
+
     # Stops at the FIRST error, saying which source failed — continuing to
     # index with a broken source would mask the problem, and the next run
     # would just re-pay the cost of discovering the error.
@@ -463,6 +470,17 @@ def _cmd_search(args) -> int:
         # "nothing about this there". A usage error, hence the status.
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    if getattr(args, "json", False):
+        # The griot_search document, built by the same function: an agent
+        # reading this through a shell reads what the tool would have given
+        # it, note included (minus the server's once-per-collection keyword
+        # note: one process per command, so it is given every time, as the
+        # text below gives it).
+        from griot import search_result
+        common.print_json(search_result.output(
+            results, mode=mode, repos=args.repo, source_types=args.source_type, keyword_note=note,
+            behind_next=search_result.catch_up_commands))
+        return 0
     if not results:
         print("No results.")
         # The line `griot ask` prints for the same search: which filters
@@ -492,70 +510,106 @@ def _cmd_search(args) -> int:
 _TIER_MIN_GB = {"light": 8, "medium": 16, "heavy": 32}
 
 
+def profiles_list_result(*, ram_gb: float | None = None, active: str | None = None) -> dict:
+    """What `griot profiles list --json` prints and what the
+    griot_profiles_list tool returns (its keys are a subset of each entry),
+    built once so the two cannot disagree: {profiles, active, ram_gb}, the
+    profiles sorted by name.
+
+    Credentials are resolved once, through auth.provider_status() (the
+    environment, griot's .env, then the keychain), and only for the
+    embedding profiles: each one checked can be a keychain prompt on macOS.
+    `fits` is for a local profile only (null for one that calls an API),
+    and "fits" means the machine's RAM is at least the tier's nominal floor
+    (light 8 GB, medium 16 GB, heavy 32 GB), not a share of RAM computed
+    from rss_estimate_mb: the floor is what the profile guide documents.
+    `active` defaults to the profile this process runs with; a long-lived
+    MCP server passes the one in effect now."""
+    from griot import auth, common
+
+    if ram_gb is None:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    active = active or common.ACTIVE_PROFILE_NAME
+    # Keyed by env var, not by provider label: the label is derived from the
+    # var by a rule 'gemini' does not follow, and matching on the derived
+    # name would silently miss it.
+    key_envs = {common.credential_env_for_profile(name, profile) for name, profile in common.EMBED_PROFILES.items()}
+    statuses = {s["env_var"]: s for s in auth.provider_status(key_envs - {None})}
+    profiles = []
+    for name in sorted(common.EMBED_PROFILES):
+        profile = common.EMBED_PROFILES[name]
+        key_env = common.credential_env_for_profile(name, profile)
+        status = statuses.get(key_env) or {}
+        configured = bool(status.get("configured")) if key_env else True
+        local = key_env is None
+        tier = profile.get("ram_tier") if local else None
+        profiles.append({
+            "profile": name,
+            "is_active": name == active,
+            # The one definition behind every `paid` field and the
+            # confirmation before spending (common.profile_is_paid), so this
+            # listing and the spend gate can never disagree about a profile.
+            "paid": common.profile_is_paid(profile),
+            "credential_configured": configured,
+            "collection": common.collection_name_for(name),
+            "dim": profile["dim"],
+            "ram_tier": tier,
+            "rss_max_mb": profile["rss_estimate_mb"][1] if local and profile.get("rss_estimate_mb") else None,
+            "fits": (ram_gb >= _TIER_MIN_GB[tier]) if tier in _TIER_MIN_GB else None,
+            "price_per_1m_tokens": None if local else profile.get("price_per_1m_tokens"),
+            "credential_env": key_env,
+            "fix": None if configured else f"griot auth set {status.get('provider') or name}",
+        })
+    return {"profiles": profiles, "active": active, "ram_gb": round(ram_gb, 1)}
+
+
 def _cmd_profiles_list(args) -> int:
-    """`griot profiles list`: detects the machine's real
-    RAM via psutil and classifies each local profile by ram_tier.
-
-    "Fits comfortably" criterion: detected RAM >= the tier's nominal floor
-    (light=8GB/medium=16GB/heavy=32GB), not a percentage computed on top of
-    rss_estimate_mb — an earlier version tried "a model alone shouldn't
-    exceed ~25-30% of total RAM", which matched section 9.3's TEXT, but
-    diverges from that same section's own mockup (16GB: bge-large-en,
-    heavy tier, shown as "might be tight" even though it fits under that
-    percentage). The nominal floor per tier reproduces the mockup exactly
-    and is the source of truth when the plan's two criteria conflict with
-    each other (review finding)."""
-    import psutil
-
+    """`griot profiles list`: every embedding profile, the local ones by RAM
+    tier against the machine's RAM, the paid ones with their price and
+    whether their credential is set. Read from profiles_list_result(), as
+    --json and the griot_profiles_list tool are."""
     from griot import common
 
-    total_gb = psutil.virtual_memory().total / (1024 ** 3)
-    print(f"\nYour machine: {total_gb:.1f} GB total RAM (detected via psutil)\n")
+    result = profiles_list_result()
+    if getattr(args, "json", False):
+        common.print_json(result)
+        return 0
+    total_gb = result["ram_gb"]
+    print(f"\nYour machine: {total_gb:.1f} GB RAM\n")
 
     tier_labels = {"light": "light (8GB)", "medium": "medium (16GB)", "heavy": "heavy (32GB+)"}
-
-    by_tier = {}
-    paid = []
-    for name, profile in common.EMBED_PROFILES.items():
-        if profile["backend"] == "local":
-            by_tier.setdefault(profile.get("ram_tier"), []).append((name, profile))
-        elif profile["backend"] == "direct":
-            paid.append((name, profile))
-
     for tier in ["light", "medium", "heavy"]:
-        entries = by_tier.get(tier)
+        entries = [e for e in result["profiles"] if e["ram_tier"] == tier]
         if not entries:
             continue
         print(f"  LOCAL — {tier_labels[tier]}")
-        fits = total_gb >= _TIER_MIN_GB[tier]
-        label = "✓ fits comfortably" if fits else f"⚠ might be tight (you have {total_gb:.1f}GB)"
-        for name, profile in entries:
-            rss_max = profile["rss_estimate_mb"][1]
-            active = "   [ACTIVE]" if name == common.ACTIVE_PROFILE_NAME else ""
-            print(f"    {name:<14}{profile['dim']}d   ~{rss_max}MB   {label}{active}")
+        for entry in entries:
+            # An estimate that needs no action: a note, not a warning glyph.
+            label = "fits comfortably" if entry["fits"] else f"might be tight (you have {total_gb:.1f}GB)"
+            active = "   [ACTIVE]" if entry["is_active"] else ""
+            print(f"    {entry['profile']:<14}{entry['dim']}d   ~{entry['rss_max_mb']}MB   {label}{active}")
         print()
 
     print("  PAID (requires API key)")
-    from griot import auth  # lazy: only used here, avoids pulling dotenv into the rest of the CLI
-
-    for name, profile in paid:
-        # gemini uses GEMINI_TOKEN (a historical variable, with no
-        # api_key_env in the profile); the openai_compatible profiles
-        # (openai-small and future Voyage/remote ones) declare their own
-        # api_key_env — never reuse GEMINI_TOKEN to check another
-        # provider's credential. [review finding] Resolved through
-        # credential_env_for_profile() rather than read off the profile dict:
-        # that special case has to live in exactly one place, or a new remote
-        # profile added next to gemini gets reported as free by whichever
-        # caller still guesses from api_key_env.
-        api_key_env = common.credential_env_for_profile(name, profile)
-        provider_label = auth.provider_label(api_key_env) if api_key_env.startswith("GRIOT_") else name
-        configured = "configured" if common.credential(api_key_env) else f"missing {api_key_env} — run: griot auth set {provider_label}"
-        active = "   [ACTIVE]" if name == common.ACTIVE_PROFILE_NAME else ""
-        price = f"${profile['price_per_1m_tokens']:.2f}/1M"
-        print(f"    {name:<14}{profile['dim']}d   {price}   {configured}{active}")
-
-    print("\n  Make one the active profile with: griot profiles use <name>")
+    # {command: the profiles it unlocks}: one provider's credential serves
+    # each of its profiles, so the command is given once and names them.
+    fixes: dict[str, list[str]] = {}
+    for entry in (e for e in result["profiles"] if e["paid"]):
+        # Worded as `griot doctor` words the same fact.
+        configured = ("configured" if entry["credential_configured"]
+                      else f"its credential ({entry['credential_env']}) is not configured")
+        if entry["fix"]:
+            fixes.setdefault(entry["fix"], []).append(entry["profile"])
+        active = "   [ACTIVE]" if entry["is_active"] else ""
+        price = f"${entry['price_per_1m_tokens']:.2f}/1M"
+        print(f"    {entry['profile']:<14}{entry['dim']}d   {price}   {configured}{active}")
+    # The commands last, the more urgent one at the very end: what switches,
+    # then what sets a missing credential, without which that profile
+    # cannot index or search.
+    print("\n  griot profiles use <name>   # makes it the active profile")
+    for fix, profiles in fixes.items():
+        print(f"  {fix}   # for {', '.join(profiles)}")
     return 0
 
 
@@ -808,6 +862,14 @@ QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never er
                                "Same as GRIOT_QUIET=1. Also -q")
 
 
+def json_flag_help(guide: str) -> str:
+    """The --json help of every listing (`repos list`, `profiles list`,
+    `golden-set list`, `search`): the same promise in the same words, and
+    the guide that documents the keys of that one."""
+    return (f"One JSON document on stdout instead of the list; notices and errors stay on stderr "
+            f"(keys: {guide})")
+
+
 def chat_profile_flag(names) -> tuple[str, str, str]:
     """`griot ask`'s --chat-profile. The names are passed in: they live in
     common.CHAT_PROFILES, which this module must not import to build a help
@@ -947,7 +1009,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_search = subparsers.add_parser(
         "search",
         help="Raw search, by meaning or by exact words (no chat/LLM synthesis)",
-        description="Searches the vector store and prints sources + score. Never calls any chat model.",
+        description="Searches the vector store and prints sources + score (or one JSON document with --json). "
+                    "Never calls any chat model.",
     )
     show_flags_read_by_griot(p_search, PROFILE_FLAG)
     p_search.add_argument("query", help="Natural-language query")
@@ -968,6 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
                                "words alone, for a commit hash, an error code or where a name is used (the "
                                "default finds where it is defined); embeds nothing. "
                                "Scores are on each mode's own scale.")
+    p_search.add_argument("--json", action="store_true", help=json_flag_help("docs/search.md"))
     p_search.set_defaults(func=_cmd_search)
 
     for name, help_text in [
@@ -1001,7 +1065,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show_flags_read_by_griot(p_profiles)
     profiles_sub = p_profiles.add_subparsers(dest="profiles_command", metavar="<action>", required=True)
-    profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
+    p_profiles_list = profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
+    p_profiles_list.add_argument("--json", action="store_true", help=json_flag_help("docs/configuration.md"))
     p_profiles_use = profiles_sub.add_parser(
         "use", help="Makes a profile the active one (writes GRIOT_EMBED_PROFILE to the config .env)"
     )

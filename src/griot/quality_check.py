@@ -394,8 +394,8 @@ _KIND_LABELS = {"subject": "subject only", "subject_and_body": "subject and body
 
 
 class _NotMeasurable(Exception):
-    """The whole run cannot start: said on stderr in --json mode (no result
-    to report), like a collection that does not exist."""
+    """The whole run cannot start: an error, so said on stderr in either
+    mode (no result to report), like a collection that does not exist."""
 
 
 def _history_targets(name: str | None) -> list[tuple[str, Path]]:
@@ -406,21 +406,21 @@ def _history_targets(name: str | None) -> list[tuple[str, Path]]:
     except FileNotFoundError:
         registered = []
     except (OSError, ValueError) as e:
-        raise _NotMeasurable(f"{common.REPOS_JSON_PATH} cannot be read ({e}). Fix the file, or list what griot "
-                             f"sees:\n  `griot repos list`") from None
+        # Not "see `griot repos list`": it fails on the same file.
+        raise _NotMeasurable(common.repos_unreadable_sentence(e)) from None
     if name is None:
         if not registered:
-            raise _NotMeasurable("No repository is registered, so there is no history to ask questions from. "
-                                 "Register one:\n  `griot repos add PATH`")
+            # The sentence `griot repos list` and the indexers say.
+            raise _NotMeasurable(common.no_repository_sentence())
         return [(path.name, path) for path in registered]
     mine = [path for path in registered if path.name == name]
     if not mine:
         raise _NotMeasurable(f"No registered repository is named {common.printable(repr(name))[:80]} (the "
-                             f"directory name, spelled exactly). See the names:\n  `griot repos list`")
+                             f"directory name, spelled exactly). See the names:\n  griot repos list")
     if len(mine) > 1:
         raise _NotMeasurable(f"More than one registered repository is named {common.printable(repr(name))[:80]}, "
                              f"and their points carry the same name: there is no telling their files apart. "
-                             f"See them:\n  `griot repos list`")
+                             f"See them:\n  griot repos list")
     return [(name, mine[0])]
 
 
@@ -487,18 +487,16 @@ def run_from_history(args) -> None:
     be measured."""
     mode = args.mode or common.SEARCH_DEFAULT_MODE
     limit = args.limit or HISTORY_DEFAULT_LIMIT
-    # Always stderr: the estimate and the question go there, and an error is
-    # not the result.
-    err = sys.stderr
     try:
         targets = _history_targets(args.repo)
         if mode != "vector" and common.keyword_search_status(common.COLLECTION_NAME) is not True:
             raise _NotMeasurable(
                 f"Mode {mode} needs keyword search, and collection '{common.COLLECTION_NAME}' has no keyword "
                 f"vectors yet. `griot index keywords` builds them once (local, embeds nothing); or measure by "
-                f"meaning only:\n  `griot quality-check --from-history --mode vector`")
+                f"meaning only:\n  griot quality-check --from-history --mode vector")
     except _NotMeasurable as e:
-        print(f"Error: {e}", file=err)
+        # Errors, so stderr in either mode, as the golden-set gate says them.
+        print(f"Error: {e}", file=sys.stderr)
         raise SystemExit(1) from None
 
     # Everything that costs nothing first (reading git and the index), so
@@ -510,19 +508,19 @@ def run_from_history(args) -> None:
             # Said apart: git would fail on it and read as "no commit".
             not_measured.append({"repo": name, "reason": (
                 f"'{name}' is registered at {path}, which is not a git repository on this machine, so it has "
-                f"no history to read. Check the registered paths:\n  `griot repos list`")})
+                f"no history to read. Check the registered paths:\n  griot repos list")})
             continue
         indexed = retrieval_eval.indexed_code_files(client, name)
         if not indexed:
             not_measured.append({"repo": name, "reason": (
                 f"nothing is indexed as code for '{name}' with profile '{common.ACTIVE_PROFILE_NAME}', so no "
-                f"commit has an answer to find. Index it:\n  `griot index code --repo {name}`")})
+                f"commit has an answer to find. Index it:\n  griot index code --repo {shlex.quote(name)}")})
             continue
         every_pair = retrieval_eval.history_pairs(path, name, indexed)
         if not every_pair:
             not_measured.append({"repo": name, "reason": (
                 f"no commit in the history of '{name}' touched a file that is indexed now, so there is no "
-                f"question to ask. Once it has one, index it again:\n  `griot index all --repo {name}`")})
+                f"question to ask. Once it has one, index it again:\n  griot index all --repo {shlex.quote(name)}")})
             continue
         planned.append((name, every_pair, retrieval_eval.spread(every_pair, limit)))
 
@@ -654,12 +652,17 @@ def main(argv=None):
     # missing key, after the self-check had been paid for. None = no file.
     golden_set = None
     if not args.skip_golden_set and common.GOLDEN_SET_PATH.exists():
+        # Errors, so stderr in either mode. A file that cannot be read is
+        # said as every other surface says it; a case at fault is named,
+        # with the command that removes it, as griot_quality_check says it.
         try:
             golden_set = golden_set_mod.list_cases()
             golden_set_mod.check_cases(golden_set)
-        except (OSError, ValueError) as e:
-            print(f"Error: {common.GOLDEN_SET_PATH} cannot be run: {e}. Fix the file, or remove the case with "
-                  f"`griot golden-set remove`.", file=sys.stderr)
+        except (OSError, *golden_set_mod.UNREADABLE) as e:
+            print(f"Error: {golden_set_mod.unreadable_sentence(e)}", file=sys.stderr)
+            raise SystemExit(1)
+        except golden_set_mod.CaseError as e:
+            print(f"Error: {golden_set_mod.unrunnable_sentence(e)}", file=sys.stderr)
             raise SystemExit(1)
 
     if not args.json:

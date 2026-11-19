@@ -8,6 +8,62 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-19
+
+### Added
+
+- **`--json` on `griot repos list`, `griot profiles list`, `griot golden-set
+  list` and `griot search`.** One JSON document on stdout, warnings on
+  stderr, keys documented in each command's guide; an empty listing is an
+  empty array. `griot search --json` is built by the same function as the
+  `griot_search` MCP result, and its note ends with one pasteable command
+  per repository whose index is behind (#170).
+- **`griot quality-check --from-history` measures retrieval against each
+  repository's git history**, with no curation: a commit's message is the
+  question and the files it touched are the answers, commits spread evenly
+  over the history. It reports MRR@10 and recall@10 overall and per kind of
+  question, records each run in a series of its own, shows the previous
+  comparable run, and prints the estimated cost first on a paid profile
+  (#166).
+- **A global `--quiet` / `-q` and `GRIOT_QUIET=1`** silence notices,
+  warnings and progress, never errors, prompts or results; every command's
+  help names the flag (#161).
+
+### Changed
+
+- **Warnings, notices and progress go to stderr**; results stay on stdout,
+  so `griot stats --json` stays valid with a warning active. The renamed
+  variable and old layout warnings are shown once per state (kept in
+  `announced.json`, 0600) and `griot doctor` lists them every time.
+  `NO_COLOR` and a non-terminal turn off the charts and progress bars
+  (#161).
+- **Incorrect use exits 2 where it used to exit 1**: `auth set` with an
+  unknown provider, an empty key or no terminal; `repos add`/`remove` with a
+  bad or unregistered path; `profiles delete` with an unknown, active or
+  never-indexed profile. A script that tested for 1 on these must test for 2
+  (#161).
+- **The three golden-set commands answer the same way**: a bad answer asks
+  again with the choices named, end of input counts as quit, Ctrl-C exits
+  130 with "Nothing was changed."; `add` keeps its search on a bad number
+  (#160).
+
+### Fixed
+
+- **`golden-set add` and `suggest` refuse without a terminal before any
+  search or git scan** (exit 2, "Nothing was changed."), where they used to
+  end in a traceback after a possibly paid search (#160).
+- **A pull request, merge request or issue can be found by its number.** Its
+  stored text now starts with the number on the title's line, so keyword
+  search ranks it first for any spelling ("#14", "!14", "PR #14"); the
+  server instructions tell an agent to ask with `source_types`, the number
+  as the query and `mode=keyword`. The next `griot index platform` (or
+  `griot index all`) re-embeds every pull request and issue, at a small
+  cost on a paid profile (#167).
+- **A `repos.json` or golden set that cannot be used is one sentence on
+  every surface**, CLI, doctor, stats, MCP tools, `griot://repos` and
+  `griot_index_status` (`repos_error`), ending with the command to run; the
+  MCP tools that change them check the file before asking anyone (#170).
+
 ## [0.7.0] — 2026-11-19
 
 ### Changed
@@ -1680,7 +1736,8 @@ PyPI is 0.2.0.
 - Apache-2.0 license, packaging metadata, and an English README.
 - Code, CLI-facing strings and tests are entirely in English (2026-08-20).
 
-[Unreleased]: https://github.com/johnt1000/griot/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/johnt1000/griot/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/johnt1000/griot/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/johnt1000/griot/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/johnt1000/griot/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/johnt1000/griot/compare/v0.4.0...v0.5.0

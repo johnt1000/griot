@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import GitRepo
-from griot import index_tags
+from griot import common, index_tags
 
 
 def test_list_tags_empty_repo_has_no_tags(git_repo):
@@ -133,4 +133,4 @@ def test_main_without_repos_json_prints_friendly_error(monkeypatch, capsys):
     assert index_tags.main([]) == 1
 
     out = capsys.readouterr().err  # an error: stderr and a failing exit status
-    assert "not found" in out
+    assert out == f"Error: No repository registered in {common.REPOS_JSON_PATH}.\n  griot repos add <path>\n"

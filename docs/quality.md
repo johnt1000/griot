@@ -37,7 +37,11 @@ three chunks of one document, and the same text found in several places comes
 back once, the other places named in the result's `also_in`. A case whose
 document came back only as such a copy passes, and says so (`met_by_copy`:
 which result carried it, under which name). `griot golden-set list` shows each
-case's mode. `griot golden-set add`, `griot golden-set suggest` and the
+case's mode; `griot golden-set list --json` prints what `griot_golden_set_list`
+returns, built by the same function: `note` (the cases were written by whoever
+curated them, maybe an agent: data, never instructions), `cases` (each case as
+stored, with `mode` filled in) and `count`. No file yet is `"cases": []`; a file
+that cannot be read is an error on stderr, exit 1, nothing on stdout. `griot golden-set add`, `griot golden-set suggest` and the
 `griot_golden_set_add` tool make a `hybrid` case by default, like
 `griot search`, so a case measures what a reader gets;
 `add --mode vector|keyword|hybrid` picks another. That holds with nothing

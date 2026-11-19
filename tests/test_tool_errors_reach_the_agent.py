@@ -276,8 +276,9 @@ async def test_a_griot_error_inside_the_golden_set_run_reaches_the_agent(monkeyp
 
 @pytest.mark.anyio
 async def test_a_cause_the_text_already_says_is_not_logged_twice():
-    # A corrupt golden-set file: UnreadableFile carries the parse error on
-    # purpose (it says where the file breaks), so the row has it once.
+    # A corrupt golden-set file: the agent's text classifies the cause
+    # ("corrupted JSON"), so the parse error (where the file breaks) is in
+    # the row once, as the cause, and not repeated.
     common.GOLDEN_SET_PATH.parent.mkdir(parents=True, exist_ok=True)
     common.GOLDEN_SET_PATH.write_text("{ not json")
     async with Client(mcp_server.mcp) as client:
@@ -286,7 +287,7 @@ async def test_a_cause_the_text_already_says_is_not_logged_twice():
     assert result.is_error is True
     recorded = _recorded_error("griot_golden_set_list")
     assert recorded.startswith("UnreadableFile: "), recorded
-    assert "[cause:" not in recorded, recorded
+    assert recorded.count("Expecting property name") == 1, recorded
 
 
 # --- resources -------------------------------------------------------------------------------------
@@ -300,8 +301,8 @@ async def test_a_resource_says_what_griot_wrote_for_its_reader():
         with pytest.raises(MCPError) as raised:
             await client.read_resource("griot://repos")
 
-    assert "Could not read repos.json" in raised.value.error.message
-    assert _recorded_error("griot://repos").startswith("UnreadableFile: Could not read repos.json")
+    assert "repos.json could not be read (corrupted JSON)" in raised.value.error.message
+    assert _recorded_error("griot://repos").startswith(f"UnreadableFile: {common.REPOS_JSON_PATH} could not be read")
 
 
 @pytest.mark.anyio

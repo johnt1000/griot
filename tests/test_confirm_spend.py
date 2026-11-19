@@ -812,7 +812,9 @@ def test_a_paid_profile_with_nothing_registered_gets_the_sources_own_error(embed
     capsys.readouterr()
     assert cli.main(argv) == 1
     out, err = capsys.readouterr()
-    assert f"Error: {common.REPOS_JSON_PATH} not found." in err.splitlines(), err
+    # The sources' shared sentence for "nothing registered yet" (#170), not
+    # the gate's: read from griot so the two cannot drift apart.
+    assert f"Error: {common.no_repository_sentence()}" in err, err
     assert "Traceback" not in err and out == ""
     assert embedded == []
 

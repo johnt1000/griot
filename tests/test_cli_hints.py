@@ -46,6 +46,7 @@ class _NoElicitCtx:
 @pytest.mark.parametrize("value", HOSTILE)
 async def test_repos_add_refusal_hint_survives_a_shell(monkeypatch, value):
     monkeypatch.setattr(repos, "add_repo", lambda p: p)
+    monkeypatch.setattr(repos, "check_add", lambda p: p)  # the path passes the check made before asking
     result = await mcp_server.griot_repos_add(value, confirm=False, ctx=_NoElicitCtx())
     hint = _command_in(result["message"])
     assert shlex.split(hint) == ["griot", "repos", "add", "--", value]
@@ -136,4 +137,7 @@ async def test_no_refusal_carries_a_non_printable_character_from_the_agent(value
     message = out["message"]
     assert all(line.isprintable() for line in message.split("\n")), repr(message)
     assert len(message.splitlines()) == len(message.split("\n"))
-    assert "griot repos add" not in message
+    # No command built from the agent's value; the refusal ends with griot's
+    # own placeholder, as `griot repos add` at a terminal ends it.
+    assert "griot repos add --" not in message
+    assert message.split("\n")[-1] == "  griot repos add <directory>"

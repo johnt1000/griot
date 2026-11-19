@@ -205,11 +205,9 @@ def main(argv=None):
         # name (Path(".").name is empty), in its points and in its ids.
         repo_paths_str = [str(Path(args.path).resolve())]
     else:
-        try:
-            repo_paths_str = common.load_repos()
-        except FileNotFoundError:
-            print(f"Error: {common.REPOS_JSON_PATH} not found.", file=sys.stderr)
-            return 1
+        repo_paths_str = common.load_repos_or_say()
+        if repo_paths_str is None:
+            return 1  # missing or unusable: load_repos_or_say said which
 
         if args.repo:
             repo_paths_str = [p for p in repo_paths_str if Path(p).name == args.repo]
