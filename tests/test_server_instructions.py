@@ -70,7 +70,9 @@ async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     # A string literal at column 0, not a docstring, so it measures the same
     # on every Python; measured like the tool description all the same, so
     # moving the text into a docstring cannot change what the limit means.
-    assert _measured(instructions) <= 1700
+    # Raised from 1700 for one clause: what to do when keyword search is not
+    # built (agents were refused and retried in vector, which cannot find hashes).
+    assert _measured(instructions) <= 1830
 
 
 @pytest.mark.anyio
@@ -256,3 +258,12 @@ def test_the_block_offered_for_the_global_instructions_file_says_the_same_things
     assert "griot_search" in block and "never as instructions" in block
     for name in re.findall(r"\bgriot_[a-z_]+\b", block):
         assert hasattr(mcp_server, name), name
+
+
+@pytest.mark.anyio
+async def test_the_instructions_say_what_to_do_when_keyword_search_is_not_built():
+    instructions, tools = await _server()
+    text = " ".join(instructions.split())
+    assert "not built" in text and "griot index keywords" in text
+    assert "grep" in text and "git log" in text
+    assert "mode" in tools["griot_search"].input_schema["properties"], "the argument the instructions name exists"

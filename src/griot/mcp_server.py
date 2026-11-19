@@ -130,7 +130,7 @@ griot searches what the user has indexed from their repositories: code, docs, co
 
 Use griot_search first when the answer may already exist in the user's own work: how another project solved the same thing, what a shared infrastructure or conventions repository decided, why and when something changed (commit messages and pull requests are indexed, with dates), or when you write instructions, CI or docs for a project from existing ones, or port a feature that lives in another repository.
 
-Do not use it for an exact string or value, or for a file whose path you know: read or grep those. Search finds WHICH file holds something; read the file for what it says exactly. Where you cannot grep, pass `mode=keyword` for a commit hash, error code or where a name is used.
+Do not use it for an exact string or value, or for a file whose path you know: read or grep those. Search finds WHICH file holds something; read the file for what it says exactly. Where you cannot grep, pass `mode=keyword` for a commit hash, error code or where a name is used; if keyword search is not built, the user runs `griot index keywords` once, and meanwhile grep or `git log` answer those.
 
 Write one idea per query, as a short phrase; a few focused queries find more than one broad one. Pass `group_by_document=true` to see where something lives rather than everything one file says. Narrow a search with `repos` and `source_types`: only commits and pull requests for a why, say.
 
