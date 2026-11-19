@@ -84,9 +84,12 @@ def capitalized(text: str) -> str:
 
 def prose(notice: Notice, lead: str = "") -> str:
     """A notice as the CLI prints it on stderr: what, then the command on a
-    line of its own, indented as every griot warning puts its command."""
+    line of its own, indented as every griot warning puts its command. An
+    action of several commands, one per line, gets one indented line each,
+    so that each can be pasted on its own."""
     end = "" if notice.sentence.endswith(".") else "."
-    return f"{lead + ' ' if lead else ''}{capitalized(notice.sentence)}{end}\n  {notice.action}"
+    commands = "\n".join(f"  {command}" for command in notice.action.splitlines() if command)
+    return f"{lead + ' ' if lead else ''}{capitalized(notice.sentence)}{end}\n{commands}"
 
 
 def _printable(text: str) -> str:

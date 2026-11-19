@@ -129,6 +129,20 @@ not check and exits non-zero. It refuses an editable or development install
 (update the checkout instead) and an installation whose method it cannot tell
 (it prints the candidate commands instead of guessing). The installer's output
 is shown as it runs and its exit status is the command's; afterwards it prints
-the version now installed. MCP servers already running keep the old version
-until they are restarted. It is a command for you, not an MCP tool: an agent
-does not upgrade the tool it is using.
+the version now installed and runs the new version's `griot doctor` (it only
+reads). Each condition that needs an action is shown with its command last:
+for example keyword search not built for a collection indexed before an
+upgrade made hybrid the default, followed by `griot index keywords`; the
+doctor's other warnings and failures are counted, pointing at `griot doctor`.
+With none it says nothing else needs doing. `griot update` runs none of those
+commands itself. If the check cannot run it says so and points to
+`griot doctor`; the upgrade still exits 0. Under `--quiet` the conditions are
+still shown (the doctor records them as said, so no later notice would say
+them again); the rest of these lines are not. Running the doctor means what
+it always means: it asks PyPI unless `update-check` is off, and its
+registration check may start the MCP server for a moment. The check exists
+from the upgrade after the release that ships it: an older `griot update`
+does not run it. MCP servers already running keep the old version until they
+are restarted: reconnect them from the client (in Claude Code, `/mcp`) or
+restart the client. It is a command for you, not an MCP tool: an agent does
+not upgrade the tool it is using.
