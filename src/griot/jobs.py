@@ -832,9 +832,10 @@ def run_quality_check_job(sample_size: int, *, collection: str | None = None, en
             result = json.loads(stdout)
         except json.JSONDecodeError:
             # [security review finding] quality_check.py only suppresses its
-            # OWN print() calls under --json — embed_texts()'s retry warnings
-            # (log_and_print(echo=True) on a 429/connection retry, deep in
-            # common.search()) still print straight to stdout. The JSON
+            # OWN print() calls under --json. log_and_print() (retry
+            # warnings deep in common.search()) writes to stderr now, so a
+            # stray line in front of the payload is no longer expected: this
+            # is the fallback for one that gets through anyway. The JSON
             # payload is always the LAST line quality_check.py writes in
             # --json mode (see its main()), so retry a parse against just
             # the last line before treating the output as genuinely broken.

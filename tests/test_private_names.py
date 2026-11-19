@@ -97,6 +97,8 @@ TESTS_MAY_REACH = {
         "_estimated_spend_was_said": _HELPER,
         "_LEGACY_ENV_RENAMES": _HELPER,
         "_GIT_ENV_ALLOWED": _HELPER,
+        "_points_error": _HELPER,
+        "_embed_one_openai_compatible_request": _HELPER,
     },
     "auth": {
         "_ensure_env_file": _HELPER,
@@ -197,6 +199,7 @@ TESTS_MAY_REACH = {
     },
     "platforms": {
         "_get_with_retry": _SEAM,
+        "_warn_pages_capped": _HELPER,
         "_gitea_matches": _HELPER,
     },
     "quality_check": {

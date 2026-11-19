@@ -135,7 +135,7 @@ def test_auth_set_says_the_new_key_will_not_be_used_while_the_export_is_there(sh
 
     assert auth.cmd_set("github") == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "~/.zshrc:3" in out and "exported" in out and "unset GITHUB_TOKEN" in out
     _no_secret_in(out)
 
@@ -147,7 +147,7 @@ def test_auth_set_says_nothing_more_when_nothing_is_exported(shell, monkeypatch,
 
     auth.cmd_set("github")
 
-    assert "exported" not in capsys.readouterr().out
+    assert "exported" not in "".join(capsys.readouterr())
 
 
 def test_auth_set_says_nothing_more_when_the_export_is_the_same_key(shell, monkeypatch, capsys):
@@ -155,7 +155,7 @@ def test_auth_set_says_nothing_more_when_the_export_is_the_same_key(shell, monke
 
     auth.cmd_set("github")
 
-    assert "exported" not in capsys.readouterr().out
+    assert "exported" not in "".join(capsys.readouterr())
 
 
 def test_auth_list_says_the_key_in_use_comes_from_the_shell(shell, capsys):
@@ -173,7 +173,7 @@ def test_auth_remove_says_the_exported_key_is_still_used(shell, capsys):
 
     auth.cmd_remove("github")
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "still exported" in out and "~/.zshrc:3" in out
     _no_secret_in(out)
 
@@ -253,7 +253,7 @@ def test_a_platform_that_refuses_the_token_says_where_it_came_from(shell, monkey
 
     index_platform.build_documents(tmp_path)
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "401" in out and "~/.zshrc:3" in out and "griot auth" in out
     assert out.count("~/.zshrc:3") == 1, "said once per repository, not once per kind of item"
     _no_secret_in(out)
@@ -270,7 +270,7 @@ def test_a_platform_that_refuses_a_stored_token_says_to_set_a_new_one(shell, mon
 
     index_platform.build_documents(tmp_path)
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "griot auth set github" in out and str(common.ENV_PATH) in out
 
 

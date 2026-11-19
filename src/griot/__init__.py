@@ -40,6 +40,14 @@ class GriotError(Exception):
     ConfigurationError is."""
 
 
+class UsageError(GriotError, ValueError):
+    """The request itself is wrong (an unknown profile, a path that is not a
+    directory, a repository not in the list): the CLI exits 2 for it. A plain
+    ValueError from the same function is the operation failing: exit 1. A
+    GriotError too: the text says what to do, and an MCP tool that raises it
+    (a repository path that is not a directory) must hand that to the agent."""
+
+
 class ConfigurationError(GriotError, ValueError):
     """A setting griot cannot start with, or a configuration file it cannot
     write (a <config>/.env that is a link leading nowhere). The CLI turns it

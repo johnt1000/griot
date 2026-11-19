@@ -124,9 +124,10 @@ def test_griot_log_file_created_0600(monkeypatch):
 # --- --json mode carries ONLY the JSON payload (jobs.py's subprocess --------
 # --- contract depends on that) ----------------------------------------------
 
-def test_log_and_print_echo_true_writes_to_stdout_by_default(capsys):
+def test_log_and_print_echo_true_writes_to_stderr_by_default(capsys):
     common.log_and_print("visible line")
-    assert "visible line" in capsys.readouterr().out
+    out, err = capsys.readouterr()
+    assert "visible line" in err and out == ""
 
 
 def test_log_and_print_echo_false_omits_stdout_but_still_logs():

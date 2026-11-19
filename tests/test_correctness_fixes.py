@@ -50,8 +50,9 @@ def test_once_the_server_starts_notices_go_to_stderr(monkeypatch, capsys):
     mcp_server._keep_stdout_for_the_protocol()
     common.log_and_print("Warning: something an operator should read", level="warning")
     out, err = capsys.readouterr()
-    assert out.strip() == "before"
-    assert "something an operator should read" in err
+    # Notices go to stderr by default now; the server's stream is stderr too.
+    assert out == ""
+    assert "before" in err and "something an operator should read" in err
 
 
 def test_a_real_server_writes_only_protocol_messages_to_stdout(tmp_path):
@@ -406,7 +407,9 @@ def test_one_missing_path_among_valid_ones_is_only_a_warning(tmp_path, capsys):
     common.REPOS_JSON_PATH.write_text(json.dumps([str(good), str(tmp_path / "gone")]))
     common.embed_texts = common.embed_texts  # no-op: the dry run below embeds nothing
     assert index_code.main(["--dry-run"]) in (None, 0)
-    assert "not a valid directory" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "not a directory, skipped" in captured.err
+    assert "not a directory" not in captured.out
 
 
 # --- what the report says about a collection it cannot count -------------------------------

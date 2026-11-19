@@ -1,4 +1,6 @@
 import atexit
+import contextlib
+import contextvars
 import functools
 import hashlib
 import http.cookiejar
@@ -575,29 +577,175 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
     return 1
 
 
-# Where log_and_print() echoes. None is the terminal's stdout. The MCP server
-# points it at stderr for its whole life: there, stdout IS the JSON-RPC
-# stream, and one stray line in it corrupts what the client is reading.
+# Where log_and_print() echoes. None is stderr, looked up at each call (not at
+# import, so a test or a host that swaps sys.stderr is followed): stdout is
+# the result of a command, and a notice in it ends up inside
+# `griot stats --json` or a pipe's data. The MCP server points it at stderr
+# explicitly for its whole life: there stdout IS the JSON-RPC stream.
 _echo_stream = None
 
 
 def set_echo_stream(stream) -> None:
     """Where log_and_print() echoes from now on: a writable text stream, or
-    None for stdout."""
+    None for stderr."""
     global _echo_stream
     _echo_stream = stream
 
 
-def log_and_print(msg: str, level: str = "info", echo: bool = True) -> None:
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def quiet() -> bool:
+    """True under `--quiet` / GRIOT_QUIET=1: notices, warnings and progress
+    are not shown. Errors, prompts and the result never consult this. Read at
+    each call: cli.py turns the flag into the variable before the first
+    import of this module, and a host may set it later.
+
+    Deliberately NOT in ENV_TEMPLATE_SETTINGS: it is a switch for one
+    invocation, not a setting. Written into .env it would silence every
+    warning of every run, including those of an MCP server started from this
+    configuration, and a person would never learn why a warning was missing."""
+    return os.environ.get("GRIOT_QUIET", "").strip().lower() in _TRUTHY
+
+
+def no_color(environ=None) -> bool:
+    """NO_COLOR as no-color.org defines it: present and not empty. The one
+    reader (the charts of `griot stats` ask it too); `environ` is for a caller
+    that holds the mapping it wants asked."""
+    return bool((os.environ if environ is None else environ).get("NO_COLOR"))
+
+
+def plain_output(stream=None) -> bool:
+    """True when nothing animated should be drawn on `stream` (default
+    stderr, where progress goes): NO_COLOR is set, or it is not a terminal.
+    griot emits no colour; what it animates is its progress bars (tqdm),
+    which is what this decides."""
+    stream = sys.stderr if stream is None else stream
+    try:
+        tty = stream.isatty()
+    except (AttributeError, ValueError, OSError):  # a replaced or closed stream
+        tty = False
+    return no_color() or not tty
+
+
+def progress_disabled() -> bool:
+    """For tqdm's `disable=`: no bar under --quiet, or where plain_output()."""
+    return quiet() or plain_output()
+
+
+# While capture_echo() is active, what log_and_print() would show is kept here
+# instead of being written anywhere. A context variable, not a module global:
+# another thread of the same process (an MCP tool running beside this one)
+# must still show its own lines, while a tool body that runs in a copy of the
+# context (asyncio.to_thread) keeps what it captured.
+_captured: contextvars.ContextVar = contextvars.ContextVar("griot_captured_echo", default=None)
+
+
+@contextlib.contextmanager
+def capture_echo():
+    """Collects what log_and_print() would show, as a list of lines, instead of
+    showing it. For a caller that wants the explanation of a function that
+    reports through log_and_print() (golden_set: why nothing was listed)
+    without printing it on top of its own result. Unlike redirecting a
+    stream, it does not depend on which stream the echo goes to (the MCP
+    server's differs) nor on --quiet."""
+    lines: list = []
+    token = _captured.set(lines)
+    try:
+        yield lines
+    finally:
+        _captured.reset(token)
+
+
+def log_and_print(msg: str, level: str = "info", echo: bool = True, silenceable: bool = True) -> None:
+    """Logs `msg` and, with `echo`, shows it on stderr (see _echo_stream).
+
+    `silenceable=False` is for a failure report (a batch that was not
+    written, a listing that is incomplete): --quiet hides notices, warnings
+    and progress, never something that says data is missing."""
     from tqdm import tqdm as _tqdm
     _ensure_log_handler()
+    captured = _captured.get()
+    if echo and captured is not None:
+        captured.append(msg)
+        getattr(_logger, level)(msg)
+        return
     # [shared config path] echo=False keeps the persistent log entry (audit trail
-    # intact) while omitting stdout — needed by `griot quality-check
-    # --json`, whose stdout contract is "JSON payload only" (jobs.py's
-    # subprocess caller parses it as such; any stray line would break that).
-    if echo:
-        _tqdm.write(msg, file=_echo_stream)
+    # intact) while omitting the console: `griot quality-check --json` and
+    # the log-only warnings rely on it.
+    if echo and not (silenceable and quiet()):
+        _tqdm.write(msg, file=sys.stderr if _echo_stream is None else _echo_stream)
     getattr(_logger, level)(msg)
+
+
+def progress_note(text: str, silenceable: bool = True) -> None:
+    """A line of progress (which repository is being read, what a source
+    found) on stderr, so the result a command prints stays alone on stdout.
+    Silenced by --quiet unless `silenceable=False` (something that says data
+    was not written or a value must be rotated); not written to the log (it
+    is not an event)."""
+    if not (silenceable and quiet()):
+        print(text, file=sys.stderr if _echo_stream is None else _echo_stream)
+
+
+def warn_not_a_directory(path) -> None:
+    """The one wording for a registered path the indexers skip, the same in
+    all five of them."""
+    shown = printable(str(path))
+    log_and_print(f"Warning: {shown} is not a directory, skipped. Update the list:\n  griot repos remove {shown}",
+                  level="warning")
+
+
+def network_cause(error: Exception) -> str:
+    """The cause of a failed request in words a person can act on, instead of
+    the exception's class name."""
+    return "timeout" if isinstance(error, requests.Timeout) else "network unreachable"
+
+
+def _announced_path() -> Path:
+    return DATA_DIR / "announced.json"
+
+
+def announce_once(kind: str, fingerprint: str | None, lines: list[str], *, level: str = "warning") -> bool:
+    """Shows `lines` (stderr) once per STATE of the condition `kind`, not once
+    per run: `fingerprint` is what the condition is about (the variable names,
+    the paths) and it is announced again only when that changes. None means
+    the condition is gone: it is forgotten, so it speaks again if it comes
+    back. `griot doctor` lists the same conditions every time.
+
+    Under --quiet nothing is shown and nothing is remembered: it was not said.
+    A state file that cannot be read or written only means it is said again;
+    it must never stop a command. It is called while this module is imported
+    (the start-up warnings), so importing common can write announced.json."""
+    path = _announced_path()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    if fingerprint is None:
+        if kind in state:
+            del state[kind]
+            _write_announced(path, state)
+        return False
+    if quiet() or state.get(kind) == fingerprint:
+        return False
+    for line in lines:
+        log_and_print(line, level=level)
+    state[kind] = fingerprint
+    _write_announced(path, state)
+    return True
+
+
+def _write_announced(path: Path, state: dict) -> None:
+    try:
+        secure_mkdir(path.parent)
+        # 0600 like the rest of the data directory: doctor flags anything
+        # other users can read, and this file is griot's own.
+        secure_write_text(path, json.dumps(state, sort_keys=True))
+    except OSError:
+        pass  # said again next time: the cost of a data directory that cannot be written
 
 
 def log_run_summary(**fields) -> None:
@@ -840,15 +988,15 @@ def _check_env_file_permissions(env_path: Path) -> None:
         return
     mode = stat.S_IMODE(env_path.stat().st_mode)
     if mode & 0o077:
-        log_and_print(
-            f"Warning: {env_path} has permission {oct(mode)} (more open than 0600) "
-            f"and holds secrets — fixing to 0600.",
-            level="warning",
-        )
         try:
             env_path.chmod(0o600)
         except OSError as e:
-            log_and_print(f"Warning: could not fix the permission of {env_path}: {e}", level="warning")
+            # Still open and it holds secrets: a warning, with the command last.
+            log_and_print(f"Warning: {env_path} is readable by others ({oct(mode)}) and griot could not close it "
+                          f"({e}). Close it:\n  chmod 600 {env_path}", level="warning", silenceable=False)
+            return
+        # Closed already: nothing for the person to do, so a note and not a warning.
+        log_and_print(f"Note: {env_path} was readable by others ({oct(mode)}); griot set it to 0600.")
 
 
 # griot reads only its own <config_dir>/.env, never another project's. If it
@@ -883,13 +1031,20 @@ _LEGACY_ENV_RENAMES = {
 }
 
 
+def legacy_env_findings() -> list[tuple[str, str]]:
+    """(old name, sentence) for each renamed variable still set. ONE source
+    for the sentence: the warning printed at start and the `griot doctor`
+    check both use it."""
+    return [(old, f"Warning: {old} was renamed and griot ignores it. Rename it:\n  export {new}=\"${old}\"")
+            for old, new in _LEGACY_ENV_RENAMES.items() if os.getenv(old) is not None]
+
+
 def warn_legacy_env_vars() -> None:
-    for old, new in _LEGACY_ENV_RENAMES.items():
-        if os.getenv(old) is not None:
-            log_and_print(
-                f"Warning: the env var {old} was renamed and is IGNORED — use {new}.",
-                level="warning",
-            )
+    """Said once per state: again only when the set of old names changes
+    (the sentence goes on being said by `griot doctor`, every time)."""
+    findings = legacy_env_findings()
+    announce_once("legacy_env", ",".join(sorted(old for old, _ in findings)) or None,
+                  [sentence for _, sentence in findings])
 
 
 warn_legacy_env_vars()
@@ -1785,12 +1940,13 @@ LOCK_PATH = DATA_DIR / ".griot.lock"
 _LEGACY_ROOT = Path(__file__).resolve().parents[2]
 
 
-def warn_legacy_layout(legacy_root: Path | None = None) -> None:
-    """Warns (and ONLY warns) if files from the old layout are
-    still at the root of the code checkout, pointing to the new location."""
+def legacy_layout_findings(legacy_root: Path | None = None) -> list[tuple[str, str]]:
+    """(old path, sentence) for each file of the old layout still at the root
+    of the code checkout. One source for the warning printed at start and the
+    `griot doctor` check."""
     root = _LEGACY_ROOT if legacy_root is None else legacy_root
     if not root.is_dir():
-        return
+        return []
     legacy_items = {
         "repos.json": CONFIG_DIR,
         "quality_golden_set.json": CONFIG_DIR,
@@ -1798,13 +1954,19 @@ def warn_legacy_layout(legacy_root: Path | None = None) -> None:
         "qdrant_data": DATA_DIR,
         "logs": DATA_DIR,
     }
-    for name, new_dir in legacy_items.items():
-        if (root / name).exists():
-            log_and_print(
-                f"Warning: {root / name} is in the old layout and is IGNORED — the new location is "
-                f"{new_dir / name} (move it manually; griot never moves it on its own).",
-                level="warning",
-            )
+    return [(str(root / name),
+             f"Warning: {root / name} is in the old layout and griot ignores it. Move it "
+             f"(griot never moves it on its own):\n  mv {root / name} {new_dir / name}")
+            for name, new_dir in legacy_items.items() if (root / name).exists()]
+
+
+def warn_legacy_layout(legacy_root: Path | None = None) -> None:
+    """Warns (and ONLY warns) if files from the old layout are still at the
+    root of the code checkout, pointing to the new location. Said once per
+    state: again only when the set of paths changes."""
+    findings = legacy_layout_findings(legacy_root)
+    announce_once("legacy_layout", ",".join(sorted(path for path, _ in findings)) or None,
+                  [sentence for _, sentence in findings])
 
 
 def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
@@ -2118,7 +2280,7 @@ def _billed_tokens(answer, path: tuple[str, str], texts: list[str]) -> float:
         _estimated_spend_was_said = True
         log_and_print("Note: the API did not report how many tokens it billed for this call. Its cost is counted "
                       "from the size of the text instead, which is an estimate: the spend shown and the spend "
-                      "ceiling go by it.", level="warning")
+                      "ceiling go by it.")
     return max(1, math.ceil(size / FALLBACK_BYTES_PER_TOKEN))
 
 
@@ -2598,9 +2760,9 @@ def _gemini_post_with_retry(path: str, json_body: dict, max_rate_limit_retries: 
             raise GeminiUnavailable(f"HTTP error {status} from the Gemini API.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
-                raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+                raise GeminiUnavailable(f"Gemini API unreachable after {max_connection_retries} attempts ({network_cause(e)})") from e
             connection_attempt += 1
-            log_and_print(f"Gemini API unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 20s...", level="warning")
+            log_and_print(f"Gemini API unreachable ({network_cause(e)}), attempt {connection_attempt}/{max_connection_retries}, waiting 20s...", level="warning")
             time.sleep(20)
 
 
@@ -2653,9 +2815,9 @@ def _openai_compatible_post_with_retry(url: str, headers: dict, json_body: dict,
             raise DirectAPIUnavailable(f"HTTP error {status} on {url}.{hint}") from e
         except (requests.ConnectionError, requests.Timeout) as e:
             if connection_attempt >= max_connection_retries:
-                raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({e.__class__.__name__})") from e
+                raise DirectAPIUnavailable(f"{url} unreachable after {max_connection_retries} attempts ({network_cause(e)})") from e
             connection_attempt += 1
-            log_and_print(f"{url} unreachable ({e.__class__.__name__}), attempt {connection_attempt}/{max_connection_retries}, waiting 10s...", level="warning")
+            log_and_print(f"{url} unreachable ({network_cause(e)}), attempt {connection_attempt}/{max_connection_retries}, waiting 10s...", level="warning")
             time.sleep(10)
 
 
@@ -2718,7 +2880,8 @@ def _embed_one_openai_compatible_request(texts: list[str], api_key: str) -> list
             credential_env=credential_env_for_profile(ACTIVE_PROFILE_NAME, ACTIVE_PROFILE),
         )
     except DirectAPIUnavailable as e:
-        log_and_print(f"Error in the embedding batch ({ACTIVE_PROFILE_NAME}): {e}", level="warning")
+        log_and_print(f"Warning: an embedding batch failed ({ACTIVE_PROFILE_NAME}): {e}. It will be retried on "
+                      f"the next run:\n  griot index all", level="warning", silenceable=False)
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
@@ -2775,7 +2938,8 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
             ]},
         )
     except GeminiUnavailable as e:
-        log_and_print(f"Error in the embedding batch: {e}", level="warning")
+        log_and_print(f"Warning: an embedding batch failed: {e}. It will be retried on the next run:\n"
+                      f"  griot index all", level="warning", silenceable=False)
         _note_embedding_failure(str(e))
         return [None] * len(texts)
 
@@ -2910,17 +3074,19 @@ def report_redactions() -> int:
     taken = take_redactions()
     if not taken:
         return 0
+    # Not silenceable: it says a real credential may sit in the repository and
+    # must be rotated, which is not noise a person asked not to see.
     places: dict[str, list[str]] = {}
     for where, rule in taken:
         places.setdefault(where, []).append(rule)
-    print(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):")
+    progress_note(f"\nReplaced {len(taken)} credential-looking value(s) before embedding, in {len(places)} place(s):", silenceable=False)
     for where, rules in list(places.items())[:20]:
         # The place is named by a path, a branch, a tag: a name can hold the
         # very kind of value this report is about, and control characters.
-        print(f"  {shown(where)} ({', '.join(sorted(set(rules)))})")
+        progress_note(f"  {shown(where)} ({', '.join(sorted(set(rules)))})", silenceable=False)
     if len(places) > 20:
-        print(f"  ... and {len(places) - 20} more place(s)")
-    print("They are not in the index. If one is real, it is still in that file or history: rotate it.")
+        progress_note(f"  ... and {len(places) - 20} more place(s)", silenceable=False)
+    progress_note("They are not in the index. If one is real, it is still in that file or history: rotate it.", silenceable=False)
     return len(taken)
 
 
@@ -3092,7 +3258,7 @@ def pending_summary(documents: list[dict], desc: str = "Checking") -> dict:
     client = get_client()
     pending = up_to_date = chars = 0
 
-    for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+    for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc, file=sys.stderr, disable=progress_disabled()):
         batch = documents[i:i + INDEX_BATCH_SIZE]
         to_embed = _split_pending(batch, client)
         pending += len(to_embed)
@@ -3612,7 +3778,7 @@ def _copy_into_keyword_collection(client: "qe.EdgeShard", staging: Path) -> tupl
                       level="info", echo=False)
     try:
         copied, kept_count, offset = 0, 0, None
-        with tqdm(total=total, desc="Adding keyword vectors") as progress:
+        with tqdm(total=total, desc="Adding keyword vectors", file=sys.stderr, disable=progress_disabled()) as progress:
             while True:
                 page, offset = client.scroll(qe.ScrollRequest(offset=offset, limit=_KEYWORD_BATCH,
                                                               with_payload=True, with_vector=["dense"]))
@@ -3771,7 +3937,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     # whole process — atexit (acquire_lock) stays registered as a safety
     # net for a crash that skips the finally block.
     try:
-        print(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
+        progress_note(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
         # A collection made before keyword search has no room for the
         # keyword vector (the engine refuses a point naming a vector the
@@ -3789,7 +3955,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         global _last_run_failures
         _last_run_failures = []
 
-        for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc):
+        for i in tqdm(range(0, len(documents), INDEX_BATCH_SIZE), desc=desc, file=sys.stderr, disable=progress_disabled()):
             batch = documents[i:i + INDEX_BATCH_SIZE]
             try:
                 to_embed = _split_pending(batch, client)
@@ -3843,7 +4009,8 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
                     client.flush()
                     indexed += len(points)
                 except Exception as e:
-                    log_and_print(f"Error writing batch to Qdrant: {e}", level="warning")
+                    log_and_print(f"Warning: a batch was not written to the index: {e}. It will be retried on "
+                                  f"the next run:\n  griot index all", level="warning", silenceable=False)
                     failed += len(points)
                     # A whole batch lost to one write error: the reason is the
                     # same for all of them, which is exactly why the itemized
@@ -3874,7 +4041,7 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
         if refreshed:
             # Said, because nothing else shows it: these count as skipped
             # (nothing was embedded), and something stored did change.
-            print(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
+            progress_note(f"Updated the stored details of {refreshed} unchanged point(s) (nothing was embedded).")
         return indexed, skipped, failed
     finally:
         _secure_collection_dir(COLLECTION_NAME, full=True)
@@ -4028,14 +4195,14 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
             continue
         name, why_not = _registration(path)
         if name is None:
-            print(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.")
+            progress_note(f"Stale points of {Path(path).name} ({source_type}) are not removed: {why_not}.", silenceable=False)
         elif produced.get(name) and name not in incomplete and name not in names:
             names.append(name)
     if not names:
         return 0
     if failed:
-        print(f"Stale points were not removed: {failed} document(s) of this run failed, "
-              f"so what the index holds cannot be compared with what was read.")
+        progress_note(f"Stale points were not removed: {failed} document(s) of this run failed, "
+                      f"so what the index holds cannot be compared with what was read.", silenceable=False)
         return 0
 
     total = 0
@@ -4043,24 +4210,25 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
         try:
             acquire_lock()
         except RuntimeError as e:
-            print(f"Stale points were not removed: {e} The next run removes them.")
+            progress_note(f"Stale points were not removed: {e} The next run removes them.", silenceable=False)
             return 0
     try:
         client = get_client()
         for name in names:
             existing, foreign = _point_ids_written_under(client, name, source_type, name)
             if foreign:
-                print(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
-                      f"directory (--path) and are left alone.")
+                progress_note(f"{foreign} point(s) named {name} ({source_type}) were written by a run of another "
+                              f"directory (--path) and are left alone.")
             stale = [point_id for point_id in existing if str(point_id) not in produced[name]]
             if not stale:
                 continue
             if (not force and len(stale) > _PRUNE_GUARD_MIN_POINTS
                     and len(stale) > len(existing) * _PRUNE_GUARD_FRACTION):
                 outcome = "they would not be removed" if dry_run else "nothing was removed"
-                print(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
-                      f"by this run. That is more than half, so {outcome}: it usually means another branch is "
-                      f"checked out or files went missing. If it is right, run again with --prune.")
+                progress_note(f"{len(stale)} of {len(existing)} indexed points of {name} ({source_type}) are not produced "
+                              f"by this run. That is more than half, so {outcome}: it usually means another branch is "
+                              f"checked out or files went missing. If it is right, run again with --prune.",
+                              silenceable=False)
                 # Counted for a caller that reads numbers and not this
                 # sentence: returned as zero, these looked like a clean index.
                 if report is not None:
@@ -4073,7 +4241,7 @@ def prune_orphans(documents: list[dict], *, source_type: str, repo_paths: list, 
                 for i in range(0, len(stale), _PRUNE_PAGE):
                     client.update(qe.UpdateOperation.delete_points(stale[i:i + _PRUNE_PAGE]))
                 client.flush()
-                print(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
+                progress_note(f"Removed {len(stale)} stale point(s) of {name} ({source_type}): their source is no longer there.")
             total += len(stale)
     finally:
         if not dry_run:
@@ -4163,11 +4331,11 @@ def _points_error(collection: str, error: Exception) -> str:
     if isinstance(error, CollectionBusyError) or _LOCK_COLLISION_SIGNATURE in str(error):
         holder = ("being opened by another call" if getattr(error, "in_this_process", False)
                   else "held by another process")
-        log_and_print(f"Warning: could not check points_count for '{collection}': "
-                      f"{holder} ({error})", level="warning")
+        log_and_print(f"Note: the point count of '{collection}' is not shown: the collection is {holder}. "
+                      f"It is counted when it is free; to see what holds it:\n  griot doctor")
         return "busy"
-    log_and_print(f"Warning: could not check points_count for '{collection}': "
-                  f"the collection could not be opened ({error})", level="warning")
+    log_and_print(f"Warning: the point count of '{collection}' is not shown: the collection could not be "
+                  f"opened ({error}). Check it:\n  griot doctor", level="warning")
     return f"unreadable: {error}"
 
 

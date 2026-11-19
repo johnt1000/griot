@@ -134,19 +134,21 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
     shown_name = common.printable(repo_path.name)
     remote_url = _remote_url(repo_path)
     if not remote_url:
-        print(f"WARNING: could not determine the 'origin' remote of {shown_name}.")
+        common.log_and_print(f"Warning: could not determine the 'origin' remote of {shown_name}, so its platform data is skipped. "
+                          f"Add one:\n  git -C {common.printable(str(repo_path))} remote add origin <url>", level="warning")
         return []
 
     # Without the user part: a remote is often written with a token in it.
     shown_remote = common.printable(re.sub(r"://[^/@\s]+@", "://", remote_url))
     detected = platforms.detect_platform(remote_url)
     if not detected:
-        print(f"WARNING: {shown_name}'s remote isn't from any recognized platform ({shown_remote}).")
+        common.log_and_print(f"Warning: the remote of {shown_name} ({shown_remote}) is not from a platform griot knows, so its "
+                          f"platform data is skipped. Point it at one:\n  git -C {common.printable(str(repo_path))} remote set-url origin <url>", level="warning")
         return []
     platform, project_id, host = detected
     note = platforms.anonymous_read_note(platform)
     if note:
-        print(f"  {shown_name}: {note}")
+        common.progress_note(f"  {shown_name}: {note}")
 
     documents = []
     hinted = False
@@ -157,12 +159,13 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
     ]:
         try:
             docs = builder(repo_path.name, platform, project_id, host, id_prefix=key)
-            print(f"  {shown_name} [{platform}:{common.printable(project_id)}]: {len(docs)} chunks from {label}")
+            common.progress_note(f"  {shown_name} [{platform}:{common.printable(project_id)}]: {len(docs)} chunks from {label}")
             documents.extend(docs)
             if fetches is not None:
                 fetches.append({"id": f"{key}:platform:{label}", "ok": True, "reason": None})
         except Exception as e:
-            print(f"  WARNING: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}")
+            common.log_and_print(f"Warning: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}. "
+                                  f"Run it again once that is fixed:\n  griot index platform", level="warning", silenceable=False)
             status = getattr(getattr(e, "response", None), "status_code", None)
             env_var = platforms.TOKEN_ENV.get(platform)
             if fetches is not None:
@@ -178,7 +181,7 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
             if status in (401, 403) and env_var and not hinted and not isinstance(e, platforms.TokenNeeded):
                 # Which token the platform refused: the one exported in the
                 # shell can hide the one griot stores, and nothing said so.
-                print(f"    {common.credential_hint(env_var)}")
+                common.log_and_print(f"    {common.credential_hint(env_var)}", silenceable=False)
                 hinted = True
     return documents
 
@@ -317,7 +320,7 @@ def main(argv=None):
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
-            print(f"WARNING: '{common.printable(path_str)}' is not a valid directory.")
+            common.warn_not_a_directory(path_str)
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
         repo_fetches: list[dict] = []
@@ -399,7 +402,7 @@ def main(argv=None):
         rc = 1
 
     if not all_documents:
-        print("\nNo platform items to index.")
+        common.log_and_print("\nNo platform items to index.")
         if refused and not args.dry_run:
             _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused, **marked)
         return rc
