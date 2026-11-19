@@ -734,15 +734,19 @@ def test_a_failing_installer_says_where_the_reason_is_and_how_to_see_the_version
 @pytest.mark.parametrize("failure, cause", [
     ("connection", "no network connection to pypi.org"),
     ("timeout", "PyPI did not answer within 3 seconds"),
-    ("proxy", "the proxy in HTTPS_PROXY refused the connection"),
+    # No proxy variable is set in the suite: the cause says a proxy, not which.
+    ("proxy", "the proxy refused the connection"),
     ("tls", "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause"),
     ("status", "PyPI answered HTTP 503"),
     ("other", "no network answer"),
     ("json", "PyPI's answer could not be read"),
     ("value", "PyPI's answer could not be read"),
 ])
-def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, capsys, failure, cause):
+def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, capsys, monkeypatch, failure, cause):
     import requests
+
+    for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
 
     # Each cause has its own fix: a proxy is not the network, and a PyPI that
     # answered with an error status did answer.

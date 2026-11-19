@@ -37,7 +37,7 @@ from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfi
 # one more dependency just for this. No directory is created here at
 # import time — whoever writes to them creates them on demand
 # (mkdir parents=True exist_ok=True).
-CONFIG_DIR = Path(os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))) / "griot"
+CONFIG_DIR = _package.config_dir()
 DATA_DIR = Path(os.getenv("GRIOT_DATA_DIR", os.getenv("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))) / "griot"
 
 
@@ -1340,7 +1340,27 @@ ENVIRONMENT_WAS_NARROWED = _package.ENVIRONMENT_ONLY_NARROWS
 if ENVIRONMENT_WAS_NARROWED:
     _take_from_the_environment_only_what_narrows()
 
+def _set_aside_to_repair(variable: str) -> bool:
+    """True when a value of `variable` that griot cannot start with is set
+    aside for this process instead of refused: the process is one of the
+    commands that repair the file (`config set`, `config unset`, `profiles
+    use`; cli.py sets griot.REPAIRING_SETTINGS) and the value came from the
+    file, not the environment. Without it, two broken lines made a loop:
+    the command each error gave failed on the other line, whose command
+    failed on the first. The value is taken out of this process's
+    environment, so the reader falls back to its default, as if the line
+    were not there; nothing these commands do spends, searches or indexes.
+    An exported value is never set aside: it wins over the file, so only
+    `unset` in the shell fixes it, and the error says so."""
+    if not _package.REPAIRING_SETTINGS or variable in ENVIRONMENT_BEFORE_ENV_FILE or variable not in os.environ:
+        return False
+    del os.environ[variable]
+    return True
+
+
 ACTIVE_PROFILE_NAME = os.getenv("GRIOT_EMBED_PROFILE", "jina-code")
+if ACTIVE_PROFILE_NAME not in EMBED_PROFILES and _set_aside_to_repair("GRIOT_EMBED_PROFILE"):
+    ACTIVE_PROFILE_NAME = "jina-code"
 if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
     # A setting griot cannot start with, like a ceiling that is not a number:
     # one line that names it and says how to fix it, not a traceback.
@@ -1348,15 +1368,17 @@ if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
     # (the environment wins over the file), else `profiles use` with the
     # default profile, which runs before the configuration loads and writes
     # the file.
+    _exported_profile = "GRIOT_EMBED_PROFILE" in ENVIRONMENT_BEFORE_ENV_FILE
+    _profile_fix = "unset GRIOT_EMBED_PROFILE" if _exported_profile else "griot profiles use jina-code"
     raise UnknownEmbedProfile(
         f"Unknown GRIOT_EMBED_PROFILE={ACTIVE_PROFILE_NAME!r}.{unknown_profile_reason(ACTIVE_PROFILE_NAME)} "
         f"Options: {', '.join(EMBED_PROFILES)}. "
         + ("It is exported in this environment, which wins over the file: fix it where it is exported, or "
-           "unset it:\n  unset GRIOT_EMBED_PROFILE" if "GRIOT_EMBED_PROFILE" in ENVIRONMENT_BEFORE_ENV_FILE
+           f"unset it:\n  {_profile_fix}" if _exported_profile
            else f"Pick one of them: griot profiles use writes {ENV_PATH} (an exported GRIOT_EMBED_PROFILE would "
                 f"win over the file, so if one is exported later, unset it there). This one is the default:\n"
-                f"  griot profiles use jina-code"),
-        ACTIVE_PROFILE_NAME, list(EMBED_PROFILES), unknown_profile_reason(ACTIVE_PROFILE_NAME),
+                f"  {_profile_fix}"),
+        ACTIVE_PROFILE_NAME, list(EMBED_PROFILES), unknown_profile_reason(ACTIVE_PROFILE_NAME), _profile_fix,
     )
 ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
 
@@ -1434,8 +1456,11 @@ def _where_to_fix(variable: str) -> str:
     if variable in ENVIRONMENT_BEFORE_ENV_FILE:
         return (f"It is exported in the environment, which wins over {ENV_PATH}: fix it where it is exported, "
                 f"or unset it to use the file's value or the default:\n  unset {variable}")
+    # By the setting's name, as griot doctor's fix for the same line gives it.
+    from griot import config
+    setting = config.find(variable)
     return (f"It is set in {ENV_PATH}: griot config set writes a valid value, and griot config unset returns it "
-            f"to the default:\n  griot config unset {variable}")
+            f"to the default:\n  griot config unset {setting.name if setting else variable}")
 
 
 def _amount_env(name: str, default: str | None) -> float | None:
@@ -1455,6 +1480,8 @@ def _amount_env(name: str, default: str | None) -> float | None:
     except ValueError:
         value = math.nan
     if not math.isfinite(value) or value < 0:
+        if _set_aside_to_repair(name):
+            return _amount_env(name, default)
         raise ConfigurationError(f"{name} must be a finite number, zero or more (got {raw!r}). {_where_to_fix(name)}")
     return value
 
@@ -1466,8 +1493,12 @@ def _count_env(name: str, default: str, minimum: int | None = None) -> int:
     try:
         value = int(raw)
     except ValueError:
+        if _set_aside_to_repair(name):
+            return _count_env(name, default, minimum)
         raise ConfigurationError(f"{name} must be a whole number (got {raw!r}). {_where_to_fix(name)}") from None
     if minimum is not None and value < minimum:
+        if _set_aside_to_repair(name):
+            return _count_env(name, default, minimum)
         raise ConfigurationError(f"{name} must be {minimum} or more (got {raw!r}). {_where_to_fix(name)}")
     return value
 
@@ -1531,6 +1562,8 @@ CHAT_PROFILES = {
 }
 
 ACTIVE_CHAT_PROFILE_NAME = os.getenv("GRIOT_CHAT_PROFILE", "gemini")
+if ACTIVE_CHAT_PROFILE_NAME not in CHAT_PROFILES and _set_aside_to_repair("GRIOT_CHAT_PROFILE"):
+    ACTIVE_CHAT_PROFILE_NAME = "gemini"
 if ACTIVE_CHAT_PROFILE_NAME not in CHAT_PROFILES:
     raise ConfigurationError(
         f"Unknown GRIOT_CHAT_PROFILE={ACTIVE_CHAT_PROFILE_NAME!r}. Options: {', '.join(CHAT_PROFILES)}. "
@@ -1977,9 +2010,24 @@ def missing_credential_text(env_var: str, profile_label: str) -> str:
     set` stores: `griot doctor` says where it is read from instead (debt
     102). "Nothing was sent" holds for an embedding and an answer alike:
     the gemini key serves both."""
+    return f"{credential_not_set(env_var, profile_label)}. Nothing was sent. {SET_IN_A_TERMINAL}\n  {credential_command(env_var)}"
+
+
+def credential_not_set(env_var: str, needed_by: str) -> str:
+    """The one sentence (without its period) for a credential set nowhere
+    griot looks, on every path: the refusal before a run starts
+    (missing_credential()), the call that would send (missing_credential_text())
+    and a platform's token (platforms.TokenMissing)."""
+    return f"{needed_by} needs {env_var}, and it is not set"
+
+
+def credential_command(env_var: str) -> str:
+    """The command that sets `env_var`: `griot auth set <provider>`, or
+    `griot doctor` for a key no provider of griot's names (a custom
+    profile's), which `griot auth set` does not store; doctor says where it
+    is read from instead (debt 102)."""
     provider = _provider_of(env_var)
-    command = f"griot auth set {provider}" if provider else "griot doctor"
-    return f"{profile_label} needs {env_var}, and it is not set. Nothing was sent. {SET_IN_A_TERMINAL}\n  {command}"
+    return f"griot auth set {provider}" if provider else "griot doctor"
 
 # Local spend circuit breaker — direct calls to Gemini (embedding and chat)
 # don't go through any external platform budget, so this is the ONLY
@@ -2102,6 +2150,8 @@ _client_last_used_at: float | None = None
 # server (mcp_server._start_idle_reaper), which counts the calls in flight:
 # get_client() never closes the handle it memoizes.
 CONCURRENCY_MODE = os.getenv("GRIOT_MCP_CONCURRENCY_MODE", "multi")
+if CONCURRENCY_MODE not in ("single", "multi") and _set_aside_to_repair("GRIOT_MCP_CONCURRENCY_MODE"):
+    CONCURRENCY_MODE = "multi"
 if CONCURRENCY_MODE not in ("single", "multi"):
     raise ConfigurationError(
         f"Unknown GRIOT_MCP_CONCURRENCY_MODE={CONCURRENCY_MODE!r}. Use 'multi' (default) or 'single'. "
@@ -3480,11 +3530,7 @@ def missing_credential() -> tuple[str, str] | None:
     env_var = credential_env_for_profile(ACTIVE_PROFILE_NAME, ACTIVE_PROFILE)
     if env_var is None or credential(env_var):
         return None
-    # A key no provider of griot's names (a custom profile's) is not one
-    # `griot auth set` stores: doctor says where it is read from instead.
-    provider = _provider_of(env_var)
-    return (f"paid profile '{ACTIVE_PROFILE_NAME}' needs {env_var}, and it is not set",
-            f"griot auth set {provider}" if provider else "griot doctor")
+    return credential_not_set(env_var, f"paid profile '{ACTIVE_PROFILE_NAME}'"), credential_command(env_var)
 
 
 def refuse_missing_credential() -> int:
@@ -3495,7 +3541,9 @@ def refuse_missing_credential() -> int:
     if missing is None:
         return 0
     why, fix = missing
-    print(f"Error: {why}. Nothing was changed.\n  {fix}", file=sys.stderr)
+    # As missing_credential_text() says it, with the verb of this path: the
+    # run did not start, so nothing was changed.
+    print(f"Error: {why}. Nothing was changed. {SET_IN_A_TERMINAL}\n  {fix}", file=sys.stderr)
     return 1
 
 
@@ -4794,6 +4842,7 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
 
     from griot import freshness
 
+    spend_today = get_spend_today()
     return {
         "points_count": points_count,
         # Per registered repository, whether its index is behind its HEAD
@@ -4819,7 +4868,10 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         "pid": pid,
         "path": path,
         "last_indexed": last_indexed,
-        "spend_ceiling_exceeded": not get_spend_today() < SPEND_CEILING_USD,
+        "spend_ceiling_exceeded": not spend_today < SPEND_CEILING_USD,
+        # Read once, with the flag above: `griot stats` proposes a ceiling
+        # from it without a read of its own.
+        "spend_today_usd": spend_today,
     }
 
 

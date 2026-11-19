@@ -123,6 +123,13 @@ TESTS_MAY_REACH = {
         # The ledger step `griot index` ends with, checked on its own: a
         # real index run would need a collection and an embedding model.
         "_end_with_notices": _HELPER,
+        # What a stopped `griot index all` says, read for each shape of the
+        # error that stopped it: a real run needs a source that fails.
+        "_stopped_at": _HELPER,
+        # That the repair flag is off again after the configuration loads,
+        # even when loading raised: common.py is imported once per process,
+        # so only the helper itself can be watched doing it.
+        "_repairing": _HELPER,
         "_main": _SEAM,
         "_run_index_source": _SEAM,
         "_busy_message": _RAISER,

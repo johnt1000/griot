@@ -140,14 +140,16 @@ compute.
 **Symptom**: a command using a paid profile or a platform adapter fails
 with something like `paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY,
 and it is not set. Nothing was sent. A credential is set in a terminal:`,
-then `griot auth set openai` on a line of its own (a platform adapter:
-`GITHUB_TOKEN is not set (the github token)`, then `griot auth set
-github`). A `griot index` or
+then `griot auth set openai` on a line of its own. A platform adapter
+with no token asks the platform nothing: `griot index platform` ends with
+`GITHUB_TOKEN is not set, so nothing was asked.`, then `griot auth set
+github` and `griot index platform`, once for the whole run; `griot stats`
+and `griot doctor` name the same variable and command. A `griot index` or
 `griot quality-check --from-history` run on a paid profile reads the
 credential before anything else and stops with `Error: paid profile
 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was
-changed.`, the command that sets it on the last line; `griot_index_repo`
-refuses the same way, without asking.
+changed. A credential is set in a terminal:`, the command that sets it on
+the last line; `griot_index_repo` refuses the same way, without asking.
 
 **Cause**: the credential for that provider was never set, or was set on a
 different machine/environment. griot never guesses a credential is present.

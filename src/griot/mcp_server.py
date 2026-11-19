@@ -1467,6 +1467,11 @@ class RepositoryFreshness(TypedDict):
     # did not answer or failed, so retry later; the token is not the
     # suspect. None when there were none, or the run predates this field.
     platform_other_reasons: list[str] | None
+    # For that same refusal, the variable of the platform's token when it
+    # was set nowhere griot looks, so no request was made ("GITHUB_TOKEN"):
+    # it is set in a terminal with `griot auth set <platform>`. None
+    # otherwise, or when the run predates this field.
+    platform_missing_token: str | None
     sources: dict[str, SourceFreshness]
 
 
@@ -1503,6 +1508,9 @@ class _IndexStatusMayLack(_WhyNoPointCount, total=False):
     # vector), null when there is no collection or its config could not be
     # read.
     keyword_search: bool | None
+    # Today's recorded spend in USD, the number spend_ceiling_exceeded
+    # compares with the daily ceiling. May be absent like the fields above.
+    spend_today_usd: float | None
 
 
 class IndexSourceProgress(TypedDict):

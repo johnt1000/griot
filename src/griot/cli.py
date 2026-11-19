@@ -15,6 +15,7 @@ real module's help.
 """
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
@@ -410,13 +411,24 @@ def _stopped_at(source: str, sources: list, rest: list, what: str) -> str:
     already indexed is skipped by content hash, so running from the failed
     one costs only what is left."""
     later = list(sources[sources.index(source) + 1:])
-    # The error itself may span lines (one of griot's own ends with its
-    # command): kept on one line here, so the resume command stays last.
-    what = " ".join(line.strip() for line in what.splitlines() if line.strip())
+    # The error itself may end with its own command on a line of its own
+    # (one of griot's: `griot auth set openai`): kept as a line, the fix
+    # before the resume, which stays last. Its prose is one sentence.
+    said = [line for line in what.splitlines() if line.strip()]
+    prose = " ".join(line.strip() for line in said if not line.startswith("  "))
+    fixes = "".join(f"\n  {line.strip()}" for line in said if line.startswith("  "))
     again = shlex.join(["griot", "index", "all", *rest, "--sources", ",".join([source, *later]), *global_flags_typed()])
-    above = " Its error is above." if what.startswith("failed (exit") else ""
-    return (f"Error: 'griot index {source}' {what}; {', '.join(later) or 'no other source'} did not run.{above} "
-            f"Once it is fixed, run them again (what is already indexed is skipped):\n  {again}")
+    above = " Its error is above." if prose.startswith("failed (exit") else ""
+    # A sentence of its own, closed once: an error that leads into its
+    # command ("A credential is set in a terminal:") keeps its colon.
+    head = f"Error: 'griot index {source}' {prose}".rstrip()
+    head = head if head.endswith((".", "!", "?", ":")) else head + "."
+    # Worded for one source or several: "no other source did not run" said
+    # the opposite of what it meant.
+    resume = (f"{', '.join(later)} did not run.{above} Once it is fixed, run them again" if later
+              else f"{above.strip()} Once it is fixed, run it again".strip())
+    separator = "\n" if fixes else " "
+    return f"{head}{fixes}{separator}{resume} (what is already indexed is skipped):\n  {again}"
 
 
 def _run_index_all(sources, rest) -> int:
@@ -1210,6 +1222,19 @@ def _end_with_notices() -> None:
         print(line, file=sys.stderr)
 
 
+@contextlib.contextmanager
+def _repairing(repairs: bool):
+    """griot.REPAIRING_SETTINGS while the configuration loads, for a command
+    that repairs it (see the flag), and off again after: it is read only as
+    common.py loads, and a process that runs more than one command (the
+    test suite, a host calling _main) must not carry it into the next."""
+    griot.REPAIRING_SETTINGS = repairs
+    try:
+        yield
+    finally:
+        griot.REPAIRING_SETTINGS = False
+
+
 def _main_with_errors_explained(argv=None) -> int:
     try:
         return _main(argv)
@@ -1299,7 +1324,8 @@ def _main(argv=None) -> int:
             # Before the configuration is read (see the flag): a server does
             # not take its environment at its word.
             griot.ENVIRONMENT_ONLY_NARROWS = True
-        from griot import common
+        with _repairing(argv[0] == "config" and argv[1:2] in (["set"], ["unset"])):
+            from griot import common
         common.ensure_env_template()
         return _run_module(_MODULES[argv[0]], argv[1:])
 
@@ -1322,7 +1348,8 @@ def _main(argv=None) -> int:
         args.environment_profile = exported_profile
         os.environ["GRIOT_EMBED_PROFILE"] = args.profile
         try:
-            from griot import common  # noqa: F401 — loaded here to catch the one error below
+            with _repairing(True):
+                from griot import common  # noqa: F401 — loaded here to catch the one error below
         except UnknownEmbedProfile as e:
             if e.name != args.profile:
                 raise

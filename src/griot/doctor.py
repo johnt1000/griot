@@ -90,7 +90,12 @@ def pypi_failure_cause(error: BaseException) -> str:
     if isinstance(error, requests.Timeout):
         return "PyPI did not answer within 3 seconds"
     if isinstance(error, requests.exceptions.ProxyError):
-        return "the proxy in HTTPS_PROXY refused the connection"
+        # The variable the proxy came from, in the order the standard
+        # library reads them (the lowercase spelling wins): a person looks
+        # in the one that is set, and HTTPS_PROXY may be the one that is not.
+        variable = next((name for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
+                         if os.environ.get(name)), None)
+        return f"the proxy in {variable} refused the connection" if variable else "the proxy refused the connection"
     if isinstance(error, requests.exceptions.SSLError):
         return "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause"
     if isinstance(error, requests.HTTPError) and getattr(error, "response", None) is not None:
@@ -105,10 +110,11 @@ def pypi_failure_cause(error: BaseException) -> str:
 
 
 def _env_path_without_the_configuration() -> Path:
-    """Where the configuration file is, computed as common.py computes it,
-    for the one check that must run when common.py cannot load."""
-    config_home = os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    return Path(config_home) / "griot" / ".env"
+    """Where the configuration file is, computed as common.py computes it
+    (griot.config_dir()), for the one check that must run when common.py
+    cannot load."""
+    import griot
+    return griot.config_dir() / ".env"
 
 
 def _settings_in_file(env_path: Path) -> list[dict]:
@@ -141,22 +147,28 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     `mode_before` is the file's mode before the configuration loaded: every
     griot command closes an open file as it loads, so a look afterwards
     finds it closed and would say nothing."""
+    broken = _settings_in_file(env_path)
+    # `config unset` is concrete and pastes: it returns each to its
+    # default. A valid value is one only the person knows. Each value's
+    # sentence ends in a period: joined, it is dropped before the ';'.
+    broken_detail = "; ".join(f"{b['variable']}: {b['why'].rstrip('.')}" for b in broken)
+    broken_fix = [f"griot config unset {b['name']}" for b in broken]
     if isinstance(error, UnknownEmbedProfile):
-        # The valid names go in the detail and a real one in the fix: a
-        # `<name>` placeholder is a redirect to a shell, and a `# comment`
-        # after it swallowed every command pasted on the same line.
-        fix = f"griot profiles use {error.options[0]}" if error.options else "unset GRIOT_EMBED_PROFILE"
+        # The valid names go in the detail and the error's own command in
+        # the fix, the one the CLI ends on (the default profile, or `unset`
+        # when the variable is exported: it wins over the file). The other
+        # broken values of the file are named too, each with its command:
+        # every one of these runs whatever state the others are in
+        # (config.shadow_broken_file_values).
+        fix = error.fix or "griot profiles use jina-code"
         return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r} "
                                         f"(set in the environment, or in {env_path}).{error.reason} It can be one "
-                                        f"of: {', '.join(error.options)} (or unset GRIOT_EMBED_PROFILE)", fix)
-    broken = _settings_in_file(env_path)
+                                        f"of: {', '.join(error.options)} (or unset GRIOT_EMBED_PROFILE)"
+                                        + (f"; and {broken_detail}" if broken else ""),
+                      "\n".join([fix, *broken_fix]))
     if broken:
-        # `config unset` is concrete and pastes: it returns each to its
-        # default. A valid value is one only the person knows.
-        return _check("settings", FAIL,
-                      "; ".join(f"{b['variable']}: {b['why']}" for b in broken)
-                      + "; or set a valid value with griot config set NAME VALUE",
-                      "\n".join(f"griot config unset {b['name']}" for b in broken))
+        return _check("settings", FAIL, broken_detail + "; or set a valid value with griot config set NAME VALUE",
+                      "\n".join(broken_fix))
     if error is not None:
         return _check("settings", FAIL, f"the configuration did not load: {error}", None)
     if not env_path.exists() and env_path.is_symlink():
@@ -453,13 +465,15 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
     # repository refused for more than one reason the fixes of its causes
     # alone (debt 70), and one the platform did not answer for, or failed,
     # no token fix at all (debt 72).
-    token_refused = [name for name in refused
-                     if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
+    missing_tokens = stats.platform_missing_tokens(reports)
+    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)
+                     and name not in dict(failures) and name not in dict(missing_tokens)]
     if behind or without_code or refused:
         parts = []
         parts.extend(n.sentence for n in behind)
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
+        parts.extend(stats.platform_missing_token_phrase(name, env_var) for name, env_var in missing_tokens)
         if token_refused:
             parts.append(stats.platform_refused_phrase(token_refused))
         if not_found:
@@ -489,6 +503,11 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
             detail += ("; check " + " and ".join(checks) + " (griot auth list shows which token is in use), "
                        "then index again")
             fix = "griot auth list\n" + fix
+        if missing_tokens:
+            # The command that sets each missing token, first: as the run
+            # that found it ended (index_platform.py).
+            fix = "\n".join(dict.fromkeys([*(common.credential_command(env_var) for _, env_var in missing_tokens),
+                                            *fix.splitlines()]))
         if failures or any("other" in c for _, c in mixed):
             # The platform did not answer or failed: retrying now would most
             # likely fail the same way, and no token check fixes it.
@@ -622,6 +641,16 @@ def check_tool_approval(home: Path | None) -> dict:
     return _check("tool approval", worst, "; ".join(details), fix)
 
 
+def _server_environment_fix(setting, raw: str, reason: str) -> str:
+    from griot import config
+
+    if reason == config.NOT_A_VALUE_IT_TAKES:
+        return shlex.join(["unset", setting.variable])
+    if setting.variable == "GRIOT_EMBED_PROFILE":
+        return shlex.join(["griot", "profiles", "use", raw.strip()])
+    return shlex.join(["griot", "config", "set", setting.name, raw])
+
+
 def check_server_environment(common) -> dict:
     """What a server started with THIS environment would ignore: the
     variables that would widen the configuration (see griot.ENVIRONMENT_ONLY_NARROWS)."""
@@ -637,14 +666,16 @@ def check_server_environment(common) -> dict:
             ignored.append((setting, raw, reason))
     if ignored:
         # The names and values are known here (settings, never credentials),
-        # so the fix is the real commands that put them in the file a server
-        # reads, one per line.
+        # so the fix is the real commands, one per line, and each one a
+        # command griot accepts: the profile is not set with `config set`
+        # (it refuses it), and a value that is not valid is not written back
+        # (`config set` refuses it too); it is taken out of the environment.
         return _check("server environment", WARN,
                       "a server started with this environment would ignore: "
                       + ", ".join(f"{s.variable} ({reason})" for s, _, reason in ignored)
                       + "; the environment only narrows a server's settings, so set them in griot's configuration "
-                        "instead (or with griot profiles use for the profile)",
-                      "\n".join(f"griot config set {s.name} {shlex.quote(raw)}" for s, raw, _ in ignored))
+                        "instead (or with griot profiles use for the profile), and unset a value that is not valid",
+                      "\n".join(_server_environment_fix(s, raw, reason) for s, raw, reason in ignored))
     exported = sorted(v for v in common.ENVIRONMENT_BEFORE_ENV_FILE if any(s.variable == v for s in config.SETTINGS))
     return _check("server environment", OK, "exported and obeyed by a server too: " + ", ".join(exported) if exported
                   else "no griot setting is exported in this environment")

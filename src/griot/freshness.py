@@ -21,6 +21,7 @@ runs already in the log.
 """
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -142,7 +143,10 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     recorded reads as it always did) or the repository was not refused;
     `platform_other_reasons` is, for that same refusal, the statuses or
     kinds of error of the fetches that failed for the "other" cause ("HTTP
-    502", "ReadTimeout"), None when none were recorded."""
+    502", "ReadTimeout"), None when none were recorded;
+    `platform_missing_token` is, for that same refusal, the variable of the
+    platform's token when it was set nowhere and so no request was made
+    ("GITHUB_TOKEN"), None otherwise."""
     reports = []
     for repository in repositories:
         name, path, now = repository["name"], repository["path"], repository["head"]
@@ -153,6 +157,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
         platform_not_found = False
         platform_refusal_causes = None
         platform_other_reasons = None
+        platform_missing_token = None
         for run in runs:
             heads = run.get("heads")
             if platform_refused is None and run.get("script") == "index_platform.py":
@@ -174,6 +179,8 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                     platform_refusal_causes = _causes_or_none(causes.get(name) if isinstance(causes, dict) else None)
                     other = run.get("other_reasons")
                     platform_other_reasons = _reasons_or_none(other.get(name) if isinstance(other, dict) else None)
+                    missing = run.get("missing_tokens")
+                    platform_missing_token = _variable_or_none(missing.get(name) if isinstance(missing, dict) else None)
                 elif not run.get("error") and isinstance(heads, dict) and name in heads:
                     platform_refused = False
             if run.get("error") or not isinstance(heads, dict) or name not in heads:
@@ -207,6 +214,7 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
                         "platform_not_found": platform_not_found,
                         "platform_refusal_causes": platform_refusal_causes,
                         "platform_other_reasons": platform_other_reasons,
+                        "platform_missing_token": platform_missing_token,
                         "sources": sources})
     return reports
 
@@ -237,6 +245,14 @@ def _reasons_or_none(reasons) -> list[str] | None:
     if not isinstance(reasons, list) or not reasons or not all(isinstance(r, str) for r in reasons):
         return None
     return reasons
+
+
+def _variable_or_none(variable) -> str | None:
+    """A repository's recorded missing token, or None for anything that is
+    not the name of a variable (a record edited by hand): the readers put it
+    in a sentence and a command, and griot_index_status declares it a
+    string."""
+    return variable if isinstance(variable, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", variable) else None
 
 
 def _runs(collection: str | None) -> list[dict]:

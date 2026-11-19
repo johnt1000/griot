@@ -176,15 +176,25 @@ TOKEN_ENV = {platform: common.credential_env_vars()[platform]
              for platform in ("github", "gitlab", "bitbucket", "azure_devops", "gitea")}
 
 
+class TokenMissing(ValueError):
+    """A platform's token is set nowhere griot looks (the environment, the
+    file, the keychain), so no request was made. Apart from a refusal: the
+    run says it once, with the command that sets it, instead of once per
+    fetch (index_platform.py), and records which variable it was, so
+    `griot stats` and `griot doctor` say the same."""
+
+    def __init__(self, env_var: str, platform: str | None):
+        self.env_var, self.platform = env_var, platform
+        # In the words of a missing embedding key: one sentence on every path.
+        super().__init__(common.missing_credential_text(env_var, f"the {platform or 'code'} platform"))
+
+
 def _require_token(env_var: str) -> str:
     token = common.credential(env_var)
     if not token:
         # credential() also looked in the file and the keychain: "not found
-        # in the environment" was not what happened. The command last.
-        platform = next((p for p, v in TOKEN_ENV.items() if v == env_var), None)
-        command = f"griot auth set {platform}" if platform else "griot doctor"
-        raise ValueError(f"{env_var} is not set (the {platform or 'platform'} token). "
-                         f"{common.SET_IN_A_TERMINAL}\n  {command}")
+        # in the environment" was not what happened.
+        raise TokenMissing(env_var, next((p for p, v in TOKEN_ENV.items() if v == env_var), None))
     return token
 
 

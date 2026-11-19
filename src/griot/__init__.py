@@ -24,9 +24,25 @@ ENVIRONMENT_ONLY_NARROWS = False
 # the command a person approves when a server is registered, which the `env`
 # beside it is not, so it is not treated as the environment's.
 PROFILE_FROM_COMMAND_LINE: str | None = None
+# Set by cli.py BEFORE the configuration loads for the commands that repair
+# the configuration file (`config set`, `config unset`, `profiles use`): a
+# value in the file griot cannot start with is then set aside for that
+# process instead of refused (common._set_aside_to_repair), so each of the
+# commands the errors give runs while another line is broken too.
+REPAIRING_SETTINGS = False
 # Whether `--quiet` (or -q) was typed, as opposed to GRIOT_QUIET=1 in the
 # environment: a command griot rebuilds for a person to paste keeps it.
 QUIET_FROM_COMMAND_LINE = False
+
+
+def config_dir():
+    """griot's configuration directory, from the environment as it is now.
+    Here, not only in common.py (whose CONFIG_DIR is this): the commands
+    that repair a file griot cannot start with read that file before
+    common.py can load (config.shadow_broken_file_values)."""
+    import os
+    from pathlib import Path
+    return Path(os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))) / "griot"
 
 
 def is_interactive() -> bool:
@@ -74,9 +90,12 @@ class UnknownEmbedProfile(ConfigurationError):
     name and the valid ones, for the one command that takes a profile name
     as an argument and puts it in force before the configuration loads."""
 
-    def __init__(self, message: str, name: str, options: list[str], reason: str = ""):
+    def __init__(self, message: str, name: str, options: list[str], reason: str = "", fix: str | None = None):
         super().__init__(message)
         # reason: why the name is gone, for a profile griot used to list
         # (common.RETIRED_EMBED_PROFILES), so the callers that word this
         # error themselves (`profiles use`, doctor) say it too.
-        self.name, self.options, self.reason = name, options, reason
+        # fix: the command the message ends on, decided once where the
+        # error is raised (common.py knows whether the variable was
+        # exported), so doctor gives the same one and not another.
+        self.name, self.options, self.reason, self.fix = name, options, reason, fix

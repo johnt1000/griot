@@ -145,6 +145,16 @@ def test_a_text_that_breaks_a_rule_fails(text, kind):
     assert violations(text, kind) != []
 
 
+def test_the_agent_limit_is_exactly_2000_characters():
+    ending = "Something failed.\n  griot doctor"
+    at_the_limit = "x" * (AGENT_TEXT_LIMIT - len(ending)) + ending
+    assert len(at_the_limit) == 2000 and violations(at_the_limit, AGENT) == []
+    assert violations("x" + at_the_limit, AGENT) != []
+    # A text a person reads only is not held to it; one an agent may read is.
+    assert violations("x" + at_the_limit) == []
+    assert violations("x" + at_the_limit, agent_reads=True) != []
+
+
 def test_an_agent_text_may_end_on_a_sentence_naming_a_tool_or_command():
     assert violations("Nothing is indexed. Call griot_index_repo first.", AGENT) == []
     assert violations("Nothing is indexed (`griot index all`).", AGENT) == []
