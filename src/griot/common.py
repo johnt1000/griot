@@ -2142,6 +2142,28 @@ def _lock_owner_is_alive(info: dict) -> bool:
     return True
 
 
+class IndexLockHeldError(RuntimeError):
+    """griot's index lock is held by another live run (`pid`), or was taken
+    by one that started at the same moment (`pid` None). Typed so that
+    `griot index all --if-stale` can tell this routine overlap (a scheduler
+    and a git hook starting together) from a real failure; a RuntimeError,
+    with the message it always had, so every caller that catches
+    RuntimeError reads it as before. Not a GriotError: that would change
+    what the MCP server sends an agent, which this type is not about."""
+
+    def __init__(self, message: str, *, pid: int | None = None, started: float | None = None):
+        super().__init__(message)
+        self.pid = pid
+        self.started = started
+
+    def held_by(self) -> str:
+        """Who holds the lock, as the skip line of --if-stale says it."""
+        if self.pid is None:
+            return "another griot index run started at the same moment and holds griot's lock"
+        when = f", started {time.strftime('%H:%M', time.localtime(self.started))}" if self.started else ""
+        return f"another griot index run holds griot's lock (PID {self.pid}{when})"
+
+
 def acquire_lock(label: str | None = None) -> None:
     """label: optional description of what's being indexed (e.g. a repo's
     path) — forward-looking for griot_index_repo (section 2.7 of the MCP
@@ -2153,10 +2175,11 @@ def acquire_lock(label: str | None = None) -> None:
     if LOCK_PATH.exists():
         info = _read_lock()
         if info is not None and _lock_owner_is_alive(info):
-            raise RuntimeError(
+            raise IndexLockHeldError(
                 f"A griot process is already running (PID {info['pid']}). Wait for it to finish, or delete "
                 f"{LOCK_PATH} if you're sure the process died without clearing the lock "
-                f"(e.g. kill -9 / OOM)."
+                f"(e.g. kill -9 / OOM).",
+                pid=info["pid"], started=info["start_time"],
             )
         # lock without valid info (corrupted/old format) or orphaned (owner
         # dead or PID recycled) — proceed and overwrite it.
@@ -2173,7 +2196,7 @@ def acquire_lock(label: str | None = None) -> None:
         # designed to receive a repo path) — same M2 contract as the other files
         fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        raise RuntimeError(
+        raise IndexLockHeldError(
             f"Another process created {LOCK_PATH} at the same instant (a race between two "
             f"indexers starting together). Run it again."
         )

@@ -386,7 +386,7 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
         parts = []
         parts.extend(n.sentence for n in behind)
         if without_code:
-            parts.append("code never indexed in " + ", ".join(without_code))
+            parts.append(f"{notices.never_indexed(['code'])} in " + ", ".join(without_code))
         if token_refused:
             parts.append(stats.platform_refused_phrase(token_refused))
         if not_found:
@@ -412,8 +412,14 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
         if checks:
             fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
+    # In the words `griot index all --if-stale` says it has nothing to do,
+    # and only when it would have nothing to do: a source that never ran is
+    # something it indexes.
     return _check("repositories", OK, f"{len(paths)} registered, all present"
-                                       + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
+                                       + (f"; {notices.none_behind(len(reports))}"
+                                          if reports and all(r.get("behind") is False
+                                                             and freshness.stale_reason(r, freshness.SOURCES) is None
+                                                             for r in reports) else ""))
 
 
 def check_quality(common, now=None, found: list | None = None, looked: set | None = None) -> dict:

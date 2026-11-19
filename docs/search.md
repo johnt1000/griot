@@ -110,7 +110,9 @@ server sees a repository fall behind or fall into another band of commits:
 and `griot doctor` list them every time. Other commands end, when something
 new needs attention, with one line on stderr, ``1 notice: run `griot doctor` `` (again a
 week later if nothing changed; `--quiet` silences it). Pull requests and issues live on the platform, so
-nothing local can say whether that source is behind.
+nothing local can say whether that source is behind. `griot index all
+--if-stale` indexes the repositories this finds behind, and nothing else
+([keeping the index fresh](getting-started.md#keeping-the-index-fresh)).
 
 ## `griot ask`
 

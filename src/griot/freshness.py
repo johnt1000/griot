@@ -211,6 +211,33 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     return reports
 
 
+def stale_reason(report: dict, sources) -> str | None:
+    """Why `griot index all --if-stale` indexes this repository (a report
+    of assess()), counting only `sources`; None when it does not, which is
+    also when `griot doctor` says it is not behind. Worded by notices.py, as
+    every other surface words it. A platform whose newest run refused the
+    repository is not counted as never run: doctor and stats report the
+    refusal with its fix, and retrying it on a schedule would fail on every
+    run."""
+    from griot import notices
+
+    if report.get("head") is None:
+        return None  # nothing to compare with: no git repository at that path
+    behind = [source for source in report.get("behind_sources") or [] if source in sources]
+    missing = [source for source in report.get("missing_sources") or [] if source in sources
+               and not (source == "platform" and report.get("platform_refused"))]
+    parts = []
+    if behind:
+        # The count is of the sources that follow HEAD; one left out by
+        # --sources does not make the others read as commits behind.
+        follows_head = any(source in FOLLOWS_HEAD for source in behind)
+        parts.append(notices.behind_detail({**report, "behind_sources": behind,
+                                            "commits_behind": report.get("commits_behind") if follows_head else 0}))
+    if missing:
+        parts.append(notices.never_indexed(missing))
+    return "; ".join(parts) or None
+
+
 # The causes index_platform.py records a refused fetch under.
 REFUSAL_CAUSES = ("not_found", "token", "other")
 

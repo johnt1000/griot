@@ -135,6 +135,43 @@ def behind_detail(report: dict) -> str:
     return "; ".join(parts) or "since the last index run"
 
 
+# What "not behind" was compared against (freshness.py): HEAD for code and
+# commits, the refs for tags and branches; the platform is never compared,
+# so a sentence that says "not behind" must not read as covering it.
+COMPARED = "HEAD, tags and branches"
+NOT_COMPARED = "pull requests and issues are not compared"
+
+
+def none_behind(count: int, among: str = "") -> str:
+    """The one wording of "no repository is behind", for doctor's ok line
+    and `griot index all --if-stale`'s no-op line. `among` qualifies the
+    repositories counted (" on disk" when a registered path is gone): never
+    "every", which a path left out would make untrue."""
+    if count == 1:
+        return f"the 1 registered repository{among} is not behind ({COMPARED}; {NOT_COMPARED})"
+    return f"none of the {count} registered repositories{among} is behind ({COMPARED}; {NOT_COMPARED})"
+
+
+def repo_not_behind(name: str) -> str:
+    """none_behind() for one repository named on the command line."""
+    return f"{name} is not behind ({COMPARED})"
+
+
+def never_indexed(sources: list[str]) -> str:
+    """`code never indexed`: the one wording of sources that never ran for a
+    repository (doctor, stats, --if-stale's reason). Every source missing is
+    the repository itself never indexed."""
+    if set(sources) >= set(SOURCES):
+        return "never indexed"
+    named = sources[0] if len(sources) == 1 else f"{', '.join(sources[:-1])} and {sources[-1]}"
+    return f"{named} never indexed"
+
+
+# freshness.SOURCES, copied: this module is imported before the configuration
+# is (see the module docstring), and freshness imports common.
+SOURCES = ("code", "commits", "tags", "branches", "platform")
+
+
 def index_repo_command(name: str) -> str:
     """`griot index all --repo NAME`, pasteable: quoted where the shell needs
     it, and glued with `=` where argparse would read the name as a flag."""

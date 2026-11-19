@@ -73,6 +73,65 @@ That removal is held back when more than half of a repository would go
 repository you index regularly. `--dry-run` says what a run would embed and
 remove, at no cost.
 
+### Keeping the index fresh
+
+`griot index all --if-stale` indexes only the registered repositories whose
+index is behind them: commits made since the last run, a rewritten history,
+changed tags or remote branches, or a source that never ran (pull requests and
+issues are not compared; see [whether the index is behind](search.md#whether-the-index-is-behind)).
+When none is behind, or another griot process (an MCP server, another index
+run) holds the collection, it embeds nothing and exits 0, so a scheduler or a
+git hook can call it without reporting a routine overlap as a failure. Other
+failures keep their exit codes. `--repo NAME` narrows it to one registered
+repository; `--path` cannot be combined with it.
+
+Two recipes. griot installs neither: the launch agents and the hooks of your
+repositories are yours.
+
+A macOS launchd agent that runs it every day at 09:00, in
+`~/Library/LaunchAgents/com.example.griot-index.plist` (load it with
+`launchctl load ~/Library/LaunchAgents/com.example.griot-index.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.griot-index</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/.local/bin/griot</string>
+    <string>index</string><string>all</string><string>--if-stale</string><string>--quiet</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/griot-index.log</string>
+</dict>
+</plist>
+```
+
+The program path is absolute (`command -v griot` prints yours): launchd's
+`PATH` does not include `~/.local/bin`, where pipx and `uv tool` put the
+launcher. `StandardErrorPath` keeps the lines a quiet run still prints.
+
+A git `post-merge` hook, in `.git/hooks/post-merge` of a registered
+repository (make it executable with `chmod +x`), which indexes that repository
+after a `git pull` or a merge:
+
+```sh
+#!/bin/sh
+griot index all --if-stale --quiet --repo "$(basename "$(git rev-parse --show-toplevel)")"
+```
+
+The name is the directory name, as everywhere `--repo` takes one. The hook's
+exit status does not undo the merge.
+
+Neither has a terminal, so on a paid profile a run estimated at or above
+confirm-spend is refused (exit 2) and nothing is spent. Add `--yes` only if you
+accept unattended spending; the daily spend ceiling still applies. `--quiet`
+keeps errors, the cost line of a paid run, and the line that says a run was
+skipped because the collection was held.
+
 ## Usage and spend: `griot stats`
 
 `griot stats --days N` covers today and the N-1 days before it, in local days
