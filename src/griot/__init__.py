@@ -26,6 +26,12 @@ ENVIRONMENT_ONLY_NARROWS = False
 PROFILE_FROM_COMMAND_LINE: str | None = None
 
 
+class UsageError(ValueError):
+    """The request itself is wrong (an unknown profile, a path that is not a
+    directory, a repository not in the list): the CLI exits 2 for it. A plain
+    ValueError from the same function is the operation failing: exit 1."""
+
+
 class ConfigurationError(ValueError):
     """A setting griot cannot start with, or a configuration file it cannot
     write (a <config>/.env that is a link leading nowhere). The CLI turns it

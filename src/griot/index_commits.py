@@ -29,7 +29,7 @@ def list_commits(repo_path: Path) -> list[dict]:
     try:
         output = common.run_git(repo_path, ["log", "--all", f"--pretty=format:{fmt}"], timeout=120).stdout
     except subprocess.CalledProcessError as e:
-        print(f"Error reading commits from {repo_path.name}: {e}")
+        common.log_and_print(f"Warning: could not read the commits of {repo_path.name}: {e}. Nothing of it is indexed; check it:\n  git -C {repo_path} log", level="warning", silenceable=False)
         return []
 
     commits = []
@@ -132,11 +132,11 @@ def main(argv=None):
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
-            print(f"WARNING: '{repo_path}' is not a valid directory.")
+            common.warn_not_a_directory(repo_path)
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
         docs = build_documents(repo_path, repo_key=repo_key)
-        print(f"{repo_path.name}: {len(docs)} commits")
+        common.progress_note(f"{repo_path.name}: {len(docs)} commits")
         all_documents.extend(docs)
 
     # What stale-point removal may act on (see common.prune_orphans for the fences).

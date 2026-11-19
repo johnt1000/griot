@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from griot import common
+from griot import UsageError, common
 
 
 def _load() -> list[str]:
@@ -55,19 +55,19 @@ def check_add(path: str) -> str:
     before asking anyone to confirm it."""
     repo_path = Path(path)
     if not repo_path.is_dir():
-        raise ValueError(f"'{path}' doesn't exist or isn't a directory.")
+        raise UsageError(f"'{path}' doesn't exist or isn't a directory.")
 
     resolved = str(repo_path.resolve())
     registered = _load()
     if resolved in registered:
-        raise ValueError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
+        raise UsageError(f"'{resolved}' is already in {common.REPOS_JSON_PATH}.")
     # The directory name is what a repository's points and ids are keyed on.
     # Two registered repositories with the same one overwrite each other's
     # points on every run, re-embed them each time, and both report success.
     name = Path(resolved).name
     same_name = [p for p in registered if Path(p).name == name]
     if same_name:
-        raise ValueError(
+        raise UsageError(
             f"another registered repository is already named '{name}' ({same_name[0]}). griot tells "
             f"repositories apart by directory name: rename one of the directories, or index this one "
             f"on its own with `griot index all --path`.")
@@ -92,9 +92,9 @@ def check_remove(path: str) -> str:
     resolved = str(Path(path).resolve())
     paths = _load()
     if not paths:
-        raise ValueError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
+        raise UsageError(f"{common.REPOS_JSON_PATH} doesn't exist or is empty.")
     if resolved not in paths:
-        raise ValueError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
+        raise UsageError(f"'{resolved}' not found in {common.REPOS_JSON_PATH}.")
     return resolved
 
 
@@ -109,12 +109,22 @@ def remove_repo(path: str) -> str:
     return resolved
 
 
+def _refuse(error: ValueError, next_command: str) -> int:
+    """The one way a refused repos command ends: the sentence, the next
+    command last, and the exit status by kind (2 for a wrong request, 1 for a
+    list that could not be read)."""
+    if isinstance(error, UsageError):
+        print(f"Error: {error}\n  {next_command}", file=sys.stderr)
+        return 2
+    print(f"Error: {error}", file=sys.stderr)
+    return 1
+
+
 def cmd_add(path: str) -> int:
     try:
         resolved = add_repo(path)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        return _refuse(e, "griot repos list")
     print(f"Added: {resolved}")
     if not is_git_repo(resolved):
         # [security review finding] 'index all' walks every registered path
@@ -151,18 +161,19 @@ def cmd_remove(path: str) -> int:
     try:
         resolved = remove_repo(path)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        return _refuse(e, "griot repos list")
     print(f"Removed: {resolved}")
     return 0
 
 
 def main(argv=None) -> int:
+    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot repos",
         description="Manages the list of repos indexed in bulk (repos.json).",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
+    show_flags_read_by_griot(parser)
 
     p_add = sub.add_parser(
         "add", help="Adds a repo (absolute or relative path)",
@@ -189,8 +200,7 @@ def main(argv=None) -> int:
     try:
         resolved = check_add(args.path) if adding else check_remove(args.path)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        return _refuse(e, "griot repos list")
     if adding:
         # No --yes on purpose: registering widens what may be sent to the
         # embedding API (see common.confirm and griot_repos_add).

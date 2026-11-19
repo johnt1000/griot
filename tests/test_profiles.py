@@ -297,7 +297,7 @@ def test_a_retired_profile_left_on_disk_can_still_be_deleted(monkeypatch):
 
 def test_cmd_profiles_delete_unknown_profile_is_a_clear_cli_error(capsys):
     rc = cli.main(["profiles", "delete", "not-a-real-profile"])
-    assert rc == 1
+    assert rc == 2  # incorrect use: no such profile
     assert "Error" in capsys.readouterr().err
 
 

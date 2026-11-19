@@ -123,7 +123,7 @@ def test_cmd_set_warns_when_overwriting_existing_key(monkeypatch, capsys):
     monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: "key-two")
     auth.cmd_set("openai")
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "restart" in out.lower()
 
 
@@ -393,7 +393,7 @@ def test_auth_set_of_a_new_key_in_the_file_says_to_restart_running_servers(monke
 
     assert _cli_auth("set", "openai") == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert _says_restart(out)
     # The old reason named only .env and import time; a keychain read is
     # kept for the process's life too.
@@ -408,7 +408,7 @@ def test_auth_set_replacing_a_file_key_says_to_restart_running_servers(monkeypat
 
     assert _cli_auth("set", "openai") == 0
 
-    assert _says_restart(capsys.readouterr().out)
+    assert _says_restart(capsys.readouterr().err)
 
 
 def test_auth_set_of_a_new_key_in_the_keychain_says_to_restart_running_servers(monkeypatch, capsys):
@@ -418,7 +418,7 @@ def test_auth_set_of_a_new_key_in_the_keychain_says_to_restart_running_servers(m
 
     assert _cli_auth("set", "openai") == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert fake.store[("griot", "GRIOT_OPENAI_API_KEY")] == "sk-new-key-1111"
     assert _says_restart(out)
 
@@ -431,7 +431,7 @@ def test_auth_set_replacing_a_keychain_key_says_to_restart_running_servers(monke
 
     assert _cli_auth("set", "openai") == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert fake.store[("griot", "GRIOT_OPENAI_API_KEY")] == "sk-new-key-1111"
     assert _says_restart(out)
 
@@ -453,7 +453,7 @@ def test_auth_remove_of_a_keychain_key_says_to_restart_running_servers(monkeypat
 
     assert _cli_auth("remove", "openai", "--yes") == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert ("griot", "GRIOT_OPENAI_API_KEY") not in fake.store
     assert _says_restart(out)
 
@@ -471,7 +471,7 @@ def test_auth_remove_of_a_file_key_says_to_restart_running_servers_in_a_real_pro
     assert done.returncode == 1, done.stderr
     assert "keychain could not be reached" in done.stderr
     assert "GRIOT_OPENAI_API_KEY" not in dotenv_values(env_path)
-    assert _says_restart(done.stdout)
+    assert _says_restart(done.stderr)
 
 
 def test_auth_remove_with_nothing_stored_does_not_mention_restart_in_a_real_process(tmp_path):

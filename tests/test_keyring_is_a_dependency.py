@@ -105,7 +105,8 @@ def test_set_says_the_key_went_to_plaintext_and_why(fail_backend, monkeypatch, c
 
     assert auth.cmd_set("openai") == 0
 
-    _says_plaintext_and_why(capsys.readouterr().out)
+    out, err = capsys.readouterr()
+    _says_plaintext_and_why(out + err)  # the reason is a note, on stderr
 
 
 def test_list_says_the_keys_are_in_plaintext_and_why(fail_backend, capsys):

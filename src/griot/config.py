@@ -641,6 +641,7 @@ def cmd_unset(name: str) -> int:
 
 
 def main(argv=None) -> int:
+    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot config",
         description="Shows and changes griot's settings (the variables in <config>/.env). A change that widens "
@@ -653,6 +654,7 @@ def main(argv=None) -> int:
                + ". A setting can also be named by its variable (GRIOT_...).",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
+    show_flags_read_by_griot(parser)
     p_list = sub.add_parser("list", help="Every setting, the value in force and where it comes from")
     p_list.add_argument("--json", action="store_true", help="One JSON document instead of the table")
     p_get = sub.add_parser("get", help="Prints the value in force of one setting")

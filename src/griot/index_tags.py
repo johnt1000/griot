@@ -45,7 +45,7 @@ def list_tags(repo_path: Path) -> list[dict]:
     try:
         output = common.run_git(repo_path, ["for-each-ref", "refs/tags", f"--format={fmt}"], timeout=60).stdout
     except subprocess.CalledProcessError as e:
-        print(f"Error reading tags from {repo_path.name}: {e}")
+        common.log_and_print(f"Warning: could not read the tags of {repo_path.name}: {e}. Nothing of it is indexed; check it:\n  git -C {repo_path} tag", level="warning", silenceable=False)
         return []
 
     tags = []
@@ -153,11 +153,11 @@ def main(argv=None):
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
-            print(f"WARNING: '{repo_path}' is not a valid directory.")
+            common.warn_not_a_directory(repo_path)
             continue
         repo_key = _repo_key_for_path(repo_path) if args.path else None
         docs = build_documents(repo_path, repo_key=repo_key)
-        print(f"{repo_path.name}: {len(docs)} tags")
+        common.progress_note(f"{repo_path.name}: {len(docs)} tags")
         all_documents.extend(docs)
 
     # What stale-point removal may act on (see common.prune_orphans for the fences).

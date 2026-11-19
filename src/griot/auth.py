@@ -188,14 +188,14 @@ def remove_provider_key(provider: str) -> KeyRemoval:
 def cmd_set(provider: str) -> int:
     providers = _providers()
     if provider not in providers:
-        print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}", file=sys.stderr)
-        return 1
+        print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}. See which are set:\n  griot auth list", file=sys.stderr)
+        return 2
     env_var = providers[provider]
 
     key = getpass.getpass(f"Key for {provider} ({env_var}, hidden input): ")
     if not key.strip():
-        print("Error: empty key, nothing was written.", file=sys.stderr)
-        return 1
+        print(f"Error: empty key, nothing was written. Try again:\n  griot auth set {provider}", file=sys.stderr)
+        return 2
 
     _ensure_env_file()
     _, where = _store_provider_key(provider, key)
@@ -223,7 +223,7 @@ def _say_running_servers_keep_what_they_read() -> None:
     key, until it restarts. Said only
     when something changed: a note printed on every call is one people
     learn to skip."""
-    print(f"Note: {RUNNING_SERVERS_KEEP_WHAT_THEY_READ}")
+    common.log_and_print(f"Note: {RUNNING_SERVERS_KEEP_WHAT_THEY_READ}")
 
 
 def _say_where_it_went(env_var: str, where: str) -> None:
@@ -237,10 +237,10 @@ def _say_where_it_went(env_var: str, where: str) -> None:
     print(f"{env_var} written in plaintext to {common.ENV_PATH} (permission 0600).")
     keychain = common.keychain_status()
     if keychain["available"]:
-        print(f"Note: the OS keychain ({keychain['backend']}) refused it, so it went to the file; "
+        common.log_and_print(f"Note: the OS keychain ({keychain['backend']}) refused it, so it went to the file; "
               f"`griot auth migrate` retries.")
     else:
-        print(f"Note: {keychain_phrase(keychain)}.")
+        common.log_and_print(f"Note: {keychain_phrase(keychain)}.")
 
 
 def _say_if_the_shell_overrides(env_var: str) -> None:
@@ -250,8 +250,8 @@ def _say_if_the_shell_overrides(env_var: str) -> None:
     origin = common.credential_origin(env_var)
     if not origin["shadows_stored"]:
         return
-    print(f"Warning: {env_var} is also exported, with a different value, in {common.export_places(origin)}. "
-          f"The environment wins, so griot keeps using that one: {common.export_advice(env_var, origin, places_said=True)}.")
+    common.log_and_print(f"Warning: {env_var} is also exported, with a different value, in {common.export_places(origin)}. "
+          f"The environment wins, so griot keeps using that one: {common.export_advice(env_var, origin, places_said=True)}.", level="warning")
 
 
 def keychain_phrase(keychain: dict) -> str:
@@ -334,8 +334,8 @@ def _in_file(env_var: str) -> bool:
 def cmd_remove(provider: str) -> int:
     providers = _providers()
     if provider not in providers:
-        print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}", file=sys.stderr)
-        return 1
+        print(f"Error: unknown provider '{provider}'. Options: {', '.join(sorted(providers))}. See which are set:\n  griot auth list", file=sys.stderr)
+        return 2
     env_var = providers[provider]
     result = remove_provider_key(provider)
     unreachable = result.keychain == common.KEYCHAIN_UNREACHABLE
@@ -348,7 +348,7 @@ def cmd_remove(provider: str) -> int:
         print(f"{env_var} removed from {' and '.join(names[p] for p in result.places)}.")
         origin = common.credential_origin(env_var)
         if origin["source"] == "environment":
-            print(f"Note: {env_var} is still exported in {common.export_places(origin)}: griot keeps using that "
+            common.log_and_print(f"Note: {env_var} is still exported in {common.export_places(origin)}: griot keeps using that "
                   f"value until it is not; to stop it, {common.export_advice(env_var, origin, places_said=True)}.")
         _say_running_servers_keep_what_they_read()
     if unreachable:
@@ -406,11 +406,13 @@ def cmd_migrate() -> int:
 
 
 def main(argv=None) -> int:
+    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot auth",
         description="Manages provider and platform keys: stored in the OS keychain when one is reachable, else in <config_dir>/.env (plaintext, 0600); `list` says which.",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
+    show_flags_read_by_griot(parser)
 
     p_set = sub.add_parser("set", help="Sets a provider's key (hidden input)")
     p_set.add_argument("provider")

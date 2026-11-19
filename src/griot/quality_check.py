@@ -420,8 +420,8 @@ def main(argv=None):
         # resolved via common (CONFIG_DIR/quality_golden_set.json) — hand-curated
         # by the user, not part of the installed code
         if golden_set is None:
-            if not args.json:
-                print(f"\nWarning: {common.GOLDEN_SET_PATH} does not exist, skipping golden set.")
+            common.log_and_print(f"Note: there is no golden set at {common.GOLDEN_SET_PATH}, so it was skipped. "
+                                 f"Start one:\n  griot golden-set suggest")
         else:
             if not args.json:
                 print(f"\n=== Golden set: {len(golden_set)} curated questions ===")
@@ -455,12 +455,17 @@ def main(argv=None):
 
     record_for_trend(collection, self_check, golden_check)
 
-    common.log_and_print(
+    result_line = (
         f"quality_check: collection={collection} "
         f"self_check={self_check['passed']}/{self_check['sampled']} "
-        f"golden_set={golden_check['passed'] if golden_check else '-'}/{golden_check['total'] if golden_check else '-'}",
-        echo=not args.json,  # [--json stdout contract] audit trail (griot.log) still gets the entry — only stdout is suppressed
+        f"golden_set={golden_check['passed'] if golden_check else '-'}/{golden_check['total'] if golden_check else '-'}"
     )
+    # This line is the RESULT of the command: it stays on stdout, which
+    # log_and_print() no longer is. The log still gets the entry either way,
+    # and under --json stdout is the JSON payload alone.
+    common.log_and_print(result_line, echo=False)
+    if not args.json:
+        print(result_line)
 
     # A check that sampled nothing measured nothing. It used to pass ("0/0
     # samples self-recovered"), which is how an empty index got a green gate.

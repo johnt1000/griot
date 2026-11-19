@@ -1509,11 +1509,13 @@ def cmd_install(scope: str, harness_choice: str, *, ask_instructions: bool = Tru
 
 
 def main(argv=None) -> int:
+    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot assist",
         description="Installs griot's bundled Claude Code/opencode skills and agents for onboarding, indexing and workflow help.",
     )
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
+    show_flags_read_by_griot(parser)
 
     p_install = sub.add_parser(
         "install", help="Copies griot's bundled skills/agents into each detected harness's config dir",

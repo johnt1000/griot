@@ -91,7 +91,7 @@ def discover_files(repo_path: Path) -> list[Path]:
             # Fail closed. Walking here would read exactly what the rule
             # keeps out: a broken HEAD, a timeout or an ownership refusal
             # must not turn "not the ignored files" into "every file".
-            print(f"git could not list the files of {repo_path}, so nothing is read from it: walking it instead "
+            common.log_and_print(f"git could not list the files of {repo_path}, so nothing is read from it: walking it instead "
                   f"would index files its .gitignore keeps out. `git -C {repo_path} status` shows what is wrong.")
             return []
         candidates = _walked_files(repo_path)
@@ -99,7 +99,7 @@ def discover_files(repo_path: Path) -> list[Path]:
         # Not an error, but silence here reads as "indexed nothing for no
         # reason": a directory inside some other work tree (a home directory
         # kept in git, say) lands here with everything untracked.
-        print(f"git lists no files under {repo_path}, so nothing is read from it: "
+        common.log_and_print(f"git lists no files under {repo_path}, so nothing is read from it: "
               f"in a git work tree, files the repository ignores are not indexed.")
 
     root = repo_path.resolve()
@@ -128,7 +128,7 @@ def discover_files(repo_path: Path) -> list[Path]:
     if too_large:
         shown = ", ".join(common.shown(str(p.relative_to(repo_path))) for p in sorted(too_large)[:5])
         more = f" and {len(too_large) - 5} more" if len(too_large) > 5 else ""
-        print(f"Skipped {len(too_large)} file(s) larger than {MAX_FILE_BYTES // 1_000_000} MB in {repo_path.name}: {shown}{more}")
+        common.log_and_print(f"Skipped {len(too_large)} file(s) larger than {MAX_FILE_BYTES // 1_000_000} MB in {repo_path.name}: {shown}{more}")
     return sorted(found)
 
 
@@ -174,7 +174,7 @@ def _repo_key_for_path(repo_path: Path) -> str:
 
 def process_repository(repo_path: Path, repo_key: str | None = None, problems: list | None = None) -> list[dict]:
     key = repo_key or repo_path.name
-    print(f"\nProcessing repository: {repo_path.name}")
+    common.progress_note(f"Processing repository: {repo_path.name}")
     documents = []
     filtered_files = discover_files(repo_path)
 
@@ -184,11 +184,12 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
 
     from tqdm import tqdm
     root = repo_path.resolve()
-    for file_path in tqdm(filtered_files, desc=f"Reading {repo_path.name}"):
+    for file_path in tqdm(filtered_files, desc=f"Reading {repo_path.name}", file=sys.stderr,
+                          disable=common.progress_disabled()):
         try:
             content = read_source(file_path, root)
             if content is None:
-                tqdm.write(f"Skipped {file_path}: it changed after it was listed.")
+                common.log_and_print(f"Note: skipped {file_path}: it changed after it was listed. It is read on the next run.")
                 if problems is not None:
                     problems.append(str(file_path))
                 continue
@@ -208,7 +209,8 @@ def process_repository(repo_path: Path, repo_key: str | None = None, problems: l
                     }),
                 })
         except Exception as e:
-            tqdm.write(f"Error reading {file_path}: {e}")
+            common.log_and_print(f"Warning: could not read {file_path}: {e}. It is tried again on the next run.",
+                                    level="warning", silenceable=False)
             if problems is not None:
                 problems.append(str(file_path))
     return documents
@@ -272,7 +274,7 @@ def main(argv=None):
             if problems:
                 incomplete.add(repo_path.name)
         else:
-            print(f"WARNING: '{repo_path}' is not a valid directory.")
+            common.warn_not_a_directory(repo_path)
 
     # What stale-point removal may act on (see common.prune_orphans for the fences).
     prune_scope = dict(source_type="code", repo_paths=repo_paths_str, used_path=bool(args.path),
