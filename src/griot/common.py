@@ -23,7 +23,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
 import griot as _package
-from griot import FALSE_WORDS, ConfigurationError, UnknownEmbedProfile, logdb, redaction
+from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfile, logdb, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -1695,12 +1695,17 @@ def _credential_hint(env_var: str) -> str:
     return f"{env_var} is not set; set it with {set_it}."
 
 
+class CredentialMissing(GriotError, ValueError):
+    """A paid call needs a credential that is set nowhere griot looks. A
+    ValueError, as these always were."""
+
+
 def _require_gemini_token() -> str:
     # GEMINI_TOKEN holds what the environment and the file gave at import;
     # the keychain is asked only here, when a gemini call is about to run.
     token = GEMINI_TOKEN or _keychain_value("GEMINI_TOKEN")
     if not token:
-        raise ValueError(
+        raise CredentialMissing(
             f"GEMINI_TOKEN not found in the environment — export it in the shell (e.g. ~/.bashrc) "
             f"or place it in {ENV_PATH}. Required for the 'gemini' embedding profile "
             f"and for ask.py's chat answer (direct call to Google's API)."
@@ -1986,6 +1991,12 @@ def _ensure_spend_state_migrated() -> None:
     logdb.migrate_legacy_spend_file(LOG_DIR, SPEND_STATE_PATH, _today())
 
 
+class SpendCircuitBreakerError(GriotError, RuntimeError):
+    """The local circuit breaker stopped a paid call: a spend ceiling was
+    reached, or a call's cost could not be counted. A RuntimeError, as the
+    breaker always raised."""
+
+
 def check_spend_ceiling() -> None:
     """Two independent checks, run before ANY paid call directly to Gemini
     (embedding or chat — no LiteLLM in between, this is the only budget
@@ -2004,7 +2015,7 @@ def check_spend_ceiling() -> None:
     # that is not a number compares False both ways, and must read as
     # reached, never as under.
     if not spend_today < SPEND_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: today's estimated spend (${spend_today:.4f}) has already reached "
             f"the ${SPEND_CEILING_USD:.2f} ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the "
             f"reason before continuing — if this is expected, raise the ceiling explicitly."
@@ -2013,7 +2024,7 @@ def check_spend_ceiling() -> None:
     now = time.time()
     velocity = logdb.read_spend_velocity(LOG_DIR, now - SPEND_VELOCITY_WINDOW_SECONDS)
     if not velocity < SPEND_VELOCITY_CEILING_USD:
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: spend in the last {SPEND_VELOCITY_WINDOW_SECONDS // 60}min "
             f"(${velocity:.4f}) is way above what's expected for sequential use (ceiling: "
             f"${SPEND_VELOCITY_CEILING_USD:.2f}, GRIOT_SPEND_VELOCITY_CEILING_USD). This usually "
@@ -2046,7 +2057,7 @@ def record_spend(cost_usd: float) -> None:
         # and adding nothing would let the paid calls go on uncounted (a
         # negative cost used to be dropped as if the call had been free):
         # stop the run.
-        raise RuntimeError(
+        raise SpendCircuitBreakerError(
             f"Local circuit breaker: the cost of a paid call came out as {cost_usd!r}, which is not an "
             f"amount (the provider reported a token count that is not a number, or is negative). It was "
             f"not added to today's total; stopping here rather than go on spending uncounted.")
@@ -2152,7 +2163,7 @@ def get_embed_model():
     return _embed_model
 
 
-class CollectionBusyError(RuntimeError):
+class CollectionBusyError(GriotError, RuntimeError):
     """The collection is open in another process. A normal condition on a
     machine running `griot mcp`, so callers can tell it apart from a broken
     collection and explain it instead of showing a traceback. A RuntimeError
@@ -2671,7 +2682,7 @@ def _embed_texts_openai_compatible(texts: list[str]) -> list[list[float] | None]
     api_key_env = ACTIVE_PROFILE["api_key_env"]
     api_key = credential(api_key_env)
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{api_key_env} not found in the environment — required for the "
             f"{ACTIVE_PROFILE_NAME!r} embedding profile (backend direct/openai_compatible)."
         )
@@ -2777,7 +2788,7 @@ def _chat_completion_openai_compatible(prompt: str, model: str | None = None) ->
     profile = ACTIVE_CHAT_PROFILE
     api_key = credential(profile["api_key_env"])
     if not api_key:
-        raise ValueError(
+        raise CredentialMissing(
             f"{profile['api_key_env']} not found in the environment — required for the "
             f"{ACTIVE_CHAT_PROFILE_NAME!r} chat profile."
         )
@@ -4587,7 +4598,7 @@ SOURCE_TYPES = tuple(RESULT_FIELDS)
 SEARCH_FILTER_MAX_VALUES = 20
 
 
-class SearchFilterError(ValueError):
+class SearchFilterError(GriotError, ValueError):
     """A search filter that cannot be used: not a list of names, too many, a
     kind of source that does not exist, a repository with nothing indexed.
     Its own type so that a caller can tell "the arguments are wrong" from
@@ -4719,6 +4730,11 @@ def _fused(by_meaning: list, by_words: list, limit: int) -> list[FusedHit]:
     # sorted() is stable: equal scores keep the order points were first met
     # in, the vector ranking's before the keyword ranking's.
     return sorted(fused.values(), key=lambda entry: entry.score, reverse=True)[:limit]
+
+
+class EmbeddingFailed(GriotError, RuntimeError):
+    """A search's query could not be embedded: the embedding API gave
+    nothing back, and the message says why (last_embedding_failure())."""
 
 
 class SearchModeUnavailable(SearchFilterError):
@@ -4877,7 +4893,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
             # right for a batch being indexed (the rest of the batch goes on). A
             # search has one text and nothing to go on with: say what happened,
             # or the None becomes a type error from the vector store.
-            raise RuntimeError(
+            raise EmbeddingFailed(
                 f"The query could not be embedded with profile '{ACTIVE_PROFILE_NAME}': "
                 + sentence(last_embedding_failure() or "the embedding call returned nothing"))
 

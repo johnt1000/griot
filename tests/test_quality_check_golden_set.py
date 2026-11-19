@@ -237,7 +237,10 @@ async def test_when_the_curated_half_stops_the_self_check_is_not_lost(index, mon
 
     def search(query, limit=5, **kw):
         if query == "the question on which the search stops":
-            raise RuntimeError("daily spend ceiling reached")
+            # What the breaker raises: griot's text, so the agent reads it.
+            # A crash here is named by its class only
+            # (test_tool_errors_reach_the_agent.py).
+            raise common.SpendCircuitBreakerError("daily spend ceiling reached")
         return real(query, limit=limit, **kw)
 
     monkeypatch.setattr(common, "search", search)
