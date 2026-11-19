@@ -486,7 +486,7 @@ A missing credential reached through `griot search` or `griot_quality_check`
 still gets the embedding path's texts, which give no pasteable command; the
 spend gate's sentence and command (#168) are not used there. The gate also
 says "chunks" for commits, tags and branches, and prints a very small
-configured limit as `1e-05`.
+configured limit as `1e-05`. Partly resolved: the embedding path's missing-credential errors use the shared sentence and `griot auth set <provider>` (#178); the gate's "chunks" for commits, tags and branches, and `1e-05` for a very small limit, are still open.
 
 ### 103. A condition fixed elsewhere stays in the ledger until something reads it
 
@@ -495,20 +495,20 @@ doctor` or `griot stats` next reads its state, not when it is fixed by
 another route; the footer counts the ledger's warn and FAIL conditions,
 which is not doctor's warning count.
 
-### 104. Some golden-set notes still go to stdout or end in prose
+### 104. ~~Some golden-set notes still go to stdout or end in prose~~ — resolved
 
 `golden-set add` and `suggest` print their fallback note on stdout, and the
 note for a collection whose config cannot be read ends in prose, naming
-neither the collection nor a command (#169).
+neither the collection nor a command (#169). Resolved: the notes go to stderr, and the one for an unreadable config names the collection and ends on `griot doctor`, which now names the file (#178).
 
-### 105. Child griot processes may read inherited `.env` values as exported
+### 105. ~~Child griot processes may read inherited `.env` values as exported~~ — resolved
 
 griot loads `<config>/.env` into `os.environ`, so a griot process it starts
 inherits those values and reads them as if the person had exported them.
 #173 stopped passing them to the upgraded installation's `griot doctor`; the
 MCP registration check that starts a server and `griot assist install` were
 not swept. For an MCP server this touches what decision 112 lets the
-environment change (`ENVIRONMENT_ONLY_NARROWS`).
+environment change (`ENVIRONMENT_ONLY_NARROWS`). Resolved: `common.environment_without_the_env_file()` is the one rule for every place griot starts griot, the MCP registration check and `griot assist install` included (#177).
 
 ### 106. The engine rewrites `edge_config.json` on a read-only load
 
@@ -525,12 +525,26 @@ died, so `griot stats` can show the last run as not finished (#174). The
 "several repositories behind" actions in doctor, stats and the skills still
 point at the full `griot index all`.
 
-### 108. A doctor fix can put a command after a shell comment
+### 108. ~~A doctor fix can put a command after a shell comment~~ — resolved
 
 For repositories the platform refused, `griot doctor` builds
 `griot auth list   # check ..., then: <command>`: pasted, everything after
 `#` is a comment, so the command never runs. #169 fixed the same defect
-where a ledger condition joined a row; this one is in the row's own text.
+where a ledger condition joined a row; this one is in the row's own text. Resolved: what to check is prose in the detail, the commands one per line in the fix, and a test refuses a command after a comment (#178).
+
+### 109. An unused, older copy of the child-environment rule
+
+`jobs.child_env()` and `_NEVER_DROP_ENV_VARS`, left over from the removed
+web UI, are an older version of the rule #177 put in
+`common.environment_without_the_env_file()`; nothing in the package calls
+them, only their own tests.
+
+### 110. The message guard sees the deliberate texts, not every string
+
+The guard (#178) checks griot's error classes and the texts the suite can
+reach; a message built ad hoc in an f-string that no test reaches is not
+checked. `griot doctor`'s settings split also relies on a configuration
+error being prose, then `:` and each command indented on its own line.
 
 ---
 

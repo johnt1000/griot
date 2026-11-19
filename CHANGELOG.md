@@ -8,6 +8,31 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every message griot shows a person or an agent ends on its next step**,
+  as a command that can be pasted on a line of its own; no command follows a
+  shell comment, and what an agent reads stays under 2,000 characters. A
+  test guards all three over griot's error classes, notices, notes and
+  doctor fixes. `griot doctor` prints each fix one command per line, each a
+  command griot accepts; `griot update` says what kept PyPI from answering
+  and when trying again can work; a stopped `griot index all` says how to
+  resume, and `griot_index_preview` gives the agent the failed source's own
+  error; a platform with no token is said once; the notices footer ends with
+  `griot doctor` alone on its last line (#178).
+
+### Security
+
+- **A griot process griot starts reads the settings file as the file, not
+  as exported values.** griot loads its `.env` into the environment, and an
+  index job, its dry run, a quality-check job, the `griot mcp` that
+  `griot assist install`'s registration check starts and the upgraded
+  doctor in `griot update` all inherited those values as if the person had
+  exported them; an MCP server started that way reported them as the
+  environment's, where decision 112 lets the environment only narrow the
+  configuration. One rule now drops what the file gave and keeps what was
+  exported or what griot set on purpose (#177).
+
 ## [0.9.0] — 2026-11-19
 
 ### Added

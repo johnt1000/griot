@@ -5,26 +5,26 @@ with the reasoning. Shipped work is in the [changelog](CHANGELOG.md).
 
 ## Now
 
-What blocks a 1.0 tag. griot works, is used daily and is published on PyPI
-(`pipx install griot-rag`, since 0.2.0); what "done" still means is this:
+Nothing blocks 1.0. The item that did, end-to-end MCP validation in a real
+project, was closed by the maintainer on 2026-11-19 with the cycle of that
+day. It read about six weeks of real use from the call log, the agent
+clients' own transcripts and their connection logs, and replayed the
+October questions in every search mode on a copy of the index, judged blind. What it found
+is in the changelog from 0.7.0 on: errors written for agents reach them again on
+mcp 2.2 and later, a search cannot hang, the call log records the mode asked
+and the client, the floor is Python 3.11 and the lock is past its
+advisories, notices are said once per change of state, a paid run says its
+cost first, `griot update` says what an upgrade left to do, `griot index all
+--if-stale` serves a scheduler, and every message ends on its next step.
 
-- **End-to-end MCP validation in a real project.** An agent calling
-  `griot_search` against a real index, with the logs and `griot stats` output
-  read afterwards to decide what to improve. A first stretch of about six
-  weeks of real use has been read, and it changed the priorities: the main
-  problem was not retrieval but that agents with the server attached mostly
-  did not search. What followed is in the changelog: the server now tells
-  the agent when to use it, the installer registers it for every project and
-  offers to pre-approve the read-only tools, search can be narrowed and its
-  results say where, when and who, and `griot stats` reports the state of
-  the index instead of only activity in a window. What remains is reading a
-  second stretch of use, after those changes, to see whether agents search
-  on their own now and to decide about the protocol gap left below
-  (`elicit_url`).
+What the validation could not see yet is how agents use those changes: the
+next stretch of real use is read the same way. The protocol gap below
+(`elicit_url`) stays as it is until a client advertises URL elicitation and
+griot has a login to send anyone to.
 
 ## Next
 
-What the rounds of 2026-10-06 to 2026-10-08 left open is done: the debts recorded at their close are resolved (debts 37 to 69 in [lessons and debts](docs/lessons-and-debts.md)). The round of 2026-10-08 shipped GitLab reading a public project without a token, with each item's web URL, a narrowed search that finds nothing naming its filters on every surface, opencode no longer getting a second copy of griot's skills, and releases keeping their author. The round of 2026-10-09 closed what that one left open: `keyring` is a dependency of `griot-rag`, so a default install keeps credentials in the keychain and says so when none is reachable; a credential is read only when a command needs it, once per process, which ends the repeated macOS keychain prompts; the installer asks before removing opencode's old skill copies and says which environment its opencode decision read; agents read the result metadata from the `griot://result-fields` resource; and a platform's 404 under a token names the project instead of blaming the token. Release 0.4.0 shipped those rounds. The round after it, also of 2026-10-09, closed what they left open (debts 70 and 71): a repository the platform refused for mixed reasons is named as such, with the token advice only for the fetches refused for the token, and `griot auth set` and `griot auth remove` always say that running MCP servers keep what they read until restarted, and how to restart them. `griot golden-set review` also offers searches the next search of the same session reworded within 5 minutes, for which every logged search records an opaque session digest. What it found and left open is debts 72 to 76. Release 0.5.0 shipped that round. The round after it, also of 2026-10-09, closed what it left open (debts 72 to 76): a platform that did not answer or failed every fetch under a token is no longer blamed on the token, and the readers name the status and say to try again later; a logged search's session is the agent client's conversation id when the client exports one (Claude Code does, opencode does not), so `griot ask` run through an agent's shell tool pairs with the same conversation's searches; in `griot golden-set review` the kinds of candidate take turns up to the limit, and a reworded candidate lets the person pick from the follow-up's results too; and subagents sharing one MCP server, and so one session, are a documented limit. The same round made the documents say what the code does, gave every command's `--help` the flags griot reads before its parser, made a timing test independent of the machine's load, and cut the README to a short front page (also the PyPI page) with the reference in guides under `docs/`. What it left open, debts 83 to 86, is resolved too (83 as a documented limit). The cycle of 2026-11-19 read about six weeks of real use (the call log, the agents' own transcripts, and the October questions replayed and judged blind in every search mode) and what it found is in the changelog; what it left open is debts 87 to 108.
+What the rounds of 2026-10-06 to 2026-10-08 left open is done: the debts recorded at their close are resolved (debts 37 to 69 in [lessons and debts](docs/lessons-and-debts.md)). The round of 2026-10-08 shipped GitLab reading a public project without a token, with each item's web URL, a narrowed search that finds nothing naming its filters on every surface, opencode no longer getting a second copy of griot's skills, and releases keeping their author. The round of 2026-10-09 closed what that one left open: `keyring` is a dependency of `griot-rag`, so a default install keeps credentials in the keychain and says so when none is reachable; a credential is read only when a command needs it, once per process, which ends the repeated macOS keychain prompts; the installer asks before removing opencode's old skill copies and says which environment its opencode decision read; agents read the result metadata from the `griot://result-fields` resource; and a platform's 404 under a token names the project instead of blaming the token. Release 0.4.0 shipped those rounds. The round after it, also of 2026-10-09, closed what they left open (debts 70 and 71): a repository the platform refused for mixed reasons is named as such, with the token advice only for the fetches refused for the token, and `griot auth set` and `griot auth remove` always say that running MCP servers keep what they read until restarted, and how to restart them. `griot golden-set review` also offers searches the next search of the same session reworded within 5 minutes, for which every logged search records an opaque session digest. What it found and left open is debts 72 to 76. Release 0.5.0 shipped that round. The round after it, also of 2026-10-09, closed what it left open (debts 72 to 76): a platform that did not answer or failed every fetch under a token is no longer blamed on the token, and the readers name the status and say to try again later; a logged search's session is the agent client's conversation id when the client exports one (Claude Code does, opencode does not), so `griot ask` run through an agent's shell tool pairs with the same conversation's searches; in `griot golden-set review` the kinds of candidate take turns up to the limit, and a reworded candidate lets the person pick from the follow-up's results too; and subagents sharing one MCP server, and so one session, are a documented limit. The same round made the documents say what the code does, gave every command's `--help` the flags griot reads before its parser, made a timing test independent of the machine's load, and cut the README to a short front page (also the PyPI page) with the reference in guides under `docs/`. What it left open, debts 83 to 86, is resolved too (83 as a documented limit). The cycle of 2026-11-19 read about six weeks of real use (the call log, the agents' own transcripts, and the October questions replayed and judged blind in every search mode) and what it found is in the changelog; what it left open is debts 87 to 110, of which 104, 105 and 108 are resolved since, and 102 in part.
 
 Nothing else is queued; what comes next is chosen from the list below.
 
