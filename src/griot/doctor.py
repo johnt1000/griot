@@ -125,32 +125,45 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
-def _whole_sentence(head: str) -> str:
-    """The first line of a start-up warning ends on the lead-in to the command
-    ("Rename it:", "Move it (griot never moves it on its own):"). Doctor
-    prints the command as the fix, so the lead-in goes and what it carried
-    stays as a sentence."""
-    head = re.sub(r" Rename it:$", "", head)
-    return re.sub(r" Move it \(([^)]*)\):$", lambda m: f" {m.group(1)[:1].upper()}{m.group(1)[1:]}.", head)
+def _from_ledger(name: str, found: list, detail_before: str = "") -> dict:
+    """A row made of ledger conditions (notices.py): their severity, their
+    sentences as the detail and their actions as the fix, in the words
+    `griot stats` lists them with."""
+    severity = FAIL if any(n.severity == FAIL for n in found) else WARN if any(
+        n.severity == WARN for n in found) else OK
+    # Actions one per line, never "; "-joined: a fix that ends in a shell
+    # comment would swallow every command pasted after it on the same line.
+    return _check(name, severity, detail_before + "; ".join(n.sentence for n in found),
+                  "\n".join(n.action for n in found))
 
 
-def check_old_settings(common) -> dict:
+def _looked(looked: set | None, kind: str) -> None:
+    """Says that a check read the state a kind of condition comes from, so
+    that what it did not find of that kind can be dropped from the ledger.
+    A check that stops before reading it must not say so: notices.record()
+    keeps a kind nobody looked at."""
+    if looked is not None:
+        looked.add(kind)
+
+
+def check_old_settings(common, found: list | None = None, looked: set | None = None) -> dict:
     """Variables renamed and files moved by an earlier release, still there
-    and ignored. The same sentences griot prints once when it starts
-    (common.legacy_env_findings / legacy_layout_findings: one source); the
-    doctor lists them every time, the start-up warning only when the set
-    changes."""
-    findings = common.legacy_env_findings() + common.legacy_layout_findings()
-    if not findings:
+    and ignored: the ledger's legacy_env and legacy_layout conditions, listed
+    every time (the CLI only counts them in its footer, when they change).
+    What is found is added to `found`, the conditions this report lists, and
+    the kinds looked at to `looked`."""
+    from griot import notices
+
+    legacy = notices.legacy(common)
+    _looked(looked, notices.LEGACY_ENV)
+    _looked(looked, notices.LEGACY_LAYOUT)
+    if found is not None:
+        found.extend(legacy)
+    if not legacy:
         return _check("old settings", OK, "no renamed variable is set and no file is left in the old layout")
-    # A sentence is "Warning: <what>.<how>:\n  <command>": the fix is the
-    # command(s), the detail is the rest.
-    details, fixes = [], []
-    for _, sentence in findings:
-        head, _, command = sentence.removeprefix("Warning: ").partition("\n  ")
-        details.append(_whole_sentence(head))
-        fixes.append(command)
-    return _check("old settings", WARN, " ".join(details), "; ".join(fixes))
+    # Sentences end with their own period here: joined with a space.
+    row = _from_ledger("old settings", legacy)
+    return {**row, "detail": " ".join(n.sentence for n in legacy)}
 
 
 def _open_entries(data_dir: Path) -> list[str]:
@@ -264,13 +277,44 @@ def check_credentials(common) -> dict:
     return _check("credentials", WARN if fixes else OK, "; ".join(details), "; ".join(fixes) or None)
 
 
-def check_index(common) -> dict:
+def _with_condition(row: dict, notice) -> dict:
+    """`row` with a ledger condition added: its sentence after the row's
+    detail, its action after the row's fix, and the worse severity."""
+    if notice is None:
+        return row
+    rank = {OK: 0, WARN: 1, FAIL: 2}
+    status = max(row["status"], notice.severity, key=lambda s: rank.get(s, 0))
+    return _check(row["check"], status, f"{row['detail']}; {notice.sentence}",
+                  "\n".join(part for part in (row["fix"], notice.action) if part))
+
+
+def check_index(common, found: list | None = None, looked: set | None = None) -> dict:
     status = common.get_index_status(reuse_active_handle=False)
     error = status.get("points_error")
     last = status.get("last_indexed") or {}
     if error and str(error).startswith("unreadable"):
+        # The keyword kind is not looked at: a collection that cannot be read
+        # is the one thing to fix, and a stored keyword fact stays.
         return _check("index", FAIL, f"the collection could not be read: {str(error)[len('unreadable: '):]}", None)
-    from griot import stats
+    from griot import notices, stats
+
+    # Read from the collection's own config file, so it is known while
+    # another process holds the collection, while it is empty and after a
+    # run that died: listed in every row below, as `griot stats` lists it,
+    # so the one fact is on both reports in every state. None (the config
+    # could not be read) is "cannot say": the kind is not looked at.
+    keyword = None
+    if status.get("keyword_search") is not None:
+        _looked(looked, notices.KEYWORD_VECTORS_MISSING)
+    if status.get("keyword_search") is False:
+        # A warning (the ledger's severity), not an OK with a hint inside it:
+        # every search still answers, but by meaning only, and an agent told
+        # to use mode=keyword for hashes and names is refused. The exit status
+        # stays 0 (only FAIL turns it red). The sentence is the one `griot
+        # stats` shows; the command is said once, as the fix.
+        keyword = notices.keyword_vectors_missing(status.get("collection") or common.COLLECTION_NAME)
+        if found is not None:
+            found.append(keyword)
 
     # A refusal the repositories check names (with the repositories, which
     # this line cannot) is said there only: the same failure said twice.
@@ -278,32 +322,27 @@ def check_index(common) -> dict:
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say).
         what = "did not finish" if last.get("indexed") is None else "failed"
-        return _check("index", WARN, f"the last indexing run {what}: {last['error']}",
-                      "griot index all   # and read what it says")
+        return _with_condition(_check("index", WARN, f"the last indexing run {what}: {last['error']}",
+                                      "griot index all   # and read what it says"), keyword)
     if error:
-        return _check("index", OK, "the collection is held by another process (a running server or index run): "
-                                   "count not read")
+        return _with_condition(_check("index", OK, "the collection is held by another process (a running server "
+                                                   "or index run): count not read"), keyword)
     count = status.get("points_count") or 0
     if not count:
-        return _check("index", WARN, "nothing indexed yet in this profile's collection", "griot index all")
+        return _with_condition(_check("index", WARN, "nothing indexed yet in this profile's collection",
+                                      "griot index all"), keyword)
     # A last run that failed (a refusal said by the repositories check)
     # wrote nothing: it was an attempt, as `griot stats` says it.
     wrote = "last indexing attempt" if last.get("error") else "last indexed"
     detail = f"{count} points in {status.get('collection')}" + (
         f", {wrote} {last.get('timestamp')}" if last.get("timestamp") else "")
-    if status.get("keyword_search") is False:
-        # A warning, not an OK with a hint inside it: every search still
-        # answers, but by meaning only, and an agent told to use mode=keyword
-        # for hashes and names is refused. The exit status stays 0 (only FAIL
-        # turns it red); the sentence is the one `griot stats` shows.
-        return _check("index", WARN, detail + "; " + common.keyword_search_missing_sentence(status.get("collection")
-                                                                                         or common.COLLECTION_NAME),
-                      common.KEYWORD_BUILD_COMMAND + "   # local, embeds nothing")
+    if keyword is not None:
+        return _from_ledger("index", [keyword], detail + "; ")
     return _check("index", OK, detail)
 
 
-def check_repositories(common) -> dict:
-    from griot import freshness
+def check_repositories(common, found: list | None = None, looked: set | None = None) -> dict:
+    from griot import freshness, notices
 
     try:
         paths = common.load_repos()
@@ -314,6 +353,7 @@ def check_repositories(common) -> dict:
         # (detail) and the command (fix): the two parts of it, word for word.
         return _check("repositories", FAIL, common.repos_unreadable_detail(e), common.REGISTER_COMMAND)
     if not paths:
+        _looked(looked, notices.BEHIND)  # nothing registered: nothing can be behind
         return _check("repositories", WARN, "no repository registered: nothing to index",
                       common.REGISTER_COMMAND)
     gone = [p for p in paths if not Path(p).is_dir()]
@@ -322,9 +362,15 @@ def check_repositories(common) -> dict:
         return _check("repositories", FAIL, f"{repos.GONE}: " + ", ".join(gone),
                       "; ".join(repos.remove_command(p) for p in gone))
     reports = freshness.repository_freshness()
-    behind = [r for r in reports if r.get("behind")]
-    without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]
+    _looked(looked, notices.BEHIND)
     from griot import stats
+
+    # The ledger's behind conditions, the most behind first, worded as
+    # `griot stats` and the griot_search note word them.
+    behind = stats.ledger({"repositories": reports}, None)
+    if found is not None:
+        found.extend(behind)
+    without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]
     refused = stats.platform_refused_names(reports)
     not_found = stats.platform_not_found_names(reports)
     mixed = stats.platform_mixed_refusals(reports)
@@ -338,8 +384,7 @@ def check_repositories(common) -> dict:
                      if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
     if behind or without_code or refused:
         parts = []
-        if behind:
-            parts.append("index behind in " + ", ".join(stats.behind_phrase(r) for r in behind))
+        parts.extend(n.sentence for n in behind)
         if without_code:
             parts.append("code never indexed in " + ", ".join(without_code))
         if token_refused:
@@ -351,8 +396,12 @@ def check_repositories(common) -> dict:
         other_reasons = stats.platform_other_reasons_of(reports)
         parts.extend(stats.platform_mixed_phrase(name, causes, other_reasons.get(name)) for name, causes in mixed)
         # A refusal is fixed first: indexing again before that is refused
-        # again.
-        fix = "griot index all   # or one with --repo <name>"
+        # again. One repository behind (and nothing else to index: no code
+        # never indexed, no refused repository to index once its token or
+        # remote is fixed) is indexed alone, with its own command; anything
+        # more, all of them.
+        fix = (behind[0].action if len(behind) == 1 and not without_code and not refused
+               else notices.INDEX_ALL)
         checks = (["the platform's token"] if token_refused or any("token" in c for _, c in mixed) else []) + (
             ["the project path in each remote and that the token can see it"]
             if not_found or any("not_found" in c for _, c in mixed) else [])
@@ -365,6 +414,26 @@ def check_repositories(common) -> dict:
         return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix)
     return _check("repositories", OK, f"{len(paths)} registered, all present"
                                        + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
+
+
+def check_quality(common, now=None, found: list | None = None, looked: set | None = None) -> dict:
+    """Whether the last quality check describes the index as it is: the
+    ledger's quality_older_than_index, `ok` with a note (nothing is broken,
+    and a check costs money on a paid profile), in the words `griot stats`
+    lists it with. Reads the log only."""
+    from griot import notices, stats
+
+    state = stats.load_state()
+    _looked(looked, notices.QUALITY_OLDER_THAN_INDEX)
+    checked_at = (state.get("last_quality_check") or {}).get("timestamp")
+    older = notices.quality_older_than_index(checked_at, state.get("last_index_change_at"), now)
+    if older is not None:
+        if found is not None:
+            found.append(older)
+        return _from_ledger("quality", [older])
+    if checked_at is None:
+        return _check("quality", OK, "no quality check recorded for this collection")
+    return _check("quality", OK, "the last quality check is newer than the last index change")
 
 
 def check_spend(common) -> dict:
@@ -652,10 +721,12 @@ def check_release(common) -> dict:
     return _check(RELEASE, OK, f"{installed}, the newest release on PyPI")
 
 
-def run_checks(*, home: Path | None = None) -> list[dict]:
+def run_checks(*, home: Path | None = None, found: list | None = None, looked: set | None = None) -> list[dict]:
     """Every check, in the order a person reads them. The configuration is
     loaded here, not before: a file griot cannot start with is the first
-    thing to report, and then only the checks that need nothing of it run."""
+    thing to report, and then only the checks that need nothing of it run.
+    The ledger's conditions the checks list are added to `found`, and the
+    kinds of condition they read the state of to `looked`."""
     env_path = _env_path_without_the_configuration()
     mode_before = stat.S_IMODE(env_path.stat().st_mode) if env_path.exists() else None
     try:
@@ -665,17 +736,18 @@ def run_checks(*, home: Path | None = None) -> list[dict]:
         checks.append(check_git())  # without the configuration: found or not
         skipped = "skipped: the configuration did not load"
         checks.extend(_check(name, SKIP, skipped) for name in
-                      ("old settings", "directories", "profile", "credentials", "index", "repositories", "spend", "mcp registration",
-                       "tool approval", "server environment", "log", RELEASE))
+                      ("old settings", "directories", "profile", "credentials", "index", "repositories", "quality",
+                       "spend", "mcp registration", "tool approval", "server environment", "log", RELEASE))
         return checks
     checks = [
         ("settings", lambda: check_settings(common.ENV_PATH, None, mode_before)),
-        ("old settings", lambda: check_old_settings(common)),
+        ("old settings", lambda: check_old_settings(common, found=found, looked=looked)),
         ("directories", lambda: check_directories(common)),
         ("profile", lambda: check_profile(common)),
         ("credentials", lambda: check_credentials(common)),
-        ("index", lambda: check_index(common)),
-        ("repositories", lambda: check_repositories(common)),
+        ("index", lambda: check_index(common, found=found, looked=looked)),
+        ("repositories", lambda: check_repositories(common, found=found, looked=looked)),
+        ("quality", lambda: check_quality(common, found=found, looked=looked)),
         ("spend", lambda: check_spend(common)),
         ("mcp registration", check_mcp_registration),
         ("tool approval", lambda: check_tool_approval(home)),
@@ -706,7 +778,8 @@ def format_report(checks: list[dict]) -> str:
     for check in checks:
         lines.append(f"{check['status']:<5} {check['check']:<19} {check['detail']}")
         if check.get("fix"):
-            lines.append(f"{'':<5} {'':<19} → {check['fix']}")
+            # One arrow per command, so each can be pasted on its own.
+            lines.extend(f"{'':<5} {'':<19} → {command}" for command in check["fix"].splitlines() if command)
     failures = sum(check["status"] == FAIL for check in checks)
     warnings = sum(check["status"] == WARN for check in checks)
     lines.append("")
@@ -725,8 +798,21 @@ def main(argv=None) -> int:
     show_flags_read_by_griot(parser, PROFILE_FLAG)
     parser.add_argument("--json", action="store_true", help="One JSON document instead of the report")
     args = parser.parse_args(argv)
-    checks = run_checks()
+    found, looked = [], set()
+    checks = run_checks(found=found, looked=looked)
     print(json.dumps(checks, indent=2) if args.json else format_report(checks))
+    if "griot.common" in sys.modules:
+        # What was looked at was listed: the CLI footer has nothing to add
+        # about it until it changes. Only when the configuration loaded (the
+        # ledger lives in its data directory), and only when every check that
+        # reads a condition ran: one that failed could not say what is gone.
+        # A kind a check stopped before reading (a busy collection, an
+        # unreadable repos.json) is not in `looked`, so it stays stored.
+        from griot import notices
+
+        if not any(c["check"] in ("old settings", "index", "repositories", "quality") and
+                   c["detail"].startswith("the check itself failed") for c in checks):
+            notices.listed(found, looked)
     return exit_status(checks)
 
 

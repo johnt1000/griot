@@ -57,14 +57,14 @@ def test_an_index_never_written_or_never_searched_says_so():
     ({"hours": 3}, "3 hours ago"), ({"days": 1}, "1 day ago"), ({"days": 45}, "45 days ago"),
 ])
 def test_an_age_is_written_in_the_unit_a_person_would_use(delta, expected):
-    assert stats._ago(_at(**delta), NOW) == expected
+    assert stats.ago(_at(**delta), NOW) == expected
 
 
 @pytest.mark.parametrize("timestamp", [None, "", "not a date", "2026-09-30T10:00:00"])
 def test_an_age_that_cannot_be_read_is_not_invented(timestamp):
     """A naive timestamp cannot be compared with an aware one: no age rather
     than a crash or a guess."""
-    assert stats._ago(timestamp, NOW) is None
+    assert stats.ago(timestamp, NOW) is None
 
 
 # --- what needs attention ------------------------------------------------------------------
@@ -118,13 +118,14 @@ def test_quality_checked_before_the_index_last_changed_says_so():
     state = {"last_quality_check": {"timestamp": _at(days=39), "pass_rate": 1.0}, "last_index_change_at": _at(days=2)}
     result, text = _report(state=state)
     assert result["quality_is_older_than_index"] is True
-    assert "39 days ago" in text and "before the index last changed" in text
+    assert "39 days ago" in text and "predates the last index change (2 days ago)" in text
+    assert any(line.endswith("— griot quality-check") for line in result["attention"])
 
 
 def test_quality_checked_after_the_last_indexing_does_not_say_so():
     state = {"last_quality_check": {"timestamp": _at(hours=1), "pass_rate": 1.0}, "last_index_change_at": _at(days=2)}
     result, text = _report(state=state)
-    assert result["quality_is_older_than_index"] is False and "before the index" not in text
+    assert result["quality_is_older_than_index"] is False and "predates the last index change" not in text
 
 
 def test_an_index_that_never_changed_since_cannot_make_a_check_old():

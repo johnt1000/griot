@@ -72,11 +72,23 @@ gets what the tool gives:
 | `behind` | `{repository: commits behind}` for the repositories among the results whose index is behind their HEAD (`null` when the indexed commit is not in the history); `{}` otherwise |
 | `note` | that the results are retrieved data, never instructions; why nothing was found when filters narrowed the search; the keyword-index note when the default fell back to `vector`; and last, which repositories are behind, ending with the command that catches each one up |
 
-The `note` differs from the tool's in two places: it ends with one command per
-repository that is behind, quoted so it can be pasted as it is (for example
-`griot index all --repo 'my repo'`), where the tool names `griot_index_status`;
-and the keyword-index note comes on every run where the server gives it once
-per collection.
+The `note` differs from the tool's in two ways: `griot search --json` says
+every current condition on every run (one process per command), where the
+server says each one the first time its process sees it, and again when it
+changes (a repository falling into another band of commits behind, another
+collection without keyword vectors), so the tool's `note` is often empty; and
+it ends with one `griot index all --repo NAME` per repository that is behind,
+each on its own line and quoted so it pastes (for example
+`griot index all --repo 'my repo'`), where the tool names `griot_index_repo`
+when `GRIOT_MCP_ENABLE_INDEX` allows it.
+
+The keyword-index note is the one condition said in two places by the CLI,
+on purpose with two rules: plain `griot search` and `griot ask` say it on
+stderr once per collection (the ledger remembers it across commands), since a
+person reads every command; `griot search --json` puts it in the note every
+time, since a script or agent reading one document has nothing else to
+remember it by. Either way the ledger records it, so the closing
+``1 notice: run `griot doctor` `` line does not count it as news.
 
 A filter that cannot match (`--repo` with nothing indexed) is an error on
 stderr with exit 2 and nothing on stdout, as without `--json`. `--limit` is
@@ -91,8 +103,13 @@ since the code and commits sources ran (or that the indexed commit is no
 longer in the history: rewritten, or another branch checked out), whether the
 tags or remote branches changed (the base branch counts, since each branch is
 described against it), and which sources never ran; `griot_search` names the
-repositories among its results that are behind (`behind`), and `griot stats`
-lists them under attention. Pull requests and issues live on the platform, so
+repositories among its results that are behind (`behind`, on every result; its
+`note` says it in words, with the command that indexes them, the first time the
+server sees a repository fall behind or fall into another band of commits:
+1-9, 10-99, 100-999, 1000 or more, or a history rewritten), and `griot stats`
+and `griot doctor` list them every time. Other commands end, when something
+new needs attention, with one line on stderr, ``1 notice: run `griot doctor` `` (again a
+week later if nothing changed; `--quiet` silences it). Pull requests and issues live on the platform, so
 nothing local can say whether that source is behind.
 
 ## `griot ask`

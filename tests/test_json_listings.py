@@ -18,11 +18,14 @@ from mcp.client.client import Client
 
 import griot
 
-from griot import cli, common, doctor, golden_set, harnesses, mcp_server, repos, search_result, stats
+from griot import cli, common, doctor, golden_set, harnesses, mcp_server, notices, repos, search_result, stats
 
 OLD_VARIABLE = "RAG_EMBED_PROFILE"
-WARNING_ACTIVE = {OLD_VARIABLE: "jina-code"}  # common warns about it on stderr at import
-WARNING = f"Warning: {OLD_VARIABLE} was renamed"
+# A renamed variable still set: the command ends with the notices footer on
+# stderr (notices.py), the one notice line a command prints, so --json is
+# read here with a notice active.
+WARNING_ACTIVE = {OLD_VARIABLE: "jina-code"}
+WARNING = notices.footer_text(1)
 
 
 def _run(tmp_path, *args, extra_env=None):
@@ -411,8 +414,10 @@ async def test_search_json_and_griot_search_give_the_same_fields_for_the_same_hi
     for entry in cli_doc["results"]:
         assert {"source_label", "repo", "source_type", "metadata", "content", "score"} <= set(entry)
     assert cli_doc["results"] == mcp_doc["results"]
-    assert cli_doc["note"] == mcp_doc["note"]
-    assert cli_doc["note"].startswith(search_result.SEARCH_RESULT_NOTE)
+    # The same note only here: the server's first call in its process, with
+    # nothing behind. Later calls leave out what the server already said, and
+    # a behind note ends with each surface's own action.
+    assert cli_doc["note"] == mcp_doc["note"] == search_result.SEARCH_RESULT_NOTE
 
 
 def test_search_json_with_nothing_found_is_an_empty_array_and_the_reason_in_the_note(tmp_path, indexed):
@@ -439,12 +444,28 @@ def test_search_json_prints_only_the_document_in_process(indexed, capsys):
     json.loads(out)
 
 
+def _note(**kw):
+    """search_result.note() as the CLI calls it, with what a test changes."""
+    args = {"reports": [], "repos": None, "source_types": None, "results": [1], "keyword_notice": None,
+            "asked_mode": None, "behind_next": search_result.terminal_commands,
+            "keyword_next": search_result.terminal_command}
+    return search_result.note(**{**args, **kw})
+
+
+def _behind_report(repo, commits):
+    return {"repo": repo, "path": f"/Users/you/{repo}", "behind": True, "commits_behind": commits,
+            "behind_sources": ["code"]}
+
+
 def test_the_note_is_built_in_one_place():
-    note = search_result.note(behind={}, repos=["a"], source_types=None, results=[], keyword_note="K.",
-                              behind_next="griot_index_status")
-    assert note.startswith(search_result.SEARCH_RESULT_NOTE)
-    assert note.endswith(" K.")
-    assert "The search was narrowed to" in note
+    keyword = notices.keyword_vectors_missing("c")
+    note = _note(repos=["a"], results=[], keyword_notice=keyword)
+    lines = note.splitlines()
+    assert lines[0] == search_result.SEARCH_RESULT_NOTE
+    assert "The search was narrowed to" in lines[1]
+    # The ledger's sentence (debt 88: one wording), its command last on its line.
+    assert lines[2] == notices.keyword_fallback_text(keyword)
+    assert lines[3] == "  griot index keywords"
     assert mcp_server.SEARCH_RESULT_NOTE == search_result.SEARCH_RESULT_NOTE
 
 
@@ -649,12 +670,13 @@ def test_profiles_list_text_ends_with_the_switch_when_every_credential_is_set(mo
 
 
 def test_search_json_names_the_command_that_catches_up_a_repository(indexed, monkeypatch, capsys):
-    monkeypatch.setattr(search_result.freshness, "behind_among", lambda names: {"alpha": 3})
+    monkeypatch.setattr(search_result.freshness, "reports_among", lambda names: [_behind_report("alpha", 3)])
     assert cli.main(["search", "retries", "--json", "--mode", "keyword"]) == 0
 
     doc = json.loads(capsys.readouterr().out)
-    assert "alpha (3 commits)" in doc["note"]
-    assert "`griot index all --repo alpha`" in doc["note"]
+    assert doc["behind"] == {"alpha": 3}
+    assert "The index of alpha is behind it (3 commits): what changed since is not in these results." in doc["note"]
+    assert doc["note"].splitlines()[-1] == "  griot index all --repo alpha"
 
 
 # --- third round: every reader of the golden set, a catch-up command that names the repository -------------
@@ -793,13 +815,16 @@ def test_a_case_the_quality_check_names_is_one_golden_set_remove_can_remove(case
     assert golden_set.remove_case(2)["must_include"] == case["must_include"]
 
 
+def _catch_up(*names):
+    return search_result.catch_up_commands([notices.behind(_behind_report(name, 1)) for name in names])
+
+
 def test_the_catch_up_command_names_each_repository_quoted():
-    catch_up = search_result.catch_up_commands
-    assert catch_up({"real": 1}) == "`griot index all --repo real`"
-    assert catch_up({"real": 1, "vanished dir": None}) == (
-        "`griot index all --repo real`, `griot index all --repo 'vanished dir'`")
+    assert _catch_up("real") == ["griot index all --repo real"]
+    assert _catch_up("real", "vanished dir") == ["griot index all --repo real",
+                                                 "griot index all --repo 'vanished dir'"]
     # A name argparse would read as a flag is glued to its option.
-    assert catch_up({"-x": 2}) == "`griot index all --repo=-x`"
+    assert _catch_up("-x") == ["griot index all --repo=-x"]
 
 
 def test_suggest_stops_with_the_one_sentence_when_the_file_changes_under_it(tmp_path, monkeypatch, capsys):
@@ -824,42 +849,79 @@ def test_suggest_stops_with_the_one_sentence_when_the_file_changes_under_it(tmp_
 
 
 def test_a_name_that_cannot_be_pasted_gets_no_command():
-    assert search_result.catch_up_commands({"bad\nname": 1}) == "`griot index all`"
-    assert search_result.catch_up_commands({"bad\nname": 1, "real": 2}) == "`griot index all --repo real`"
+    assert _catch_up("bad\nname") == ["griot index all"]
+    assert _catch_up("bad\nname", "real") == ["griot index all --repo real"]
 
 
 def test_a_catch_up_command_pastes_as_the_repository_it_names():
     import shlex
-    command = search_result.catch_up_commands({"vanished dir": 3}).strip("`")
+    [command] = _catch_up("vanished dir")
     assert shlex.split(command) == ["griot", "index", "all", "--repo", "vanished dir"]
 
 
 def test_the_behind_sentence_is_last_and_counts_one_commit():
-    note = search_result.note(behind={"real": 1, "other": 2}, repos=None, source_types=None, results=[1],
-                              keyword_note="K.", behind_next=search_result.catch_up_commands)
+    note = _note(reports=[_behind_report("real", 1), _behind_report("other", 2)],
+                 keyword_notice=notices.keyword_vectors_missing("c"))
+    lines = note.splitlines()
 
-    assert "real (1 commit)," in note and "other (2 commits)" in note
-    assert note.index(" K.") < note.index("is behind their HEAD")
-    assert note.endswith("(see `behind`, and `griot index all --repo real`, `griot index all --repo other`).")
+    assert ("The index of real is behind it (1 commit); the index of other is behind it (2 commits): "
+            "what changed since is not in these results.") in lines
+    assert note.index("griot index keywords") < note.index("is behind it")
+    # One command per repository, each on its own line, last.
+    assert lines[-2:] == ["  griot index all --repo real", "  griot index all --repo other"]
+
+
+def test_a_repository_behind_only_by_its_tags_is_not_zero_commits():
+    report = {**_behind_report("alpha", 0), "behind_sources": ["tags"]}
+    note = _note(reports=[report])
+
+    assert "The index of alpha is behind it (tags changed)" in note and "0 commits" not in note
 
 
 def test_search_json_ends_its_note_with_the_command_that_catches_up_the_repository(indexed, monkeypatch, capsys):
-    monkeypatch.setattr(search_result.freshness, "behind_among", lambda names: {"vanished dir": 1})
+    monkeypatch.setattr(search_result.freshness, "reports_among", lambda names: [_behind_report("vanished dir", 1)])
     assert cli.main(["search", "retries", "--json", "--mode", "keyword"]) == 0
 
     doc = json.loads(capsys.readouterr().out)
-    assert "vanished dir (1 commit)" in doc["note"]
-    assert doc["note"].endswith("(see `behind`, and `griot index all --repo 'vanished dir'`).")
+    assert "The index of vanished dir is behind it (1 commit)" in doc["note"]
+    assert doc["note"].splitlines()[-1] == "  griot index all --repo 'vanished dir'"
     assert "<name>" not in doc["note"]
 
 
+def test_search_json_says_every_condition_on_every_run(indexed, monkeypatch, capsys):
+    """One process per command keeps no memory: what the server says once,
+    the CLI says each time."""
+    monkeypatch.setattr(search_result.freshness, "reports_among", lambda names: [_behind_report("alpha", 3)])
+    notes = []
+    for _ in range(2):
+        assert cli.main(["search", "retries", "--json", "--mode", "keyword"]) == 0
+        notes.append(json.loads(capsys.readouterr().out)["note"])
+
+    assert notes[0] == notes[1]
+    assert notes[0].startswith(search_result.SEARCH_RESULT_NOTE) and "behind it" in notes[0]
+
+
 @pytest.mark.anyio
-async def test_griot_search_ends_its_note_with_the_tool_that_says_more(indexed, monkeypatch):
-    monkeypatch.setattr(search_result.freshness, "behind_among", lambda names: {"alpha": 1})
+async def test_griot_search_ends_its_note_with_the_command_for_a_terminal(indexed, monkeypatch):
+    monkeypatch.setattr(search_result.freshness, "reports_among", lambda names: [_behind_report("alpha", 1)])
 
     result = await _tool("griot_search", {"query": "retries", "mode": "keyword", "limit": 5})
     common.release_client()
 
     note = result.structured_content["note"]
-    assert "alpha (1 commit)" in note
-    assert note.endswith("(see `behind`, and griot_index_status).")
+    assert "The index of alpha is behind it (1 commit)" in note
+    assert note.splitlines()[-1] == "In a terminal: griot index all --repo alpha"
+
+
+@pytest.mark.anyio
+async def test_griot_search_gives_one_command_per_repository_never_index_all(indexed, monkeypatch):
+    """`griot index all` re-indexes every registered repository: more than
+    the ones named, and on a paid profile it spends for them."""
+    monkeypatch.setattr(search_result.freshness, "reports_among",
+                        lambda names: [_behind_report("alpha", 1), _behind_report("my repo", 2)])
+
+    result = await _tool("griot_search", {"query": "retries", "mode": "keyword", "limit": 5})
+    common.release_client()
+
+    lines = result.structured_content["note"].splitlines()
+    assert lines[-3:] == ["In a terminal:", "  griot index all --repo alpha", "  griot index all --repo 'my repo'"]

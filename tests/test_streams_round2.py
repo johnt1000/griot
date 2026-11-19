@@ -2,6 +2,7 @@
 log_and_print says, the private mode of the state file, and the notices that
 still went to stdout."""
 import io
+import json
 import os
 import subprocess
 
@@ -49,7 +50,9 @@ def test_suggest_carries_it_under_quiet_and_with_the_mcp_echo_stream(empty_repo,
 # --- the state file is private, and doctor stays quiet about it ----------------------------------------------
 
 def test_the_announced_state_file_is_private():
-    common.announce_once("probe", "one", ["Warning: a thing"])
+    from griot import notices
+
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing("c")])
 
     path = common.DATA_DIR / "announced.json"
     assert path.exists()
@@ -57,12 +60,14 @@ def test_the_announced_state_file_is_private():
 
 
 def test_a_file_that_was_open_is_closed_when_the_state_changes():
+    from griot import notices
+
     path = common.DATA_DIR / "announced.json"
     common.secure_mkdir(path.parent)
     path.write_text("{}")
     path.chmod(0o644)
 
-    common.announce_once("probe", "one", ["Warning: a thing"])
+    notices.record({notices.KEYWORD_VECTORS_MISSING}, [notices.keyword_vectors_missing("c")])
 
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
@@ -112,30 +117,36 @@ def test_a_dash_q_after_the_double_dash_is_data_not_the_flag(tmp_path):
 
 def test_doctor_directories_stays_ok_after_a_real_run_announced_the_old_variable(tmp_path):
     from test_streams_and_quiet import _run
-    first = _run(tmp_path, "stats", "--json", extra_env={"RAG_EMBED_PROFILE": "jina-code"})
-    assert "was renamed" in first.stderr
+    env = {"RAG_EMBED_PROFILE": "jina-code"}
+    first = _run(tmp_path, "repos", "list", extra_env=env)
+    assert "1 notice: run `griot doctor`" in first.stderr  # the ledger file was written
 
-    done = _run(tmp_path, "doctor", "--json", extra_env={"RAG_EMBED_PROFILE": "jina-code"})
+    done = _run(tmp_path, "doctor", "--json", extra_env=env)
 
-    import json
     checks = {c["check"]: c for c in json.loads(done.stdout)}
-    assert checks["directories"]["status"] == "ok", checks["directories"]
+    # About the ledger file this griot wrote. Not the whole status: doctor
+    # asks the harnesses on this machine which server they registered, which
+    # can start that server (whatever griot it is) with this test's data
+    # directory, and the log it creates there is not this griot's to answer
+    # for. The run before used to create that log first, privately, by
+    # printing the start-up warning the footer replaced.
+    assert "announced.json" not in checks["directories"]["detail"], checks["directories"]
+    assert oct((tmp_path / "data" / "griot" / "announced.json").stat().st_mode & 0o777) == "0o600"
 
 
-@pytest.mark.parametrize("sentence", [
-    "Warning: RAG_EMBED_PROFILE was renamed and griot ignores it. Rename it:\n  export GRIOT_EMBED_PROFILE=\"$RAG_EMBED_PROFILE\"",
-    "Warning: /Users/you/old/repos.json is in the old layout and griot ignores it. Move it "
-    "(griot never moves it on its own):\n  mv /Users/you/old/repos.json /Users/you/.config/griot/repos.json",
+@pytest.mark.parametrize("env, layout", [
+    ([("RAG_EMBED_PROFILE", "GRIOT_EMBED_PROFILE")], []),
+    ([], [("/Users/you/old/repos.json", "/Users/you/.config/griot/repos.json")]),
 ])
-def test_the_doctor_detail_is_a_whole_sentence_without_a_dangling_colon(monkeypatch, sentence):
+def test_the_doctor_detail_is_a_whole_sentence_without_a_dangling_colon(monkeypatch, env, layout):
     from griot import doctor
-    monkeypatch.setattr(common, "legacy_env_findings", lambda: [("x", sentence)])
-    monkeypatch.setattr(common, "legacy_layout_findings", lambda: [])
+    monkeypatch.setattr(common, "legacy_env_findings", lambda: env)
+    monkeypatch.setattr(common, "legacy_layout_findings", lambda: layout)
 
     check = doctor.check_old_settings(common)
 
     assert not check["detail"].rstrip().endswith(":")
-    assert "Rename it" not in check["detail"] and "Move it" not in check["detail"]
+    assert "Warning" not in check["detail"]
     assert check["detail"].rstrip().endswith(".")
     assert check["fix"].startswith(("export ", "mv "))
 

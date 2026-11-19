@@ -473,13 +473,17 @@ def _cmd_search(args) -> int:
     if getattr(args, "json", False):
         # The griot_search document, built by the same function: an agent
         # reading this through a shell reads what the tool would have given
-        # it, note included (minus the server's once-per-collection keyword
-        # note: one process per command, so it is given every time, as the
-        # text below gives it).
+        # it, with one difference on purpose. One process per command keeps
+        # no memory, so every current condition is in every note (the server
+        # says each once per process), and each ends with commands to paste.
         from griot import search_result
         common.print_json(search_result.output(
-            results, mode=mode, repos=args.repo, source_types=args.source_type, keyword_note=note,
-            behind_next=search_result.catch_up_commands))
+            results, mode=mode, repos=args.repo, source_types=args.source_type, keyword_notice=note,
+            asked_mode=args.mode, behind_next=search_result.terminal_commands,
+            keyword_next=search_result.terminal_command))
+        # Said in the note already: not on stderr too, but recorded, so that
+        # the footer does not count it as news afterwards.
+        say_keyword_fallback(args.mode, note, said_in_result=True)
         return 0
     if not results:
         print("No results.")
@@ -500,11 +504,29 @@ def _cmd_search(args) -> int:
         if also_in:
             print(f"        same text in: {', '.join(common.shown(label) for label in also_in)}")
     # Which mode ran, always: the default is not always what runs (see
-    # common.search_mode_for), and scores are on that mode's own scale.
+    # common.search_mode_for), and scores are on that mode's own scale. It
+    # is part of the result; why it is not hybrid is a notice (stderr, once
+    # per collection, counted in the footer afterwards).
     print(f"Mode: {mode}")
-    if note:
-        print(note)
+    say_keyword_fallback(args.mode, note)
     return 0
+
+
+def say_keyword_fallback(asked_mode, notice, *, said_in_result: bool = False) -> None:
+    """What `griot search` and `griot ask` say when a default search fell
+    back to vector: the ledger's prose once per collection, on stderr. A
+    default search that ran as it should read the collection's state and
+    found nothing to say: that is recorded too, so the prose comes again if
+    the condition returns. An explicit mode read nothing and says nothing.
+    `said_in_result`: the result itself carried it (`--json`'s note), so it
+    is only recorded."""
+    from griot import notices
+
+    if notice is not None or asked_mode is None:
+        if said_in_result:
+            notices.said_in_result(notice, notices.KEYWORD_VECTORS_MISSING)
+        else:
+            notices.say_once(notice, notices.KEYWORD_VECTORS_MISSING, lead=notices.FELL_BACK)
 
 
 _TIER_MIN_GB = {"light": 8, "medium": 16, "heavy": 32}
@@ -1100,6 +1122,11 @@ def main(argv=None) -> int:
     status = None
     try:
         status = _main_with_errors_explained(argv)
+        if status == 0:
+            # After a failure the error's own command is the last line, and a
+            # host that reads the last lines of stderr as the reason (jobs.py)
+            # must find it there.
+            _end_with_notices()
         return status
     except SystemExit as e:
         status = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
@@ -1114,6 +1141,47 @@ def main(argv=None) -> int:
     finally:
         if "griot.common" in sys.modules:  # imported lazily: no run began without it
             sys.modules["griot.common"].progress_end(status)
+
+
+# The command this process ran (the first word left once griot's own flags
+# are taken out), for the footer. None until _main() knows it.
+_command: str | None = None
+
+# Commands that end without the footer: doctor and stats list every
+# condition themselves, and a server's stderr is a log nobody reads as the
+# end of a command.
+_NO_FOOTER = frozenset({"doctor", "stats", "mcp"})
+
+
+def _end_with_notices() -> None:
+    """The one notice line a command ends with (notices.footer()), on stderr,
+    after recording what this command can see for free: the renamed
+    variables and old files on every command, and after `griot index` what
+    an index run changes (which repositories are behind, whether the
+    collection has keyword vectors). A ledger that cannot be read or
+    written must never fail a command that succeeded."""
+    if _command is None or _command in _NO_FOOTER or "griot.common" not in sys.modules:
+        return
+    from griot import common, notices
+
+    try:
+        kinds, found = {notices.LEGACY_ENV, notices.LEGACY_LAYOUT}, notices.legacy(common)
+        if _command == "index":
+            from griot import freshness, stats
+
+            status = {"repositories": freshness.repository_freshness(),
+                      "keyword_search": common.keyword_search_status(common.COLLECTION_NAME)}
+            # A config that cannot be read leaves a stored keyword fact as it was.
+            kinds |= stats.kinds_looked_at(status, None)
+            found += stats.ledger(status, None)
+        notices.record(kinds, found)
+        line = notices.footer()
+    except Exception as e:  # whatever the ledger could not foresee: logged, never raised
+        common.log_and_print(f"Warning: the notices ledger could not be updated: {type(e).__name__}: {e}",
+                             level="warning", echo=False)
+        return
+    if line:
+        print(line, file=sys.stderr)
 
 
 def _main_with_errors_explained(argv=None) -> int:
@@ -1153,6 +1221,8 @@ def _main(argv=None) -> int:
     if chat_profile is not None:
         os.environ["GRIOT_CHAT_PROFILE"] = chat_profile
     argv, sources = _extract_sources_override(argv)
+    global _command
+    _command = argv[0] if argv and not argv[0].startswith("-") else None
 
     # [real finding] argparse.REMAINDER combined with
     # subparsers has a long-standing CPython bug (reproduced here on

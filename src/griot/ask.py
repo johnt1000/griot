@@ -3,7 +3,7 @@ import sys
 import time
 
 from griot import common
-from griot.cli import PROFILE_FLAG, at_least_one, chat_profile_flag, show_flags_read_by_griot
+from griot.cli import PROFILE_FLAG, at_least_one, chat_profile_flag, say_keyword_fallback, show_flags_read_by_griot
 
 DEFAULT_LIMIT = 5
 
@@ -122,9 +122,9 @@ def main(argv=None):
             print(reason)
     else:
         print(answer)
-    if note:
-        # stderr: the answer on stdout stays the answer alone.
-        print(note, file=sys.stderr)
+    # stderr, once per collection, as `griot search` says it: the answer on
+    # stdout stays the answer alone.
+    say_keyword_fallback(args.mode, note)
 
     if args.show_sources:
         print("\n--- sources ---")

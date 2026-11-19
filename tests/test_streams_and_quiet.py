@@ -18,7 +18,10 @@ import pytest
 from griot import common, cli, platforms, repos
 
 OLD_VARIABLE = "RAG_EMBED_PROFILE"
-OLD_SENTENCE = f'Warning: {OLD_VARIABLE} was renamed and griot ignores it. Rename it:\n  export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
+# What the CLI says of a renamed variable since the notices ledger: one footer
+# line, the sentence itself being listed by `griot doctor` and `griot stats`.
+FOOTER = "1 notice: run `griot doctor`"
+OLD_LINE = f'{OLD_VARIABLE} was renamed and griot ignores it — export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
 
 
 def _run(tmp_path, *args, extra_env=None, stdin=subprocess.DEVNULL):
@@ -41,8 +44,9 @@ def test_a_warning_does_not_enter_the_json_of_stats(tmp_path):
     done = _run(tmp_path, "stats", "--json", extra_env=WARNING_ACTIVE)
 
     assert done.returncode == 0, done.stderr
-    json.loads(done.stdout)  # valid: nothing else is in it
-    assert OLD_SENTENCE in done.stderr
+    report = json.loads(done.stdout)  # valid: nothing else is in it
+    assert OLD_LINE in report["attention"]  # listed by the report, not printed beside it
+    assert FOOTER not in done.stderr
 
 
 @pytest.mark.parametrize("argv", [["repos", "list"], ["auth", "list"], ["profiles", "list"]])
@@ -52,7 +56,8 @@ def test_a_warning_stays_out_of_the_result_of_other_commands(tmp_path, argv):
     assert done.returncode == 0, done.stderr
     assert "Warning" not in done.stdout and "renamed" not in done.stdout
     assert done.stdout.strip(), "the result is still printed"
-    assert OLD_SENTENCE in done.stderr
+    assert "notice" not in done.stdout
+    assert done.stderr.rstrip().splitlines()[-1] == FOOTER
 
 
 def test_log_and_print_writes_to_stderr_looked_up_at_the_call(capsys):
@@ -132,12 +137,15 @@ def test_quiet_silences_notices_but_not_a_failure_report(capsys, monkeypatch):
 def test_quiet_says_nothing_and_remembers_nothing(tmp_path, capsys, monkeypatch):
     """Silenced is not said: when the person stops being quiet the warning
     still has to come."""
-    monkeypatch.setenv("GRIOT_QUIET", "1")
-    common.announce_once("kind", "state", ["Warning: a"])
-    monkeypatch.delenv("GRIOT_QUIET")
-    common.announce_once("kind", "state", ["Warning: a"])
+    from griot import notices
 
-    assert capsys.readouterr().err == "Warning: a\n"
+    condition = notices.keyword_vectors_missing("c")
+    monkeypatch.setenv("GRIOT_QUIET", "1")
+    notices.say_once(condition, notices.KEYWORD_VECTORS_MISSING)
+    monkeypatch.delenv("GRIOT_QUIET")
+    notices.say_once(condition, notices.KEYWORD_VECTORS_MISSING)
+
+    assert capsys.readouterr().err == notices.prose(condition) + "\n"
 
 
 @pytest.mark.parametrize("argv", [["search"], ["ask"], ["index", "code"], ["index", "all"], ["stats"], ["doctor"],
@@ -159,7 +167,7 @@ def test_the_warning_is_said_once_not_on_every_run(tmp_path):
     first = _run(tmp_path, "repos", "list", extra_env=WARNING_ACTIVE)
     second = _run(tmp_path, "repos", "list", extra_env=WARNING_ACTIVE)
 
-    assert OLD_SENTENCE in first.stderr
+    assert first.stderr == FOOTER + "\n"
     assert second.stderr == ""
     assert second.stdout == first.stdout
 
@@ -168,8 +176,7 @@ def test_a_changed_state_speaks_again(tmp_path):
     _run(tmp_path, "repos", "list", extra_env=WARNING_ACTIVE)
     more = _run(tmp_path, "repos", "list", extra_env={**WARNING_ACTIVE, "RAG_CHAT_MODEL": "x"})
 
-    assert "RAG_CHAT_MODEL was renamed" in more.stderr
-    assert OLD_SENTENCE in more.stderr
+    assert more.stderr == FOOTER + "\n"  # one condition (renamed variables), a new fingerprint
 
 
 def test_a_condition_that_went_away_speaks_again_when_it_returns(tmp_path):
@@ -178,7 +185,7 @@ def test_a_condition_that_went_away_speaks_again_when_it_returns(tmp_path):
     back = _run(tmp_path, "repos", "list", extra_env=WARNING_ACTIVE)
 
     assert gone.stderr == ""
-    assert OLD_SENTENCE in back.stderr
+    assert back.stderr == FOOTER + "\n"
 
 
 def test_a_state_file_that_cannot_be_used_does_not_stop_the_command(tmp_path):
@@ -188,7 +195,7 @@ def test_a_state_file_that_cannot_be_used_does_not_stop_the_command(tmp_path):
 
     assert done.returncode == 0, done.stderr
     assert "No repository registered" in done.stdout
-    assert OLD_SENTENCE in done.stderr  # said, since it cannot be remembered
+    assert done.stderr == FOOTER + "\n"  # said, since it cannot be remembered
 
 
 @pytest.mark.parametrize("garbage", ["[not json", "[]", "7", '"text"'])
@@ -199,7 +206,7 @@ def test_a_state_file_with_garbage_is_started_over(tmp_path, garbage):
     done = _run(tmp_path, "repos", "list", extra_env=WARNING_ACTIVE)
 
     assert done.returncode == 0
-    assert OLD_SENTENCE in done.stderr
+    assert done.stderr == FOOTER + "\n"
 
 
 def test_doctor_lists_the_renamed_variable_every_time(tmp_path):
@@ -218,23 +225,21 @@ def test_doctor_old_settings_is_ok_when_there_are_none(tmp_path):
     assert {c["check"]: c["status"] for c in json.loads(done.stdout)}["old settings"] == "ok"
 
 
-def test_the_old_layout_is_said_once_and_doctor_lists_it(tmp_path, capsys):
+def test_the_old_layout_is_one_condition_whose_fingerprint_is_its_paths(tmp_path):
+    from griot import notices
+
     root = tmp_path / "old-checkout"
     root.mkdir()
     (root / "repos.json").write_text("[]")
-    expected = (f"Warning: {root / 'repos.json'} is in the old layout and griot ignores it. Move it (griot never "
-                f"moves it on its own):\n  mv {root / 'repos.json'} {common.CONFIG_DIR / 'repos.json'}")
 
-    common.warn_legacy_layout(legacy_root=root)
-    common.warn_legacy_layout(legacy_root=root)
-
-    out, err = capsys.readouterr()
-    assert out == ""
-    assert err == expected + "\n"  # once, not twice
-    assert [s for _, s in common.legacy_layout_findings(root)] == [expected]
+    found = notices.legacy_layout(common.legacy_layout_findings(root))
+    assert found.sentence == (f"{root / 'repos.json'} is in the old layout and griot ignores it (griot never moves "
+                              f"it on its own).")
+    assert found.action == f"mv {root / 'repos.json'} {common.CONFIG_DIR / 'repos.json'}"
     (root / "qdrant_data").mkdir()
-    common.warn_legacy_layout(legacy_root=root)
-    assert "qdrant_data" in capsys.readouterr().err
+    more = notices.legacy_layout(common.legacy_layout_findings(root))
+    assert more.id == found.id and more.fingerprint != found.fingerprint
+    assert "qdrant_data" in more.sentence and f"mv {root / 'qdrant_data'}" in more.action
 
 
 # --- messages -----------------------------------------------------------------------------------------------

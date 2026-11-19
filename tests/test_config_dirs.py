@@ -31,29 +31,20 @@ def no_legacy_env(monkeypatch):
 
 # --- warning for legacy RAG_* env vars ---
 
-def test_legacy_env_var_warns_with_new_name(monkeypatch, caplog, no_legacy_env):
+def test_legacy_env_var_is_found_with_its_new_name(monkeypatch, no_legacy_env):
     monkeypatch.setenv("RAG_SPEND_CEILING_USD", "3.0")
-    with caplog.at_level(logging.WARNING, logger="griot"):
-        common.warn_legacy_env_vars()
-    assert "RAG_SPEND_CEILING_USD" in caplog.text
-    assert "GRIOT_SPEND_CEILING_USD" in caplog.text
+    assert common.legacy_env_findings() == [("RAG_SPEND_CEILING_USD", "GRIOT_SPEND_CEILING_USD")]
 
 
-def test_legacy_env_var_warns_once_per_var_set(monkeypatch, caplog, no_legacy_env):
+def test_every_legacy_env_var_set_is_found(monkeypatch, no_legacy_env):
     monkeypatch.setenv("RAG_EMBED_PROFILE", "gemini")
     monkeypatch.setenv("RAG_CHAT_MODEL", "gemini-2.5-flash")
-    with caplog.at_level(logging.WARNING, logger="griot"):
-        common.warn_legacy_env_vars()
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 2
-    assert "GRIOT_EMBED_PROFILE" in caplog.text
-    assert "GRIOT_CHAT_MODEL" in caplog.text
+    assert sorted(common.legacy_env_findings()) == [("RAG_CHAT_MODEL", "GRIOT_CHAT_MODEL"),
+                                                    ("RAG_EMBED_PROFILE", "GRIOT_EMBED_PROFILE")]
 
 
-def test_no_warning_when_no_legacy_env_var(caplog, no_legacy_env):
-    with caplog.at_level(logging.WARNING, logger="griot"):
-        common.warn_legacy_env_vars()
-    assert caplog.records == []
+def test_nothing_is_found_when_no_legacy_env_var(no_legacy_env):
+    assert common.legacy_env_findings() == []
 
 
 # --- automatic migration of .spend_state.json (an earlier decision, exception to "warning only") ---
@@ -101,31 +92,27 @@ def test_spend_state_migration_noop_without_legacy_file(tmp_path):
 
 # --- warning (and ONLY warning) for the old layout (section 7.2) ---
 
-def test_legacy_layout_warns_and_never_moves(tmp_path, caplog):
+def test_legacy_layout_is_found_and_never_moved(tmp_path):
     legacy_root = tmp_path / "old-checkout"
     legacy_root.mkdir()
     (legacy_root / "repos.json").write_text("[]")
     (legacy_root / "qdrant_data").mkdir()
 
-    with caplog.at_level(logging.WARNING, logger="griot"):
-        common.warn_legacy_layout(legacy_root=legacy_root)
+    found = common.legacy_layout_findings(legacy_root)
 
-    assert str(legacy_root / "repos.json") in caplog.text
-    assert str(common.CONFIG_DIR / "repos.json") in caplog.text
-    assert str(common.DATA_DIR / "qdrant_data") in caplog.text
+    assert (str(legacy_root / "repos.json"), str(common.CONFIG_DIR / "repos.json")) in found
+    assert (str(legacy_root / "qdrant_data"), str(common.DATA_DIR / "qdrant_data")) in found
     # nothing was moved or created in the new location
     assert (legacy_root / "repos.json").exists()
     assert not (common.CONFIG_DIR / "repos.json").exists()
     assert not (common.DATA_DIR / "qdrant_data").exists()
 
 
-def test_legacy_layout_silent_when_root_clean_or_missing(tmp_path, caplog):
+def test_legacy_layout_finds_nothing_when_root_clean_or_missing(tmp_path):
     empty_root = tmp_path / "empty"
     empty_root.mkdir()
-    with caplog.at_level(logging.WARNING, logger="griot"):
-        common.warn_legacy_layout(legacy_root=empty_root)
-        common.warn_legacy_layout(legacy_root=tmp_path / "does-not-exist")
-    assert caplog.records == []
+    assert common.legacy_layout_findings(empty_root) == []
+    assert common.legacy_layout_findings(tmp_path / "does-not-exist") == []
 
 
 # --- <config_dir>/.env permission (secrets → 0600) ---

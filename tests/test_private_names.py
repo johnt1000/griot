@@ -107,6 +107,10 @@ TESTS_MAY_REACH = {
         "_providers": _HELPER,
     },
     "cli": {
+        "_command": _STATE,
+        # The ledger step `griot index` ends with, checked on its own: a
+        # real index run would need a collection and an embedding model.
+        "_end_with_notices": _HELPER,
         "_main": _SEAM,
         "_run_index_source": _SEAM,
     },
@@ -118,6 +122,9 @@ TESTS_MAY_REACH = {
     },
     "doctor": {
         "_settings_in_file": _HELPER,
+        "_check": _HELPER,
+        "_with_condition": _HELPER,
+        "_from_ledger": _HELPER,
     },
     "freshness": {
         "_commits_between": _SEAM,
@@ -169,7 +176,6 @@ TESTS_MAY_REACH = {
         "_inflight": _STATE,
         "_index_questions": _STATE,
         "_shown": _SHARED,
-        "_KEYWORD_NOTE_GIVEN_FOR": _STATE,
         "_tool_started": _STATE,
         "_tool_finished": _STATE,
         "_Ask": _SEAM,
@@ -230,7 +236,6 @@ TESTS_MAY_REACH = {
         "_MIN_BAR_WIDTH": _SHARED,
         "_MIN_CHART_WIDTH": _SHARED,
         "_SPARK_LEVELS": _SHARED,
-        "_ago": _HELPER,
         "_bar": _HELPER,
         "_chart_width": _HELPER,
         "_classify_source_label": _HELPER,

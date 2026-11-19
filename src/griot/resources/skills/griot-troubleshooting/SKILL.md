@@ -1,6 +1,6 @@
 ---
 name: griot-troubleshooting
-description: Symptom-to-fix reference for griot failures - the client cannot connect to griot (launcher "No such file" after a Python upgrade), a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built yet", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
+description: Symptom-to-fix reference for griot failures - the client cannot connect to griot (launcher "No such file" after a Python upgrade), a locked/in-use collection, the spend circuit breaker refusing a paid call, a missing credential error, a weak/empty search result, keyword search "not built", and the "point count unavailable" message from griot stats. Use when a griot command errors out or behaves unexpectedly, not for first-time setup (griot-onboarding) or indexing strategy (griot-indexing).
 ---
 
 # griot troubleshooting
@@ -213,16 +213,18 @@ and use `griot quality-check`
 quality holds or regresses across changes (e.g. switching embedding
 profiles).
 
-## Keyword search "is not built yet"
+## Keyword search "is not built"
 
 **Symptom**: `griot search --mode keyword` (or `hybrid`, or `griot_search`
-with `mode` `keyword`/`hybrid`) fails with "Keyword search is not built yet
+with `mode` `keyword`/`hybrid`) fails with "Keyword search is not built
 for collection ...".
 
 **Cause**: the collection was indexed before griot stored keyword (BM25)
 vectors, and the vector store cannot add a vector to points it already
 holds. Vector search is unaffected, and a search that names no mode runs
-by meaning there instead of hybrid, saying so with the same command.
+by meaning there instead of hybrid, saying so with the same command the
+first time (then only `mode: vector`); `griot doctor` and `griot stats`
+list it every time.
 
 **Fix**: run, once, from a terminal:
 

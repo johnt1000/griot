@@ -23,7 +23,7 @@ import json
 import pytest
 from mcp.client.client import Client
 
-from griot import cli, common, golden_set, mcp_server
+from griot import cli, common, golden_set, mcp_server, notices
 from test_keyword_search import fake_embeddings, index, legacy_index  # noqa: F401
 
 OLD_CASE = {"query": "acquire_lock", "limit": 5, "must_include": [{"repo": "alpha"}]}
@@ -114,7 +114,8 @@ def test_suggest_on_a_collection_without_keyword_vectors_makes_a_vector_case_and
     assert "this case" not in out.lower(), "said once for two cases: it may not speak of one"
 
 
-@pytest.mark.parametrize("note", [golden_set.VECTOR_FALLBACK_NOTE, golden_set.UNREADABLE_CONFIG_NOTE],
+@pytest.mark.parametrize("note", [golden_set.vector_fallback_note(notices.keyword_vectors_missing("c")),
+                                  golden_set.UNREADABLE_CONFIG_NOTE],
                          ids=["no keyword vectors", "unreadable config"])
 def test_a_fallback_note_is_true_of_one_case_or_of_several(note):
     """Said once for a whole suggest run, which can add several cases, and
@@ -184,6 +185,17 @@ async def test_the_tool_with_nothing_indexed_makes_a_hybrid_case_with_no_note():
     assert out["changed"] is True and "hybrid" in out["message"]
     assert "griot index keywords" not in out["message"] and "could not be read" not in out["message"]
     assert _cases()[0]["mode"] == "hybrid"
+
+
+@pytest.mark.anyio
+async def test_the_tool_on_a_collection_without_keyword_vectors_ends_its_note_with_the_command(legacy_index):
+    """Read as the agent receives it: the command last, on its own line."""
+    async with Client(mcp_server.mcp) as client:
+        out = (await client.call_tool("griot_golden_set_add", {
+            "query": "acquire_lock", "must_include": [{"repo": "alpha"}], "confirm": True})).structured_content
+    assert out["changed"] is True
+    assert "The case(s) just added are checked in mode vector" in out["message"]
+    assert out["message"].rstrip().splitlines()[-1] == "  griot index keywords"
 
 
 @pytest.mark.anyio
