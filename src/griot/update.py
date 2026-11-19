@@ -40,6 +40,7 @@ def _installed_version(executable: str) -> str | None:
 
 
 def main(argv=None) -> int:
+    from griot.cli import show_flags_read_by_griot  # here: cli is imported before these modules at run time
     parser = argparse.ArgumentParser(
         prog="griot update",
         description="Upgrades griot to the newest release on PyPI: asks PyPI (whatever update-check says: that "
@@ -48,6 +49,7 @@ def main(argv=None) -> int:
                     "a development install (update the checkout instead) and an installation whose method it "
                     "cannot tell (it prints the candidates). Running MCP servers keep the old version until "
                     "restarted.")
+    show_flags_read_by_griot(parser)
     parser.add_argument("--yes", action="store_true", help="Run the upgrade without asking")
     args = parser.parse_args(argv)
 

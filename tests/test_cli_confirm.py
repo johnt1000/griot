@@ -126,7 +126,7 @@ def test_repos_add_does_nothing_on_a_no(monkeypatch, tmp_path):
 
 def test_repos_add_reports_a_bad_path_without_asking(monkeypatch, tmp_path, capsys):
     shown = _terminal(monkeypatch, "y")
-    assert repos.main(["add", str(tmp_path / "missing")]) == 1
+    assert repos.main(["add", str(tmp_path / "missing")]) == 2  # incorrect use
     assert shown == [] and "Error" in capsys.readouterr().err
 
 
@@ -153,7 +153,7 @@ def test_repos_remove_asks_at_a_terminal(monkeypatch, tmp_path):
 def test_repos_remove_reports_an_unregistered_path_without_asking(monkeypatch, tmp_path, capsys):
     repos.add_repo(str(tmp_path))
     shown = _terminal(monkeypatch, "y")
-    assert repos.main(["remove", "/not/registered"]) == 1
+    assert repos.main(["remove", "/not/registered"]) == 2  # incorrect use
     assert shown == [] and "Error" in capsys.readouterr().err
 
 
@@ -205,7 +205,7 @@ def test_profiles_delete_does_nothing_on_a_no(monkeypatch, deletable_profile):
 def test_profiles_delete_reports_what_it_would_refuse_without_asking(monkeypatch, capsys, name):
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     shown = _terminal(monkeypatch, "y")
-    assert cli.main(["profiles", "delete", name]) == 1
+    assert cli.main(["profiles", "delete", name]) == 2  # unknown or active: incorrect use
     assert shown == [] and "Error" in capsys.readouterr().err
 
 
@@ -213,7 +213,7 @@ def test_profiles_delete_reports_a_never_indexed_profile_without_asking(monkeypa
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     name = next(n for n in common.EMBED_PROFILES if n != "jina-code")
     shown = _terminal(monkeypatch, "y")
-    assert cli.main(["profiles", "delete", name]) == 1
+    assert cli.main(["profiles", "delete", name]) == 2  # nothing to delete: incorrect use
     assert shown == [] and "does not exist" in capsys.readouterr().err
 
 

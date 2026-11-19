@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from mcp.client.client import Client
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import Implementation
 
 from griot import common, logdb, mcp_server, stats
@@ -130,8 +131,10 @@ def test_a_mode_that_is_not_one_of_the_modes_is_recorded_as_invalid_never_as_wri
     and a literal "default" does not read as "no mode asked"."""
     assert mcp_server.MODE_NOT_ASKED not in common.SEARCH_MODES
     for bad in ("default", "x" * 500 + "\x1b[31m"):
-        with pytest.raises(common.SearchFilterError):
+        # Raised again as the ToolError the agent is sent, the refusal as its cause.
+        with pytest.raises(ToolError) as caught:
             mcp_server.griot_search("q", mode=bad)
+        assert isinstance(caught.value.__cause__, common.SearchFilterError)
 
     rows = _rows()
     assert [r["mode"] for r in rows] == [mcp_server.MODE_INVALID] * 2
@@ -217,8 +220,9 @@ async def test_a_client_name_that_looks_like_a_credential_is_replaced():
 
 
 def test_a_mode_asked_by_one_direct_call_is_not_the_next_calls(cannot_run_keyword):
-    with pytest.raises(common.SearchModeUnavailable):
+    with pytest.raises(ToolError) as caught:
         mcp_server.griot_search("q", mode="keyword")
+    assert isinstance(caught.value.__cause__, common.SearchModeUnavailable)
     mcp_server.griot_spend_status()
 
     rows = _rows()

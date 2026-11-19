@@ -21,7 +21,7 @@ import signal
 import sys
 
 import griot
-from griot import ConfigurationError, UnknownEmbedProfile, __version__
+from griot import ConfigurationError, UnknownEmbedProfile, UsageError, __version__
 
 # Full pipeline order: code
 # first (largest volume), then the git metadata sources, "platform" last
@@ -250,7 +250,7 @@ def _cmd_index(args) -> int:
     # index with a broken source would mask the problem, and the next run
     # would just re-pay the cost of discovering the error.
     for source in sources:
-        print(f"=== griot index {source} ===")
+        common.progress_note(f"=== griot index {source} ===")
         common.progress_source(source, "reading")
         try:
             rc = _run_index_source(source, rest)
@@ -269,7 +269,8 @@ def _cmd_index(args) -> int:
             print(f"Error: 'griot index {source}' failed (exit {rc}) — pipeline stopped.", file=sys.stderr)
             return rc
         common.progress_source(source, "done")
-    print("=== griot index all: all sources completed ===")
+    # Progress, like the headers above it: a person piping stdout must not see a footer without them.
+    common.progress_note("=== griot index all: all sources completed ===")
     return 0
 
 
@@ -411,6 +412,14 @@ def _cmd_profiles_list(args) -> int:
     return 0
 
 
+def unknown_profile_sentence(name: str, reason: str, options: list[str]) -> str:
+    """The one wording for a profile name that does not exist, said by
+    `profiles use` (both before and after the configuration loads) and by
+    `profiles delete`: the profiles there are, then the command that lists
+    them with what each needs."""
+    return f"unknown profile {name!r}.{reason} Options: {', '.join(options)}.\n  griot profiles list"
+
+
 def _cmd_profiles_use(args) -> int:
     """`griot profiles use <name>`: makes `name` the active embedding
     profile by writing GRIOT_EMBED_PROFILE to <config>/.env, the file every
@@ -426,8 +435,8 @@ def _cmd_profiles_use(args) -> int:
 
     name = args.profile
     if name not in common.EMBED_PROFILES:
-        print(f"Error: unknown profile {name!r}.{common.unknown_profile_reason(name)} "
-              f"Options: {', '.join(common.EMBED_PROFILES)}.", file=sys.stderr)
+        print(f"Error: {unknown_profile_sentence(name, common.unknown_profile_reason(name), list(common.EMBED_PROFILES))}",
+              file=sys.stderr)
         return 2
     profile = common.EMBED_PROFILES[name]
     in_file = dotenv_values(common.ENV_PATH).get("GRIOT_EMBED_PROFILE") if common.ENV_PATH.exists() else None
@@ -509,6 +518,11 @@ def delete_profile(profile_name: str, *, active_profile_name: str | None = None)
     return collection
 
 
+class ActiveProfileError(UsageError):
+    """The profile asked to delete is the active one: the step that fixes it
+    is a different `profiles use`, not a listing."""
+
+
 def check_delete_profile(profile_name: str, *, active_profile_name: str | None = None) -> str:
     """Read-only half of delete_profile(): the collection it would delete.
     Raises the same ValueError it would for an unknown profile, the active
@@ -521,14 +535,15 @@ def check_delete_profile(profile_name: str, *, active_profile_name: str | None =
     # A retired profile is still deletable: a run on it opened its collection
     # before the first embedding failed, and nothing else removes that one.
     if profile_name not in common.EMBED_PROFILES and profile_name not in common.RETIRED_EMBED_PROFILES:
-        raise ValueError(f"unknown profile '{profile_name}'.")
+        raise UsageError(unknown_profile_sentence(
+            profile_name, common.unknown_profile_reason(profile_name), list(common.EMBED_PROFILES)))
     active = active_profile_name if active_profile_name is not None else common.ACTIVE_PROFILE_NAME
     if profile_name == active:
-        raise ValueError(f"'{profile_name}' is the active profile — switch to a different one first "
+        raise ActiveProfileError(f"'{profile_name}' is the active profile — switch to a different one first "
                          f"(`griot profiles use <name>`), then delete.")
     collection = common.collection_name_for(profile_name)
     if not common.collection_exists(collection):
-        raise ValueError(f"collection '{collection}' does not exist.")
+        raise UsageError(f"collection '{collection}' does not exist, so there is nothing to delete.")
     if common.index_lock_status()["running"]:
         raise ValueError("an indexing run is currently in progress — wait for it to finish, then try again.")
     return collection
@@ -540,8 +555,16 @@ def _cmd_profiles_delete(args) -> int:
     try:
         check_delete_profile(args.profile)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        # The command that helps goes last. The sentence is shared with the MCP
+        # tool, which has its own next step, so it is added here, and only
+        # where the sentence does not end on one already.
+        tail = ("\n  griot profiles use <name>" if isinstance(e, ActiveProfileError)
+                else "\n  griot profiles list" if isinstance(e, UsageError) and "\n  griot " not in str(e) else "")
+        print(f"Error: {e}{tail}", file=sys.stderr)
+        # A wrong request (unknown or active profile, nothing to delete) is
+        # incorrect use; a run holding the lock is the operation not able to
+        # run now.
+        return 2 if isinstance(e, UsageError) else 1
     # No --yes on purpose: the vectors are gone for good and rebuilding them
     # costs money (see common.confirm and griot_profiles_delete).
     refused = common.confirm(f"Delete profile '{args.profile}' and its indexed vectors? This cannot be undone, "
@@ -555,6 +578,28 @@ def _cmd_profiles_delete(args) -> int:
         return 1
     print(f"Deleted profile '{args.profile}' (collection: {collection}).")
     return 0
+
+
+def _needs_a_value(long_flag: str) -> SystemExit:
+    """A flag read before the parser, given without its value: incorrect use,
+    so exit 2 and a message that says what to type (a string passed to
+    SystemExit would exit 1 with no `Error:` and no example)."""
+    print(f"Error: {long_flag} requires a value. Example:\n  griot {long_flag} NAME ...", file=sys.stderr)
+    return SystemExit(2)
+
+
+def _extract_switch(argv: list, *spellings: str) -> tuple[list, bool]:
+    """Takes a flag that has no value (`--quiet`, `-q`) out of argv, wherever
+    it is, for the same reason _extract_flag does it: the passthrough
+    subcommands forward everything to their own parser, which must not see
+    it. `--quiet=1` is not a spelling: the flag takes no value. No subcommand
+    has an argument of its own called `-q` or `--quiet`, so nothing legitimate
+    is taken."""
+    # Past `--` everything is data (a search query or a path that is named
+    # `-q`), as it is for any command line: left alone.
+    stop = argv.index("--") if "--" in argv else len(argv)
+    head = [arg for arg in argv[:stop] if arg not in spellings]
+    return head + argv[stop:], len(head) != stop
 
 
 def _extract_flag(argv: list, flag: str) -> tuple[list, str | None]:
@@ -577,14 +622,14 @@ def _extract_flag(argv: list, flag: str) -> tuple[list, str | None]:
         arg = argv[i]
         if arg == long_flag:
             if i + 1 >= len(argv):
-                raise SystemExit(f"{long_flag} requires a value")
+                raise _needs_a_value(long_flag)
             value = argv[i + 1]
             i += 2
             continue
         if arg.startswith(f"{long_flag}="):
             value = arg.split("=", 1)[1]
             if not value:
-                raise SystemExit(f"{long_flag} requires a value")
+                raise _needs_a_value(long_flag)
             i += 1
             continue
         out.append(arg)
@@ -608,6 +653,14 @@ SOURCES_FLAG = ("--sources", "LIST", f"Run only these sources, comma-separated, 
 _SOURCES_OF_INDEX_ALL = (*SOURCES_FLAG[:2], f"`griot index all` only. {SOURCES_FLAG[2]}")
 
 
+# A switch, not a flag with a value: show_flags_read_by_griot() lists it
+# without a metavar. Every parser's help shows it (it is appended there), so a
+# person who sees a notice they do not want finds the way to silence it in
+# the help of the command that printed it.
+QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never errors, prompts or the result). "
+                               "Same as GRIOT_QUIET=1. Also -q")
+
+
 def chat_profile_flag(names) -> tuple[str, str, str]:
     """`griot ask`'s --chat-profile. The names are passed in: they live in
     common.CHAT_PROFILES, which this module must not import to build a help
@@ -620,15 +673,61 @@ def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str,
     """Adds to `parser`'s --help a section naming `flags`, which griot reads
     before that parser sees the command line. The section is laid out by
     argparse itself, on a parser that is only ever formatted, so it reads
-    like the options above it; `parser` parses exactly what it did."""
+    like the options above it; `parser` parses exactly what it did.
+
+    Every parser below `parser` (its subparsers, however deep, and the ones
+    added to it later) gets the section too, with --quiet alone: the help of a
+    leaf command is where a person who just saw a notice looks, and a list of
+    names kept by hand goes stale. Calling it again on a parser replaces its
+    section instead of adding a second one."""
     shown = argparse.ArgumentParser(prog=parser.prog, add_help=False)
     group = shown.add_argument_group("read by griot itself, anywhere on the command line")
-    for flag, metavar, help_text in flags:
-        group.add_argument(flag, metavar=metavar, help=help_text)
+    for flag, metavar, help_text in (*flags, QUIET_FLAG):
+        if metavar is None:
+            group.add_argument(flag, action="store_true", help=help_text)
+        else:
+            group.add_argument(flag, metavar=metavar, help=help_text)
     # Without its usage paragraph, which names only these flags.
     section = shown.format_help().split("\n\n", 1)[1]
-    format_help = parser.format_help
-    parser.format_help = lambda: f"{format_help().rstrip()}\n\n{section}"
+    base = getattr(parser, "_griot_format_help", None) or parser.format_help
+    parser._griot_format_help = base
+    parser.format_help = lambda: f"{base().rstrip()}\n\n{section}"
+    _cover_subparsers(parser)
+
+
+def _cover_subparsers(parser: argparse.ArgumentParser) -> None:
+    """Gives the parsers `parser` has, and will have, the --quiet section."""
+    def cover(child):
+        if not hasattr(child, "_griot_format_help"):
+            show_flags_read_by_griot(child)
+
+    def wrap(action):
+        add_parser = action.add_parser
+
+        def add_covered(*args, **kwargs):
+            child = add_parser(*args, **kwargs)
+            cover(child)
+            return child
+
+        action.add_parser = add_covered
+        for child in action.choices.values():
+            cover(child)
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction) and not getattr(action, "_griot_covered", False):
+            action._griot_covered = True
+            wrap(action)
+    if not getattr(parser, "_griot_covers_new_subparsers", False):
+        parser._griot_covers_new_subparsers = True
+        add_subparsers = parser.add_subparsers
+
+        def add_covered_subparsers(*args, **kwargs):
+            action = add_subparsers(*args, **kwargs)
+            action._griot_covered = True
+            wrap(action)
+            return action
+
+        parser.add_subparsers = add_covered_subparsers
 
 
 def _extract_profile_override(argv: list) -> tuple[list, str | None]:
@@ -659,6 +758,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="griot",
         description="Griot — local RAG over code, git history and code platforms (GitHub/GitLab/Bitbucket/Azure DevOps/Gitea) of your repositories.",
+        epilog="Exit status: 0 done, 1 the operation ran and failed, 2 incorrect use (an unknown name, a bad "
+               "value, no terminal where one is needed). Results go to stdout; notices, warnings, progress and "
+               "errors go to stderr.",
     )
     show_flags_read_by_griot(parser, PROFILE_FLAG,
                              ("--chat-profile", "NAME", "`griot ask`: the chat provider for this run only (see "
@@ -737,11 +839,13 @@ def build_parser() -> argparse.ArgumentParser:
         "profiles",
         help="Manages embedding profiles (--profile in index/ask/search)",
     )
+    show_flags_read_by_griot(p_profiles)
     profiles_sub = p_profiles.add_subparsers(dest="profiles_command", metavar="<action>", required=True)
     profiles_sub.add_parser("list", help="Lists available profiles with real RAM detection")
     p_profiles_use = profiles_sub.add_parser(
         "use", help="Makes a profile the active one (writes GRIOT_EMBED_PROFILE to the config .env)"
     )
+    show_flags_read_by_griot(p_profiles_use)
     p_profiles_use.add_argument("profile", help="Profile name (see `griot profiles list`)")
     p_profiles_use.add_argument("--yes", action="store_true",
                                 help="Do not ask before switching to a profile that calls an API")
@@ -752,6 +856,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "so it asks first, at an interactive terminal, and there is no flag that answers: run from a "
                     "script or an agent's shell, with no terminal, it changes nothing.",
     )
+    show_flags_read_by_griot(p_profiles_delete)
     p_profiles_delete.add_argument("profile", help="Profile name (see `griot profiles list`)")
     p_profiles_delete.set_defaults(func=_cmd_profiles_delete)
     p_profiles.set_defaults(func=_cmd_profiles_list)
@@ -803,6 +908,13 @@ def _main_with_errors_explained(argv=None) -> int:
 
 def _main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    # Before everything, and as an environment variable: the notices that
+    # matter are printed while common.py is imported, and the processes griot
+    # starts (an index run's children) inherit it. Only ever set here, never
+    # cleared: GRIOT_QUIET=1 in the environment is the same switch.
+    argv, quiet_asked = _extract_switch(argv, "--quiet", "-q")
+    if quiet_asked:
+        os.environ["GRIOT_QUIET"] = "1"
     # What the REAL environment says, before --profile below writes the same
     # variable and before .env is loaded: `profiles use` needs to tell an
     # exported variable from either of those.
@@ -887,8 +999,7 @@ def _main(argv=None) -> int:
             if e.name != args.profile:
                 raise
             # The name came from the command line, not from a setting: say so.
-            print(f"Error: unknown profile {args.profile!r}.{e.reason} Options: {', '.join(e.options)}.",
-                  file=sys.stderr)
+            print(f"Error: {unknown_profile_sentence(args.profile, e.reason, e.options)}", file=sys.stderr)
             return 2
     from griot import common
     common.ensure_env_template()

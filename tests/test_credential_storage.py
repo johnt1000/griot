@@ -131,7 +131,7 @@ def test_list_says_there_is_no_keychain_and_the_file_is_plaintext(capsys):
 
     auth.cmd_list()
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "no OS keychain backend" in out and "reinstall griot-rag" in out
     openai = next(line for line in out.splitlines() if line.strip().startswith("openai"))
     assert "plaintext" in openai and str(common.ENV_PATH) in openai
@@ -143,7 +143,7 @@ def test_list_with_keyring_installed_but_no_backend_does_not_say_install_it(monk
 
     auth.cmd_list()
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "no OS keychain backend" in out and "reinstall griot-rag" not in out
 
 
@@ -156,7 +156,7 @@ def test_list_names_the_keychain_and_where_each_one_is(keychain, monkeypatch, ca
 
     auth.cmd_list()
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     lines = {line.split()[0]: line for line in out.splitlines() if line.startswith("  ")}
     assert "Fake Keyring" in out
     assert "OS keychain" in lines["openai"] and "plaintext" not in lines["openai"]
@@ -189,7 +189,7 @@ def test_list_does_not_suggest_migrate_when_there_is_no_backend(capsys):
 
     auth.cmd_list()
 
-    assert "griot auth migrate" not in capsys.readouterr().out
+    assert "griot auth migrate" not in "".join(capsys.readouterr())
 
 
 # --- griot auth set / migrate: the moment the fallback happens ------------------------------------
@@ -202,7 +202,7 @@ def test_set_into_the_keychain_does_not_claim_the_file(keychain, monkeypatch, ca
 
     assert auth.cmd_set("openai") == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "OS keychain" in out and "Fake Keyring" in out
     assert str(common.ENV_PATH) not in out and "plaintext" not in out
     _no_secret_in(out)
@@ -213,7 +213,7 @@ def test_set_says_the_fallback_to_the_plaintext_file_and_why(monkeypatch, capsys
 
     assert auth.cmd_set("openai") == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "plaintext" in out and str(common.ENV_PATH) in out
     assert "no OS keychain backend" in out and "reinstall griot-rag" in out
     _no_secret_in(out)
@@ -233,7 +233,7 @@ def test_set_says_a_reachable_keychain_refused_the_key_and_how_to_retry(monkeypa
 
     assert auth.cmd_set("openai") == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "plaintext" in out and str(common.ENV_PATH) in out
     assert "Fake Keyring" in out and "refused" in out and "griot auth migrate" in out
     assert "no OS keychain backend" not in out
@@ -252,7 +252,7 @@ def test_migrate_with_keyring_but_no_backend_does_not_say_install_it(monkeypatch
 
     assert auth.cmd_migrate() == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "openai" in out and "reinstall griot-rag" not in out and "Secret Service" in out
     assert dotenv_values(common.ENV_PATH)["GRIOT_OPENAI_API_KEY"] == SECRET
 
@@ -272,7 +272,7 @@ def test_remove_says_where_the_key_was_removed_from(keychain, capsys, stored, sa
 
     assert auth.cmd_remove("openai") == 0
 
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert says in out and "GRIOT_OPENAI_API_KEY" in out
     if never:
         assert never not in out

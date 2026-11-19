@@ -237,7 +237,10 @@ async def test_when_the_curated_half_stops_the_self_check_is_not_lost(index, mon
 
     def search(query, limit=5, **kw):
         if query == "the question on which the search stops":
-            raise RuntimeError("daily spend ceiling reached")
+            # What the breaker raises: griot's text, so the agent reads it.
+            # A crash here is named by its class only
+            # (test_tool_errors_reach_the_agent.py).
+            raise common.SpendCircuitBreakerError("daily spend ceiling reached")
         return real(query, limit=limit, **kw)
 
     monkeypatch.setattr(common, "search", search)
@@ -352,8 +355,8 @@ def test_the_terminal_command_records_the_self_check_when_the_curated_half_stops
 def test_the_terminal_command_without_a_file_still_runs_the_self_check(index, capsys):
     from griot import quality_check
     quality_check.main(["--sample-size", "2"])
-    out = capsys.readouterr().out
-    assert "does not exist, skipping golden set" in out and "Quality OK" in out
+    out, err = capsys.readouterr()
+    assert "there is no golden set at" in err and "Quality OK" in out
 
 
 def test_told_to_skip_the_curated_half_the_terminal_command_does_not_read_the_file(index, capsys):

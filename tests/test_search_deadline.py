@@ -12,6 +12,7 @@ import time
 
 import pytest
 from mcp.client.client import Client
+from mcp.server.mcpserver.exceptions import ToolError
 
 from griot import common, config, logdb, mcp_server
 
@@ -98,8 +99,10 @@ def test_a_search_that_does_not_finish_raises_in_bounded_time_and_is_recorded(mo
     monkeypatch.setattr(common, "search", _slow_search(release))
     try:
         started = time.monotonic()
-        with pytest.raises(RuntimeError) as caught:
+        # Raised again as the ToolError the agent reads, the deadline as its cause.
+        with pytest.raises(ToolError) as caught:
             mcp_server.griot_search(query="x")
+        assert isinstance(caught.value.__cause__, mcp_server.SearchTimedOut)
         assert time.monotonic() - started < 5
         text = str(caught.value)
         assert "did not finish" in text and "0.3" in text
@@ -122,7 +125,7 @@ def test_the_in_flight_count_returns_to_zero_once_the_abandoned_search_ends(monk
     monkeypatch.setattr(common, "SEARCH_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(common, "search", _slow_search(release))
     before = mcp_server._inflight
-    with pytest.raises(RuntimeError, match="did not finish"):
+    with pytest.raises(ToolError, match="did not finish"):
         mcp_server.griot_search(query="x")
     assert mcp_server._inflight == before + 1, "the worker still uses the shard"
     release.set()

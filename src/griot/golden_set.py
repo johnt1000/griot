@@ -11,12 +11,29 @@ human pick which results form the `must_include` — covers questions that
 don't come from any specific commit. `review` derives candidates from the
 query log instead (questions asked more than once, or that scored low), and a
 person at a terminal picks which logged result was right. `list`/`remove`
-round out the CRUD, same pattern as `griot repos`."""
+round out the CRUD, same pattern as `griot repos`.
+
+`suggest`, `add` and `review` ask a person, so without a terminal each
+refuses before doing anything that costs (exit 2, nothing changed), and all
+three answer in ONE vocabulary (read by `_answer`, the one loop):
+
+    ANSWERS
+    numbers (1,3)  pick those results                     (add, review)
+    y              approve the suggestion                 (suggest)
+    s or Enter     skip: the non-committal answer; `add` has one query and
+                   nothing to skip to, so there it adds nothing and ends
+    q = quit       stop; what was approved before is kept (review, suggest)
+    n, no          skip, as s does                        (suggest: it used
+                   to be [y/N], so a typed n still means skip)
+    n, r           none of them / never offer again       (review only: it
+                   alone has a log of candidates to remember)
+
+A bad answer asks again with the accepted choices named. End of input
+counts as q; Ctrl-C stops the same way and ends with exit 130."""
 
 import argparse
-import contextlib
-import io
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -314,8 +331,7 @@ def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit
     qrels = retrieval_eval.build_qrels_from_git(top, repo_name, max_commits=max_commits)
     # What it reports about files it skips is for an index run. Kept only to
     # say why nothing was listed, when nothing was.
-    said = io.StringIO()
-    with contextlib.redirect_stdout(said):
+    with common.capture_echo() as said:
         indexable = {path.relative_to(repo_path).as_posix(): path for path in index_code.discover_files(repo_path)}
     root = repo_path.resolve()
     has_text: dict[str, bool] = {}
@@ -349,7 +365,7 @@ def suggest_candidates(repo_path: Path, *, max_commits: int | None = None, limit
             })
     return {"repo": repo_name, "candidates": candidates, "commits": len(qrels),
             "not_indexable": not_indexable, "too_many_files": too_many_files, "no_message": no_message,
-            "problem": " ".join(said.getvalue().split()) or None if not indexable else None}
+            "problem": " ".join(" ".join(said).split()) or None if not indexable else None}
 
 
 def left_out_note(found: dict) -> str | None:
@@ -366,6 +382,73 @@ def left_out_note(found: dict) -> str | None:
     return ("Left out: " + "; ".join(reasons) + ".") if reasons else None
 
 
+# n/no stay accepted in suggest: it used to be [y/N], and a muscle-memory "n"
+# should skip, not ask again.
+_SUGGEST_WORDS = {"y": "yes", "yes": "yes", "": "skip", "s": "skip", "skip": "skip", "n": "skip", "no": "skip",
+                  "q": "quit", "quit": "quit"}
+# add has one query and nothing to skip to: every non-committal answer ends it.
+_ADD_WORDS = {"": "quit", "s": "quit", "skip": "quit", "q": "quit", "quit": "quit"}
+_REVIEW_WORDS = {"": "skip", "s": "skip", "skip": "skip", "n": "none", "none": "none", "r": "reject",
+                 "reject": "reject", "q": "quit", "quit": "quit"}
+
+
+def _answer(prompt: str, words: dict[str, str], hint: str, *, count: int = 0, vet=None) -> str | list[int]:
+    """The shared answer loop of add, suggest and review. `words` maps what
+    may be typed (lower case, "" for Enter) to the answer it means; with
+    `count` > 0 a list of numbers 1..count is also an answer, returned as a
+    sorted list; `vet(picked)` may refuse a pick (it says why itself) and
+    the loop asks again. Anything else asks again naming `hint`, the choices
+    accepted. End of input is "quit": there is nobody left to ask. Ctrl-C is
+    not caught here: the command ends it (_interrupted), because only it
+    knows what was already written."""
+    while True:
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            print(file=sys.stderr)  # the prompt's line, ended
+            return "quit"
+        if answer in words:
+            return words[answer]
+        if not count:
+            print(f"  Answer with {hint}.", file=sys.stderr)
+            continue
+        try:
+            picked = sorted({int(part) for part in answer.split(",") if part.strip()})
+        except ValueError:
+            print(f"  Answer with {hint}.", file=sys.stderr)
+            continue
+        wrong = [j for j in picked if not 1 <= j <= count]
+        if not picked or wrong:
+            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{count}).", file=sys.stderr)
+            continue
+        if vet is not None and not vet(picked):
+            continue
+        return picked
+
+
+def _added_line(added: int) -> str:
+    """The one sentence every command ends with, whichever way it ended."""
+    return f"{added} case(s) added to {common.GOLDEN_SET_PATH}."
+
+
+def _interrupted(added: int) -> int:
+    """Ctrl-C at a prompt: what was approved before is already written (each
+    case is saved when approved), so say how many, or that nothing changed."""
+    print("\n" + (f"Stopped. {_added_line(added)}" if added else "Nothing was changed."), file=sys.stderr)
+    return 130
+
+
+def _add_command(query: str, limit: int, mode: str | None) -> str:
+    """The `golden-set add` line a person can paste, with the whole query and
+    the flags they gave. Never a cut query: pasting it would curate a
+    different case without saying so. A query that cannot be one pasteable
+    line (it has a line break, a tab or a control character) gets a
+    placeholder instead, which cannot be mistaken for the real one."""
+    text = shlex.quote(query) if query.isprintable() else "'<your query>'"
+    flags = (f" --mode {mode}" if mode else "") + (f" --limit {limit}" if limit != 5 else "")
+    return f"griot golden-set add {text}{flags}"
+
+
 def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int = 10) -> int:
     repo_path = Path(repo_path_str).resolve()  # `suggest .` must still name the repository
     if not repo_path.is_dir():
@@ -374,6 +457,12 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
     if limit < 1:
         print(f"Error: --limit must be at least 1 (got {limit}).", file=sys.stderr)
         return 2
+    # Before the git log scan and before "no candidates": whatever the
+    # repository holds, a run nobody can answer is refused the same way.
+    if not common.is_interactive():
+        return common.refuse_without_terminal(
+            "griot golden-set suggest asks a person which commits make good cases",
+            f"griot golden-set suggest {shlex.quote(repo_path_str)}")
 
     try:
         found = suggest_candidates(repo_path, max_commits=max_commits, limit=limit)
@@ -396,10 +485,14 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         files = [entry["file_path"] for entry in candidate["must_include"]]
         print(f"\nCandidate query: {display_query}")
         print(f"  must_include: {len(files)} file(s) — {', '.join(files)}")
-        answer = input("Approve this case? [y/N/q(uit)] ").strip().lower()
-        if answer == "q":
+        try:
+            answer = _answer("Approve this case? y = add it, s or Enter = skip, q = quit: ", _SUGGEST_WORDS,
+                             "y, s (or n) or q")
+        except KeyboardInterrupt:
+            return _interrupted(added)
+        if answer == "quit":
             break
-        if answer != "y":
+        if answer != "yes":
             continue
         # The mode every command gives a case made without one
         # (case_mode_for): the files come from the git log, not from a
@@ -427,7 +520,7 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         if mode_note and mode_note not in mode_notes:
             mode_notes.append(mode_note)
 
-    print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    print(f"\n{_added_line(added)}")
     if refused:
         print(f"{refused} approved candidate(s) not added (the reason is above).")
     # Once for the run, not once per case: every case of it was resolved
@@ -442,6 +535,16 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
 def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     from griot import ask  # lazy — same pattern as cli.py, avoids pulling in qdrant/fastembed before needed
 
+    if limit < 1:
+        print(f"Error: --limit must be at least 1 (got {limit}).", file=sys.stderr)
+        return 2
+    # First, before the mode is resolved and before the search (which can be a
+    # paid call): a run nobody can answer must not spend anything.
+    if not common.is_interactive():
+        return common.refuse_without_terminal(
+            "griot golden-set add asks a person which results are the right ones",
+            _add_command(query, limit, mode))
+
     # None is the default: hybrid, or vector where hybrid cannot run
     # (case_mode_for). Resolved once, before the search, so the results shown
     # come from the mode the case is written in.
@@ -452,13 +555,26 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     from griot import quality_check  # lazy: quality_check imports this module
     try:
         results = common.search(query, limit=limit, mode=mode, diverse=quality_check.GOLDEN_SET_DIVERSE)
+    except KeyboardInterrupt:
+        # The search is the slow (and possibly paid) step: Ctrl-C there ends
+        # like Ctrl-C at a prompt, since nothing was written yet either.
+        return _interrupted(0)
     except common.SearchFilterError as e:
         # A mode this collection cannot run yet, or a query it cannot match:
         # what to do instead, not a traceback.
         print(f"Error: {e}", file=sys.stderr)
         return 1
     if not results:
-        print("Error: search returned no results — nothing to approve.", file=sys.stderr)
+        # Zero hits: SearchFilterError above already covers a mode the
+        # collection cannot run (keyword vectors missing), so this is an
+        # index without a match or an index with nothing in it. Another
+        # mode may match where this one did not.
+        other = "keyword" if mode == "vector" else "vector"
+        shown_query = common.shown(query).splitlines()[0][:80] if query.strip() else ""
+        print(f'Error: the {mode} search for "{shown_query}" returned no results, so there is nothing to '
+              f"approve. Nothing was changed. Either the repository is not indexed yet (`griot index all`) or the "
+              f"words do not match what was indexed; another mode may find it (vector = by meaning, keyword = "
+              f"the exact words, hybrid = both).\nTry:\n  {_add_command(query, limit, other)}", file=sys.stderr)
         return 1
 
     print(f'Results for "{query}":')
@@ -466,23 +582,16 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
         payload = r.payload or {}
         print(f"  [{i}] ({r.score:.3f}) {common.shown(ask.source_label(payload))}")
 
-    choice = input("Which are the right result(s) (must_include)? comma-separated numbers, or empty to cancel: ").strip()
-    if not choice:
-        print("Cancelled — nothing added.")
-        return 0
-
     try:
-        indices = [int(x.strip()) for x in choice.split(",") if x.strip()]
-    except ValueError:
-        print("Error: invalid input — use comma-separated numbers (e.g. 1,3).", file=sys.stderr)
-        return 1
-
-    must_include = []
-    for i in indices:
-        if not (1 <= i <= len(results)):
-            print(f"Error: {i} out of range (1-{len(results)}).", file=sys.stderr)
-            return 1
-        must_include.append(_must_include_entry(results[i - 1].payload or {}))
+        picked = _answer("Which result is the right one? number(s), comma-separated (e.g. 1,3), "
+                         "Enter or q = add nothing: ", _ADD_WORDS,
+                         f"numbers 1-{len(results)} (e.g. 1,3) or q", count=len(results))
+    except KeyboardInterrupt:
+        return _interrupted(0)
+    if picked == "quit":
+        print("Nothing was changed.", file=sys.stderr)
+        return 0
+    must_include = [_must_include_entry(results[i - 1].payload or {}) for i in picked]
 
     try:
         add_case(query, must_include, limit=limit, mode=mode)
@@ -1111,37 +1220,19 @@ def _ask(candidate: dict) -> str | list[dict]:
     pickable = any(not choice["blocked"] for choice in choices)
     prompt = (("Which result is the right one? number(s), comma-separated; " if pickable else "")
               + "n = none of them, s = skip, r = reject (never offer again), q = quit: ")
-    while True:
-        try:
-            answer = input(prompt).strip().lower()
-        except EOFError:
-            return "quit"
-        if answer in ("", "s", "skip"):
-            return "skip"
-        if answer in ("n", "none"):
-            return "none"
-        if answer in ("r", "reject"):
-            return "reject"
-        if answer in ("q", "quit"):
-            return "quit"
-        try:
-            picked = sorted({int(part) for part in answer.split(",") if part.strip()})
-        except ValueError:
-            print("  Answer with numbers (e.g. 1,3), n, s, r or q.")
-            continue
-        wrong = [j for j in picked if not 1 <= j <= len(choices)]
-        if not picked or wrong:
-            print(f"  {', '.join(map(str, wrong)) or 'Nothing'} out of range (1-{len(choices)}).")
-            continue
+    def vet(picked: list[int]) -> bool:
         blocked = [choices[j - 1]["blocked"] for j in picked if choices[j - 1]["blocked"]]
-        if blocked:
-            for note in dict.fromkeys(b for b in blocked if b != "cannot"):
-                print(f"  {note}")
-            unusable = [j for j in picked if choices[j - 1]["blocked"] == "cannot"]
-            if unusable:
-                print(f"  Result {', '.join(map(str, unusable))} {_CANNOT}.")
-            continue
-        return [choices[j - 1]["entry"] for j in picked]
+        if not blocked:
+            return True
+        for note in dict.fromkeys(b for b in blocked if b != "cannot"):
+            print(f"  {note}")
+        unusable = [j for j in picked if choices[j - 1]["blocked"] == "cannot"]
+        if unusable:
+            print(f"  Result {', '.join(map(str, unusable))} {_CANNOT}.")
+        return False
+
+    answer = _answer(prompt, _REVIEW_WORDS, "numbers (e.g. 1,3), n, s, r or q", count=len(choices), vet=vet)
+    return answer if isinstance(answer, str) else [choices[j - 1]["entry"] for j in answer]
 
 
 def cmd_review(limit: int = 10) -> int:
@@ -1152,9 +1243,8 @@ def cmd_review(limit: int = 10) -> int:
     # worth trusting. Like the confirmations (see common.confirm), a guard
     # against the plain command run from an agent's shell, not a boundary.
     if not common.is_interactive():
-        print("Error: the review asks a person which result was the right one, and there is no terminal to ask "
-              "on. Nothing was changed. Run it in an interactive terminal.", file=sys.stderr)
-        return 2
+        return common.refuse_without_terminal(
+            "griot golden-set review asks a person which result was the right one", "griot golden-set review")
     try:
         found = review_candidates(limit=limit)
     except (OSError, ValueError) as e:
@@ -1180,8 +1270,7 @@ def cmd_review(limit: int = 10) -> int:
         try:
             answer = _ask(candidate)
         except KeyboardInterrupt:
-            print(f"\nStopped. {added} case(s) added to {common.GOLDEN_SET_PATH}.")
-            return 130
+            return _interrupted(added)
         if answer == "quit":
             break
         if answer == "none":
@@ -1197,7 +1286,7 @@ def cmd_review(limit: int = 10) -> int:
                 continue
             added += 1
             print("  Case added.")
-    print(f"\n{added} case(s) added to {common.GOLDEN_SET_PATH}.")
+    print(f"\n{_added_line(added)}")
     return 0
 
 
@@ -1215,8 +1304,10 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="action", metavar="<action>", required=True)
 
     p_suggest = sub.add_parser(
-        "suggest", help="Suggests candidates for free from the git log, with case-by-case human approval",
-        description="Suggests candidates for free from the git log, with case-by-case human approval. An approved "
+        "suggest", help="Suggests candidates for free from the git log and asks you, at a terminal, to approve "
+                        "each one",
+        description="Suggests candidates for free from the git log and asks you, at a terminal, to approve each "
+                    "one. Answers: y approves, s or Enter skip, q quits. An approved "
                     "case is checked in the same mode `golden-set add` gives one by default: hybrid, as griot "
                     "search (also with nothing indexed yet: an index run builds keyword vectors); vector on a "
                     "collection without keyword vectors, which `griot index keywords` builds, or whose config "
@@ -1226,7 +1317,11 @@ def main(argv=None) -> int:
     p_suggest.add_argument("--max-commits", type=int, default=None, help="Limit of commits to consider (default: all)")
     p_suggest.add_argument("--limit", type=int, default=10, help="How many candidates to offer for approval (default: %(default)s)")
 
-    p_add = sub.add_parser("add", help="Runs a real search and lets you approve which results are the must_include")
+    p_add = sub.add_parser(
+        "add", help="Runs a search for QUERY (paid on a paid profile) and asks, at a terminal, which results are "
+                    "the right ones to require",
+        description="Runs a search for QUERY (paid on a paid profile) and asks, at a terminal, which results are "
+                    "the right ones to require. Answers: numbers pick, Enter or q add nothing.")
     show_flags_read_by_griot(p_add, PROFILE_FLAG)
     p_add.add_argument("query", help="Natural language question/term")
     p_add.add_argument("--limit", type=int, default=5, help="How many results to show to choose from (default: %(default)s)")
@@ -1239,7 +1334,10 @@ def main(argv=None) -> int:
     p_review = sub.add_parser("review", help="Offers questions from the query log (asked more than once, scoring "
                                              "low, ranked very differently by meaning and by the words, or "
                                              "reworded soon after) as cases; at a terminal, you pick the right "
-                                             "result")
+                                             "result",
+                                    description="Offers questions from the query log as cases; at a terminal, you "
+                                                "pick the right result. Answers: numbers pick, n none, s or Enter "
+                                                "skip, r reject, q quits.")
     p_review.add_argument("--limit", type=int, default=10, help="How many candidates to offer (default: %(default)s)")
 
     sub.add_parser("list", help="Lists the already-curated cases")

@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from griot import common, logdb, mcp_server, stats
 
@@ -135,7 +136,7 @@ def test_a_tool_call_records_the_project(monkeypatch):
 def test_a_failing_tool_call_still_records_the_project(monkeypatch):
     monkeypatch.setenv("GRIOT_PROJECT", "project-a")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):  # the refusal, raised again as what the agent reads
         mcp_server.griot_stats(days=0)  # rejects a nonsensical window: a real tool failure
 
     last = logdb.read_tool_calls(common.LOG_DIR, days=1)[-1]

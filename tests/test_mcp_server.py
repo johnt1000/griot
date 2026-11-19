@@ -20,6 +20,7 @@ import pytest
 
 from mcp.client.client import Client
 from mcp.server.elicitation import AcceptedElicitation
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ElicitResult
 
 from griot import common, golden_set, harnesses, jobs, logdb, mcp_server, quality_check, repos
@@ -93,16 +94,16 @@ def test_griot_search_clamps_limit_to_max(monkeypatch):
 
 
 def test_griot_search_propagates_runtime_error(monkeypatch):
-    """Spend circuit breaker (simulated gemini profile): RuntimeError needs to
-    propagate without being swallowed — the conversion to isError is automatic via
-    Client (confirmed empirically), there should be no try/except here."""
+    """Spend circuit breaker (simulated gemini profile): its error needs to
+    propagate without being swallowed into an answer, raised again as the
+    ToolError whose text the SDK shows the agent."""
 
     def fake_search(query, limit=5, group_by_document=False, **filters):
-        raise RuntimeError("Local circuit breaker: today's estimated spend already hit the ceiling")
+        raise common.SpendCircuitBreakerError("Local circuit breaker: today's estimated spend already hit the ceiling")
 
     monkeypatch.setattr(common, "search", fake_search)
 
-    with pytest.raises(RuntimeError, match="circuit breaker"):
+    with pytest.raises(ToolError, match="circuit breaker"):
         mcp_server.griot_search(query="x")
 
 
@@ -202,13 +203,13 @@ def test_griot_repos_list_reports_a_corrupted_repos_file_as_an_error():
     MCP client. Two things are wrong with that: the raw decoder traceback
     leaks internals, and the alternative of swallowing it would be worse —
     an empty list is indistinguishable from "no repos registered", i.e. a
-    lie. RuntimeError is this server's established way to surface a real
-    failure (it converts to isError automatically); the message must name
-    the file so the user can go fix it."""
+    lie. A griot error is raised again as a ToolError, the one kind whose
+    text reaches the agent; the message must name the file so the user can
+    go fix it."""
     common.secure_mkdir(common.REPOS_JSON_PATH.parent)
     common.REPOS_JSON_PATH.write_text('["/repos/alpha", "/repos/tru')
 
-    with pytest.raises(RuntimeError, match="repos.json"):
+    with pytest.raises(ToolError, match="repos.json"):
         mcp_server.griot_repos_list()
 
 
@@ -809,7 +810,7 @@ async def test_golden_set_add_does_not_present_a_corrupt_file_as_a_bad_argument(
 
     monkeypatch.setattr(golden_set, "add_case", _corrupt)
 
-    with pytest.raises(RuntimeError, match="quality_golden_set.json"):
+    with pytest.raises(ToolError, match="quality_golden_set.json"):
         await mcp_server.griot_golden_set_add(
             "q", [{"source_type": "code"}], confirm=True, ctx=_FakeCtx())
 
@@ -822,7 +823,7 @@ def test_golden_set_list_names_the_file_when_it_is_corrupt(monkeypatch):
 
     monkeypatch.setattr(golden_set, "list_cases", _corrupt)
 
-    with pytest.raises(RuntimeError, match="quality_golden_set.json"):
+    with pytest.raises(ToolError, match="quality_golden_set.json"):
         mcp_server.griot_golden_set_list()
 
 
@@ -1177,7 +1178,7 @@ def test_griot_stats_includes_the_quality_trend(monkeypatch):
 def test_griot_stats_rejects_a_nonsensical_window(monkeypatch):
     """A negative or zero window silently returns an empty report, which an
     agent would read as "no activity" rather than "you asked wrong"."""
-    with pytest.raises(ValueError, match="days"):
+    with pytest.raises(ToolError, match="days"):
         mcp_server.griot_stats(days=0)
 
 
@@ -1482,13 +1483,14 @@ async def test_call_tool_griot_spend_status_gera_structured_content_real(monkeyp
 @pytest.mark.anyio
 async def test_call_tool_griot_search_runtime_error_becomes_iserror_via_client(monkeypatch):
     """Level 2 of what test_griot_search_propagates_runtime_error already covers at
-    level 1: the RuntimeError -> isError=True conversion is automatic via
-    Client (mcp_server.py's docstring) — it was never actually confirmed
-    going through the real protocol, only assumed."""
+    level 1: through the real protocol, the circuit breaker's error is an
+    isError result carrying its text. The breaker's own class, as
+    check_spend_ceiling() raises it: from mcp 2.2 on a plain RuntimeError
+    would reach the agent as "Error executing tool griot_search"."""
     from mcp.client.client import Client
 
     def fake_search(query, limit=5, group_by_document=False, **filters):
-        raise RuntimeError("Local circuit breaker: today's estimated spend already hit the ceiling")
+        raise common.SpendCircuitBreakerError("Local circuit breaker: today's estimated spend already hit the ceiling")
 
     monkeypatch.setattr(common, "search", fake_search)
 

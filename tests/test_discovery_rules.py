@@ -159,7 +159,7 @@ def test_a_file_over_the_size_ceiling_is_skipped_and_reported(tree, capsys):
     (root / "dump.sql").write_text("x" * (index_code.MAX_FILE_BYTES + 1))
     add("small.sql", "dump.sql")
     assert _rel(index_code.discover_files(root), root) == ["small.sql"]
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "dump.sql" in out and "larger than" in out
 
 
@@ -239,7 +239,7 @@ def test_a_work_tree_git_cannot_list_is_not_walked_instead(repo, capsys):
     (repo / "local_settings.py").write_text("SECRET = 'x'\n")
     _break_git(repo)
     assert index_code.discover_files(repo) == []
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "could not list" in out and "nothing is read" in out
 
 
@@ -255,7 +255,7 @@ def test_a_directory_whose_files_are_all_ignored_says_so(repo, capsys):
     (repo / "scratch").mkdir()
     (repo / "scratch" / "a.py").write_text("x = 1\n")
     assert index_code.discover_files(repo / "scratch") == []
-    assert "git lists no files under" in capsys.readouterr().out
+    assert "git lists no files under" in capsys.readouterr().err
 
 
 # --- symlinks anywhere on the way ---------------------------------------------------
@@ -308,4 +308,4 @@ def test_the_size_note_speaks_in_the_same_unit_as_the_docs(tree, capsys):
     (root / "dump.sql").write_text("x" * (index_code.MAX_FILE_BYTES + 1))
     add("dump.sql")
     index_code.discover_files(root)
-    assert "larger than 1 MB" in capsys.readouterr().out
+    assert "larger than 1 MB" in capsys.readouterr().err

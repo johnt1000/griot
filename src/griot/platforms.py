@@ -38,6 +38,7 @@ change).
 from __future__ import annotations
 
 import os
+import re
 import time
 from urllib.parse import quote, urlsplit
 
@@ -52,6 +53,15 @@ from griot import common
 # resource — well above any reasonable repo; hitting the cap produces an
 # explicit warning (silent truncation would mask incomplete coverage).
 MAX_PAGES = 200
+
+
+def _warn_pages_capped(url: str) -> None:
+    """The one wording for a listing cut at MAX_PAGES. Not silenceable: the
+    index is incomplete. The URL is shown without its user part and query,
+    where a token can sit."""
+    shown = common.printable(re.sub(r"://[^/@\s]+@", "://", url.split("?", 1)[0]))
+    common.log_and_print(f"Warning: the listing at {shown} was cut at {MAX_PAGES} pages, so the items after that "
+                         f"are not indexed.", level="warning", silenceable=False)
 
 
 def _strip_git_suffix(path: str) -> str:
@@ -203,7 +213,7 @@ def _github_paginated_get(url: str, params: dict | None = None) -> list[dict]:
     while next_url:
         pages += 1
         if pages > MAX_PAGES:
-            common.log_and_print(f"WARNING: cap of {MAX_PAGES} pages reached on {url} — listing truncated.", level="warning")
+            _warn_pages_capped(url)
             break
         resp = _get_with_retry(next_url, headers, request_params)
         resp.raise_for_status()
@@ -354,7 +364,7 @@ def _gitlab_request(project_id: str, endpoint: str, params: dict | None = None) 
         if total_pages_header is not None and page >= int(total_pages_header):
             break
         if page >= MAX_PAGES:
-            common.log_and_print(f"WARNING: cap of {MAX_PAGES} pages reached on {endpoint} — listing truncated.", level="warning")
+            _warn_pages_capped(endpoint)
             break
         page += 1
     return all_items
@@ -441,7 +451,7 @@ def _bitbucket_paginated_get(url: str, params: dict | None = None) -> list[dict]
     while next_url:
         pages += 1
         if pages > MAX_PAGES:
-            common.log_and_print(f"WARNING: cap of {MAX_PAGES} pages reached on {url} — listing truncated.", level="warning")
+            _warn_pages_capped(url)
             break
         resp = _get_with_retry(next_url, headers, request_params)
         resp.raise_for_status()
@@ -580,7 +590,7 @@ def azure_fetch_pull_requests(project_id: str) -> list[dict]:
         if len(page) < 100:
             break
         if skip >= (MAX_PAGES - 1) * 100:
-            common.log_and_print(f"WARNING: cap of {MAX_PAGES} pages reached on {url} — listing truncated.", level="warning")
+            _warn_pages_capped(url)
             break
         skip += 100
     return [
@@ -659,7 +669,7 @@ def _gitea_paginated_get(url: str, params: dict | None = None) -> list[dict]:
             break
         all_items.extend(items)
         if page >= MAX_PAGES:
-            common.log_and_print(f"WARNING: cap of {MAX_PAGES} pages reached on {url} — listing truncated.", level="warning")
+            _warn_pages_capped(url)
             break
         page += 1
     return all_items

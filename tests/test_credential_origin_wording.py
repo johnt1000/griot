@@ -29,12 +29,12 @@ def _every_message(monkeypatch, capsys):
     hint = common.credential_hint(VAR)
     check = next(c for c in doctor.run_checks() if c["check"] == "credentials")
     auth.cmd_list()
-    listed = capsys.readouterr().out
+    listed = "".join(capsys.readouterr())
     monkeypatch.setattr(auth.getpass, "getpass", lambda prompt: NEW)
     auth.cmd_set("github")
-    set_out = capsys.readouterr().out
+    set_out = "".join(capsys.readouterr())
     auth.cmd_remove("github")
-    removed = capsys.readouterr().out
+    removed = "".join(capsys.readouterr())
     messages = {"hint": hint, "doctor": check["detail"] + " " + (check["fix"] or ""),
                 "list": listed, "set": set_out, "remove": removed}
     for text in messages.values():

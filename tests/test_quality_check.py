@@ -216,6 +216,47 @@ def test_main_happy_path_self_check_only(monkeypatch, capsys):
     assert "Quality OK." in out
 
 
+def test_the_result_line_is_on_stdout_and_nothing_else_is_(monkeypatch, capsys):
+    """The `quality_check: ...` line is the result: moving log_and_print to
+    stderr must not have taken it along."""
+    _fake_embed(monkeypatch)
+    common.index_documents(_docs(5))
+    common.release_lock()
+    capsys.readouterr()
+
+    quality_check.main(["--sample-size", "5", "--skip-golden-set"])
+
+    out, err = capsys.readouterr()
+    assert "quality_check: collection=" in out and "self_check=5/5" in out
+    assert "quality_check: collection=" not in err
+
+
+def test_json_mode_prints_no_result_line(monkeypatch, capsys):
+    _fake_embed(monkeypatch)
+    common.index_documents(_docs(5))
+    common.release_lock()
+    capsys.readouterr()
+
+    quality_check.main(["--sample-size", "5", "--skip-golden-set", "--json"])
+
+    out, err = capsys.readouterr()
+    assert "quality_check: collection=" not in out + err
+
+
+def test_a_missing_golden_set_is_a_note_on_stderr_with_the_command(monkeypatch, capsys):
+    _fake_embed(monkeypatch)
+    common.index_documents(_docs(5))
+    common.release_lock()
+    capsys.readouterr()
+
+    quality_check.main(["--sample-size", "5", "--json"])
+
+    out, err = capsys.readouterr()
+    json.loads(out)
+    assert err.strip().splitlines()[-1] == "  griot golden-set suggest"
+    assert "Note: there is no golden set at" in err
+
+
 # --- --json (jobs.run_quality_check_job() calls this as a ------------------
 # --- subprocess and parses stdout as JSON — human-readable prints must -----
 # --- NEVER mix into stdout in this mode, or the parent's json.loads() ------

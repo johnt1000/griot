@@ -2,14 +2,15 @@ import argparse
 import json
 import statistics
 import sys
+from pathlib import Path
 
 import qdrant_edge as qe
 
 # golden_set imports only common/retrieval_eval, so this is not a cycle;
 # aliased because `golden_set` is also this module's parameter name.
-from griot import common, logdb
+from griot import common, logdb, retrieval_eval
 from griot import golden_set as golden_set_mod
-from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
+from griot.cli import PROFILE_FLAG, at_least_one, show_flags_read_by_griot
 
 # Cap on how many individual failures a stored record keeps. A self-check
 # over a large corpus with a high failure rate would otherwise persist a
@@ -361,6 +362,191 @@ def golden_summary(golden_check: dict) -> str:
             + (f" ({'; '.join(detail)})" if detail else ""))
 
 
+# --- --from-history -----------------------------------------------------------
+
+# Questions per repository unless --limit says otherwise: enough for a mean
+# that does not swing on one commit, few enough that a run on a paid profile
+# costs cents and a local one takes seconds.
+HISTORY_DEFAULT_LIMIT = 100
+# How far back a run looks for the previous one to compare with.
+_HISTORY_LOOKBACK = 200
+_KIND_LABELS = {"subject": "subject only", "subject_and_body": "subject and body"}
+
+
+class _NotMeasurable(Exception):
+    """The whole run cannot start: said on stderr in --json mode (no result
+    to report), like a collection that does not exist."""
+
+
+def _history_targets(name: str | None) -> list[tuple[str, Path]]:
+    """(name, path) of the registered repositories to measure: the one named,
+    or every one. Names are directory names, the `repo` every point carries."""
+    try:
+        registered = [Path(p) for p in common.load_repos()]
+    except FileNotFoundError:
+        registered = []
+    except (OSError, ValueError) as e:
+        raise _NotMeasurable(f"{common.REPOS_JSON_PATH} cannot be read ({e}). Fix the file, or list what griot "
+                             f"sees:\n  `griot repos list`") from None
+    if name is None:
+        if not registered:
+            raise _NotMeasurable("No repository is registered, so there is no history to ask questions from. "
+                                 "Register one:\n  `griot repos add PATH`")
+        return [(path.name, path) for path in registered]
+    mine = [path for path in registered if path.name == name]
+    if not mine:
+        raise _NotMeasurable(f"No registered repository is named {common.printable(repr(name))[:80]} (the "
+                             f"directory name, spelled exactly). See the names:\n  `griot repos list`")
+    if len(mine) > 1:
+        raise _NotMeasurable(f"More than one registered repository is named {common.printable(repr(name))[:80]}, "
+                             f"and their points carry the same name: there is no telling their files apart. "
+                             f"See them:\n  `griot repos list`")
+    return [(name, mine[0])]
+
+
+def _previous_history_check(repo: str, mode: str, limit: int, fingerprint: str) -> dict | None:
+    """The last recorded run comparable with this one: same collection,
+    repository, mode, k and limit. Whether it asked the same questions is
+    said (same_questions), not required: a history that grew is still the
+    same series, read with that in mind."""
+    for record in logdb.read_recent(common.LOG_DIR, "history_checks", collection=common.COLLECTION_NAME,
+                                    limit=_HISTORY_LOOKBACK):
+        if (record.get("repo"), record.get("mode"), record.get("k"), record.get("limit")) == (
+                repo, mode, retrieval_eval.HISTORY_K, limit):
+            return {"timestamp": record.get("timestamp"), "mrr": record.get("mrr"), "recall": record.get("recall"),
+                    "pairs": record.get("pairs"), "same_questions": record.get("questions") == fingerprint}
+    return None
+
+
+def _record_history_check(result: dict, mode: str) -> None:
+    """Never raises, like record_for_trend(): recording is observability,
+    and the numbers were already printed."""
+    from datetime import datetime, timezone
+
+    record = {key: value for key, value in result.items() if key != "previous"}
+    try:
+        common.secure_mkdir(common.LOG_DIR)
+        logdb.write_history_check(common.LOG_DIR, {
+            "timestamp": datetime.now(timezone.utc).isoformat(), "collection": common.COLLECTION_NAME,
+            "profile": common.ACTIVE_PROFILE_NAME, "mode": mode, "k": retrieval_eval.HISTORY_K, **record})
+    except Exception as e:  # noqa: BLE001 — see docstring
+        common.log_and_print(f"Warning: could not record this history check for the trend: {e}",
+                             level="warning", echo=False)
+
+
+def _rate(value) -> str:
+    return "-" if value is None else f"{value:.3f}"
+
+
+def _print_history_result(result: dict, mode: str) -> None:
+    print(f"\n=== Retrieval from history: {result['repo']} (mode {mode}, top {retrieval_eval.HISTORY_K}, "
+          f"code only) ===")
+    print(f"{result['pairs']} of {result['pairs_available']} commits asked (evenly spaced over the history): "
+          f"a commit's message is the question, the indexed files it touched the answers.")
+    print(f"  {'kind':<18}{'pairs':>6}{'MRR@10':>9}{'recall@10':>11}")
+    for kind, row in result["by_kind"].items():
+        print(f"  {_KIND_LABELS[kind]:<18}{row['pairs']:>6}{_rate(row['mrr']):>9}{_rate(row['recall']):>11}")
+    print(f"  {'all':<18}{result['pairs']:>6}{_rate(result['mrr']):>9}{_rate(result['recall']):>11}")
+    if result["refused"]:
+        print(f"  {result['refused']} question(s) refused by {mode} search (no word it can match): counted as "
+              f"not found.")
+    previous = result["previous"]
+    if previous:
+        same = "same questions" if previous["same_questions"] else "the history changed since, so the questions differ"
+        print(f"  previous ({previous['timestamp']}, {same}): MRR@10 {_rate(previous['mrr'])}, "
+              f"recall@10 {_rate(previous['recall'])}")
+
+
+def run_from_history(args) -> None:
+    """`griot quality-check --from-history`: for each registered repository
+    (or the one --repo names), commits evenly spaced over its history become
+    questions, the indexed files each touched are its answers, and MRR@10 and
+    recall@10 are reported per kind of question. Runs neither the self-check
+    nor the golden set, and records into a series of its own (logs.db
+    history_checks), so the three rates never mix. Exit 1 when nothing could
+    be measured."""
+    mode = args.mode or common.SEARCH_DEFAULT_MODE
+    limit = args.limit or HISTORY_DEFAULT_LIMIT
+    err = sys.stderr if args.json else sys.stdout
+    try:
+        targets = _history_targets(args.repo)
+        if mode != "vector" and common.keyword_search_status(common.COLLECTION_NAME) is not True:
+            raise _NotMeasurable(
+                f"Mode {mode} needs keyword search, and collection '{common.COLLECTION_NAME}' has no keyword "
+                f"vectors yet. `griot index keywords` builds them once (local, embeds nothing); or measure by "
+                f"meaning only:\n  `griot quality-check --from-history --mode vector`")
+    except _NotMeasurable as e:
+        print(f"Error: {e}", file=err)
+        raise SystemExit(1) from None
+
+    # Everything that costs nothing first (reading git and the index), so
+    # the cost said below is the cost of exactly what will be searched.
+    client = common.get_client()
+    planned, not_measured = [], []
+    for name, path in targets:
+        if not (path / ".git").exists():
+            # Said apart: git would fail on it and read as "no commit".
+            not_measured.append({"repo": name, "reason": (
+                f"'{name}' is registered at {path}, which is not a git repository on this machine, so it has "
+                f"no history to read. Check the registered paths:\n  `griot repos list`")})
+            continue
+        indexed = retrieval_eval.indexed_code_files(client, name)
+        if not indexed:
+            not_measured.append({"repo": name, "reason": (
+                f"nothing is indexed as code for '{name}' with profile '{common.ACTIVE_PROFILE_NAME}', so no "
+                f"commit has an answer to find. Index it:\n  `griot index code --repo {name}`")})
+            continue
+        every_pair = retrieval_eval.history_pairs(path, name, indexed)
+        if not every_pair:
+            not_measured.append({"repo": name, "reason": (
+                f"no commit in the history of '{name}' touched a file that is indexed now, so there is no "
+                f"question to ask. Once it has one, index it again:\n  `griot index all --repo {name}`")})
+            continue
+        planned.append((name, every_pair, retrieval_eval.spread(every_pair, limit)))
+
+    estimate = None
+    paid = common.ACTIVE_PROFILE["backend"] != "local"
+    asked = [pair for _, _, pairs in planned for pair in pairs]
+    if paid and mode != "keyword" and asked:
+        # Said before any search, on stderr so --json stays one payload, and
+        # then the run goes on: no confirmation threshold exists yet, and a
+        # run of this size costs cents (HISTORY_DEFAULT_LIMIT). Never silent.
+        estimate = common.estimated_embedding_cost_usd(sum(len(pair["query"]) for pair in asked))
+        cost = f"about US$ {estimate:.4f}, estimated from their size" if estimate is not None else "cost unknown"
+        print(f"Embedding {len(asked)} commit messages with paid profile '{common.ACTIVE_PROFILE_NAME}' "
+              f"({cost}).", file=sys.stderr)
+
+    results = []
+    for name, every_pair, pairs in planned:
+        fingerprint = retrieval_eval.questions_fingerprint(pairs)
+        previous = _previous_history_check(name, mode, limit, fingerprint)
+        measured = retrieval_eval.evaluate_history(pairs, mode)
+        result = {"repo": name, "pairs": measured["pairs"], "pairs_available": len(every_pair), "limit": limit,
+                  "questions": fingerprint, "mrr": measured["mrr"], "recall": measured["recall"],
+                  "by_kind": measured["by_kind"], "refused": measured["refused"], "previous": previous}
+        _record_history_check(result, mode)
+        results.append(result)
+        if not args.json:
+            _print_history_result(result, mode)
+
+    common.log_and_print(
+        f"quality_check --from-history: collection={common.COLLECTION_NAME} mode={mode} "
+        + " ".join(f"{r['repo']}=mrr:{_rate(r['mrr'])},recall:{_rate(r['recall'])},pairs:{r['pairs']}"
+                   for r in results),
+        echo=not args.json)
+
+    ok = bool(results)
+    if args.json:
+        print(json.dumps({"collection": common.COLLECTION_NAME, "profile": common.ACTIVE_PROFILE_NAME,
+                          "mode": mode, "k": retrieval_eval.HISTORY_K, "repositories": results,
+                          "not_measured": not_measured, "estimated_cost_usd": estimate, "ok": ok}))
+    else:
+        for missing in not_measured:
+            print(f"\nNot measured: {missing['reason']}")
+    if not ok:
+        raise SystemExit(1)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="griot quality-check",
@@ -375,7 +561,32 @@ def main(argv=None):
     parser.add_argument("--min-score", type=float, default=SELF_CHECK_MIN_SCORE, help="Minimum acceptable self-match score (default: %(default)s)")
     parser.add_argument("--skip-golden-set", action="store_true", help="Runs only the self-check, skips the curated golden set")
     parser.add_argument("--json", action="store_true", help="[--json stdout contract] Output ONLY a single JSON payload on stdout (for scripting/subprocess consumers, e.g. jobs.run_quality_check_job()) — every human-readable print() is suppressed in this mode. A genuine execution error (bad collection) still goes to stderr, never stdout, so a caller can tell 'valid JSON on stdout' apart from 'something broke before we even got a result' just from which stream has content.")
+    history = parser.add_argument_group(
+        "from history", "Measures retrieval against git history instead of the self-check and the golden set: "
+                        "a commit's message is the question, the indexed files it touched are the answers. "
+                        "Reports MRR@10 and recall@10 per kind of question and records them as a series of "
+                        "their own. On a paid profile the estimated cost of embedding the messages is said "
+                        "first.")
+    history.add_argument("--from-history", action="store_true",
+                         help="Measure against the history of the registered repositories (the active collection)")
+    history.add_argument("--repo", help="Only this registered repository (its directory name)")
+    history.add_argument("--limit", type=at_least_one, default=None,
+                         help=f"Commits asked per repository, evenly spaced over its history "
+                              f"(default: {HISTORY_DEFAULT_LIMIT})")
+    history.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
+                         help=f"Search mode measured (default: {common.SEARCH_DEFAULT_MODE}, what readers get)")
     args = parser.parse_args(argv)
+
+    if not args.from_history:
+        given = [flag for flag, value in (("--repo", args.repo), ("--limit", args.limit), ("--mode", args.mode))
+                 if value is not None]
+        if given:
+            parser.error(f"{', '.join(given)} {'applies' if len(given) == 1 else 'apply'} only with --from-history")
+    elif args.collection and args.collection != common.COLLECTION_NAME:
+        # The searches always run against the active collection
+        # (common.search has no other): measuring another is not possible.
+        parser.error(f"--from-history measures the active collection ('{common.COLLECTION_NAME}'); "
+                     f"choose another with --profile instead of --collection")
 
     collection = args.collection or common.COLLECTION_NAME
     # Existence check WITHOUT opening/creating anything (the old
@@ -393,6 +604,9 @@ def main(argv=None):
         # mode, never stdout, or a caller parsing stdout as JSON would choke.
         print(f"Error: collection '{collection}' does not exist.", file=sys.stderr if args.json else sys.stdout)
         raise SystemExit(1)
+
+    if args.from_history:
+        return run_from_history(args)
 
     # The curated cases are read and checked BEFORE anything is embedded: a
     # file that cannot be run as cases used to end in a traceback naming a
@@ -420,8 +634,8 @@ def main(argv=None):
         # resolved via common (CONFIG_DIR/quality_golden_set.json) — hand-curated
         # by the user, not part of the installed code
         if golden_set is None:
-            if not args.json:
-                print(f"\nWarning: {common.GOLDEN_SET_PATH} does not exist, skipping golden set.")
+            common.log_and_print(f"Note: there is no golden set at {common.GOLDEN_SET_PATH}, so it was skipped. "
+                                 f"Start one:\n  griot golden-set suggest")
         else:
             if not args.json:
                 print(f"\n=== Golden set: {len(golden_set)} curated questions ===")
@@ -455,12 +669,17 @@ def main(argv=None):
 
     record_for_trend(collection, self_check, golden_check)
 
-    common.log_and_print(
+    result_line = (
         f"quality_check: collection={collection} "
         f"self_check={self_check['passed']}/{self_check['sampled']} "
-        f"golden_set={golden_check['passed'] if golden_check else '-'}/{golden_check['total'] if golden_check else '-'}",
-        echo=not args.json,  # [--json stdout contract] audit trail (griot.log) still gets the entry — only stdout is suppressed
+        f"golden_set={golden_check['passed'] if golden_check else '-'}/{golden_check['total'] if golden_check else '-'}"
     )
+    # This line is the RESULT of the command: it stays on stdout, which
+    # log_and_print() no longer is. The log still gets the entry either way,
+    # and under --json stdout is the JSON payload alone.
+    common.log_and_print(result_line, echo=False)
+    if not args.json:
+        print(result_line)
 
     # A check that sampled nothing measured nothing. It used to pass ("0/0
     # samples self-recovered"), which is how an empty index got a green gate.
