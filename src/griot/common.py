@@ -1143,6 +1143,21 @@ def load_repos() -> list[str]:
     return paths
 
 
+def repos_read_error() -> str | None:
+    """Why repos.json cannot be used, in the one sentence every surface says,
+    or None when it can (or is simply not there yet: nothing registered).
+    For a status reader: freshness.repository_freshness() answers [] for an
+    unreadable file on purpose, so a search does not fail over it, and that
+    empty list alone reads as "no repository registered"."""
+    try:
+        load_repos()
+    except FileNotFoundError:
+        return None
+    except (OSError, *UNREADABLE_JSON) as e:
+        return repos_unreadable_sentence(e)
+    return None
+
+
 def load_repos_or_say() -> list[str] | None:
     """load_repos() for an indexer: the paths, or None after the sentence
     that says why there are none was printed on stderr (the caller exits 1).
@@ -4597,6 +4612,9 @@ def get_index_status(collection: str | None = None, *, reuse_active_handle: bool
         # and by how much (freshness.py): the question an agent has before
         # trusting a result.
         "repositories": freshness.repository_freshness(collection),
+        # Set when repos.json is there and cannot be read: `repositories` is
+        # then empty, and without this it would read as nothing registered.
+        "repos_error": repos_read_error(),
         # Why points_count is None when it is: "busy" (another process holds
         # the collection, routine with `griot mcp` running) or "unreadable:
         # <reason>" (it could not be opened at all). None when there is a count.

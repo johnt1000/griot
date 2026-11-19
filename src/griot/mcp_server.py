@@ -1462,6 +1462,10 @@ class _IndexStatusMayLack(_WhyNoPointCount, total=False):
     # a degraded answer, not a rejected one. (`| None`: the SDK gives an
     # absent key the value null, so the type has to admit it.)
     repositories: list[RepositoryFreshness] | None
+    # Why `repositories` is empty when repos.json is there and cannot be
+    # read, in the sentence every surface uses for that file; null when it
+    # can be read or does not exist yet (nothing registered).
+    repos_error: str | None
     # Whether griot_search takes mode keyword/hybrid on this collection, and
     # so whether its default runs hybrid: false for one indexed before
     # keyword search (`griot index keywords` builds it; the default then runs
