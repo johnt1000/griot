@@ -8,6 +8,58 @@ between minor versions. Breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Added
+
+- **`griot index all --if-stale [--repo NAME]` indexes only what is
+  behind**, by the rule `griot doctor`, `griot stats` and
+  `griot_index_status` report. With nothing behind it embeds nothing and
+  exits 0; when another griot process holds the collection it stops, keeps
+  what it wrote and exits 0, so a scheduler does not report a routine
+  overlap. Its summary of what it indexed is on stdout and `--quiet` keeps
+  it. The indexing guide has a launchd and a `post-merge` recipe; griot
+  installs neither (#174).
+- **A paid run says what it will cost first, and asks above
+  `GRIOT_CONFIRM_SPEND_USD`** (default 0.50, `griot config set
+  confirm-spend`). On a paid profile, `griot index` and `griot quality-check
+  --from-history` read the credential first, then estimate what is pending:
+  below the threshold the estimate goes to stderr and the run goes on, at or
+  above it they ask, `--yes` answers, and without a terminal they exit 2
+  with nothing spent. A run the spend ceiling would stop is refused with a
+  ceiling that can be pasted. `griot_quality_check` returns `paid` and
+  `estimated_cost_usd` (#168).
+- **`griot update` says what the new version needs done.** After a
+  successful upgrade it runs the upgraded installation's `griot doctor
+  --json` and lists each condition that needs an action, command last, or
+  says nothing else needs doing; a check that cannot run never fails the
+  upgrade. It never indexes or builds anything (#173).
+
+### Changed
+
+- **One notices ledger says each condition once per change of state, in one
+  wording, on every surface.** Repositories behind, keyword vectors
+  missing, the quality check older than the index, renamed variables and the
+  old layout each have one sentence and one action, which `griot doctor`
+  and `griot stats` list in full. Other commands end with at most one stderr
+  line, `N notices: run griot doctor`, when the set changed or a week later.
+  `griot_search` and `griot search --json` share one note built from the
+  ledger; the server says each condition once per process and again when it
+  changes, and a repository behind ends with one `griot index all --repo
+  NAME` per repository. Over 10 searches with one repository behind, the
+  note text drops from 3,420 bytes to 292 (#169).
+- **In `griot doctor --json`, a `fix` with more than one command separates
+  them by newlines** (it used "; "), so each command can be pasted; the
+  text report prints one arrow line per command. Rows also gain a `notices`
+  field (#169, #173).
+- An index run starts with how many items it embeds and how many are
+  already up to date; every refusal says "Nothing was changed." (#168).
+
+### Security
+
+- **Counting another collection's points no longer leaves the engine's
+  `edge_config.json` and `segment.json` readable by other users**, and the
+  update check no longer passes `.env` values to its child process as if
+  they were exported (#173).
+
 ## [0.8.0] — 2026-11-19
 
 ### Added
