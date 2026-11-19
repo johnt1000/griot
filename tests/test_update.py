@@ -446,7 +446,9 @@ def test_the_check_gets_the_environment_as_it_was_before_the_settings_file(world
     common.ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     common.ENV_PATH.write_text("GRIOT_MCP_INDEX_ROOTS=\nGRIOT_QUIET=0\nGRIOT_SOMETHING_EXPORTED=same\n")
     monkeypatch.setenv("GRIOT_SOMETHING_EXPORTED", "same")  # exported, and the file says the same
-    common.EXPORTED_BEFORE_ENV_FILE["GRIOT_SOMETHING_EXPORTED"] = "digest"
+    # The digest of the value it was exported with: a value griot changed
+    # since is not the environment's any more (common.environment_without_the_env_file).
+    common.EXPORTED_BEFORE_ENV_FILE["GRIOT_SOMETHING_EXPORTED"] = common.value_digest("same")
     monkeypatch.setenv("GRIOT_MCP_INDEX_ROOTS", "")  # as load_dotenv left it
     monkeypatch.setenv("GRIOT_QUIET", "1")  # set by --quiet after the file was read
 

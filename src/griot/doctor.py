@@ -527,7 +527,7 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
         parts = []
         parts.extend(n.sentence for n in behind)
         if without_code:
-            parts.append("code never indexed in " + ", ".join(without_code))
+            parts.append(f"{notices.never_indexed(['code'])} in " + ", ".join(without_code))
         parts.extend(stats.platform_missing_token_phrase(name, env_var) for name, env_var in missing_tokens)
         if token_refused:
             parts.append(stats.platform_refused_phrase(token_refused))
@@ -568,8 +568,14 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
             # likely fail the same way, and no token check fixes it.
             detail += "; where the platform did not answer or failed, " + stats.FAILURE_CHECK
         return _check("repositories", WARN, detail, fix, behind)
+    # In the words `griot index all --if-stale` says it has nothing to do,
+    # and only when it would have nothing to do (freshness.stale_reason, the
+    # one rule both read).
     return _check("repositories", OK, f"{len(paths)} registered, all present"
-                                       + (", none behind its repository" if reports and all(r.get("behind") is False for r in reports) else ""))
+                                       + (f"; {notices.none_behind(len(reports))}"
+                                          if reports and all(r.get("behind") is False
+                                                             and freshness.stale_reason(r, freshness.SOURCES) is None
+                                                             for r in reports) else ""))
 
 
 def check_quality(common, now=None, found: list | None = None, looked: set | None = None) -> dict:

@@ -828,6 +828,22 @@ def log_run_summary(**fields) -> None:
     prune_logs_if_due()
 
 
+def log_empty_run(script: str, args, repo_paths: list[str], start_time: float) -> None:
+    """Records a run that found nothing to index (no file it reads, no tags,
+    no remote branches, no platform items): it still ran, at those heads and refs.
+    Unrecorded, the freshness report reads the source as never run, and
+    `griot index all --if-stale` indexes every repository again on every
+    call to fill it; recorded, a tag added later still reads as changed.
+    A dry run records nothing, as everywhere else (cli._run_index_source)."""
+    import time
+
+    if args.dry_run:
+        return
+    log_run_summary(script=script, repo=args.repo or args.path or "all", repo_paths=repo_paths,
+                    indexed=0, skipped=0, failed=0, duration_seconds=round(time.time() - start_time, 2),
+                    spend_today_usd=get_spend_today())
+
+
 def log_questions_enabled() -> bool:
     """[finding M1 from the audit, 2026-08-19] queries.jsonl stores the full
     question forever — GRIOT_LOG_QUESTIONS=false allows turning off just the
@@ -1057,13 +1073,54 @@ keep_own_directories_private()
 # process that outlives edits to the file (the MCP server) has no other way
 # to tell a variable that was exported from one the file gave it at start.
 ENVIRONMENT_BEFORE_ENV_FILE = {name: value for name, value in os.environ.items() if name.startswith("GRIOT_")}
+def value_digest(value: str) -> str:
+    """How a variable's value is remembered here: enough to tell two values
+    apart, without keeping a second copy of a secret."""
+    return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+
+
 # Every variable the environment set before the file was read, as a digest of
 # its value: enough to tell a credential exported in the shell from one the
 # file or the keychain gave, and whether the two differ, without keeping a
 # second copy of any secret (see credential_origin()).
-EXPORTED_BEFORE_ENV_FILE = {name: hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
-                            for name, value in os.environ.items()}
+EXPORTED_BEFORE_ENV_FILE = {name: value_digest(value) for name, value in os.environ.items()}
 load_dotenv(dotenv_path=ENV_PATH)
+# What the file put into the environment just now (load_dotenv never
+# overrides, so: every name it added), as digests. The file can be edited
+# while a server runs; this is what tells its value at start from an export.
+SET_BY_ENV_FILE = {name: value_digest(value) for name, value in os.environ.items()
+                   if name not in EXPORTED_BEFORE_ENV_FILE}
+
+
+def environment_without_the_env_file() -> dict[str, str]:
+    """This process's environment for a griot process it starts, without
+    what griot's settings file put there.
+
+    Handed on as it is, every value the file gave would reach the child as
+    if the person had exported it: reported as the environment's, and, for
+    an MCP server, taken as the environment's word (see
+    griot.ENVIRONMENT_ONLY_NARROWS), where the file and the environment
+    count differently. A long-lived host would also hand on the file's value
+    as it was at start. The child reads the file itself, as it is now.
+
+    Kept: a value the environment gave (GRIOT_CONFIG_DIR and GRIOT_DATA_DIR
+    among them, so the child uses the same directories), and what this
+    process set itself (--quiet, --profile, --chat-profile write theirs
+    before the file is read; anything set later and not the file's). Left
+    out: a value the file gave at start, and one the file holds now (what a
+    server put back from the file after ignoring a widening export, see
+    _take_from_the_environment_only_what_narrows)."""
+    from dotenv import dotenv_values
+
+    in_file = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
+    kept = {}
+    for name, value in os.environ.items():
+        digest = value_digest(value)
+        if EXPORTED_BEFORE_ENV_FILE.get(name) == digest:
+            kept[name] = value  # the environment's own value
+        elif SET_BY_ENV_FILE.get(name) != digest and in_file.get(name) != value:
+            kept[name] = value  # neither the environment's nor the file's: this process set it
+    return kept
 
 # Rename RAG_* -> GRIOT_*: values under the
 # old names are IGNORED — better to warn loudly than to let, say, a
@@ -1894,7 +1951,7 @@ def credential_origin(env_var: str) -> dict:
     # keychain).
     source = "environment" if exported else stored
     shadows = bool(exported and stored_value
-                   and hashlib.sha256(stored_value.encode("utf-8", "replace")).hexdigest() != EXPORTED_BEFORE_ENV_FILE[env_var])
+                   and value_digest(stored_value) != EXPORTED_BEFORE_ENV_FILE[env_var])
     direnv = _direnv_exports(env_var) if exported else []
     return {"source": source, "stored": stored, "shadows_stored": shadows,
             "exported_in": _shell_exports(env_var) + direnv if exported else [], "direnv_in": direnv}
@@ -2225,6 +2282,28 @@ def _lock_owner_is_alive(info: dict) -> bool:
     return True
 
 
+class IndexLockHeldError(RuntimeError):
+    """griot's index lock is held by another live run (`pid`), or was taken
+    by one that started at the same moment (`pid` None). Typed so that
+    `griot index all --if-stale` can tell this routine overlap (a scheduler
+    and a git hook starting together) from a real failure; a RuntimeError,
+    with the message it always had, so every caller that catches
+    RuntimeError reads it as before. Not a GriotError: that would change
+    what the MCP server sends an agent, which this type is not about."""
+
+    def __init__(self, message: str, *, pid: int | None = None, started: float | None = None):
+        super().__init__(message)
+        self.pid = pid
+        self.started = started
+
+    def held_by(self) -> str:
+        """Who holds the lock, as the skip line of --if-stale says it."""
+        if self.pid is None:
+            return "another griot index run started at the same moment and holds griot's lock"
+        when = f", started {time.strftime('%H:%M', time.localtime(self.started))}" if self.started else ""
+        return f"another griot index run holds griot's lock (PID {self.pid}{when})"
+
+
 def acquire_lock(label: str | None = None) -> None:
     """label: optional description of what's being indexed (e.g. a repo's
     path) — forward-looking for griot_index_repo (section 2.7 of the MCP
@@ -2236,10 +2315,11 @@ def acquire_lock(label: str | None = None) -> None:
     if LOCK_PATH.exists():
         info = _read_lock()
         if info is not None and _lock_owner_is_alive(info):
-            raise RuntimeError(
+            raise IndexLockHeldError(
                 f"A griot process is already running (PID {info['pid']}). Wait for it to finish, or delete "
                 f"{LOCK_PATH} if you're sure the process died without clearing the lock "
-                f"(e.g. kill -9 / OOM)."
+                f"(e.g. kill -9 / OOM).",
+                pid=info["pid"], started=info["start_time"],
             )
         # lock without valid info (corrupted/old format) or orphaned (owner
         # dead or PID recycled) — proceed and overwrite it.
@@ -2256,7 +2336,7 @@ def acquire_lock(label: str | None = None) -> None:
         # designed to receive a repo path) — same M2 contract as the other files
         fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        raise RuntimeError(
+        raise IndexLockHeldError(
             f"Another process created {LOCK_PATH} at the same instant (a race between two "
             f"indexers starting together). Run it again."
         )

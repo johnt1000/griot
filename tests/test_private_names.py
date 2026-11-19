@@ -134,6 +134,9 @@ TESTS_MAY_REACH = {
         "_run_index_source": _SEAM,
         "_busy_message": _RAISER,
         "_cmd_profiles_delete": _RAISER,
+        # --if-stale's estimate, replaced to see which repositories it reads.
+        "_pending_by_source": _SEAM,
+        "_take_if_stale": _HELPER,
     },
     "config": {
         "_in_file": _SEAM,

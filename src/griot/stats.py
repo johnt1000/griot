@@ -464,7 +464,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                    collection=collection)
     attention = notices.attention_lines([n for n in found if n.kind == notices.BEHIND])
     if repositories_without_code:
-        attention.append("code never indexed in: " + ", ".join(repositories_without_code)
+        attention.append(f"{notices.never_indexed(['code'])} in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
     refused, not_found = platform_refused_names(repositories), platform_not_found_names(repositories)
     mixed = platform_mixed_refusals(repositories)

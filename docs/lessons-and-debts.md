@@ -467,6 +467,71 @@ A failed write of `repos.json` is worded with the read sentence;
 `stats._repos_error` and `common.repos_read_error` read `repos.json` with two
 copies of the same check, which could come to disagree (#170).
 
+### 100. A paid run with no credential is refused even when nothing is pending
+
+The spend gate (#168) reads the credential before anything else, so a
+no-op `griot index` on an unchanged repository with a paid profile needs the
+credential set, although it would embed nothing.
+
+### 101. Every index run makes one more read pass to print its plan line
+
+`index_documents` splits pending from current chunks before its loop to say
+"Embedding N of M; K are already up to date" (#168), then the loop splits
+them again. On a large index that is a second full read of the local store
+on every run, local profiles included.
+
+### 102. The embedding path's own missing-credential texts are older
+
+A missing credential reached through `griot search` or `griot_quality_check`
+still gets the embedding path's texts, which give no pasteable command; the
+spend gate's sentence and command (#168) are not used there. The gate also
+says "chunks" for commits, tags and branches, and prints a very small
+configured limit as `1e-05`.
+
+### 103. A condition fixed elsewhere stays in the ledger until something reads it
+
+The notices ledger (#169) drops a condition when `griot index`, `griot
+doctor` or `griot stats` next reads its state, not when it is fixed by
+another route; the footer counts the ledger's warn and FAIL conditions,
+which is not doctor's warning count.
+
+### 104. Some golden-set notes still go to stdout or end in prose
+
+`golden-set add` and `suggest` print their fallback note on stdout, and the
+note for a collection whose config cannot be read ends in prose, naming
+neither the collection nor a command (#169).
+
+### 105. Child griot processes may read inherited `.env` values as exported
+
+griot loads `<config>/.env` into `os.environ`, so a griot process it starts
+inherits those values and reads them as if the person had exported them.
+#173 stopped passing them to the upgraded installation's `griot doctor`; the
+MCP registration check that starts a server and `griot assist install` were
+not swept. For an MCP server this touches what decision 112 lets the
+environment change (`ENVIRONMENT_ONLY_NARROWS`).
+
+### 106. The engine rewrites `edge_config.json` on a read-only load
+
+Opening and closing a collection only to count its points rewrites the
+engine's `edge_config.json`; #173 repairs the file's mode afterwards, but
+its content changes, so "doctor changes no file" holds only if the engine's
+own files are not counted.
+
+### 107. `--if-stale` leaves a dead-run record when it skips a held collection
+
+When another process holds the collection, `griot index all --if-stale`
+stops and exits 0, but the source it stopped at is recorded as a run that
+died, so `griot stats` can show the last run as not finished (#174). The
+"several repositories behind" actions in doctor, stats and the skills still
+point at the full `griot index all`.
+
+### 108. A doctor fix can put a command after a shell comment
+
+For repositories the platform refused, `griot doctor` builds
+`griot auth list   # check ..., then: <command>`: pasted, everything after
+`#` is a comment, so the command never runs. #169 fixed the same defect
+where a ledger condition joined a row; this one is in the row's own text.
+
 ---
 
 ## Lessons

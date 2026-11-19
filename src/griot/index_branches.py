@@ -244,6 +244,7 @@ def main(argv=None):
 
     if not all_documents:
         common.log_and_print("\nNo branches to index.")
+        common.log_empty_run("index_branches.py", args, repo_paths_str, start_time)
         return
 
     if args.dry_run:

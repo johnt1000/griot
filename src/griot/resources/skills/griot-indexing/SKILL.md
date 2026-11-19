@@ -54,6 +54,16 @@ Run one source directly instead of all five with `griot index <source>`
 - On `griot index all` specifically, `--sources code,commits` (a
   comma-separated subset of `code,commits,tags,branches,platform`) filters
   which sources run.
+- On `griot index all` specifically, `--if-stale` indexes only the
+  registered repositories whose index is behind them (commits since the
+  last run, a rewritten history, changed tags or remote branches, code
+  never indexed; pull requests and issues are not compared). When none is
+  behind it embeds nothing and exits 0; when another griot process holds
+  the collection it stops there, keeps what it already wrote, and exits 0:
+  made for a scheduler or a git hook (recipes in
+  `docs/getting-started.md`; griot installs neither). `--repo` narrows it;
+  `--path` cannot be combined with it. On a paid profile with no terminal,
+  a run at or above confirm-spend still needs `--yes`.
 
 ## Incremental behavior — why re-indexing is nearly free
 

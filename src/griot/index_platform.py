@@ -465,7 +465,10 @@ def main(argv=None):
 
     if not all_documents:
         common.log_and_print("\nNo platform items to index.")
-        if refused and not args.dry_run:
+        # Recorded even with nothing refused (no remote, or nothing open on
+        # it): see common.log_empty_run. The refused repositories are not
+        # among `covered`, so this does not count as indexing them.
+        if not args.dry_run:
             _log_run(args, covered, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused, **marked)
         return rc
 
