@@ -79,9 +79,10 @@ remove, at no cost.
 index is behind them: commits made since the last run, a rewritten history,
 changed tags or remote branches, or code never indexed: what `griot doctor` reports
 (pull requests and issues are not compared; see [whether the index is behind](search.md#whether-the-index-is-behind)).
-When none is behind, or another griot process (an MCP server, another index
-run) holds the collection, it embeds nothing and exits 0, so a scheduler or a
-git hook can call it without reporting a routine overlap as a failure. Other
+When none is behind, it embeds nothing and exits 0. When another griot process
+(an MCP server, another index run) holds the collection, it stops there, keeps
+what it already wrote, says so on stderr and exits 0, so a scheduler or a git
+hook can call it without reporting a routine overlap as a failure. Other
 failures keep their exit codes. `--repo NAME` narrows it to one registered
 repository; `--path` cannot be combined with it.
 
@@ -105,6 +106,7 @@ A macOS launchd agent that runs it every day at 09:00, in
   </array>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/you/Library/Logs/griot-index.log</string>
   <key>StandardErrorPath</key><string>/Users/you/Library/Logs/griot-index.log</string>
 </dict>
 </plist>
@@ -112,7 +114,8 @@ A macOS launchd agent that runs it every day at 09:00, in
 
 The program path is absolute (`command -v griot` prints yours): launchd's
 `PATH` does not include `~/.local/bin`, where pipx and `uv tool` put the
-launcher. `StandardErrorPath` keeps the lines a quiet run still prints.
+launcher. `StandardOutPath` keeps the run's summary (stdout) and `StandardErrorPath`
+the lines `--quiet` never silences (stderr): a cost estimate, a skip, an error.
 
 A git `post-merge` hook, in `.git/hooks/post-merge` of a registered
 repository (make it executable with `chmod +x`), which indexes that repository

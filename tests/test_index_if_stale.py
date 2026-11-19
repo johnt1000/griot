@@ -18,6 +18,7 @@ test's own directories, with the keychain backend forced off."""
 import json
 import os
 import pty
+import re
 import select
 import subprocess
 import sys
@@ -190,7 +191,7 @@ def test_code_never_indexed_is_behind_as_doctor_says_it(tmp_path, two):
     done, rows = _run(tmp_path, "index", "all", "--if-stale")
     assert done.returncode == 0, done.stderr
     assert _ran(rows) == [(source, "partial") for source in SOURCES]
-    assert "the ones behind: partial (code never indexed)." in done.stderr
+    assert "registered repositories: partial (code never indexed)." in done.stderr
 
 
 def test_the_nothing_behind_line_is_one_phrase_shared_with_doctor():
@@ -198,7 +199,8 @@ def test_the_nothing_behind_line_is_one_phrase_shared_with_doctor():
                                       "pull requests and issues are not compared)")
     assert notices.none_behind(1) == ("the 1 registered repository is not behind (HEAD, tags and branches; "
                                       "pull requests and issues are not compared)")
-    assert notices.repo_not_behind("one") == "one is not behind (HEAD, tags and branches)"
+    assert notices.repo_not_behind("one") == ("one is not behind (HEAD, tags and branches; pull requests and "
+                                              "issues are not compared)")
 
 
 def test_doctor_says_nothing_behind_in_the_same_words(tmp_path, two):
@@ -231,7 +233,7 @@ def test_only_the_repository_behind_is_indexed(tmp_path, two):
     assert _ran(rows) == [(source, "other") for source in SOURCES]
     assert _embedded(rows) > 0
     lines = done.stderr.splitlines()
-    assert "Indexing 1 of 2 registered repositories, the ones behind: other (3 commits)." in lines
+    assert "Behind, 1 of 2 registered repositories: other (3 commits)." in lines
     assert "=== griot index code: other ===" in lines
     assert "=== griot index all --if-stale: other indexed (1 of 2 registered) ===" in lines
     # The run recorded the new HEAD: the next call finds nothing behind.
@@ -247,7 +249,7 @@ def test_a_rewritten_history_counts_as_behind(tmp_path, two):
     done, rows = _run(tmp_path, "index", "all", "--if-stale")
     assert done.returncode == 0, done.stderr
     assert _ran(rows) == [(source, "one") for source in SOURCES]
-    assert ("Indexing 1 of 2 registered repositories, the ones behind: one (the indexed commit is not in this "
+    assert ("Behind, 1 of 2 registered repositories: one (the indexed commit is not in this "
             "history).") in done.stderr.splitlines()
 
 
@@ -257,7 +259,7 @@ def test_a_repository_never_indexed_is_behind_in_the_shared_phrase(tmp_path, two
     done, rows = _run(tmp_path, "index", "all", "--if-stale")
     assert done.returncode == 0, done.stderr
     assert _ran(rows) == [(source, "fresh") for source in SOURCES]
-    assert "Indexing 1 of 3 registered repositories, the ones behind: fresh (never indexed)." in done.stderr
+    assert "Behind, 1 of 3 registered repositories: fresh (never indexed)." in done.stderr
 
 
 def test_a_source_that_never_ran_is_named_in_the_phrase_doctor_uses():
@@ -275,7 +277,7 @@ def test_only_the_sources_asked_for_count(tmp_path, two):
     assert _ran(rows) == []
     done, rows = _run(tmp_path, "index", "all", "--if-stale", "--sources", "tags")
     assert _ran(rows) == [("tags", "one")], done.stderr
-    assert "the ones behind: one (tags changed)." in done.stderr
+    assert ": one (tags changed)." in done.stderr
 
 
 def test_a_platform_that_refused_every_fetch_is_not_retried_on_a_schedule(tmp_path, two):
@@ -347,7 +349,7 @@ def test_a_new_tag_after_an_empty_tags_run_is_behind(tmp_path):
     _git(one, "tag", "v1")
     done, rows = _run(tmp_path, "index", "all", "--if-stale")
     assert done.returncode == 0, done.stderr
-    assert "the ones behind: one (tags changed)." in done.stderr
+    assert ": one (tags changed)." in done.stderr
     assert ("tags", "one") in _ran(rows)
 
 
@@ -396,15 +398,16 @@ def test_repo_narrows_to_one_repository(tmp_path, two):
     done, rows = _run(tmp_path, "index", "all", "--if-stale", "--repo", "one")
     assert done.returncode == 0, done.stderr
     assert {repo for _, repo in _ran(rows)} == {"one"}
-    assert "Indexing 1 of 2 registered repositories, the ones behind: one (1 commit)." not in done.stderr
-    assert "Indexing one, which is behind (1 commit)." in done.stderr.splitlines()
+    assert "Behind, 1 of 2 registered repositories: one (1 commit)." not in done.stderr
+    assert "Behind: one (1 commit)." in done.stderr.splitlines()
 
 
 def test_repo_that_is_not_behind_is_named(tmp_path, two):
     done, rows = _run(tmp_path, "index", "all", "--if-stale", "--repo", "one")
     assert done.returncode == 0, done.stderr
     assert _ran(rows) == []
-    assert done.stderr.rstrip().splitlines()[-1] == "Nothing to index: one is not behind (HEAD, tags and branches)."
+    assert done.stderr.rstrip().splitlines()[-1] == ("Nothing to index: one is not behind (HEAD, tags and branches; pull requests and issues "
+                                                       "are not compared).")
 
 
 def test_repo_that_is_not_registered_is_incorrect_use(tmp_path, two):
@@ -543,7 +546,8 @@ def test_a_collection_held_after_some_sources_ran_says_what_was_indexed(tmp_path
     err = capsys.readouterr().err
     assert err.rstrip().splitlines()[-2:] == [
         f"Stopped at commits of one: another griot process holds the collection '{common.COLLECTION_NAME}'. "
-        f"Holder: PID 4242 (griot mcp). code of one was indexed; the rest is tried on the next run.",
+        f"Holder: PID 4242 (griot mcp). Indexed before the stop: code of one. The next run indexes again "
+        f"what is still behind (HEAD, tags and branches; pull requests and issues are not compared).",
         "  griot index all --if-stale --repo one"]
 
 
@@ -588,7 +592,7 @@ def test_a_paid_run_estimates_only_the_repositories_behind(tmp_path, two):
     done, rows = _run(tmp_path, "index", "all", "--if-stale", paid=True)
     assert done.returncode == 2, done.stderr
     lines = done.stderr.splitlines()
-    assert lines[:2] == ["Indexing 1 of 2 registered repositories, the ones behind: other (1 commit).",
+    assert lines[:2] == ["Behind, 1 of 2 registered repositories: other (1 commit).",
                          "Estimating the cost of code, commits, tags, branches, platform from other (behind) with "
                          "paid profile 'openai-small'..."], lines
     assert any(line.startswith("Error: embedding ") and " from other, " in line or " from other " in line
@@ -682,6 +686,36 @@ def test_the_question_at_a_real_terminal_names_the_repository_behind(tmp_path, t
     assert (_embedded(rows) > 0) is (code == 0)
 
 
+def _sources_named(line):
+    """The source list in the spend line's `N chunks (a, b) from ...`."""
+    match = re.search(r"chunks? \(([^)]*)\) from ", line)
+    assert match, line
+    return match.group(1).split(", ")
+
+
+def test_two_repositories_behind_name_each_source_once_in_the_refusal(tmp_path, two):
+    _advance(two[0])
+    _advance(two[1])
+    done, rows = _run(tmp_path, "index", "all", "--if-stale", paid=True)
+    assert done.returncode == 2, done.stderr
+    assert _embedded(rows) == 0 and _ran(rows) == []
+    line = next(line for line in done.stderr.splitlines() if line.startswith("Error: embedding "))
+    named = _sources_named(line)
+    assert len(named) == len(set(named)) and named[:2] == ["code", "commits"], line
+    assert " from 2 repositories behind (one, other) " in line, line
+
+
+def test_two_repositories_behind_name_each_source_once_in_the_question(tmp_path, two):
+    _advance(two[0])
+    _advance(two[1])
+    got, out, rows = _in_a_terminal(tmp_path, ["index", "all", "--if-stale"], b"n\n")
+    assert got == 1, out
+    line = next(line for line in out.splitlines() if "with paid profile 'openai-small'?" in line)
+    named = _sources_named(line)
+    assert len(named) == len(set(named)) and named[:2] == ["code", "commits"], line
+    assert _embedded(rows) == 0
+
+
 # --- help and docs ----------------------------------------------------------------------------------
 
 
@@ -692,6 +726,9 @@ def test_the_help_names_the_flag_and_what_it_does_not_compare(capsys):
     assert "--if-stale" in text
     assert "Pull requests and issues are not compared." in text
     assert "--path cannot be combined with it" in text
+    assert "stops there, keeps what it already wrote, and exits 0" in text
+    # The help a scheduler's author reads for --quiet says what it keeps.
+    assert "never errors, prompts, a cost estimate or the result" in text
 
 
 def test_the_docs_give_both_recipes_and_say_griot_installs_neither():
@@ -699,5 +736,6 @@ def test_the_docs_give_both_recipes_and_say_griot_installs_neither():
     assert "griot index all --if-stale --quiet" in text
     assert "launchd" in text and "post-merge" in text
     assert "installs neither" in text
+    assert "StandardOutPath" in text and "holds the collection, it embeds nothing" not in text
     roadmap = (Path(__file__).resolve().parent.parent / "ROADMAP.md").read_text()
     assert "griot index all --if-stale" in roadmap and "resident watcher" in roadmap

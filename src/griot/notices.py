@@ -154,7 +154,7 @@ def none_behind(count: int, among: str = "") -> str:
 
 def repo_not_behind(name: str) -> str:
     """none_behind() for one repository named on the command line."""
-    return f"{name} is not behind ({COMPARED})"
+    return f"{name} is not behind ({COMPARED}; {NOT_COMPARED})"
 
 
 def never_indexed(sources: list[str]) -> str:

@@ -226,8 +226,9 @@ DRY_RUN_HELP = ("Says how many chunks would be (re)embedded and, on a paid profi
 
 IF_STALE_HELP = ("Index only the registered repositories whose index is behind them: commits made since the last "
                  "run, a rewritten history, changed tags or remote branches, or code never indexed. Pull "
-                 "requests and issues are not compared. When none is behind, or another griot process holds the "
-                 "collection, it embeds nothing and exits 0. Made for a scheduler or a git hook. On a paid "
+                 "requests and issues are not compared. When none is behind it embeds nothing and exits 0; when "
+                 "another griot process holds the collection it stops there, keeps what it already wrote, and "
+                 "exits 0. Made for a scheduler or a git hook. On a paid "
                  "profile with no terminal, a run at or above confirm-spend still needs --yes.")
 
 
@@ -281,7 +282,7 @@ def _say_skipped(exc, command: str, *, at: tuple[str, str] | None = None, done: 
     """--if-stale's line for a held collection: not an error (exit 0), and
     not silenceable either, because it says the index was NOT written and
     stays behind."""
-    from griot import common
+    from griot import common, notices
 
     global _skipped
     _skipped = True
@@ -289,8 +290,10 @@ def _say_skipped(exc, command: str, *, at: tuple[str, str] | None = None, done: 
     if done:
         written = "; ".join(f"{', '.join(sources)} of {name}" for name, sources in done.items())
         source, name = at
-        text = (f"Stopped at {source} of {name}: {held.removesuffix('.')}. {written} was indexed; the rest is "
-                f"tried on the next run.")
+        # Only what the next run compares is promised again: a source never
+        # compared (the platform) is filled when the repository is next behind.
+        text = (f"Stopped at {source} of {name}: {held.removesuffix('.')}. Indexed before the stop: {written}. "
+                f"The next run indexes again what is still behind ({notices.COMPARED}; {notices.NOT_COMPARED}).")
     else:
         text = f"Skipped: {held} Nothing was indexed; the next run tries again."
     common.progress_note(f"{text}\n  {command}", silenceable=False)
@@ -353,11 +356,13 @@ def _cmd_index_if_stale(sources: list, rest: list, sources_override) -> int:
 
     selected = [report["repo"] for report, _ in chosen]
     if typed is not None:
-        common.progress_note(f"Indexing {common.printable(typed)}, which is behind ({chosen[0][1]}).")
+        # "Behind", not "Indexing": on a paid profile the spend gate may
+        # refuse right after, and the line stays true either way.
+        common.progress_note(f"Behind: {common.printable(typed)} ({chosen[0][1]}).")
     else:
         reasons = ", ".join(f"{common.printable(report['repo'])} ({why})" for report, why in chosen)
-        common.progress_note(f"Indexing {len(chosen)} of {len(paths)} registered "
-                             f"repositor{'y' if len(paths) == 1 else 'ies'}, the ones behind: {reasons}.")
+        common.progress_note(f"Behind, {len(chosen)} of {len(paths)} registered "
+                             f"repositor{'y' if len(paths) == 1 else 'ies'}: {reasons}.")
     try:
         refused = _confirm_index_spend(sources, rest, run="all", sources_override=sources_override,
                                        selection=selected, typed_repo=typed)
@@ -557,7 +562,11 @@ def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_overrid
     if not count:
         return 0  # nothing to embed costs nothing: the run says what it found
     chunks = f"{count:,} chunk{'s' if count != 1 else ''}"
-    kinds = (f"of {run}" if run != "all" else f"({', '.join(record['source'] for record in pending)})")
+    # With --if-stale the records are added up per repository, so a source
+    # comes once per repository behind: named once, in the order first seen,
+    # or the line that reports money reads as if it were counted twice.
+    kinds = (f"of {run}" if run != "all"
+             else f"({', '.join(dict.fromkeys(record['source'] for record in pending))})")
     what = f"{chunks} {kinds}{origin}"
     estimate = common.estimated_embedding_cost_usd(sum(record["to_embed_chars"] for record in pending))
     # The command as it was typed, with what griot took out of argv first.
@@ -1098,8 +1107,8 @@ _SOURCES_OF_INDEX_ALL = (*SOURCES_FLAG[:2], f"`griot index all` only. {SOURCES_F
 # without a metavar. Every parser's help shows it (it is appended there), so a
 # person who sees a notice they do not want finds the way to silence it in
 # the help of the command that printed it.
-QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never errors, prompts or the result). "
-                               "Same as GRIOT_QUIET=1. Also -q")
+QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never errors, prompts, a cost estimate or the "
+                               "result). Same as GRIOT_QUIET=1. Also -q")
 
 
 def json_flag_help(guide: str) -> str:
