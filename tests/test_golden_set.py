@@ -230,7 +230,7 @@ def test_must_include_entry_unknown_source_type_falls_back_to_repo_only():
 def test_cmd_list_on_fresh_install_shows_empty(capsys):
     rc = golden_set.cmd_list()
     assert rc == 0
-    assert "no cases" in capsys.readouterr().out.lower()
+    assert "no golden-set cases" in capsys.readouterr().out.lower()
 
 
 def test_cmd_list_shows_each_case(capsys):

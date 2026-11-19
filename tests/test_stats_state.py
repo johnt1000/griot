@@ -161,8 +161,9 @@ def test_cases_that_expect_a_repository_that_is_not_registered_are_named():
 def test_a_golden_set_file_that_cannot_be_read_needs_attention():
     """Not the same as having none: it is something to fix, and silence
     about it read as "no golden set"."""
-    result, text = _report(state={"golden_set": None, "golden_set_error": "JSONDecodeError: Expecting value"})
-    assert any("golden set file could not be read" in item and "Expecting value" in item for item in result["attention"])
+    result, text = _report(state={"golden_set": None, "golden_set_error": "corrupted JSON"})
+    assert any(f"{common.GOLDEN_SET_PATH} could not be read (corrupted JSON)" in item
+               and item.endswith("griot golden-set suggest <repo-path>") for item in result["attention"])
     assert "Attention" in text
 
 
@@ -357,7 +358,7 @@ def test_a_golden_set_file_that_is_there_and_unusable_is_reported_not_taken_for_
     state = stats.load_state()
     assert state["golden_set"] is None and state["golden_set_error"]
     result = stats.compute_stats([], [], {"points_count": 1, "embed_profile": "any"}, state=state)
-    assert any("golden set file could not be read" in item for item in result["attention"])
+    assert any(f"{common.GOLDEN_SET_PATH} could not be read" in item for item in result["attention"])
 
 
 def test_without_a_registry_nothing_is_claimed_about_registration():

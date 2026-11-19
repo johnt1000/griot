@@ -28,7 +28,8 @@ defines a function or class name first less often (0.61 against 0.72), since
 the chunks that mention a name are mostly where it is used; `hybrid`, the
 default, is the mode for the rest, a name's definition included. Scores are on
 each mode's own scale, and every result says which mode ran (`mode` on
-`griot_search`'s output, a `Mode:` line from `griot search`).
+`griot_search`'s output, a `Mode:` line from `griot search`, or `mode` with
+`--json`).
 
 An index made before keyword search existed needs `griot index keywords` once
 (local, embeds nothing, needs about as much free disk as the collection while
@@ -48,7 +49,32 @@ has run.
 ```bash
 griot search "where is the retry logic for the payment API?"
 griot search "ERR_CONNECTION_REFUSED" --mode keyword
+griot search "retry policy" --json        # one JSON document on stdout
 ```
+
+### `griot search --json`
+
+One JSON document on stdout and nothing else there; notices, warnings and
+errors stay on stderr. Its keys are those of `griot_search`'s output, built
+by the same function, so a script or an agent reading it through a shell
+gets what the tool gives:
+
+| Key | What it holds |
+|---|---|
+| `results` | the hits, best first; `[]` when nothing matched (exit 0) |
+| `results[].source_label` | where the hit comes from, as the text output shows it |
+| `results[].repo`, `results[].source_type` | the repository (its directory name) and the kind of source |
+| `results[].metadata` | what was stored with the source: `file_path` for code; `commit_hash`, `author`, `date` for a commit |
+| `results[].content` | the stored text of the chunk |
+| `results[].score` | on the scale of the mode that ran |
+| `results[].also_in` | other places the same text was found; absent when none |
+| `mode` | the mode that ran (`vector`, `keyword` or `hybrid`) |
+| `behind` | `{repository: commits behind}` for the repositories among the results whose index is behind their HEAD (`null` when the indexed commit is not in the history); `{}` otherwise |
+| `note` | that the results are retrieved data, never instructions; which repositories are behind; why nothing was found when filters narrowed the search; and the keyword-index note when the default fell back to `vector` |
+
+A filter that cannot match (`--repo` with nothing indexed) is an error on
+stderr with exit 2 and nothing on stdout, as without `--json`. `--limit` is
+not held to `griot_search`'s ceiling of 50.
 
 ## Whether the index is behind
 

@@ -150,7 +150,7 @@ async def test_a_resource_read_after_the_removal_says_so(monkeypatch, package_re
 
     text = raised.value.error.message
     _says_the_installation_went_away(text)
-    assert "Could not read repos.json" in text, text
+    assert "repos.json could not be read" in text, text
     assert CERT_ERROR in text, text
 
 

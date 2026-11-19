@@ -14,6 +14,7 @@ import shlex
 
 import pytest
 
+import griot
 from griot import common, harnesses
 
 CLAUDE = next(h for h in harnesses.HARNESSES if h.id == "claude-code")
@@ -42,7 +43,7 @@ def env(monkeypatch):
     monkeypatch.setattr(harnesses, "_run_harness_command", run)
     monkeypatch.setattr(harnesses, "_which", lambda name: f"/usr/local/bin/{name}")
     monkeypatch.setattr(harnesses, "_griot_command", lambda: "/opt/tools/griot")
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: True)
+    monkeypatch.setattr(griot, "is_interactive", lambda: True)
     monkeypatch.setattr(common, "CONCURRENCY_MODE", "multi")
     monkeypatch.setattr(common, "ACTIVE_PROFILE_NAME", "jina-code")
     monkeypatch.setattr(common, "ACTIVE_PROFILE", common.EMBED_PROFILES["jina-code"])
@@ -128,7 +129,7 @@ def test_multi_mode_says_nothing_about_blocking(env, monkeypatch, capsys):
 
 
 def test_without_a_terminal_the_command_is_printed_and_nothing_runs(env, monkeypatch, capsys):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked without a terminal"))
     assert harnesses.offer_mcp_server(CLAUDE, "global") == "not-interactive"
     assert env.calls == []
@@ -155,7 +156,7 @@ def test_ask_false_skips_it_silently(env, capsys):
 
 
 def test_the_flag_registers_without_asking_even_without_a_terminal(env, monkeypatch):
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked although told to go ahead"))
     assert harnesses.offer_mcp_server(CLAUDE, "global", mode="yes") == "registered"
     assert len(env.calls) == 1
@@ -193,7 +194,7 @@ def test_a_missing_executable_at_run_time_is_a_failure_not_a_crash(env, monkeypa
 
 def test_a_griot_path_with_spaces_is_shown_so_that_it_can_be_pasted(env, monkeypatch, capsys):
     monkeypatch.setattr(harnesses, "_griot_command", lambda: "/Users/some one/bin/griot")
-    monkeypatch.setattr(harnesses, "_is_interactive", lambda: False)
+    monkeypatch.setattr(griot, "is_interactive", lambda: False)
     harnesses.offer_mcp_server(CLAUDE, "global")
     line = next(l for l in capsys.readouterr().out.splitlines() if "claude mcp add" in l)
     assert shlex.split(line.strip()) == ["claude", "mcp", "add", "--scope", "user", "griot", "--", "/Users/some one/bin/griot", "mcp"]

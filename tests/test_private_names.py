@@ -131,7 +131,6 @@ TESTS_MAY_REACH = {
     },
     "harnesses": {
         "_griot_command": _SEAM,
-        "_is_interactive": _SEAM,
         "_model_note": _SEAM,
         "_resources_root": _SEAM,
         "_run_harness_command": _SEAM,

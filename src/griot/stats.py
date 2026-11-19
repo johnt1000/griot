@@ -169,17 +169,22 @@ def _golden_set_state() -> tuple[dict | None, str | None]:
 
     if not common.GOLDEN_SET_PATH.exists():
         return None, None
+    # The cause is classified (golden_set.unreadable_sentence() says it),
+    # never an exception's name: the same sentence as the CLI and MCP.
     try:
         cases = golden_set.list_cases()
+    except (OSError, ValueError) as e:
+        return None, common.unreadable_cause(e)
+    try:
         if not isinstance(cases, list):
-            raise ValueError("it is not a list of cases")
+            raise ValueError
         expected = set()
         for case in cases:
             for exp in case["must_include"]:
                 if isinstance(exp.get("repo"), str) and exp["repo"]:
                     expected.add(exp["repo"])
-    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
-        return None, f"{type(e).__name__}: {e}"[:200]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None, "not a list of cases, each with must_include"
     # Compared with repos.json, not with the index: asking the index costs a
     # scan per name and needs the collection, which another process may
     # hold. `griot quality-check` asks the index itself. When repos.json
@@ -444,8 +449,8 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
 
     if state.get("golden_set_error"):
-        attention.append(f"the golden set file could not be read ({state['golden_set_error']}): fix or delete "
-                         f"{common.GOLDEN_SET_PATH.name}, then curate again with `griot golden-set add`")
+        from griot import golden_set
+        attention.append(golden_set.unreadable_sentence(state["golden_set_error"], before_command=" "))
 
     curated = state.get("golden_set") or None
     golden = None

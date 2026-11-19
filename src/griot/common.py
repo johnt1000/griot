@@ -523,9 +523,37 @@ def is_git_hash(value: str) -> bool:
     return bool(_GIT_HASH.fullmatch(value))
 
 
-def is_interactive() -> bool:
-    """True when a person can be asked: both ends are a terminal."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
+# True when a person can be asked: both ends are a terminal. Defined in the
+# package (griot.is_interactive) so that `griot assist install`, which must
+# work without this module, asks the same question the same way.
+is_interactive = _package.is_interactive
+
+
+def print_json(document) -> None:
+    """The one way a `--json` listing prints its result: one document, on
+    stdout, and nothing else there (notices go to stderr, see log_and_print).
+    Not ASCII-escaped, as `griot stats` and `griot config list` already
+    print theirs: a path or a query in another script stays readable."""
+    print(json.dumps(document, ensure_ascii=False))
+
+
+def unreadable_cause(error: BaseException) -> str:
+    """Why one of griot's own JSON files (repos.json, the golden set) could
+    not be read, classified for a person instead of an exception's name:
+    the text says what to do about it, the class name does not."""
+    if isinstance(error, PermissionError):
+        return "permission denied"
+    if isinstance(error, IsADirectoryError):
+        return "it is a directory, not a file"
+    if isinstance(error, OSError):
+        # The system's own reason when it gave one; otherwise the message
+        # (an OSError raised with text alone, such as a missing certificate
+        # bundle after the installation was removed, says what broke).
+        if error.strerror:
+            return error.strerror.lower()
+        return str(error) or "it could not be opened"
+    # json.JSONDecodeError and UnicodeDecodeError are both ValueErrors.
+    return "corrupted JSON"
 
 
 def refuse_without_terminal(what: str, command: str) -> int:
