@@ -283,6 +283,7 @@ ENV_TEMPLATE_SETTINGS = [
     # pinning it after the default became `multi`.
     ("GRIOT_MCP_CONCURRENCY_MODE", "multi", "multi (default): griot mcp releases the collection after the idle window, so other sessions and shell indexing can use it; single keeps it open for the server's whole life (no reopen cost, but nothing else can use that profile meanwhile)", True),
     ("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30", "idle window before releasing the collection handle in multi mode", False),
+    ("GRIOT_SEARCH_TIMEOUT_SECONDS", "60", "seconds the griot_search MCP tool may run before it fails with an error telling the agent what to do; 0 turns the deadline off", False),
     ("GRIOT_GITLAB_API_BASE", "https://gitlab.com/api/v4", "self-hosted GitLab instance API base, if not gitlab.com", False),
     ("GRIOT_GITEA_HOSTS", "", "comma-separated Gitea/Forgejo hostnames to recognize, e.g. git.example.com — required, Gitea has no fixed host to detect", False),
 ]
@@ -1835,6 +1836,13 @@ if CONCURRENCY_MODE not in ("single", "multi"):
 # Finite and zero or more, like an amount: an idle time of `nan` is never
 # reached, and the index would be held for as long as the server runs.
 IDLE_RELEASE_SECONDS = _amount_env("GRIOT_MCP_IDLE_RELEASE_SECONDS", "30")
+# How long the griot_search MCP tool may run before it fails with an error that
+# says what to do, so an agent client never waits on a search that cannot
+# finish (a sleeping machine, a collection held elsewhere). 0 turns the
+# deadline off. Chosen well above a normal search (1 to 2 seconds, a cold
+# open of a big collection tens of seconds) and below the ~2 minutes after
+# which the clients seen so far give up on their own.
+SEARCH_TIMEOUT_SECONDS = _amount_env("GRIOT_SEARCH_TIMEOUT_SECONDS", "60")
 # [tuned after empirical validation with a real collision] local DISK
 # contention (another process with the WAL open), not network — a much
 # smaller budget than the 10-20s used for paid-API retries, but needs to
@@ -2218,6 +2226,14 @@ _client_lock = threading.RLock()
 # How long a status read (get_client(wait=False)) waits for a call that is
 # opening the collection before it answers "busy".
 _STATUS_READ_PATIENCE = 0.5
+# How long a caller that needs the shard waits for the lock before giving up
+# with CollectionBusyError. The lock is held for a whole open: the ~12s retry
+# budget of _load_shard_with_retry plus the load of a large collection, so the
+# limit has to outlast that or a legitimate slow open turns into a spurious
+# failure for everyone queued behind it. It is still a limit: with
+# timeout=-1 (forever) a stuck open parked every later call with no sign of
+# it (2026-10-25: two searches took ~2600s).
+CLIENT_LOCK_WAIT_SECONDS = 120.0
 
 
 def get_client(*, wait: bool = True) -> "qe.EdgeShard":
@@ -2241,7 +2257,7 @@ def get_client(*, wait: bool = True) -> "qe.EdgeShard":
     caller does not wait long behind another call that is opening it,
     either."""
     global _client, _client_last_used_at
-    if not _client_lock.acquire(timeout=-1 if wait else _STATUS_READ_PATIENCE):
+    if not _client_lock.acquire(timeout=CLIENT_LOCK_WAIT_SECONDS if wait else _STATUS_READ_PATIENCE):
         path = collection_path(COLLECTION_NAME)
         raise CollectionBusyError(COLLECTION_NAME, path,
                                   f"Collection '{COLLECTION_NAME}' is being opened by another call right now.",
