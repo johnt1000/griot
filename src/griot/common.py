@@ -270,6 +270,8 @@ ENV_TEMPLATE_SETTINGS = [
     ("GRIOT_GROQ_CHAT_PRICE_PER_1M_TOKENS", "", "optional — defaults to $0 (free tier) if left commented out; uncomment only if that changes", True),
     ("GRIOT_SPEND_CEILING_USD", "3.0", "daily spend ceiling for the local circuit breaker", False),
     ("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0", "5-minute window spend ceiling (catches burst spend before the daily one would)", False),
+    # Written out, never `VAR=`: it is read through _amount_env, where an empty value is not a number.
+    ("GRIOT_CONFIRM_SPEND_USD", "0.50", "on a paid profile, an index run or `quality-check --from-history` estimated at or above this many USD asks first (--yes answers); below it the estimate is printed and the run goes on", False),
     ("GRIOT_MAX_CONSECUTIVE_FAILED_BATCHES", "5", "abort indexing after this many fully-failed batches in a row", False),
     ("GRIOT_LOG_QUESTIONS", "true", "set to false to omit question text from the query log (metrics are kept either way)", False),
     ("GRIOT_UPDATE_CHECK", "true", "set to false so `griot doctor` does not ask PyPI whether a newer griot was released (`griot update`, run to upgrade, always asks)", False),
@@ -620,7 +622,8 @@ def refuse_without_terminal(what: str, command: str) -> int:
     return 2
 
 
-def confirm(question: str, *, yes: bool | None = False) -> int:
+def confirm(question: str, *, yes: bool | None = False, what: str | None = None,
+            command: str | None = None) -> int:
     """Asks a yes/no question before a CLI command destroys or widens
     something. Returns 0 to proceed, otherwise the exit code the command
     should end with: 1 when the person did not say yes, 2 when nobody could
@@ -633,10 +636,20 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
     so the plain command run from an agent's shell (which has no terminal)
     changes nothing. That is a guard against the easy path, not a boundary: a
     process that can run arbitrary commands can also fake a terminal or edit
-    the files directly."""
+    the files directly.
+
+    `what` and `command` shape the refusal without a terminal, as
+    refuse_without_terminal() does: `what` completes "Error: ..., and there
+    is no terminal to ask on" (what needed confirming), and `command` is the
+    command as it was typed, which ends the message with its --yes so it can
+    be pasted. Without them the refusal can only say "pass --yes"."""
     if yes:
         return 0
     if not is_interactive():
+        if command is not None and yes is not None:
+            print(f"Error: {what or 'this needs a confirmation'}, and there is no terminal to ask on. Nothing was "
+                  f"changed.\nRun it in an interactive terminal, or pass --yes:\n  {command} --yes", file=sys.stderr)
+            return 2
         how = ("Run it in an interactive terminal: there is no flag that answers for you." if yes is None
                else "Run it in an interactive terminal, or pass --yes.")
         print(f"Error: this needs a confirmation and there is no terminal to ask on. "
@@ -648,11 +661,11 @@ def confirm(question: str, *, yes: bool | None = False) -> int:
         answer = ""
         print(file=sys.stderr)
     except KeyboardInterrupt:
-        print("\nAborted, nothing changed.", file=sys.stderr)
+        print("\nAborted. Nothing was changed.", file=sys.stderr)
         return 130
     if answer.strip().lower() in ("y", "yes"):
         return 0
-    print("Aborted, nothing changed.", file=sys.stderr)
+    print("Aborted. Nothing was changed.", file=sys.stderr)
     return 1
 
 
@@ -2010,6 +2023,11 @@ SPEND_CEILING_USD = _amount_env("GRIOT_SPEND_CEILING_USD", "3.0")
 # waiting for the previous response).
 SPEND_VELOCITY_WINDOW_SECONDS = 300
 SPEND_VELOCITY_CEILING_USD = _amount_env("GRIOT_SPEND_VELOCITY_CEILING_USD", "1.0")
+# On a paid profile, a run whose embeddings are estimated to cost this much or
+# more asks a person first (see confirm_spend); below it the estimate is said
+# and the run goes on. Not a ceiling: the ceilings above stop paid calls
+# whatever was answered.
+CONFIRM_SPEND_USD = _amount_env("GRIOT_CONFIRM_SPEND_USD", "0.50")
 
 # Consecutive-failure detector — 5 batches in a row failing completely
 # isn't "bad luck", it's a sign that something is systemically broken
@@ -3410,6 +3428,160 @@ def estimated_embedding_cost_usd(chars: int) -> float | None:
     return chars / CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * price
 
 
+def estimate_rounded(estimate: float | None) -> float | None:
+    """An estimate as a program receives it (the preview, the quality
+    checks' JSON and MCP results): 4 decimals, None kept. A positive
+    estimate too small for 4 decimals keeps two significant figures
+    instead: rounded to 0.0 an agent reads a paid run as free, and the
+    usual openai-small check costs a few millionths of a dollar."""
+    if estimate is None:
+        return None
+    rounded = round(estimate, 4)
+    return rounded if rounded or estimate <= 0 else float(f"{estimate:.2g}")
+
+
+def profile_is_paid(profile: dict | None = None) -> bool:
+    """Whether embedding with `profile` (default the active one) is billed:
+    every backend but the local one calls an API. The one definition behind
+    every `paid` field, the confirmation before spending and the dry run's
+    cost line, so that no two of them can disagree about a profile."""
+    return (ACTIVE_PROFILE if profile is None else profile)["backend"] != "local"
+
+
+def format_usd(amount: float) -> str:
+    """The one way an amount of money is written to a person: cents from
+    half a cent up, a tenth of a cent below that (two decimals would print
+    an estimate of a few tenths of a cent as $0.00, which reads as free),
+    and "under $0.001" below that."""
+    if amount == 0 or amount >= 0.005:
+        return f"${amount:,.2f}"
+    if amount >= 0.0005:
+        return f"${amount:.3f}"
+    return "under $0.001"
+
+
+def about_usd(estimate: float) -> str:
+    """An estimate as a phrase: "about $1.84", or "under $0.001", which
+    already says it is approximate ("about under $0.001" is not English).
+    The one wording for an estimate on every surface (the CLI's line and
+    question, the dry run, griot_index_repo's question)."""
+    shown = format_usd(estimate)
+    return shown if shown.startswith("under") else f"about {shown}"
+
+
+def format_limit(amount: float) -> str:
+    """A configured limit (a spend ceiling, confirm-spend) as a person set
+    it: cents when it is a whole number of cents, the value itself below or
+    between them. A limit is known, not estimated, so format_usd()'s "under
+    $0.001" (or two decimals' $0.00) would misstate it."""
+    cents = amount * 100
+    if math.isfinite(cents) and abs(cents - round(cents)) < 1e-9:
+        return f"${amount:,.2f}"
+    return f"${amount:g}"
+
+
+def spend_ceiling_to_propose(today: float, estimate: float | None) -> str:
+    """The daily ceiling a refusal proposes, written as the plain number
+    `griot config set spend-ceiling` takes (a `<usd>` placeholder is a
+    redirect to a shell, so the line could not be pasted): today's spend
+    plus the estimate, up to the next half dollar, and half a dollar more
+    when that is exact, because the estimate is approximate. Without an
+    estimate (no price on the profile), the next whole dollar above today's
+    spend, which at least lets the run start."""
+    if estimate is None or not math.isfinite(today + estimate):
+        base = today if math.isfinite(today) else SPEND_CEILING_USD
+        return f"{math.ceil(base) + 1:.0f}" if math.isfinite(base) else "1"
+    needed = today + estimate
+    amount = math.ceil(needed * 2) / 2
+    if amount <= needed:
+        amount += 0.5
+    return f"{amount:.0f}" if amount == int(amount) else f"{amount:.2f}"
+
+
+def missing_credential() -> tuple[str, str] | None:
+    """(the sentence, the command that fixes it) when the active profile
+    needs a credential that is set nowhere griot looks, else None. Cheap
+    (the environment, then the keychain), so a paid run reads it before it
+    estimates, says it will spend, or asks: the run could not start, and
+    no answer would change that. One wording for the CLI's refusal and
+    griot_index_repo's."""
+    env_var = credential_env_for_profile(ACTIVE_PROFILE_NAME, ACTIVE_PROFILE)
+    if env_var is None or credential(env_var):
+        return None
+    # A key no provider of griot's names (a custom profile's) is not one
+    # `griot auth set` stores: doctor says where it is read from instead.
+    provider = _provider_of(env_var)
+    return (f"paid profile '{ACTIVE_PROFILE_NAME}' needs {env_var}, and it is not set",
+            f"griot auth set {provider}" if provider else "griot doctor")
+
+
+def refuse_missing_credential() -> int:
+    """The CLI's refusal for missing_credential(): on stderr, never silenced
+    by --quiet (an error), the command last. Returns 1, or 0 when the
+    credential is there (or none is needed)."""
+    missing = missing_credential()
+    if missing is None:
+        return 0
+    why, fix = missing
+    print(f"Error: {why}. Nothing was changed.\n  {fix}", file=sys.stderr)
+    return 1
+
+
+def spend_needs_asking(estimate: float | None) -> bool:
+    """True when a paid run estimated at `estimate` USD asks first: at or
+    above CONFIRM_SPEND_USD, or when the cost cannot be estimated (no price
+    on the profile), which can be neither compared nor waved through."""
+    return estimate is None or estimate >= CONFIRM_SPEND_USD
+
+
+def confirm_spend(what: str, estimate: float | None, *, yes: bool, command: str) -> int:
+    """The confirmation before a paid run embeds `what` (a count and what
+    from, "1,240 chunks (code, commits) from my-app"), estimated at
+    `estimate` USD (None: the profile has no price). Called only on a paid
+    profile, before anything is embedded. Below the threshold, or with
+    --yes (`yes`), the estimate is said on stderr and 0 is returned: it is
+    the only trace of money spent without a question, so --quiet does not
+    hide it (a deliberate exception to "--quiet silences notices"). At or
+    above it, common.confirm() asks, and without a terminal refuses with
+    `command` (as typed) and its --yes as the last line. Returns confirm()'s
+    code, or 1 when the daily spend ceiling would stop the run: no answer
+    could change that outcome, so nothing is asked. The credential is the
+    caller's first check (refuse_missing_credential), before the estimate
+    this needs."""
+    profile = f"paid profile '{ACTIVE_PROFILE_NAME}'"
+    unknown = f"cost unknown: profile '{ACTIVE_PROFILE_NAME}' has no price set"
+    cost = unknown if estimate is None else f"{about_usd(estimate)}, estimated from their size"
+    # Before the question AND before a --yes or below-threshold run: the
+    # breaker (check_spend_ceiling) would refuse the first paid call, or stop
+    # the run partway, with its own error. Only the daily ceiling: the
+    # velocity window empties within minutes. "Not below" as the breaker
+    # writes it, so a total that is not a number reads as reached.
+    today = get_spend_today()
+    if not today < SPEND_CEILING_USD or (estimate is not None and today + estimate > SPEND_CEILING_USD):
+        ceiling = format_limit(SPEND_CEILING_USD)
+        why = (f"today's estimated spend {format_usd(today)} reached the {ceiling} daily ceiling, so embedding "
+               f"{what} with {profile} would be refused"
+               if not today < SPEND_CEILING_USD else
+               f"embedding {what} with {profile} would cost {about_usd(estimate)} (estimated), and today's "
+               f"estimated spend {format_usd(today)} plus that passes the {ceiling} daily ceiling, which would "
+               f"stop the run partway")
+        # `config set` of a higher ceiling asks at a terminal: the pasted line
+        # still asks first, so nothing is said after it.
+        print(f"Error: {why}. Nothing was changed.\n"
+              f"  griot config set spend-ceiling {spend_ceiling_to_propose(today, estimate)}", file=sys.stderr)
+        return 1
+    if yes or not spend_needs_asking(estimate):
+        progress_note(f"Embedding {what} with {profile}: {cost}.", silenceable=False)
+        return 0
+    if estimate is None:
+        refusal = f"embedding {what} with {profile} asks first, because its cost cannot be estimated ({unknown})"
+    else:
+        refusal = (f"embedding {what} with {profile} would cost {about_usd(estimate)} (estimated), at or above "
+                   f"confirm-spend ({format_limit(CONFIRM_SPEND_USD)})")
+    return confirm(f"Embed {what} with {profile}? {cost[0].upper()}{cost[1:]}; the spend cannot be undone.",
+                   what=refusal, command=command)
+
+
 def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Checking",
             prune_scope: dict | None = None) -> dict:
     """`--dry-run` of one source: says what a run would embed and remove,
@@ -3430,6 +3602,13 @@ def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Check
                    "to_embed_chars": sum(len(_without_credentials(doc["content"], doc["id"])) for doc in documents)}
     print(f"\n[dry-run] {summary['to_embed']} {unit} would need to be (re)embedded, "
           f"{summary['up_to_date']} are already up to date.")
+    if summary["to_embed"] and profile_is_paid():
+        # What the confirmation before a real run reads (cli's gate runs this
+        # very dry run), shown so it can be learned without starting a run.
+        estimate = estimated_embedding_cost_usd(summary["to_embed_chars"])
+        print(f"[dry-run] Cost unknown: profile '{ACTIVE_PROFILE_NAME}' has no price set." if estimate is None
+              else f"[dry-run] {about_usd(estimate).capitalize()} to embed them with paid profile "
+                   f"'{ACTIVE_PROFILE_NAME}', estimated from their size.")
     report_redactions()
     stale = 0
     if prune_scope is not None and collection_exists(COLLECTION_NAME):
@@ -4038,7 +4217,33 @@ def build_keyword_index() -> dict:
         release_lock()
 
 
-def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int, int, int]:
+# The singular of each unit an indexer counts in (its Total line's word).
+_UNIT_SINGULAR = {"chunks": "chunk", "commits": "commit", "tags": "tag", "branches": "branch"}
+
+
+def _embedding_plan_note(documents: list[dict], client: "qe.EdgeShard", unit: str) -> str:
+    """The line a run starts with: how many of `documents` it embeds and how
+    many are already up to date, in the source's `unit`. The same split the
+    loop makes (_split_pending, a read of the local store that embeds
+    nothing), so the count agrees with the estimate the paid gate gave,
+    which counted only what is pending; this line used to count every
+    document read and say it was indexing all of them."""
+    total = len(documents)
+    if not total:
+        return f"\nNothing to embed: no {unit} to index."
+    pending = 0
+    for i in range(0, total, INDEX_BATCH_SIZE):
+        pending += len(_split_pending(documents[i:i + INDEX_BATCH_SIZE], client))
+    current = total - pending
+    noun = _UNIT_SINGULAR.get(unit, unit) if total == 1 else unit
+    if not pending:
+        return (f"\nNothing to embed: the 1 {noun} is already up to date." if total == 1 else
+                f"\nNothing to embed: all {total:,} {noun} are already up to date.")
+    return (f"\nEmbedding {pending:,} of {total:,} {noun} with profile '{ACTIVE_PROFILE_NAME}'; {current:,} "
+            f"{'is' if current == 1 else 'are'} already up to date.")
+
+
+def index_documents(documents: list[dict], desc: str = "Indexing", unit: str = "chunks") -> tuple[int, int, int]:
     """Receives documents with 'id' (natural key, string), 'content' and
     'metadata' already prepared, embeds them in batches (active profile)
     and writes them in batches to the embedded Qdrant. Shared by all
@@ -4064,8 +4269,13 @@ def index_documents(documents: list[dict], desc: str = "Indexing") -> tuple[int,
     # whole process — atexit (acquire_lock) stays registered as a safety
     # net for a crash that skips the finally block.
     try:
-        progress_note(f"\nGenerating embeddings ({ACTIVE_PROFILE_NAME}) and indexing {len(documents)} chunks...")
         client = get_client()
+        try:
+            plan = _embedding_plan_note(documents, client, unit)
+        except Exception as e:  # noqa: BLE001 - a count for a notice; the loop below reports a batch that fails
+            log_and_print(f"Warning: could not count what is already up to date: {e}", level="warning", echo=False)
+            plan = f"\nIndexing {len(documents):,} {unit} with profile '{ACTIVE_PROFILE_NAME}'..."
+        progress_note(plan)
         # A collection made before keyword search has no room for the
         # keyword vector (the engine refuses a point naming a vector the
         # collection lacks): its points are written as before, and

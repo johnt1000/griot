@@ -112,6 +112,7 @@ TESTS_MAY_REACH = {
     },
     "config": {
         "_in_file": _SEAM,
+        "_question": _HELPER,
         "_TRUE": _SHARED,
         "_FALSE": _SHARED,
     },
@@ -166,6 +167,8 @@ TESTS_MAY_REACH = {
     "mcp_server": {
         "_alone_queue": _STATE,
         "_inflight": _STATE,
+        "_index_questions": _STATE,
+        "_shown": _SHARED,
         "_KEYWORD_NOTE_GIVEN_FOR": _STATE,
         "_tool_started": _STATE,
         "_tool_finished": _STATE,

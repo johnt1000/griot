@@ -672,7 +672,7 @@ def _resolve_ask(ctx, question: str, *, confirm: bool, human_required: bool):
     return Elicit(question, _Ask)
 
 
-async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
+async def _confirmed(ctx, question, *, confirm: bool, cli_hint: str | None,
                      human_required: bool = False, cli_note: str | None = None,
                      answer=None) -> tuple[bool, str | None]:
     """Gate for any operation that changes state or spends money.
@@ -699,6 +699,9 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
     confirm=true, because the person just refused. Anything else (no answer,
     or the `_NO_CHANNEL` a resolver returns for a client that cannot ask)
     means nobody was asked, and falls through to the confirm argument.
+
+    `question` is the text, or a function that builds it (in a worker
+    thread, and only when the refusal shows it).
 
     Every refusal that means "nobody was asked" carries the equivalent CLI
     command. The terminal is always a complete path — the MCP surface is a
@@ -735,6 +738,11 @@ async def _confirmed(ctx, question: str, *, confirm: bool, cli_hint: str | None,
 
     if confirm and not human_required:
         return True, None
+
+    if callable(question):
+        # Built only now that it is shown: it can cost a dry run (the index
+        # question's estimate), which a call answered above never needs.
+        question = await anyio.to_thread.run_sync(question)
 
     if human_required:
         return False, (
@@ -1629,6 +1637,13 @@ class QualityCheckOutput(TypedDict):
     # then says why, so that "not run" is never read as "nothing failed".
     golden_check: GoldenCheck | None
     golden_set_not_run: str | None
+    # Always present: whether the active profile bills. Nothing asks before
+    # this tool spends (a client may approve it on its own), so what it cost
+    # is said here, in the result (decided 2026-11-19).
+    paid: bool
+    # What this call's embeddings cost, estimated from their size, 4
+    # decimals; null on a local profile (and on a paid one with no price).
+    estimated_cost_usd: float | None
 
 
 @_tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -2792,10 +2807,9 @@ def griot_health_report() -> str:
         "field is what tells you whether the next step costs money. griot_spend_status "
         "is worth calling too, for how much of today's ceiling is already spent, but it "
         "reports the profile's NAME, not whether that profile bills.\n"
-        "3. Only then call griot_quality_check: it embeds one query per sampled point "
-        "and one per curated case, free on a local profile and billed on a paid one. "
-        "On a paid profile, tell me the cost before running a large sample rather than "
-        "after.\n\n"
+        "3. Then call griot_quality_check. On a local profile it is free; on a paid one "
+        "it is billed and its result carries `paid` and `estimated_cost_usd`: report that "
+        "cost with the result.\n\n"
         "It returns two measurements. Read them apart, because they fail for opposite "
         "reasons:\n"
         "- The self-check (sampled, passed, failed, failures) is mechanical — indexed "
@@ -2962,9 +2976,11 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     or golden_set=false was passed to run the self-check alone). Null is
     never a pass.
 
-    Embeds one query per sampled point and one query per curated case: free
-    on a local profile, billed on a paid one. The run is recorded for the
-    trend griot_stats reports."""
+    Embeds one query per sampled point and one per curated case: free on a
+    local profile; on a paid one it is billed and nothing asks first.
+    `paid` says whether the active profile bills, and `estimated_cost_usd`
+    is what this call's embeddings cost, estimated from their size (null
+    when local). The run is recorded for the trend griot_stats reports."""
     if sample_size < 1:
         raise ArgumentRefused(f"sample_size must be at least 1 (got {sample_size})")
     # A check that samples nothing measured nothing. Returned as zeros with
@@ -2973,7 +2989,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     # the same defect). Asked first, so that checking never CREATES the
     # collection it is checking.
     not_measured = (f"Quality was not measured: nothing is indexed for profile '{common.ACTIVE_PROFILE_NAME}'. "
-                    f"Index a repository first (`griot index all`), then run this again.")
+                    f"Index a repository, then call this again:\n  griot index all")
     if not common.collection_exists(common.COLLECTION_NAME):
         raise NothingIndexed(not_measured)
     if golden_set:
@@ -2984,6 +3000,7 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
                                           min(sample_size, QUALITY_CHECK_SAMPLE_MAX))
     if result["sampled"] == 0:
         raise NothingIndexed(not_measured)
+    embedded = {"embedded_chars": result.pop("embedded_chars", 0)}
     golden_check = None
     if cases:
         try:
@@ -2992,11 +3009,16 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
             # The self-check is done and paid for: recorded, and said. It
             # used to vanish with the error of the half that came after it.
             quality_check.record_for_trend(common.COLLECTION_NAME, result, None)
+            # This path returns no result to carry the cost in, so the text
+            # does, for what did run.
+            spent = quality_check.embedding_cost_usd(embedded, None)
+            cost = (f", and cost {common.about_usd(spent)}, estimated from the size of what it embedded"
+                    if spent is not None else "")
             # A crash is named by its class only (_carried): CheckIncomplete
             # reaches the agent whole, its cause must not ride along unmasked.
             raise CheckIncomplete(
                 f"The curated golden set stopped before it finished: {_carried(e)} The self-check did run and is "
-                f"recorded: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
+                f"recorded{cost}: {result['passed']} of {result['sampled']} sampled points retrieved themselves. "
                 f"golden_set=false runs the self-check alone.") from e
     # [review finding] Same regression as an earlier decision, one surface over: the
     # trend table is read by griot_stats and written by record_for_trend,
@@ -3005,7 +3027,8 @@ def griot_quality_check(sample_size: int = QUALITY_CHECK_DEFAULT_SAMPLE_SIZE,
     # the terminal does; what is returned is the shown form.
     quality_check.record_for_trend(common.COLLECTION_NAME, result, golden_check)
     return {**result, "golden_check": _golden_check_shown(golden_check, cases) if golden_check else None,
-            "golden_set_not_run": not_run}
+            "golden_set_not_run": not_run, "paid": common.profile_is_paid(),
+            "estimated_cost_usd": common.estimate_rounded(quality_check.embedding_cost_usd(embedded, golden_check))}
 
 
 def _assist_install_question(harness: str, scope: str) -> str:
@@ -3255,16 +3278,97 @@ def _index_command(path: str) -> str | None:
     return _cli_command("index", "all", option=("--path", path))
 
 
-def _index_repo_question(path: str) -> str:
-    return (f"Index {_shown(path)}. This calls the embedding API and costs money on a paid profile; "
-            f"the spend cannot be undone. It also removes indexed points whose source is gone.")
+def _index_repo_question(path: str, preview: dict | None = None) -> str:
+    """The question before an index run, naming the profile and, on a paid
+    one, the estimate `preview` (jobs.run_index_preview's result) gives, or
+    why there is none. One line, whatever `path` or the preview's reason
+    holds: the person reads it before accepting."""
+    removes = "It also removes indexed points whose source is gone"
+    if not common.profile_is_paid():
+        return (f"Index {_shown(path)} with local profile '{common.ACTIVE_PROFILE_NAME}' (nothing is billed). "
+                f"{removes}.")
+    profile = f"paid profile '{common.ACTIVE_PROFILE_NAME}'"
+    estimate = preview.get("estimated_cost_usd") if preview and preview.get("ok") else None
+    if preview and preview.get("ok") and not preview.get("to_embed"):
+        # Still asked (griot_index_repo's documented design), but it must
+        # not claim a spend that nothing pending can make.
+        return (f"Index {_shown(path)} with {profile}: nothing is pending to embed, so nothing is billed. "
+                f"{removes}.")
+    if estimate is not None:
+        count = preview.get("to_embed") or 0
+        return (f"Index {_shown(path)} with {profile}: {common.about_usd(estimate)} to embed {count:,} "
+                f"chunk{'s' if count != 1 else ''}, estimated from their size; the spend cannot be undone. "
+                f"{removes}.")
+    reason = (preview or {}).get("reason") or (
+        f"profile '{common.ACTIVE_PROFILE_NAME}' has no price set" if preview else "no estimate was made")
+    # One short line, cut at a word: the reason is a subprocess's last lines,
+    # and the question must keep its consequence on screen.
+    reason = common.printable(" ".join(str(reason).split()))
+    if len(reason) > 60:
+        reason = reason[:57].rsplit(" ", 1)[0] + "..."
+    return (f"Index {_shown(path)} with {profile}; its cost could not be estimated ({reason}). The spend cannot "
+            f"be undone. {removes}.")
 
 
-def _ask_index_repo(ctx: Context, path: str, confirm: bool = False):
+def _index_cost_preview(path: str, sources) -> dict | None:
+    """The dry run behind the index question's estimate, on a paid profile
+    only (a local one has no cost to estimate, and the dry run reads every
+    file). Blocking: called from a worker thread."""
+    if not common.profile_is_paid():
+        return None
+    return jobs.run_index_preview(path, sources, release=_release_for_a_subprocess)
+
+
+# The index question as it was asked, by (path, sources, profile), for a
+# while. On the 2026-07-28 protocol a question is a round trip: the tool is
+# called again with the answer and the resolver runs again, and an answer
+# counts only for the very text it was given for. Built afresh, the question
+# would cost a second dry run and could come out different (a file changed
+# in between), which asks again instead of taking the yes.
+_INDEX_QUESTION_TTL_SECONDS = 600
+_index_questions: dict[tuple, tuple[float, str]] = {}
+_index_questions_lock = threading.Lock()
+
+
+def _index_question_asked(path: str, sources) -> str:
+    key = (path, tuple(sources or ()), common.ACTIVE_PROFILE_NAME)
+    now = time.monotonic()
+    with _index_questions_lock:
+        for old in [k for k, (at, _) in _index_questions.items() if now - at > _INDEX_QUESTION_TTL_SECONDS]:
+            del _index_questions[old]
+        if key in _index_questions:
+            return _index_questions[key][1]
+    question = _index_repo_question(path, _index_cost_preview(path, sources))
+    with _index_questions_lock:
+        _index_questions[key] = (time.monotonic(), question)
+    return question
+
+
+def _missing_credential_reason() -> str | None:
+    """griot_index_repo's refusal when the active profile's credential is
+    set nowhere: the job runs with --yes, so a person asked to approve the
+    spend would say yes to a run that fails in its log. The CLI's sentence
+    (common.missing_credential); a secret is set in a terminal, never
+    through this server."""
+    missing = common.missing_credential()
+    if missing is None:
+        return None
+    why, fix = missing
+    return f"{why[0].upper()}{why[1:]}. Nothing was started. A credential is set in a terminal:\n  {fix}"
+
+
+def _ask_index_repo(ctx: Context, path: str, sources=None, confirm: bool = False):
     # A path that will be refused is never worth a person's attention.
     if jobs.index_job_refusal(path) is not None:
         return _NO_CHANNEL
-    return _resolve_ask(ctx, _index_repo_question(path), confirm=confirm, human_required=False)
+    # Nor a run that cannot start: the tool refuses it without asking.
+    if _missing_credential_reason() is not None:
+        return _NO_CHANNEL
+    # Checked before the question is built: building it costs a dry run on a
+    # paid profile, and nobody would read it.
+    if not getattr(getattr(ctx, "client_capabilities", None), "elicitation", None):
+        return _NO_CHANNEL
+    return _resolve_ask(ctx, _index_question_asked(path, sources), confirm=confirm, human_required=False)
 
 
 # griot_index_wait's bounds. The default stays under the tool timeout of the
@@ -3331,7 +3435,9 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         confirmation along the way.
 
         It is confirmed before it starts: through your client when it can
-        ask the user, otherwise by calling again with confirm=true.
+        ask the user, otherwise by calling again with confirm=true. On a
+        paid profile whose credential is not set it is refused without
+        asking, with the terminal command that sets it.
 
         The run needs the index to itself. While another griot tool call is
         using it, this waits a few seconds for that call to finish, before
@@ -3372,14 +3478,21 @@ if os.getenv("GRIOT_MCP_ENABLE_INDEX", "").strip().lower() in TRUE_WORDS:
         blocked = jobs.index_job_refusal(path)
         if blocked is not None:
             return {"started": False, "reason": blocked, "path": None, "pid": None, "sources": None}
+        # Cheap too, and confirm=true cannot change it either: the job would
+        # only fail on it in its log.
+        missing = _missing_credential_reason()
+        if missing is not None:
+            return {"started": False, "reason": missing, "path": None, "pid": None, "sources": None}
         # The run needs the collection to itself (its subprocess opens the
         # same directory), and closing it under another call would take the
         # index from under that call. Also checked BEFORE asking: a yes that
         # cannot start the run is a question with one possible outcome.
         if not await _alone_within(_WAIT_FOR_OTHER_CALLS_SECONDS):
             return {"started": False, "reason": _BUSY_WITH_ANOTHER_CALL, "path": None, "pid": None, "sources": None}
+        # A function, not the text: _confirmed builds it only where it is
+        # shown, so an answer or confirm=true never pays for its dry run.
         ok, refusal = await _confirmed(
-            ctx, _index_repo_question(path),
+            ctx, lambda: _index_repo_question(path, _index_cost_preview(path, sources)),
             confirm=confirm, cli_hint=_index_command(path), answer=answer)
         if not ok:
             return {"started": False, "reason": refusal, "path": None, "pid": None, "sources": None}

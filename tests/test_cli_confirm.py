@@ -56,19 +56,19 @@ def test_confirm_proceeds_only_on_a_typed_yes(monkeypatch, answer):
 def test_confirm_treats_anything_else_as_no(monkeypatch, capsys, answer):
     _terminal(monkeypatch, answer)
     assert common.confirm("Do it?") == 1
-    assert "Aborted, nothing changed." in capsys.readouterr().err
+    assert "Aborted. Nothing was changed." in capsys.readouterr().err
 
 
 def test_confirm_end_of_input_is_a_no(monkeypatch, capsys):
     _terminal(monkeypatch, raises=EOFError())
     assert common.confirm("Do it?") == 1
-    assert "Aborted, nothing changed." in capsys.readouterr().err
+    assert "Aborted. Nothing was changed." in capsys.readouterr().err
 
 
 def test_confirm_ctrl_c_exits_like_a_shell_interrupt(monkeypatch, capsys):
     _terminal(monkeypatch, raises=KeyboardInterrupt())
     assert common.confirm("Do it?") == 130
-    assert "Aborted, nothing changed." in capsys.readouterr().err
+    assert "Aborted. Nothing was changed." in capsys.readouterr().err
 
 
 def test_confirm_yes_flag_skips_the_question(monkeypatch):

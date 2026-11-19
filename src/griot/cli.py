@@ -16,9 +16,12 @@ real module's help.
 
 import argparse
 import importlib
+import json
 import os
+import shlex
 import signal
 import sys
+from pathlib import Path
 
 import griot
 from griot import ConfigurationError, UnknownEmbedProfile, UsageError, __version__
@@ -206,14 +209,149 @@ def _cmd_index_keywords(rest: list) -> int:
     return 0
 
 
+YES_HELP = ("On a paid profile, do not ask before a run estimated at or above confirm-spend (default $0.50). "
+            "The cost is still estimated first (a dry run of what is pending) and printed.")
+DRY_RUN_HELP = ("Says how many chunks would be (re)embedded and, on a paid profile, their estimated cost, "
+                "without embedding or spending anything.")
+
+
 def _index_all_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="griot index all",
         description=f"Runs every source in one process, in this order: {', '.join(INDEX_SOURCES)}; stops at the "
-                    f"first one that fails. Every other flag (--repo, --path, --dry-run, --prune) is forwarded to "
-                    f"each source: see `griot index code --help`.")
+                    f"first one that fails. On a paid profile it asks once, for every source, before the first "
+                    f"one embeds. Every other flag is forwarded to each source: see `griot index code --help`.")
+    parser.add_argument("--yes", action="store_true", help=YES_HELP)
     show_flags_read_by_griot(parser, SOURCES_FLAG, PROFILE_FLAG)
     return parser
+
+
+def _gate_flags(rest: list):
+    """What the spend confirmation needs from the forwarded argv: --help
+    (nothing to confirm), --yes, and the repository named. Read the way the
+    source modules' parsers read it (prefixes included); a command line they
+    would refuse is left to them, so the gate is skipped (None)."""
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--repo")
+    parser.add_argument("--path")
+    try:
+        known, _ = parser.parse_known_args(rest)
+    except (argparse.ArgumentError, SystemExit):
+        return None
+    return None if known.help else known
+
+
+def _pending_by_source(sources: list, rest: list):
+    """What each source would embed: its own --dry-run, run in this process
+    with its report read back as data (the same records the MCP preview
+    reads), and its printed lines kept out of sight. Returns (records, 0),
+    or (None, exit code) when a dry run failed: its own error is shown and
+    the real run, which would fail the same way, never starts."""
+    import contextlib
+    import io
+    import tempfile
+
+    from griot import common
+
+    fd, report = tempfile.mkstemp(prefix="griot-estimate-", suffix=".jsonl")
+    os.close(fd)
+    previous = os.environ.get("GRIOT_DRY_RUN_REPORT")
+    os.environ["GRIOT_DRY_RUN_REPORT"] = report
+    try:
+        for source in sources:
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    rc = _run_module(f"griot.index_{source}", [*rest, "--dry-run"])
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            except Exception as e:
+                if _is_collection_busy(e):
+                    raise
+                sys.stderr.write(err.getvalue())
+                print(f"Error: could not estimate what 'griot index {source}' would embed: {e}. Nothing was "
+                      f"changed.\n  griot doctor", file=sys.stderr)
+                return None, 1
+            if rc != 0:
+                sys.stderr.write(err.getvalue())
+                return None, rc
+        with open(report, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()], 0
+    finally:
+        if previous is None:
+            os.environ.pop("GRIOT_DRY_RUN_REPORT", None)
+        else:
+            os.environ["GRIOT_DRY_RUN_REPORT"] = previous
+        try:
+            os.unlink(report)
+        except OSError:
+            pass
+        common.take_redactions()  # counted by the dry runs; the real run counts and reports its own
+
+
+def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_override) -> int:
+    """The confirmation before an index run spends money (decided
+    2026-11-19): on a paid profile, what is pending is estimated first and
+    said; at or above confirm-spend it asks, once for every source of `run`
+    ("all" or one source) before the first one embeds. Asking inside the
+    loop would spend on `code` before `commits` is asked. A refusal returns
+    its exit code with only common.confirm()'s line: no progress is begun
+    and no run is recorded, because nothing ran. 0 lets the run start.
+
+    Costs a second read of every source on a paid profile (the dry run),
+    --yes included: --yes answers the question, it does not skip the
+    estimate, because what runs without a question leaves a trace (a
+    script's log, griot_index_repo's job log). A local profile, a dry run
+    and --help never come here."""
+    from griot import common
+
+    flags = _gate_flags(rest)
+    if flags is None or _is_dry_run(rest) or not common.profile_is_paid():
+        return 0
+    # First, before the estimate is announced or made: a run that cannot
+    # start must not say it is estimating or spending, nor pay for a dry run.
+    refused = common.refuse_missing_credential()
+    if refused:
+        return refused
+    if flags.repo:
+        target = flags.repo
+    elif flags.path:
+        target = Path(flags.path).resolve().name
+    else:
+        try:
+            registered = common.load_repos()
+        except (OSError, ValueError):
+            # Nothing registered yet (or a file griot cannot read): the dry
+            # run below fails on it with the source's own error, the one a
+            # local profile prints, and the gate names no repository.
+            registered = None
+        target = (None if not isinstance(registered, list) else Path(registered[0]).name if len(registered) == 1
+                  else f"{len(registered)} registered repositories")
+    target = None if target is None else common.printable(target)[:80]
+    origin = f" from {target}" if target else ""
+    # The dry run reads every file (and asks the platform's API) with its
+    # output kept out of sight: said first, so a long read does not look hung.
+    common.progress_note(f"Estimating the cost of {', '.join(sources)}{origin} with paid profile "
+                         f"'{common.ACTIVE_PROFILE_NAME}'...")
+    records, failed = _pending_by_source(sources, rest)
+    if records is None:
+        return failed
+    pending = [record for record in records if record["to_embed"]]
+    count = sum(record["to_embed"] for record in pending)
+    if not count:
+        return 0  # nothing to embed costs nothing: the run says what it found
+    chunks = f"{count:,} chunk{'s' if count != 1 else ''}"
+    kinds = (f"of {run}" if run != "all" else f"({', '.join(record['source'] for record in pending)})")
+    what = f"{chunks} {kinds}{origin}"
+    estimate = common.estimated_embedding_cost_usd(sum(record["to_embed_chars"] for record in pending))
+    # The command as it was typed, with what griot took out of argv first.
+    argv = ["griot", "index", run, *rest]
+    if sources_override is not None:
+        argv += ["--sources", ",".join(sources_override)]
+    argv += global_flags_typed()
+    return common.confirm_spend(what, estimate, yes=flags.yes, command=shlex.join(argv))
 
 
 def _cmd_index(args) -> int:
@@ -221,6 +359,9 @@ def _cmd_index(args) -> int:
     if args.source == "keywords":
         return _cmd_index_keywords(rest)
     if args.source != "all":
+        refused = _confirm_index_spend([args.source], rest, run=args.source, sources_override=None)
+        if refused:
+            return refused
         return _run_index_source(args.source, rest)
     # `all` has a help of its own: otherwise --help reaches each source's
     # parser in turn, five helps followed by "all sources completed".
@@ -240,6 +381,12 @@ def _cmd_index(args) -> int:
         return 2
 
     from griot import common  # lazy, same as every other subcommand here
+
+    # Before the progress record and the loop: a decline is not a failed
+    # source, and one question covers every source.
+    refused = _confirm_index_spend(sources, rest, run="all", sources_override=args.sources_override)
+    if refused:
+        return refused
 
     # Where the run is, for the host that started it (griot_index_repo): a
     # no-op unless that host named a file for it. The sources are announced
@@ -400,9 +547,10 @@ def profiles_list_result(*, ram_gb: float | None = None, active: str | None = No
         profiles.append({
             "profile": name,
             "is_active": name == active,
-            # "paid" is derived from having a credential to pay with, not
-            # from a price field: a local profile has neither.
-            "paid": not local,
+            # The one definition behind every `paid` field and the
+            # confirmation before spending (common.profile_is_paid), so this
+            # listing and the spend gate can never disagree about a profile.
+            "paid": common.profile_is_paid(profile),
             "credential_configured": configured,
             "collection": common.collection_name_for(name),
             "dim": profile["dim"],
@@ -730,6 +878,18 @@ def chat_profile_flag(names) -> tuple[str, str, str]:
                                       f"instead of GRIOT_CHAT_PROFILE")
 
 
+def global_flags_typed() -> list[str]:
+    """The flags griot takes out of argv before a subcommand sees them
+    (--profile, --quiet), as they were typed: a command rebuilt for a person
+    to paste (a refusal's `... --yes`) runs the way the one typed would."""
+    flags = []
+    if griot.PROFILE_FROM_COMMAND_LINE is not None:
+        flags += ["--profile", griot.PROFILE_FROM_COMMAND_LINE]
+    if griot.QUIET_FROM_COMMAND_LINE:
+        flags.append("--quiet")
+    return flags
+
+
 def show_flags_read_by_griot(parser: argparse.ArgumentParser, *flags: tuple[str, str, str]) -> None:
     """Adds to `parser`'s --help a section naming `flags`, which griot reads
     before that parser sees the command line. The section is laid out by
@@ -834,8 +994,9 @@ def build_parser() -> argparse.ArgumentParser:
         "index",
         help="Indexes one source (code|commits|tags|branches|platform) or all (all); keywords adds keyword "
              "vectors to what is already indexed",
-        description="Indexes repositories into the vector store. Extra flags (--repo, --dry-run, ...) "
-                    "are forwarded to the source's indexer — use `griot index <source> --help`. "
+        description="Indexes repositories into the vector store. Every other flag is forwarded to the source's "
+                    "indexer: see `griot index <source> --help`. On a paid profile the cost is estimated first, "
+                    "and a run estimated at or above confirm-spend asks (--yes answers). "
                     "`griot index keywords` is not a source: it adds keyword (BM25) vectors to a collection "
                     "indexed before keyword search existed, embedding nothing.",
     )
@@ -979,6 +1140,7 @@ def _main(argv=None) -> int:
     argv, quiet_asked = _extract_switch(argv, "--quiet", "-q")
     if quiet_asked:
         os.environ["GRIOT_QUIET"] = "1"
+        griot.QUIET_FROM_COMMAND_LINE = True
     # What the REAL environment says, before --profile below writes the same
     # variable and before .env is loaded: `profiles use` needs to tell an
     # exported variable from either of those.

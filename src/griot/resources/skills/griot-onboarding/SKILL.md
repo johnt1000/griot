@@ -86,11 +86,12 @@ want to know what you're about to pay for in local compute time:
 griot index all --repo my-app --dry-run
 ```
 
-`--dry-run` only counts how many chunks would need to be (re)embedded — no
-local CPU spent embedding, no API call, no cost of any kind. This is the
-safe way to answer "how big is this going to be" before committing to a
-real run. It works for any single source too (e.g. `griot index code --repo
-my-app --dry-run`).
+`--dry-run` only counts how many chunks would need to be (re)embedded and,
+on a paid profile, what embedding them would cost, estimated from their
+size; it embeds nothing and spends nothing (it still reads every file).
+This is the safe way to answer "how big is this going to be" before
+committing to a real run. It works for any single source too (e.g. `griot
+index code --repo my-app --dry-run`).
 
 ## Index for real
 
@@ -103,7 +104,10 @@ griot index all --repo my-app
 platform last because it's the only one that depends on an external
 API — see the `griot-indexing` skill for adapter setup). It stops at the
 first source that fails, so you always know which one broke. Filter with
-`--sources code,commits` if you only want part of the pipeline.
+`--sources code,commits` if you only want part of the pipeline. On a paid
+profile it first says what the run is estimated to cost; at or above
+confirm-spend ($0.50 unless set) it asks once, for every source, and
+`--yes` answers for a script.
 
 Re-running this over unchanged content costs nothing — griot skips any
 chunk whose content hash hasn't changed. See `griot-indexing` for the full

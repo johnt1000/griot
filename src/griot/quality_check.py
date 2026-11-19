@@ -11,7 +11,7 @@ import qdrant_edge as qe
 # aliased because `golden_set` is also this module's parameter name.
 from griot import common, logdb, retrieval_eval
 from griot import golden_set as golden_set_mod
-from griot.cli import PROFILE_FLAG, at_least_one, show_flags_read_by_griot
+from griot.cli import PROFILE_FLAG, at_least_one, global_flags_typed, show_flags_read_by_griot
 
 # Cap on how many individual failures a stored record keeps. A self-check
 # over a large corpus with a high failure rate would otherwise persist a
@@ -34,6 +34,7 @@ def record_for_trend(collection: str, self_check: dict, golden_check: dict | Non
     from datetime import datetime, timezone
 
     stored = dict(self_check)
+    stored.pop("embedded_chars", None)  # a size for a cost estimate, not a measurement
     failures = stored.get("failures") or []
     if len(failures) > MAX_STORED_FAILURES:
         stored["failures"] = failures[:MAX_STORED_FAILURES]
@@ -123,6 +124,7 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
         samples = sample_points(client, sample_size) if client is not None else []
         failures = []
         scores = []
+        embedded_chars = 0
 
         for point in samples:
             content = common.stored_text(point.payload)
@@ -138,6 +140,7 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
                 continue
             # By meaning, explicitly: this measures the embeddings, whatever
             # the surfaces default to (common.SEARCH_DEFAULT_MODE).
+            embedded_chars += len(content)
             results = common.search(content, limit=5, mode="vector")
             match = next((r for r in results if str(r.id) == str(point.id)), None)
             if match is None:
@@ -156,7 +159,23 @@ def run_self_check(collection: str, sample_size: int = SELF_CHECK_SAMPLE_SIZE, m
         "failed": len(failures),
         "failures": failures,
         "avg_score": round(statistics.mean(scores), 4) if scores else None,
+        # The size of the text embedded as queries, for a caller that says
+        # what the check cost (embedding_cost_usd); not part of the record.
+        "embedded_chars": embedded_chars,
     }
+
+
+def embedding_cost_usd(self_check: dict, golden_check: dict | None) -> float | None:
+    """What the queries of a check cost to embed, estimated from their size
+    (common.estimated_embedding_cost_usd, the one formula), on a paid
+    profile; None on a local one, or when the profile has no price. A case
+    searched by its words alone, or skipped, embedded nothing."""
+    if not common.profile_is_paid():
+        return None
+    chars = self_check.get("embedded_chars", 0) + sum(
+        len(case["query"]) for case in (golden_check or {}).get("cases", [])
+        if not case.get("skipped") and case.get("mode") != "keyword")
+    return common.estimated_embedding_cost_usd(chars)
 
 
 # The golden set searches the way readers get results (common.search's
@@ -506,16 +525,31 @@ def run_from_history(args) -> None:
         planned.append((name, every_pair, retrieval_eval.spread(every_pair, limit)))
 
     estimate = None
-    paid = common.ACTIVE_PROFILE["backend"] != "local"
+    paid = common.profile_is_paid()
     asked = [pair for _, _, pairs in planned for pair in pairs]
     if paid and mode != "keyword" and asked:
-        # Said before any search, on stderr so --json stays one payload, and
-        # then the run goes on: no confirmation threshold exists yet, and a
-        # run of this size costs cents (HISTORY_DEFAULT_LIMIT). Never silent.
+        # The credential first, as an index run reads it: without it no
+        # search below could embed its query, whatever the answer.
+        refused = common.refuse_missing_credential()
+        if refused:
+            raise SystemExit(refused)
+        # Before any search, on stderr so --json stays one payload: said and
+        # run below confirm-spend, asked at or above it (as an index run is).
         estimate = common.estimated_embedding_cost_usd(sum(len(pair["query"]) for pair in asked))
-        cost = f"about US$ {estimate:.4f}, estimated from their size" if estimate is not None else "cost unknown"
-        print(f"Embedding {len(asked)} commit messages with paid profile '{common.ACTIVE_PROFILE_NAME}' "
-              f"({cost}).", file=sys.stderr)
+        target = planned[0][0] if len(planned) == 1 else f"{len(planned)} repositories"
+        what = (f"{len(asked):,} commit message{'s' if len(asked) != 1 else ''} from "
+                f"{common.printable(target)[:80]}")
+        # Every flag that was typed: a script pasting the line keeps its --json.
+        command = ["griot", "quality-check", "--from-history"]
+        for flag, value in (("--repo", args.repo), ("--limit", args.limit), ("--mode", args.mode)):
+            if value is not None:
+                command += [flag, str(value)]
+        if args.json:
+            command.append("--json")
+        command += global_flags_typed()
+        refused = common.confirm_spend(what, estimate, yes=args.yes, command=shlex.join(command))
+        if refused:
+            raise SystemExit(refused)
 
     results = []
     for name, every_pair, pairs in planned:
@@ -540,7 +574,8 @@ def run_from_history(args) -> None:
     if args.json:
         print(json.dumps({"collection": common.COLLECTION_NAME, "profile": common.ACTIVE_PROFILE_NAME,
                           "mode": mode, "k": retrieval_eval.HISTORY_K, "repositories": results,
-                          "not_measured": not_measured, "estimated_cost_usd": estimate, "ok": ok}))
+                          "not_measured": not_measured, "paid": paid,
+                          "estimated_cost_usd": common.estimate_rounded(estimate), "ok": ok}))
     else:
         for missing in not_measured:
             print(f"\nNot measured: {missing['reason']}")
@@ -567,7 +602,7 @@ def main(argv=None):
                         "a commit's message is the question, the indexed files it touched are the answers. "
                         "Reports MRR@10 and recall@10 per kind of question and records them as a series of "
                         "their own. On a paid profile the estimated cost of embedding the messages is said "
-                        "first.")
+                        "first; at or above confirm-spend (default $0.50) it asks, and --yes answers.")
     history.add_argument("--from-history", action="store_true",
                          help="Measure against the history of the registered repositories (the active collection)")
     history.add_argument("--repo", help="Only this registered repository (its directory name)")
@@ -576,10 +611,14 @@ def main(argv=None):
                               f"(default: {HISTORY_DEFAULT_LIMIT})")
     history.add_argument("--mode", choices=common.SEARCH_MODES, default=None,
                          help=f"Search mode measured (default: {common.SEARCH_DEFAULT_MODE}, what readers get)")
+    history.add_argument("--yes", action="store_true",
+                         help="On a paid profile, do not ask before a run estimated at or above confirm-spend "
+                              "(default $0.50). The estimate is still printed.")
     args = parser.parse_args(argv)
 
     if not args.from_history:
-        given = [flag for flag, value in (("--repo", args.repo), ("--limit", args.limit), ("--mode", args.mode))
+        given = [flag for flag, value in (("--repo", args.repo), ("--limit", args.limit), ("--mode", args.mode),
+                                          ("--yes", args.yes or None))
                  if value is not None]
         if given:
             parser.error(f"{', '.join(given)} {'applies' if len(given) == 1 else 'apply'} only with --from-history")
@@ -600,10 +639,9 @@ def main(argv=None):
     # common.get_client() would CREATE it from scratch — wrong here,
     # quality_check should only inspect what already exists.
     if not common.collection_exists(collection):
-        # [--json stdout contract] --json's stdout contract is "JSON or nothing" — an
-        # error this early (no result to report) belongs on stderr in that
-        # mode, never stdout, or a caller parsing stdout as JSON would choke.
-        print(f"Error: collection '{collection}' does not exist.", file=sys.stderr if args.json else sys.stdout)
+        # [--json stdout contract] --json's stdout contract is "JSON or nothing", and
+        # without --json stdout is the result: an error is neither.
+        print(f"Error: collection '{collection}' does not exist.", file=sys.stderr)
         raise SystemExit(1)
 
     if args.from_history:
@@ -630,6 +668,7 @@ def main(argv=None):
     if not args.json:
         print(f"=== Self-check: {collection} ===")
     self_check = run_self_check(collection, args.sample_size, args.min_score)
+    self_check.pop("embedded_chars", None)  # this command's JSON and text keep the shape they had
     if not args.json:
         print(f"{self_check['passed']}/{self_check['sampled']} samples self-recovered correctly (avg score: {self_check['avg_score']})")
         for f in self_check["failures"]:

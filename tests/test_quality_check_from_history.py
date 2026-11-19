@@ -190,8 +190,9 @@ def test_from_history_reports_mrr_and_recall_per_kind_of_question(history_index,
 
 def test_from_history_json_shape(history_index, capsys):
     result = _run_json(capsys, "--repo", "repo", "--limit", "2")
-    assert set(result) == {"collection", "profile", "mode", "k", "repositories", "not_measured",
+    assert set(result) == {"collection", "profile", "mode", "k", "repositories", "not_measured", "paid",
                            "estimated_cost_usd", "ok"}
+    assert result["paid"] is False
     assert result["collection"] == common.COLLECTION_NAME
     assert result["mode"] == "vector" and result["k"] == 10 and result["ok"] is True
     assert result["not_measured"] == [] and result["estimated_cost_usd"] is None  # a local profile
@@ -312,12 +313,15 @@ def test_the_history_flags_need_from_history(flag, capsys):
 
 
 def test_a_paid_profile_says_the_estimated_cost_before_searching_and_goes_on(history_index, monkeypatch, capsys):
+    # A price high enough for the estimate to survive rounding to 4 decimals,
+    # under the threshold so nothing asks.
     monkeypatch.setattr(common, "ACTIVE_PROFILE", {**common.ACTIVE_PROFILE, "backend": "openai_compatible",
-                                                   "price_per_1m_tokens": 0.02})
+                                                   "price_per_1m_tokens": 20.0})
+    monkeypatch.setattr(common, "CONFIRM_SPEND_USD", 0.50)
     result = _run_json(capsys)
     chars = len(Q_ALPHA) + len(Q_BETA) + len(Q_GAMMA)
-    expected = chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * 0.02
-    assert result["estimated_cost_usd"] == pytest.approx(expected)
+    expected = chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * 20.0
+    assert result["estimated_cost_usd"] == round(expected, 4) > 0
     assert result["repositories"][0]["pairs"] == 3, "the estimate is said, and the measurement still runs"
     _run_json(capsys)  # the estimate goes to stderr, so --json stdout stays one payload
     capsys.readouterr()

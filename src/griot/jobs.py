@@ -637,6 +637,12 @@ def start_index_job(
         else:
             argv += ["--path", str(repo_path)]
     argv += ["--sources", ",".join(sources)]
+    # The run has no terminal, so the CLI's confirmation before spending would
+    # refuse it (exit 2) after the person already said yes: the host that
+    # starts it asks first (griot_index_repo, through its client or
+    # confirm=true), and the spend ceiling still applies. The run still
+    # estimates and prints its cost, which lands in the job's log.
+    argv.append("--yes")
 
     # Where the run records its progress (common.progress_begin() and what
     # follows): a file of its own per job, so that two servers' jobs never
@@ -722,7 +728,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
     subprocess can open it, and returns a reason when it must not (another
     call is using it). Defaults to common.release_client."""
     result = {"ok": False, "reason": None, "path": None, "profile": common.ACTIVE_PROFILE_NAME,
-              "paid": common.ACTIVE_PROFILE["backend"] != "local", "sources": [], "notes": [],
+              "paid": common.profile_is_paid(), "sources": [], "notes": [],
               "to_embed": 0, "up_to_date": 0, "stale": 0, "held_back": 0, "estimated_cost_usd": None}
     refusal = index_job_refusal(path, allow_env_roots=allow_env_roots)
     if refusal is not None:
@@ -788,7 +794,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
             "held_back": held_back,
             # An estimate from the size of the text; the bill comes from the
             # provider's own token count.
-            "estimated_cost_usd": (round(estimate, 4) if result["paid"] and estimate is not None else None)}
+            "estimated_cost_usd": common.estimate_rounded(estimate) if result["paid"] else None}
 
 
 _quality_check_lock = threading.Lock()

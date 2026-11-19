@@ -255,7 +255,8 @@ def test_start_index_job_path_none_omits_the_path_flag(monkeypatch, tmp_path):
     assert result["started"] is True
     assert result["path"] is None
     assert "--path" not in captured["cmd"]
-    assert captured["cmd"][-4:] == ["index", "all", "--sources", "code"]
+    # --yes: the person was asked by the host before the run started (see start_index_job).
+    assert captured["cmd"][-5:] == ["index", "all", "--sources", "code", "--yes"]
 
 
 def test_start_index_job_path_none_skips_allowlist_check(monkeypatch, tmp_path):

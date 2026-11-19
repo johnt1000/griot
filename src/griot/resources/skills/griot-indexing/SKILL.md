@@ -43,9 +43,12 @@ Run one source directly instead of all five with `griot index <source>`
 - `--path <dir>` — indexes an arbitrary directory directly, bypassing
   `repos.json` entirely. Useful for a one-off index you don't want
   registered.
-- `--dry-run` — counts how many chunks would need to be (re)embedded
-  without spending anything (no local CPU for embedding, no API call), and
-  how many stale points would be removed.
+- `--dry-run` — counts how many chunks would need to be (re)embedded and,
+  on a paid profile, their estimated cost, without embedding or spending
+  anything, and how many stale points would be removed.
+- `--yes` — on a paid profile, starts without asking even when the run is
+  estimated at or above confirm-spend (default $0.50); the estimate is
+  still printed on stderr. Without it, such a run asks first.
 - `--prune` — removes stale points even when they are more than half of
   what is indexed for a repository (see "Stale points" below).
 - On `griot index all` specifically, `--sources code,commits` (a
