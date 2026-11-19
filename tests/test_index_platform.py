@@ -635,7 +635,8 @@ def test_a_platform_item_url_is_stored_when_the_platform_gives_one(gitlab_run, m
 
     index_platform.main(["--path", gitlab_run["path"]])
 
-    by_title = {d["content"].split("\n")[0]: d["metadata"] for d in gitlab_run["documents"]}
+    # By the title, after the number the text of a numbered item starts with.
+    by_title = {d["content"].split("\n")[0].split(": ")[-1]: d["metadata"] for d in gitlab_run["documents"]}
     assert by_title["with"]["url"] == "https://gitlab.com/group/project/-/merge_requests/1"
     # Absent, not null: the other platforms' points stay as they were.
     assert "url" not in by_title["without"]
