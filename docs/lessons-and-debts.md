@@ -480,13 +480,13 @@ credential set, although it would embed nothing.
 them again. On a large index that is a second full read of the local store
 on every run, local profiles included.
 
-### 102. ~~The embedding path's own missing-credential texts are older~~ — resolved
+### 102. The embedding path's own missing-credential texts are older
 
 A missing credential reached through `griot search` or `griot_quality_check`
 still gets the embedding path's texts, which give no pasteable command; the
 spend gate's sentence and command (#168) are not used there. The gate also
 says "chunks" for commits, tags and branches, and prints a very small
-configured limit as `1e-05`. Resolved: they use the shared sentence and `griot auth set <provider>` (#178).
+configured limit as `1e-05`. Partly resolved: the embedding path's missing-credential errors use the shared sentence and `griot auth set <provider>` (#178); the gate's "chunks" for commits, tags and branches, and `1e-05` for a very small limit, are still open.
 
 ### 103. A condition fixed elsewhere stays in the ledger until something reads it
 
