@@ -4839,10 +4839,11 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
         # told which tool does, and the refusal stays a refusal.
         raise SearchModeUnavailable(
             f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
-            f"stored keyword vectors. The user fixes this once by running `{KEYWORD_BUILD_COMMAND}` (local: it "
+            f"stored keyword vectors. Running `{KEYWORD_BUILD_COMMAND}` once builds it (local: it "
             f"embeds nothing and costs nothing; while it runs it needs about as much free disk as the "
-            f"collection). What to do now: for a commit hash, an error code or where a name is used, search the "
-            f"repository yourself with grep or `git log`; for a descriptive question, retry with mode 'vector'. "
+            f"collection). Until then: for a commit hash, an error code or where a name is used, use grep or "
+            f"`git log` in the repository you are working in (they do not reach the other registered "
+            f"repositories or pull request text); for a descriptive question, retry with mode 'vector'. "
             f"Vector search does not find exact strings, so do not use it for those.")
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.

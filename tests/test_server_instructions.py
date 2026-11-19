@@ -62,6 +62,15 @@ async def test_the_instructions_say_when_to_use_it_and_when_not_to():
 
 
 @pytest.mark.anyio
+async def test_the_not_built_clause_is_usable_by_an_agent_that_cannot_grep():
+    instructions, _ = await _server()
+    text = " ".join(instructions.split())
+    assert "if the tool says keyword search is not built, tell the user to run `griot index keywords` once" in text
+    assert "mode vector only for a descriptive question, never for a hash or an exact name" in text
+    assert "answer those" not in text, "the clause must not send an agent that cannot grep back to grep"
+
+
+@pytest.mark.anyio
 async def test_the_instructions_are_short_enough_to_sit_in_every_session():
     instructions, _ = await _server()
     # Raised from 1600 when keyword search came: the one place an agent learns
@@ -265,5 +274,5 @@ async def test_the_instructions_say_what_to_do_when_keyword_search_is_not_built(
     instructions, tools = await _server()
     text = " ".join(instructions.split())
     assert "not built" in text and "griot index keywords" in text
-    assert "grep" in text and "git log" in text
+    assert "mode vector" in text, "the clause carries the vector alternative the error message carries"
     assert "mode" in tools["griot_search"].input_schema["properties"], "the argument the instructions name exists"

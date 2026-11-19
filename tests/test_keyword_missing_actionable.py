@@ -31,6 +31,14 @@ def test_the_refusal_names_the_command_and_what_to_do_now(legacy_index, mode):
     assert "embeds nothing" in message
 
 
+@pytest.mark.parametrize("mode", ["keyword", "hybrid"])
+def test_the_refusal_limits_grep_to_the_working_repository_and_reads_neutrally(legacy_index, mode):
+    message = _refusal(mode)
+    assert "repository you are working in" in message, "grep and log cover only the current checkout"
+    assert "other registered repositories" in message, "the index spans more than the checkout"
+    assert "The user" not in message and "yourself" not in message, "a person reads this in the CLI too"
+
+
 def test_the_shared_sentence_names_the_command_and_the_collection():
     sentence = common.keyword_search_missing_sentence("some-collection")
     assert "`griot index keywords`" in sentence and "'some-collection'" in sentence
