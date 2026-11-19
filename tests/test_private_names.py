@@ -163,7 +163,6 @@ TESTS_MAY_REACH = {
     "mcp_server": {
         "_alone_queue": _STATE,
         "_inflight": _STATE,
-        "_KEYWORD_NOTE_GIVEN_FOR": _STATE,
         "_tool_started": _STATE,
         "_tool_finished": _STATE,
         "_Ask": _SEAM,
@@ -221,7 +220,6 @@ TESTS_MAY_REACH = {
         "_MIN_BAR_WIDTH": _SHARED,
         "_MIN_CHART_WIDTH": _SHARED,
         "_SPARK_LEVELS": _SHARED,
-        "_ago": _HELPER,
         "_bar": _HELPER,
         "_chart_width": _HELPER,
         "_classify_source_label": _HELPER,

@@ -565,12 +565,17 @@ async def test_a_repository_name_cannot_carry_a_line_break_into_the_note(monkeyp
 
     monkeypatch.setattr(common, "search", lambda *a, **k: [Hit()])
     monkeypatch.setattr(mcp_server, "_log_search", lambda *a, **k: None)
-    monkeypatch.setattr(freshness, "behind_among", lambda names, collection=None: {"bad\nname": 2})
+    monkeypatch.setattr(freshness, "reports_among", lambda names, collection=None: [
+        {"repo": "bad\nname", "path": "/Users/you/bad\nname", "behind": True, "commits_behind": 2,
+         "behind_sources": ["code"]}])
 
     async with Client(mcp_server.mcp) as client:
         out = (await client.call_tool("griot_search", {"query": "x"})).structured_content
 
-    assert "\n" not in out["note"].replace(mcp_server.SEARCH_RESULT_NOTE, "") and "badname" in out["note"]
+    # One line each: the anti-injection note, the behind clause, its action.
+    lines = out["note"].splitlines()
+    assert lines[0] == mcp_server.SEARCH_RESULT_NOTE and len(lines) == 3, out["note"]
+    assert "bad?name" in lines[1] and lines[2] == "In a terminal: griot index all --repo 'bad?name'"
 
 
 def test_the_server_tells_the_agent_what_behind_means():
@@ -603,11 +608,13 @@ def test_stats_names_the_repositories_behind_and_asks_for_attention():
         {"repo": "four", "commits_behind": 0, "behind_sources": ["branches"]},
         {"repo": "three", "commits_behind": None, "behind_sources": ["code"]}]
     assert s["repositories_without_code"] == ["two"]
-    behind_line = next(line for line in s["attention"] if "behind" in line)
-    assert "one (3 commits; tags changed)" in behind_line and "four (branches changed)" in behind_line
-    assert "three (the indexed commit is not in this history)" in behind_line
+    behind_lines = [line for line in s["attention"] if "behind" in line]
+    assert behind_lines == [
+        "the index of one is behind it (3 commits; tags changed) — griot index all --repo one",
+        "the index of four is behind it (branches changed) — griot index all --repo four",
+        "the index of three is behind it (the indexed commit is not in this history) — griot index all --repo three"]
     assert any("code never indexed" in line and "two" in line for line in s["attention"])
-    assert "index behind in one (3 commits; tags changed)" in text, "in the state lines, not only under attention"
+    assert text.count("the index of one is behind it") == 1, "said under Attention, once"
 
 
 def test_stats_says_nothing_when_every_repository_is_fresh():

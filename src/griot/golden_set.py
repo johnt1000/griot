@@ -37,7 +37,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from griot import common, logdb, retrieval_eval
+from griot import common, logdb, notices, retrieval_eval
 from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 # Fields that identify an item of each source_type specifically but without
@@ -127,11 +127,12 @@ def mode_refusal(query: str, mode) -> str | None:
 # collection has no keyword vectors: the case is written that way for good,
 # so the person (or agent) hears what it measures and how to get the default.
 # Worded for one case or several: add says it after its one case, suggest
-# once for every case of its run.
-VECTOR_FALLBACK_NOTE = (
-    "The case(s) just added are checked by meaning only (mode vector): this collection was indexed before keyword "
-    "search, so the default, hybrid, cannot run on it yet. `griot index keywords` builds it once (local, embeds "
-    "nothing); to check a question in hybrid after that, remove its case and add it again.")
+# once for every case of its run. It opens with the ledger's sentence for the
+# fact (notices.keyword_vectors_missing), the words griot doctor, griot stats
+# and a search use, then says what it means for the case.
+def vector_fallback_note(notice) -> str:
+    return (f"{notices.capitalized(notice.sentence)}. The case(s) just added are checked in mode vector; to check "
+            f"one in hybrid, after `{notice.action}`, remove it and add it again.")
 
 # Said when a case made without a mode is a vector case because the
 # collection's config cannot be read: whether it can run hybrid is unknown,
@@ -173,7 +174,7 @@ def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
         return common.SEARCH_DEFAULT_MODE, None
     resolved, search_note = common.search_mode_for(query, None)
     if search_note:
-        return resolved, VECTOR_FALLBACK_NOTE
+        return resolved, vector_fallback_note(search_note)
     if resolved == "vector":
         # The collection exists, the query can be matched and there is no
         # note: what is left is a config search_mode_for could not read.

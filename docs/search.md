@@ -59,8 +59,13 @@ since the code and commits sources ran (or that the indexed commit is no
 longer in the history: rewritten, or another branch checked out), whether the
 tags or remote branches changed (the base branch counts, since each branch is
 described against it), and which sources never ran; `griot_search` names the
-repositories among its results that are behind (`behind`), and `griot stats`
-lists them under attention. Pull requests and issues live on the platform, so
+repositories among its results that are behind (`behind`, on every result; its
+`note` says it in words, with the command that indexes them, the first time the
+server sees a repository fall behind or fall into another band of commits:
+1-9, 10-99, 100-999, 1000 or more, or a history rewritten), and `griot stats`
+and `griot doctor` list them every time. Other commands end, when something
+new needs attention, with one line on stderr, `1 notice: griot doctor` (again a
+week later if nothing changed; `--quiet` silences it). Pull requests and issues live on the platform, so
 nothing local can say whether that source is behind.
 
 ## `griot ask`

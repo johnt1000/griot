@@ -16,7 +16,7 @@ import threading
 import pytest
 from mcp.client.client import Client
 
-from griot import ask, cli, common, golden_set, logdb, mcp_server, quality_check
+from griot import ask, cli, common, golden_set, logdb, mcp_server, notices, quality_check
 from test_keyword_search import DOCS, _active_path, fake_embeddings, index, legacy_index  # noqa: F401
 
 
@@ -45,7 +45,8 @@ def test_the_default_runs_hybrid_where_keyword_search_is_built(index):
 def test_the_default_falls_back_to_vector_on_a_collection_without_keyword_vectors(legacy_index):
     mode, note = common.search_mode_for("acquire_lock", None)
     assert mode == "vector"
-    assert "griot index keywords" in note
+    assert note == notices.keyword_vectors_missing(common.COLLECTION_NAME)
+    assert note.action == "griot index keywords"
 
 
 def test_the_default_falls_back_to_vector_when_nothing_is_indexed():
@@ -247,8 +248,9 @@ async def test_the_tool_gives_the_fallback_note_on_the_first_default_search_only
         second = await client.call_tool("griot_search", {"query": "release_lock", "limit": 3})
     assert first.is_error is False and second.is_error is False
     assert first.structured_content["note"].count("griot index keywords") == 1
+    assert first.structured_content["note"].splitlines()[-1] == "In a terminal: griot index keywords"
     assert "griot index keywords" not in second.structured_content["note"]
-    assert second.structured_content["note"] == mcp_server.SEARCH_RESULT_NOTE
+    assert second.structured_content["note"] == ""
     assert first.structured_content["mode"] == second.structured_content["mode"] == "vector"
 
 
@@ -267,7 +269,7 @@ async def test_a_refused_default_search_does_not_use_up_the_fallback_note(legacy
 async def test_the_fallback_note_given_for_another_collection_does_not_silence_this_one(legacy_index, monkeypatch):
     """The note is about a collection: one given for another profile's
     collection told nobody about this one."""
-    monkeypatch.setattr(mcp_server, "_KEYWORD_NOTE_GIVEN_FOR", {"another-collection"})
+    mcp_server.NOTES_GIVEN.first_time(notices.keyword_vectors_missing("another-collection"))
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_search", {"query": "acquire_lock", "limit": 3})
     assert result.structured_content["note"].count("griot index keywords") == 1
@@ -283,33 +285,52 @@ async def test_an_explicit_vector_search_does_not_use_up_the_fallback_note(legac
     assert default.structured_content["note"].count("griot index keywords") == 1
 
 
-def test_the_cli_gives_the_fallback_note_with_every_command(legacy_index, capsys):
-    """One process per command, read by a person: each default search that
-    fell back says why and what to run, even when one process runs several
-    (as this test does)."""
-    for _ in range(2):
-        assert cli.main(["search", "acquire_lock", "--limit", "3"]) == 0
-        captured = capsys.readouterr()
-        assert "Mode: vector" in captured.out
-        assert (captured.out + captured.err).count("griot index keywords") == 1
+@pytest.mark.parametrize("argv", [["search", "acquire_lock", "--limit", "3"],
+                                  ["ask", "acquire_lock", "--limit", "3"]], ids=["search", "ask"])
+def test_the_cli_gives_the_fallback_note_once_per_collection_on_stderr(legacy_index, capsys, monkeypatch, argv):
+    """Read by a person, who keeps reading the same collection: the note is
+    said on stderr the first time and not again while nothing changed (the
+    ledger, announced.json), and never with the footer on top of it. `Mode:
+    vector` is part of a search's result and stays on stdout every time.
+    `griot search` and `griot ask` behave the same."""
+    if argv[0] == "ask":
+        # The answer is not what is tested: no chat model is called.
+        monkeypatch.setattr(ask, "ask", lambda *a, **k: ("an answer", []))
+    note = notices.prose(notices.keyword_vectors_missing(common.COLLECTION_NAME), lead=notices.FELL_BACK)
+    assert cli.main(argv) == 0
+    first = capsys.readouterr()
+    notices.SPOKEN.clear()  # a second process
+    assert cli.main(argv) == 0
+    second = capsys.readouterr()
+    assert first.err == note + "\n" and "griot index keywords" not in first.out
+    assert "griot index keywords" not in second.err and "notice" not in second.err
+    if argv[0] == "search":
+        assert "Mode: vector" in first.out and "Mode: vector" in second.out
+
+
+def test_the_cli_fallback_note_is_silenced_by_quiet(legacy_index, capsys, monkeypatch):
+    monkeypatch.setenv("GRIOT_QUIET", "1")
+    assert cli.main(["search", "acquire_lock", "--limit", "3"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and "Mode: vector" in captured.out
 
 
 # --- the fallback note's memory: atomic, and forgotten once the collection changes -------------
 
 
-class _SetWhoseLookupWaitsForASecondCaller(set):
-    """A set whose membership test answers, then waits (briefly) for a second
-    thread to reach the same test before returning. Unguarded, two first
-    searches both read "absent" before either adds, and both carry the note;
-    under a lock the second cannot test until the first has added, so the
-    wait times out and the second reads "present"."""
+class _DictWhoseLookupWaitsForASecondCaller(dict):
+    """A dict whose lookup answers, then waits (briefly) for a second thread
+    to reach the same lookup before returning. Unguarded, two first searches
+    both read "absent" before either adds, and both carry the note; under a
+    lock the second cannot look until the first has added, so the wait times
+    out and the second reads "present"."""
 
     def __init__(self, barrier):
         super().__init__()
         self.barrier = barrier
 
-    def __contains__(self, item):
-        answer = super().__contains__(item)
+    def get(self, key, default=None):
+        answer = super().get(key, default)
         try:
             self.barrier.wait(timeout=0.5)
         except threading.BrokenBarrierError:
@@ -321,12 +342,11 @@ def test_two_concurrent_first_searches_carry_the_fallback_note_once(monkeypatch)
     """The check and the add are one step: of two first default searches at
     the same moment, exactly one result carries the note."""
     monkeypatch.setattr(common, "search_mode_for",
-                        lambda query, mode: ("vector", common.KEYWORD_SEARCH_NOT_BUILT_NOTE))
+                        lambda query, mode: ("vector", notices.keyword_vectors_missing(common.COLLECTION_NAME)))
     monkeypatch.setattr(common, "search", lambda *a, **kw: [])
     monkeypatch.setattr(mcp_server, "_log_search", lambda *a, **kw: None)
-    monkeypatch.setattr(mcp_server.freshness, "behind_among", lambda repos: {})
-    monkeypatch.setattr(mcp_server, "_KEYWORD_NOTE_GIVEN_FOR",
-                        _SetWhoseLookupWaitsForASecondCaller(threading.Barrier(2)))
+    monkeypatch.setattr(mcp_server.freshness, "reports_among", lambda repos: [])
+    monkeypatch.setattr(mcp_server.NOTES_GIVEN, "given", _DictWhoseLookupWaitsForASecondCaller(threading.Barrier(2)))
     start = threading.Barrier(2)
     notes = []
 

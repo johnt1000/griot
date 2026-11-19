@@ -25,7 +25,7 @@ from dotenv import load_dotenv, set_key, unset_key
 from tqdm import tqdm
 
 import griot as _package
-from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfile, logdb, redaction
+from griot import FALSE_WORDS, ConfigurationError, GriotError, UnknownEmbedProfile, logdb, notices, redaction
 
 # Where user config and data live: explicit
 # override via GRIOT_CONFIG_DIR/GRIOT_DATA_DIR (also useful for tests),
@@ -702,52 +702,6 @@ def network_cause(error: Exception) -> str:
     return "timeout" if isinstance(error, requests.Timeout) else "network unreachable"
 
 
-def _announced_path() -> Path:
-    return DATA_DIR / "announced.json"
-
-
-def announce_once(kind: str, fingerprint: str | None, lines: list[str], *, level: str = "warning") -> bool:
-    """Shows `lines` (stderr) once per STATE of the condition `kind`, not once
-    per run: `fingerprint` is what the condition is about (the variable names,
-    the paths) and it is announced again only when that changes. None means
-    the condition is gone: it is forgotten, so it speaks again if it comes
-    back. `griot doctor` lists the same conditions every time.
-
-    Under --quiet nothing is shown and nothing is remembered: it was not said.
-    A state file that cannot be read or written only means it is said again;
-    it must never stop a command. It is called while this module is imported
-    (the start-up warnings), so importing common can write announced.json."""
-    path = _announced_path()
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(state, dict):
-            state = {}
-    except (OSError, ValueError):
-        state = {}
-    if fingerprint is None:
-        if kind in state:
-            del state[kind]
-            _write_announced(path, state)
-        return False
-    if quiet() or state.get(kind) == fingerprint:
-        return False
-    for line in lines:
-        log_and_print(line, level=level)
-    state[kind] = fingerprint
-    _write_announced(path, state)
-    return True
-
-
-def _write_announced(path: Path, state: dict) -> None:
-    try:
-        secure_mkdir(path.parent)
-        # 0600 like the rest of the data directory: doctor flags anything
-        # other users can read, and this file is griot's own.
-        secure_write_text(path, json.dumps(state, sort_keys=True))
-    except OSError:
-        pass  # said again next time: the cost of a data directory that cannot be written
-
-
 def log_run_summary(**fields) -> None:
     """Records a structured record per indexer run — script, profile, repo,
     indexed/skipped/failed counts, duration, estimated spend for the day.
@@ -1032,22 +986,11 @@ _LEGACY_ENV_RENAMES = {
 
 
 def legacy_env_findings() -> list[tuple[str, str]]:
-    """(old name, sentence) for each renamed variable still set. ONE source
-    for the sentence: the warning printed at start and the `griot doctor`
-    check both use it."""
-    return [(old, f"Warning: {old} was renamed and griot ignores it. Rename it:\n  export {new}=\"${old}\"")
-            for old, new in _LEGACY_ENV_RENAMES.items() if os.getenv(old) is not None]
-
-
-def warn_legacy_env_vars() -> None:
-    """Said once per state: again only when the set of old names changes
-    (the sentence goes on being said by `griot doctor`, every time)."""
-    findings = legacy_env_findings()
-    announce_once("legacy_env", ",".join(sorted(old for old, _ in findings)) or None,
-                  [sentence for _, sentence in findings])
-
-
-warn_legacy_env_vars()
+    """(old name, new name) for each renamed variable still set. Worded by
+    notices.legacy_env(), the one sentence `griot doctor` and `griot stats`
+    list and the CLI footer counts: a line of its own at every start would be
+    a second notice line where the footer says at most one."""
+    return [(old, new) for old, new in _LEGACY_ENV_RENAMES.items() if os.getenv(old) is not None]
 
 
 def load_repos() -> list[str]:
@@ -1941,9 +1884,9 @@ _LEGACY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def legacy_layout_findings(legacy_root: Path | None = None) -> list[tuple[str, str]]:
-    """(old path, sentence) for each file of the old layout still at the root
-    of the code checkout. One source for the warning printed at start and the
-    `griot doctor` check."""
+    """(old path, new path) for each file of the old layout still at the root
+    of the code checkout. Worded by notices.legacy_layout(), as
+    legacy_env_findings() is; griot only ever says so, it never moves them."""
     root = _LEGACY_ROOT if legacy_root is None else legacy_root
     if not root.is_dir():
         return []
@@ -1954,19 +1897,8 @@ def legacy_layout_findings(legacy_root: Path | None = None) -> list[tuple[str, s
         "qdrant_data": DATA_DIR,
         "logs": DATA_DIR,
     }
-    return [(str(root / name),
-             f"Warning: {root / name} is in the old layout and griot ignores it. Move it "
-             f"(griot never moves it on its own):\n  mv {root / name} {new_dir / name}")
+    return [(str(root / name), str(new_dir / name))
             for name, new_dir in legacy_items.items() if (root / name).exists()]
-
-
-def warn_legacy_layout(legacy_root: Path | None = None) -> None:
-    """Warns (and ONLY warns) if files from the old layout are still at the
-    root of the code checkout, pointing to the new location. Said once per
-    state: again only when the set of paths changes."""
-    findings = legacy_layout_findings(legacy_root)
-    announce_once("legacy_layout", ",".join(sorted(path for path, _ in findings)) or None,
-                  [sentence for _, sentence in findings])
 
 
 def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
@@ -1988,7 +1920,6 @@ def migrate_legacy_spend_state(legacy_root: Path | None = None) -> None:
         )
 
 
-warn_legacy_layout()
 migrate_legacy_spend_state()
 
 _embed_model = None  # a fastembed.TextEmbedding once a local profile is first used
@@ -4978,46 +4909,50 @@ def keyword_query_matches(query: str) -> bool:
 # anyway; a golden-set case passes the mode it was made in.
 SEARCH_DEFAULT_MODE = "hybrid"
 
-# Said with a default search that ran by meaning only because the collection
-# has no keyword vectors, so that the person or agent learns the default is
-# not what ran, and the one command that changes it. Once per result where it
-# is said; how often it is said is up to each surface: the CLI (`griot
-# search`, `griot ask`) says it with every command, one process each, while
-# the MCP server says it on the first default search of the process for each
-# collection and afterwards only reports `mode: vector`, until a default
-# search finds that collection with keyword vectors again
-# (mcp_server._KEYWORD_NOTE_GIVEN_FOR).
-KEYWORD_SEARCH_NOT_BUILT_NOTE = (
-    "Searched by meaning only (mode vector): this collection was indexed before keyword search, so the default "
-    "hybrid search cannot run on it yet. `griot index keywords` builds it once (local, embeds nothing).")
+# A collection without keyword vectors is one condition of the ledger
+# (notices.keyword_vectors_missing, keyed by collection): one sentence for
+# griot doctor, griot stats, the search that fell back and the refusal below.
+# The rule for how often its prose is said is the ledger's, the same on both
+# surfaces: once per fingerprint (here the collection), while the structured
+# field (`mode: vector` in a search's output) is always there. The CLI keeps
+# the fingerprint in announced.json (notices.say_once), the MCP server for the
+# life of its process (mcp_server.NOTES_GIVEN).
+KEYWORD_BUILD_COMMAND = notices.KEYWORD_BUILD_COMMAND
 
 
-KEYWORD_BUILD_COMMAND = "griot index keywords"
+def keyword_search_unavailable(collection: str) -> "SearchModeUnavailable":
+    """The refusal of an explicit keyword or hybrid search on `collection`:
+    the ledger's sentence, then what to do meanwhile. An error, so never
+    deduplicated or silenced."""
+    sentence = notices.keyword_vectors_missing(collection).sentence
+    # Read by an agent first (the CLI shows the same words to a person), so
+    # it says what to do NOW, not only what is missing: vector search does
+    # not answer the queries that need a word match (measured: MRR@10 0.01
+    # for commit hashes in vector against 0.80 in hybrid), so the agent is
+    # told which tool does, and the refusal stays a refusal.
+    return SearchModeUnavailable(
+        f"{notices.capitalized(sentence)}. Running `{KEYWORD_BUILD_COMMAND}` once builds it (it costs nothing; "
+        f"while it runs it needs about as much free disk as the collection). Until then: for a commit hash, an "
+        f"error code or where a name is used, use grep or `git log` in the repository you are working in (they do "
+        f"not reach the other registered repositories or pull request text); for a descriptive question, retry "
+        f"with mode 'vector'. Vector search does not find exact strings, so do not use it for those.")
 
 
-def keyword_search_missing_sentence(collection: str) -> str:
-    """The one sentence `griot doctor`, `griot stats` and griot_stats use for a
-    collection without keyword vectors, so the three never word it apart: what
-    is missing, the command that builds it, and that the command is free."""
-    return (f"keyword search is not built for collection '{collection}' (it was indexed before griot stored keyword "
-            f"vectors), so searches run by meaning only instead of the default hybrid: `{KEYWORD_BUILD_COMMAND}` "
-            f"builds it once (local, embeds nothing)")
-
-
-def search_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:
-    """The mode a search of `query` runs, and a note to show with its results
-    or None. An explicit `mode` is returned as it is, even where it cannot
-    run: search() then refuses it with what to run, which is what was asked.
-    None is the default, which never fails where vector search would answer:
-    hybrid when the collection has keyword vectors and the query a word
-    keyword search can match, vector otherwise. Only a collection that lacks
-    the keyword vector gets the note: with no collection, or one whose config
-    cannot be read, there is nothing to tell anyone to build."""
+def search_mode_for(query: str, mode: str | None) -> tuple[str, "notices.Notice | None"]:
+    """The mode a search of `query` runs, and the condition to tell its
+    reader about or None. An explicit `mode` is returned as it is, even where
+    it cannot run: search() then refuses it with what to run, which is what
+    was asked. None is the default, which never fails where vector search
+    would answer: hybrid when the collection has keyword vectors and the
+    query a word keyword search can match, vector otherwise. Only a
+    collection that lacks the keyword vector gives the condition
+    (notices.keyword_vectors_missing): with no collection, or one whose
+    config cannot be read, there is nothing to tell anyone to build."""
     if mode is not None:
         return mode, None
     built = keyword_search_status(COLLECTION_NAME)
     if built is False:
-        return "vector", KEYWORD_SEARCH_NOT_BUILT_NOTE
+        return "vector", notices.keyword_vectors_missing(COLLECTION_NAME)
     if built is None or not keyword_query_matches(query):
         return "vector", None
     return SEARCH_DEFAULT_MODE, None
@@ -5064,19 +4999,7 @@ def search(query: str, limit: int = 5, group_by_document: bool = False, *,
     keyword_query = _keyword_query(query) if mode != "vector" else None
     client = get_client()
     if mode != "vector" and not has_keyword_vectors(COLLECTION_NAME):
-        # Read by an agent first (the CLI shows the same words to a person), so
-        # it says what to do NOW, not only what is missing: vector search does
-        # not answer the queries that need a word match (measured: MRR@10 0.01
-        # for commit hashes in vector against 0.80 in hybrid), so the agent is
-        # told which tool does, and the refusal stays a refusal.
-        raise SearchModeUnavailable(
-            f"Keyword search is not built yet for collection '{COLLECTION_NAME}': it was indexed before griot "
-            f"stored keyword vectors. Running `{KEYWORD_BUILD_COMMAND}` once builds it (local: it "
-            f"embeds nothing and costs nothing; while it runs it needs about as much free disk as the "
-            f"collection). Until then: for a commit hash, an error code or where a name is used, use grep or "
-            f"`git log` in the repository you are working in (they do not reach the other registered "
-            f"repositories or pull request text); for a descriptive question, retry with mode 'vector'. "
-            f"Vector search does not find exact strings, so do not use it for those.")
+        raise keyword_search_unavailable(COLLECTION_NAME)
     # Before the query is embedded: on a paid profile that call costs money,
     # and a search that cannot run should not spend it.
     only = search_filter(client, repos, source_types)

@@ -264,17 +264,24 @@ def repository_freshness(collection: str | None = None, *, repos: list[str] | No
     return assess(runs, repositories)
 
 
-def behind_among(repo_names: list[str], collection: str | None = None) -> dict[str, int | None]:
-    """{repository: commits behind} for the named repositories that ARE
-    behind: what a search appends to its results. Asks git nothing while no
-    run has recorded a head (before the first run of this version): there
-    is nothing to compare with, and a search must not pay for the
-    comparison."""
+def reports_among(repo_names: list[str], collection: str | None = None) -> list[dict]:
+    """assess() for the named repositories: what a search looks at for its
+    results. The whole report, path included (griot_index_repo takes a path),
+    and the ones that are not behind too: a search forgets what it said of a
+    repository that caught up. Asks git nothing while no run has recorded a
+    head (before the first run of this version): there is nothing to compare
+    with, and a search must not pay for the comparison."""
     names = list(dict.fromkeys(repo_names))
     if not names:
-        return {}
+        return []
     runs = _runs(collection)
     if not any(isinstance(run.get("heads"), dict) for run in runs):
-        return {}
+        return []
+    return repository_freshness(collection, repos=names, runs=runs)
+
+
+def behind_among(repo_names: list[str], collection: str | None = None) -> dict[str, int | None]:
+    """{repository: commits behind} for the named repositories that ARE
+    behind (reports_among())."""
     return {report["repo"]: report["commits_behind"]
-            for report in repository_freshness(collection, repos=names, runs=runs) if report["behind"]}
+            for report in reports_among(repo_names, collection) if report["behind"]}

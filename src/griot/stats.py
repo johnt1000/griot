@@ -12,7 +12,7 @@ import statistics
 import sys
 from datetime import datetime, time, timedelta, timezone
 
-from griot import common, logdb
+from griot import common, logdb, notices
 from griot.cli import PROFILE_FLAG, show_flags_read_by_griot
 
 DEFAULT_DAYS = 30
@@ -99,7 +99,7 @@ def _filter_by_days(records: list[dict], days: int, now_iso: str | None = None) 
     return kept
 
 
-def _when(timestamp) -> datetime | None:
+def when(timestamp) -> datetime | None:
     """The moment a record was written, or None for anything that cannot be
     placed in time: not a string, not a date, or a date without a timezone
     (it cannot be compared with one that has it)."""
@@ -112,12 +112,12 @@ def _when(timestamp) -> datetime | None:
     return when if when.tzinfo is not None else None
 
 
-def _ago(timestamp, now: datetime | None = None) -> str | None:
+def ago(timestamp, now: datetime | None = None) -> str | None:
     """How long ago, in the unit a person would use. None when unknown."""
-    when = _when(timestamp)
-    if when is None:
+    moment = when(timestamp)
+    if moment is None:
         return None
-    seconds = ((now or datetime.now(timezone.utc)) - when).total_seconds()
+    seconds = ((now or datetime.now(timezone.utc)) - moment).total_seconds()
     if seconds < 60:
         return "just now"
     for unit, size, limit in (("minute", 60, 3600), ("hour", 3600, 86400), ("day", 86400, None)):
@@ -238,11 +238,38 @@ def load_state() -> dict:
             "golden_set": curated, "golden_set_error": unreadable}
 
 
+def _most_behind_first(repositories: list[dict]) -> list[dict]:
+    """The reports that are behind, the most behind first, those whose
+    history was rewritten last."""
+    return sorted((r for r in repositories if r.get("behind")),
+                  key=lambda r: (r.get("commits_behind") is None, -(r.get("commits_behind") or 0)))
+
+
+def ledger(index_status: dict, state: dict | None, now: datetime | None = None, *,
+           legacy: list | tuple = (), collection: str | None = None) -> list:
+    """Every current condition of the ledger (notices.py) that a report can
+    see: the repositories behind (index_status's `repositories`), keyword
+    vectors missing, the quality check older than the index (state, when the
+    caller looked: None leaves it out) and `legacy`. The one list the
+    attention items are made of, and what `griot stats` records as listed."""
+    found = [notices.behind(r) for r in _most_behind_first(index_status.get("repositories") or [])]
+    if index_status.get("keyword_search") is False:
+        found.append(notices.keyword_vectors_missing(index_status.get("collection") or collection
+                                                     or common.COLLECTION_NAME))
+    if state is not None:
+        quality = notices.quality_older_than_index((state.get("last_quality_check") or {}).get("timestamp"),
+                                                   state.get("last_index_change_at"), now)
+        if quality is not None:
+            found.append(quality)
+    return [*found, *legacy]
+
+
 def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
                   quality_checks: list[dict] | None = None,
                   tool_calls: list[dict] | None = None, *,
                   state: dict | None = None, now: datetime | None = None,
-                  collection: str | None = None, since: datetime | None = None) -> dict:
+                  collection: str | None = None, since: datetime | None = None,
+                  legacy: list | tuple = ()) -> dict:
     """Pure aggregation logic — no I/O, testable on its own. `runs`/`queries`
     should already come filtered by the desired day window (see main()).
 
@@ -267,7 +294,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     lines are about; None counts every profile. Spend is never scoped (money
     is spent per account, whichever collection a call was for), and MCP tool
     calls and resource reads cannot be (they record no collection). since is
-    when the window opened (window_start()), echoed so the report can name it."""
+    when the window opened (window_start()), echoed so the report can name it.
+    legacy is the conditions of an earlier release (notices.legacy()), which
+    live in the environment rather than in any of the inputs above: the
+    attention list carries every condition of the ledger (ledger())."""
     # Spend is read from everything in the window, before the scope narrows
     # it: the breaker's daily total is one number for the whole account.
     spend_records = runs + queries
@@ -355,10 +385,10 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # used to take the UTC date from the text of the timestamp, so one
         # local evening that crossed midnight UTC put the same growing total
         # under two dates and the sum counted it twice.
-        when = _when(ts)
-        if when is None:
+        moment = when(ts)
+        if moment is None:
             continue
-        date = when.astimezone().date().isoformat()
+        date = moment.astimezone().date().isoformat()
         spend_by_date[date] = max(spend_by_date.get(date, 0.0), spend)
     total_spend_usd = round(sum(spend_by_date.values()), 4)
 
@@ -385,7 +415,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     # "Checked before the index last changed": the last run that wrote or
     # removed something (load_state() finds it, whatever the window) is
     # newer than the last check.
-    checked, changed = _when(last_quality_at), _when(state.get("last_index_change_at"))
+    checked, changed = when(last_quality_at), when(state.get("last_index_change_at"))
     changed_after_check = checked is not None and changed is not None and changed > checked
 
     # Which repositories are behind their own repository (freshness.py), the
@@ -393,15 +423,14 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     # have no code indexed at all. Absent from an older status dict, or when
     # the caller did not look.
     repositories = index_status.get("repositories") or []
-    repositories_behind = sorted(
-        ({"repo": r["repo"], "commits_behind": r.get("commits_behind"), "behind_sources": r.get("behind_sources") or []}
-         for r in repositories if r.get("behind")),
-        key=lambda r: (r["commits_behind"] is None, -(r["commits_behind"] or 0)))
+    repositories_behind = [{"repo": r["repo"], "commits_behind": r.get("commits_behind"),
+                            "behind_sources": r.get("behind_sources") or []} for r in _most_behind_first(repositories)]
     repositories_without_code = [r["repo"] for r in repositories if "code" in (r.get("missing_sources") or [])]
-    attention = []
-    if repositories_behind:
-        attention.append("the index is behind the repository in: " + ", ".join(behind_phrase(r) for r in repositories_behind)
-                         + " — run `griot index all` (or the repository alone with --repo)")
+    # The conditions of the ledger, worded by notices.py exactly as griot
+    # doctor and the griot_search note word them.
+    found = ledger(index_status, state if state_known else None, now, legacy=legacy,
+                   collection=collection)
+    attention = notices.attention_lines([n for n in found if n.kind == notices.BEHIND])
     if repositories_without_code:
         attention.append("code never indexed in: " + ", ".join(repositories_without_code)
                          + " — a search finds nothing in their files until `griot index code` runs")
@@ -437,9 +466,7 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     if index_status.get("spend_ceiling_exceeded"):
         attention.append("today's spend reached the daily ceiling: paid calls are refused until "
                          "tomorrow, or until the ceiling is raised")
-    if index_status.get("keyword_search") is False:
-        attention.append(common.keyword_search_missing_sentence(index_status.get("collection") or collection
-                                                                or common.COLLECTION_NAME))
+    attention.extend(notices.attention_lines([n for n in found if n.kind != notices.BEHIND]))
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
 
@@ -772,8 +799,8 @@ def _column_chart(title: str, unit: str, values: list[float], labels: list[str],
 def _local_day(timestamp) -> str:
     """The local calendar date of a timestamp, the same day spend is counted
     under; the raw value when it cannot be placed in time."""
-    when = _when(timestamp)
-    return when.astimezone().date().isoformat() if when else str(timestamp)
+    moment = when(timestamp)
+    return moment.astimezone().date().isoformat() if moment else str(timestamp)
 
 
 def _source_bars(breakdown: dict[str, int], width: int) -> list[str] | None:
@@ -796,19 +823,9 @@ def _source_bars(breakdown: dict[str, int], width: int) -> list[str] | None:
 
 
 def behind_phrase(report: dict) -> str:
-    """`one (3 commits; tags changed)`: the commits since for the sources
-    that follow HEAD, and the refs sources that changed. Public because
-    griot doctor names a repository behind the same way."""
-    count = report.get("commits_behind")
-    parts = []
-    if count is None:
-        parts.append("the indexed commit is not in this history")
-    elif count:
-        parts.append(f"{count} commit{'s' if count != 1 else ''}")
-    changed = [source for source in report.get("behind_sources") or [] if source in ("tags", "branches")]
-    if changed:
-        parts.append(f"{' and '.join(changed)} changed")
-    return f"{report['repo']} ({'; '.join(parts) or 'behind'})"
+    """`one (3 commits; tags changed)`, worded by notices.behind_detail(),
+    the one wording of how a repository is behind."""
+    return f"{report['repo']} ({notices.behind_detail(report)})"
 
 
 def platform_refused_names(reports: list[dict]) -> list[str]:
@@ -961,13 +978,13 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
     """The report as text. `width` None is the plain form, the same for
     every reader; a width (see _chart_width()) draws the trends as charts
     that fit it."""
-    opened = _when(s.get("window_start"))
+    opened = when(s.get("window_start"))
     since = f", since {opened.date().isoformat()}, local time" if opened else ""
     lines = [
         f"griot — report (last {days} day{'s' if days != 1 else ''}{since})",
         "═" * 38,
     ]
-    now = _when(s.get("generated_at"))
+    now = when(s.get("generated_at"))
 
     # Before everything else, and whatever the window: what needs someone.
     for i, item in enumerate(s.get("attention") or []):
@@ -1010,16 +1027,17 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
     # that only counted what happened in the window looked the same a week
     # later, and said nothing of an index nobody had refreshed in a month.
     if "last_indexed_at" in s:
-        indexed_ago = _ago(s["last_indexed_at"], now)
+        indexed_ago = ago(s["last_indexed_at"], now)
         # "Indexed" only for a run that finished: one that died is an attempt.
         wrote = "last indexing attempt" if s.get("last_indexed_error") else "last indexed"
         recency = [f"{wrote} {indexed_ago}" if indexed_ago else "never indexed"]
         if "last_query_at" in s:  # absent when the caller did not look (see compute_stats)
-            searched_ago = _ago(s["last_query_at"], now)
+            searched_ago = ago(s["last_query_at"], now)
             recency.append(f"last search {searched_ago}" if searched_ago else "never searched")
         lines.append(f"             {' · '.join(recency)}")
-    if s.get("repositories_behind"):
-        lines.append(f"             index behind in {', '.join(behind_phrase(r) for r in s['repositories_behind'])}")
+    # The repositories behind are not named here: Attention names them, in
+    # the ledger's words, and a second wording in one report said the same
+    # fact twice.
 
     reuse = f"{s['reuse_rate'] * 100:.1f}% reused" if s["reuse_rate"] is not None else "no reuse data"
     lines.append("")
@@ -1208,15 +1226,15 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
         # Nothing in the window is not the same as nothing ever, and both
         # are worth a line: the section used to vanish, which read as "fine".
         lines.append("")
-        checked_ago = _ago(s.get("last_quality_check_at"), now)
+        checked_ago = ago(s.get("last_quality_check_at"), now)
         if checked_ago:
             rate = s.get("last_quality_pass_rate")
             measured = f" ({rate * 100:.0f}% of sampled points self-retrieved)" if rate is not None else ""
             lines.append(f"Quality:     last checked {checked_ago}{measured}")
         else:
             lines.append("Quality:     never checked (`griot quality-check`)")
-    if s.get("quality_is_older_than_index"):
-        lines.append("             checked before the index last changed: it describes an older index")
+    # A check older than the index is said under Attention (the ledger's
+    # quality_older_than_index), not here a second time.
 
     golden = s.get("golden_set")
     if golden:
@@ -1227,7 +1245,7 @@ def format_stats(s: dict, days: int, width: int | None = None) -> str:
                 # Not failed, not passed: cases whose mode needs keyword
                 # search the collection did not have when they were run.
                 ran += f", {golden['last_skipped']} skipped"
-            ran_ago = _ago(golden.get("last_run_at"), now)
+            ran_ago = ago(golden.get("last_run_at"), now)
             ran += f" ({ran_ago})" if ran_ago else ""
         else:
             ran = "never run (`griot quality-check`)"
@@ -1320,14 +1338,22 @@ def report(days: int, *, all_profiles: bool = False) -> dict:
 
     By default the counts are the active collection's, the collection every
     state line is about; all_profiles counts every profile's."""
+    return report_and_ledger(days, all_profiles=all_profiles)[0]
+
+
+def report_and_ledger(days: int, *, all_profiles: bool = False) -> tuple[dict, list]:
+    """report(), and the ledger's conditions it listed (ledger()), for the
+    command that records them as listed."""
     now = datetime.now(timezone.utc)
     runs, queries = load_window(days, now)
-    return compute_stats(runs, queries, common.get_index_status(),
-                         quality_checks=load_quality_window(days, now),
-                         tool_calls=load_tool_calls(days, now),
-                         state=load_state(), now=now,
-                         collection=None if all_profiles else common.COLLECTION_NAME,
-                         since=window_start(days, now))
+    status, state, legacy = common.get_index_status(), load_state(), notices.legacy(common)
+    result = compute_stats(runs, queries, status,
+                           quality_checks=load_quality_window(days, now),
+                           tool_calls=load_tool_calls(days, now),
+                           state=state, now=now,
+                           collection=None if all_profiles else common.COLLECTION_NAME,
+                           since=window_start(days, now), legacy=legacy)
+    return result, ledger(status, state, now, legacy=legacy)
 
 
 def main(argv=None) -> int:
@@ -1349,7 +1375,10 @@ def main(argv=None) -> int:
         # A window of no days is always empty, which reads as "no activity".
         parser.error(f"--days must be at least 1 (got {args.days})")
 
-    result = report(args.days, all_profiles=args.all_profiles)
+    result, found = report_and_ledger(args.days, all_profiles=args.all_profiles)
+    # The report lists every condition: the CLI footer has nothing to add
+    # about them until one changes.
+    notices.listed(found)
     # Both front ends, so `--json` and griot_stats say over how long the
     # search and tool-call counts can reach.
     result["log_retention_days"] = common.LOG_RETENTION_DAYS

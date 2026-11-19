@@ -354,17 +354,21 @@ def _echo_goes_to_stdout_again(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _the_mcp_server_has_not_given_the_keyword_fallback_note_yet():
-    """griot_search says why a default search fell back to vector once per
-    collection and server process (mcp_server._KEYWORD_NOTE_GIVEN_FOR). The
-    suite is one process: without this, whether a test sees the note would
-    depend on which tests ran before it."""
+def _no_note_has_been_given_yet():
+    """griot_search gives the prose of a condition once per fingerprint and
+    server process (mcp_server.NOTES_GIVEN), and the CLI's footer leaves out
+    what this process already said (notices.SPOKEN). The suite is one
+    process: without this, whether a test sees a note would depend on which
+    tests ran before it."""
     import sys
 
+    from griot import notices
+
     def forget():
+        notices.SPOKEN.clear()
         server = sys.modules.get("griot.mcp_server")
-        if server is not None and hasattr(server, "_KEYWORD_NOTE_GIVEN_FOR"):
-            server._KEYWORD_NOTE_GIVEN_FOR.clear()
+        if server is not None and hasattr(server, "NOTES_GIVEN"):
+            server.NOTES_GIVEN.clear()
 
     forget()
     yield

@@ -11,7 +11,7 @@ Real tiny Edge indexes (tests/test_keyword_search.py's fixtures)."""
 import pytest
 from mcp.client.client import Client
 
-from griot import common, doctor, mcp_server, stats
+from griot import common, doctor, mcp_server, notices, stats
 from test_keyword_search import fake_embeddings, index, legacy_index  # noqa: F401
 
 
@@ -39,17 +39,18 @@ def test_the_refusal_limits_grep_to_the_working_repository_and_reads_neutrally(l
     assert "The user" not in message and "yourself" not in message, "a person reads this in the CLI too"
 
 
-def test_the_shared_sentence_names_the_command_and_the_collection():
-    sentence = common.keyword_search_missing_sentence("some-collection")
-    assert "`griot index keywords`" in sentence and "'some-collection'" in sentence
-    assert "embeds nothing" in sentence
+def test_the_shared_condition_names_the_command_and_the_collection():
+    found = notices.keyword_vectors_missing("some-collection")
+    assert found.action == "griot index keywords" and "'some-collection'" in found.sentence
+    assert "embeds nothing" in found.sentence
 
 
 def test_the_doctor_warns_with_the_command_and_stays_exit_zero(legacy_index):
     check = {c["check"]: c for c in doctor.run_checks()}["index"]
+    found = notices.keyword_vectors_missing(common.COLLECTION_NAME)
     assert check["status"] == "warn"
-    assert "griot index keywords" in check["fix"]
-    assert common.keyword_search_missing_sentence(common.COLLECTION_NAME) in check["detail"]
+    assert check["fix"] == "griot index keywords"
+    assert found.sentence in check["detail"]
     assert doctor.exit_status([check]) == 0, "a warning does not turn the install red"
 
 
@@ -59,9 +60,9 @@ def test_the_doctor_is_ok_when_keyword_vectors_are_built(index):
 
 
 def test_stats_attention_has_the_sentence_only_without_keyword_vectors(legacy_index):
-    sentence = common.keyword_search_missing_sentence(common.COLLECTION_NAME)
+    line = notices.keyword_vectors_missing(common.COLLECTION_NAME).line()
     result = stats.compute_stats([], [], common.get_index_status())
-    assert sentence in result["attention"]
+    assert line in result["attention"]
 
 
 def test_stats_attention_is_quiet_when_keyword_vectors_are_built(index):
@@ -89,4 +90,4 @@ async def test_griot_stats_carries_the_attention_sentence(legacy_index):
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_stats", {})
     attention = result.structured_content["attention"]
-    assert common.keyword_search_missing_sentence(common.COLLECTION_NAME) in attention
+    assert notices.keyword_vectors_missing(common.COLLECTION_NAME).line() in attention

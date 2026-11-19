@@ -335,11 +335,24 @@ def _cmd_search(args) -> int:
         if also_in:
             print(f"        same text in: {', '.join(common.shown(label) for label in also_in)}")
     # Which mode ran, always: the default is not always what runs (see
-    # common.search_mode_for), and scores are on that mode's own scale.
+    # common.search_mode_for), and scores are on that mode's own scale. It
+    # is part of the result; why it is not hybrid is a notice (stderr, once
+    # per collection, counted in the footer afterwards).
     print(f"Mode: {mode}")
-    if note:
-        print(note)
+    say_keyword_fallback(args.mode, note)
     return 0
+
+
+def say_keyword_fallback(asked_mode, notice) -> None:
+    """What `griot search` and `griot ask` say when a default search fell
+    back to vector: the ledger's prose once per collection, on stderr. A
+    default search that ran as it should read the collection's state and
+    found nothing to say: that is recorded too, so the prose comes again if
+    the condition returns. An explicit mode read nothing and says nothing."""
+    from griot import notices
+
+    if notice is not None or asked_mode is None:
+        notices.say_once(notice, notices.KEYWORD_VECTORS_MISSING, lead=notices.FELL_BACK)
 
 
 _TIER_MIN_GB = {"light": 8, "medium": 16, "heavy": 32}
@@ -875,6 +888,11 @@ def main(argv=None) -> int:
     status = None
     try:
         status = _main_with_errors_explained(argv)
+        if status == 0:
+            # After a failure the error's own command is the last line, and a
+            # host that reads the last lines of stderr as the reason (jobs.py)
+            # must find it there.
+            _end_with_notices()
         return status
     except SystemExit as e:
         status = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
@@ -889,6 +907,45 @@ def main(argv=None) -> int:
     finally:
         if "griot.common" in sys.modules:  # imported lazily: no run began without it
             sys.modules["griot.common"].progress_end(status)
+
+
+# The command this process ran (the first word left once griot's own flags
+# are taken out), for the footer. None until _main() knows it.
+_command: str | None = None
+
+# Commands that end without the footer: doctor and stats list every
+# condition themselves, and a server's stderr is a log nobody reads as the
+# end of a command.
+_NO_FOOTER = frozenset({"doctor", "stats", "mcp"})
+
+
+def _end_with_notices() -> None:
+    """The one notice line a command ends with (notices.footer()), on stderr,
+    after recording what this command can see for free: the renamed
+    variables and old files on every command, and after `griot index` what
+    an index run changes (which repositories are behind, whether the
+    collection has keyword vectors). A ledger that cannot be read or
+    written must never fail a command that succeeded."""
+    if _command is None or _command in _NO_FOOTER or "griot.common" not in sys.modules:
+        return
+    from griot import common, notices
+
+    try:
+        kinds, found = {notices.LEGACY_ENV, notices.LEGACY_LAYOUT}, notices.legacy(common)
+        if _command == "index":
+            from griot import freshness, stats
+
+            kinds |= {notices.BEHIND, notices.KEYWORD_VECTORS_MISSING}
+            found += stats.ledger({"repositories": freshness.repository_freshness(),
+                                   "keyword_search": common.keyword_search_status(common.COLLECTION_NAME)}, None)
+        notices.record(kinds, found)
+        line = notices.footer()
+    except Exception as e:  # whatever the ledger could not foresee: logged, never raised
+        common.log_and_print(f"Warning: the notices ledger could not be updated: {type(e).__name__}: {e}",
+                             level="warning", echo=False)
+        return
+    if line:
+        print(line, file=sys.stderr)
 
 
 def _main_with_errors_explained(argv=None) -> int:
@@ -927,6 +984,8 @@ def _main(argv=None) -> int:
     if chat_profile is not None:
         os.environ["GRIOT_CHAT_PROFILE"] = chat_profile
     argv, sources = _extract_sources_override(argv)
+    global _command
+    _command = argv[0] if argv and not argv[0].startswith("-") else None
 
     # [real finding] argparse.REMAINDER combined with
     # subparsers has a long-standing CPython bug (reproduced here on
