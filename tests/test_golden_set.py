@@ -163,26 +163,30 @@ def test_cmd_add_no_search_results_is_an_error(monkeypatch, capsys):
     assert "no results" in capsys.readouterr().err.lower()
 
 
-def test_cmd_add_invalid_number_format_is_an_error(monkeypatch, capsys):
+def test_cmd_add_invalid_number_format_asks_again(monkeypatch, capsys):
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
     monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None, diverse=False: hits)
-    monkeypatch.setattr("builtins.input", lambda prompt: "abc")
+    answers = iter(["abc", "1"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
 
     rc = golden_set.cmd_add("question")
 
-    assert rc != 0
-    assert "invalid" in capsys.readouterr().err.lower()
+    assert rc == 0
+    assert "answer with numbers 1-1" in capsys.readouterr().out.lower()
+    assert len(json.loads(common.GOLDEN_SET_PATH.read_text())) == 1
 
 
-def test_cmd_add_out_of_range_index_is_an_error(monkeypatch, capsys):
+def test_cmd_add_out_of_range_index_asks_again(monkeypatch, capsys):
     hits = [FakeHit(0.9, {"repo": "x", "source_type": "code", "file_path": "a.py"})]
     monkeypatch.setattr(common, "search", lambda query, limit=5, mode=None, diverse=False: hits)
-    monkeypatch.setattr("builtins.input", lambda prompt: "5")
+    answers = iter(["5", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
 
     rc = golden_set.cmd_add("question")
 
-    assert rc != 0
-    assert "out of range" in capsys.readouterr().err.lower()
+    assert rc == 0
+    assert "out of range" in capsys.readouterr().out.lower()
+    assert not common.GOLDEN_SET_PATH.exists()
 
 
 def test_cmd_add_appends_to_existing_cases(monkeypatch):
@@ -398,3 +402,9 @@ def test_must_include_entry_omits_a_field_the_payload_lacks():
 
     assert "repo" not in entry
     assert entry == {"source_type": "code", "file_path": "a.py"}
+
+
+@pytest.fixture(autouse=True)
+def _a_person_is_at_the_terminal(monkeypatch):
+    """add and suggest ask a person and refuse without a terminal; input() is faked here."""
+    monkeypatch.setattr(common, "is_interactive", lambda: True)

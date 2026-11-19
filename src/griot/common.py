@@ -525,6 +525,19 @@ def is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def refuse_without_terminal(what: str, command: str) -> int:
+    """The refusal of a command that asks a person something, when nobody
+    can be asked. `what` completes "Error: ... and there is no terminal to
+    ask on" (it names the command and what it asks); `command` is the line to
+    run at a terminal and ends the message, so it can be pasted. Prints to
+    stderr and returns exit code 2 (incorrect use). Callers check this BEFORE
+    any search, scan or other work that costs something: asking about work
+    already done makes the refusal arrive too late."""
+    print(f"Error: {what}, and there is no terminal to ask on. Nothing was changed.\n"
+          f"Run it in an interactive terminal:\n  {command}", file=sys.stderr)
+    return 2
+
+
 def confirm(question: str, *, yes: bool | None = False) -> int:
     """Asks a yes/no question before a CLI command destroys or widens
     something. Returns 0 to proceed, otherwise the exit code the command

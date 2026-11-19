@@ -222,6 +222,7 @@ def test_adding_a_golden_case_shows_what_the_check_will_search_in_the_new_case_s
     """A new case defaults to hybrid (it is written with `mode: hybrid`, and
     the check repeats it in that mode), so its results come from hybrid."""
     monkeypatch.setattr("builtins.input", lambda *a: "")
+    monkeypatch.setattr("griot.common.is_interactive", lambda: True)  # add refuses without a terminal
     golden_set.cmd_add("acquire_lock", limit=3)
     assert searches and set(searches) == {"hybrid"}
 
