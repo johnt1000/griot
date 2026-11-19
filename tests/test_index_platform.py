@@ -254,14 +254,17 @@ def test_a_failure_with_no_status_is_named_by_its_kind(platform_run, monkeypatch
 def test_nothing_on_the_platform_is_still_not_a_failure(platform_run):
     rc = index_platform.main(["--path", platform_run["path"]])
 
-    assert not rc and platform_run["runs"] == []
+    # Recorded (so the source does not read as never run), as a clean run.
+    (run,) = platform_run["runs"]
+    assert not rc and (run["indexed"], run["failed"], run.get("error")) == (0, 0, None)
 
 
 def test_a_remote_of_no_known_platform_is_not_a_failure(platform_run, monkeypatch):
     monkeypatch.setattr(index_platform.platforms, "detect_platform", lambda url: None)
 
     assert not index_platform.main(["--path", platform_run["path"]])
-    assert platform_run["runs"] == []
+    (run,) = platform_run["runs"]
+    assert (run["indexed"], run["failed"], run.get("error"), run.get("refused_repos")) == (0, 0, None, None)
 
 
 def test_a_run_the_platform_refused_entirely_does_not_count_as_indexing_it(platform_run, monkeypatch):
