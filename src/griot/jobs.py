@@ -750,7 +750,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
                                   for key in ("to_embed", "up_to_date", "stale", "held_back")}}
             for source in sources]
     chars = sum(record.get("to_embed_chars", 0) for record in records)
-    price = common.ACTIVE_PROFILE.get("price_per_1m_tokens")
+    estimate = common.estimated_embedding_cost_usd(chars)
     held_back = sum(row["held_back"] for row in rows)
     notes = []
     if held_back:
@@ -768,8 +768,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
             "held_back": held_back,
             # An estimate from the size of the text; the bill comes from the
             # provider's own token count.
-            "estimated_cost_usd": (round(chars / common.CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * price, 4)
-                                   if result["paid"] and price is not None else None)}
+            "estimated_cost_usd": (round(estimate, 4) if result["paid"] and estimate is not None else None)}
 
 
 _quality_check_lock = threading.Lock()

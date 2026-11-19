@@ -3284,6 +3284,19 @@ def count_pending(documents: list[dict], desc: str = "Checking") -> tuple[int, i
 CHARS_PER_TOKEN_ESTIMATE = 3.5
 
 
+def estimated_embedding_cost_usd(chars: int) -> float | None:
+    """What embedding `chars` characters with the active profile would cost,
+    in USD, estimated from their size (CHARS_PER_TOKEN_ESTIMATE); None when
+    the profile has no price to multiply by. One formula for every place that
+    says a cost before spending it (the index preview, the quality check from
+    history), so the two never quote different numbers for the same text.
+    Whether the profile is paid at all is the caller's question."""
+    price = ACTIVE_PROFILE.get("price_per_1m_tokens")
+    if price is None:
+        return None
+    return chars / CHARS_PER_TOKEN_ESTIMATE / 1_000_000 * price
+
+
 def dry_run(documents: list[dict], *, source: str, unit: str, desc: str = "Checking",
             prune_scope: dict | None = None) -> dict:
     """`--dry-run` of one source: says what a run would embed and remove,

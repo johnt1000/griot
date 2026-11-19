@@ -5,6 +5,7 @@ golden set, and growing that set from the questions actually asked.
 
 ```bash
 griot quality-check              # self-check: sampled points must find themselves
+griot quality-check --from-history  # MRR@10 and recall@10: commit messages against the files they touched
 griot golden-set suggest ~/code/my-app  # derive curated test cases from that repository's git log (human-approved)
 griot golden-set review          # curate cases from the questions actually asked (at a terminal)
 griot golden-set add "query"     # curate a case from a real search
@@ -49,6 +50,37 @@ A keyword or hybrid case on a collection without keyword vectors is reported
 as skipped, naming `griot index keywords`, neither passed nor failed and left
 out of the pass rate ("8 of 8 passed, 2 skipped"); the report says how many
 cases were searched in each mode.
+
+## `griot quality-check --from-history`
+
+A measurement that needs no curation: git history already holds questions
+with known answers. A commit's message is the question, and the files it
+touched that are indexed now are the answers (a touched file that is not
+indexed, an image or a lockfile, can never be found, so it is left out, and
+a commit left with none is not asked).
+
+```bash
+griot quality-check --from-history                       # every registered repository, hybrid, 100 commits each
+griot quality-check --from-history --repo my-app --mode vector --limit 50
+griot quality-check --from-history --json                # one JSON payload on stdout
+```
+
+For each repository it reports MRR@10 (1 / the rank of the first touched
+file found, averaged) and recall@10 (the share of the touched files among the
+first ten results), overall and per kind of question: a subject alone, or a
+subject with a body. Results are ranked by document (a file's second chunk
+takes no rank), searched within the repository and among code only: the
+commit itself is indexed too and would always come first. The commits asked
+are spread evenly over the history, so the same history always gives the
+same questions. `--mode` defaults to what readers get (`hybrid`); keyword
+and hybrid need `griot index keywords` on an older collection.
+
+Each run is recorded in its own series (logs.db `history_checks`), never
+mixed with the self-check and golden-set rates, and the next run with the
+same repository, mode and `--limit` shows the previous numbers beside its
+own, saying whether the questions were the same. It runs neither the
+self-check nor the golden set. On a paid profile it first prints the
+estimated cost of embedding the commit messages, on stderr, and goes on.
 
 ## `griot golden-set review`
 
