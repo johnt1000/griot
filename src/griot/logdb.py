@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS quality_checks (
 CREATE INDEX IF NOT EXISTS idx_quality_checks_timestamp ON quality_checks(timestamp);
 CREATE INDEX IF NOT EXISTS idx_quality_checks_collection ON quality_checks(collection);
 
+-- `griot quality-check --from-history`: MRR and recall of commit messages
+-- against the files they touched, one row per repository measured. A table
+-- of its own, not rows of quality_checks: every reader of that table takes
+-- a row as a self-check (its pass rate, "last checked"), and a measurement
+-- of another kind would read there as a check that sampled nothing.
+CREATE TABLE IF NOT EXISTS history_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    collection TEXT,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_checks_collection ON history_checks(collection);
+
 -- [real bug, reproduced with concurrent processes] The spend circuit
 -- breaker's state. Single row (id=1): today's date plus the running
 -- total. It lives here, rather than in the .spend_state.json it replaces,
@@ -105,9 +118,9 @@ CREATE TABLE IF NOT EXISTS _jsonl_migrated (
 
 # Tables whose records carry a `collection` field worth indexing on its
 # own (see _insert()) — `queries` deliberately does not.
-_TABLES_WITH_COLLECTION = ("runs", "quality_checks")
+_TABLES_WITH_COLLECTION = ("runs", "quality_checks", "history_checks")
 
-_TABLES = ("runs", "queries", "quality_checks")
+_TABLES = ("runs", "queries", "quality_checks", "history_checks")
 
 # (legacy filename, target table) — the exact two files common.py used to
 # write via secure_append_line() before this module existed.
@@ -303,6 +316,17 @@ def write_quality_check(log_dir: Path, record: dict) -> None:
         conn.close()
 
 
+def write_history_check(log_dir: Path, record: dict) -> None:
+    """One repository's `griot quality-check --from-history` result (see the
+    history_checks table for why it is not a quality_checks row)."""
+    conn = _connect(log_dir)
+    try:
+        with conn:
+            _insert(conn, "history_checks", record)
+    finally:
+        conn.close()
+
+
 def migrate_legacy_json_file(log_dir: Path, legacy_path: Path, table: str) -> None:
     """One-time import of a legacy single-JSON-object file (as opposed to
     the JSONL ones _ensure_migrated() handles automatically) into `table`,
@@ -375,7 +399,7 @@ def read_since(log_dir: Path, table: str, days: int, now: datetime | None = None
 # in their JSON since log_query() began writing it, and a record from before
 # then gives NULL, so it matches no collection rather than a guessed one.
 _RECENT_TABLES = {"runs": "collection", "queries": "json_extract(data, '$.collection')",
-                  "quality_checks": "collection"}
+                  "quality_checks": "collection", "history_checks": "collection"}
 
 
 def read_recent(log_dir: Path, table: str, *, collection: str | None = None, limit: int = 1) -> list[dict]:
