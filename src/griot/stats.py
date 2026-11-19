@@ -6,6 +6,7 @@ writes/exposes.
 
 import argparse
 import json
+import math
 import os
 import shutil
 import statistics
@@ -473,8 +474,14 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
     # repository refused for more than one reason gets the fix of each of
     # its causes, and no other (debt 70); one the platform did not answer
     # for, or failed, is not the token's fault at all (debt 72).
-    token_refused = [name for name in refused
-                     if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
+    # A token that was not set at all is named, with the command that sets
+    # it, as the run that found it said it (index_platform.py).
+    missing_tokens = platform_missing_tokens(repositories)
+    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)
+                     and name not in dict(failures) and name not in dict(missing_tokens)]
+    for name, env_var in missing_tokens:
+        attention.append(platform_missing_token_phrase(name, env_var) + f" — set it in a terminal with "
+                         f"`{common.credential_command(env_var)}`, then `griot index platform`")
     if token_refused:
         attention.append(platform_refused_phrase(token_refused) + " — " + _TOKEN_CHECK + ", then `griot index platform`")
     if not_found:
@@ -493,10 +500,14 @@ def compute_stats(runs: list[dict], queries: list[dict], index_status: dict,
         # do its job (the platform refused every fetch, say). A refusal the
         # line above already names is not said a second time.
         what = "did not finish" if last_indexed.get("indexed") is None else "failed"
-        attention.append(f"the last indexing run {what}: {last_indexed['error']}")
+        # The command last, as griot doctor's index row gives it.
+        attention.append(f"the last indexing run {what}: {last_indexed['error']}; run it again and read its first "
+                         f"error — griot index all")
     if index_status.get("spend_ceiling_exceeded"):
-        attention.append("today's spend reached the daily ceiling: paid calls are refused until "
-                         "tomorrow, or until the ceiling is raised")
+        # As griot doctor's spend row says it, with the same command.
+        attention.append("today's spend reached the daily ceiling: paid calls are refused until tomorrow; raising "
+                         "the ceiling asks first — griot config set spend-ceiling "
+                         + common.spend_ceiling_to_propose(index_status.get("spend_today_usd", math.nan), None))
     attention.extend(notices.attention_lines([n for n in found if n.kind != notices.BEHIND]))
     if (index_status.get("points_error") or "").startswith("unreadable"):
         attention.append(f"the collection could not be read: {index_status['points_error'][len('unreadable: '):][:160]}")
@@ -884,6 +895,23 @@ def platform_mixed_refusals(reports: list[dict]) -> list[tuple[str, dict[str, li
     return [(common.printable(r["repo"]), r["platform_refusal_causes"]) for r in reports
             if r.get("platform_refused") and not r.get("platform_not_found")
             and isinstance(r.get("platform_refusal_causes"), dict) and len(r["platform_refusal_causes"]) > 1]
+
+
+def platform_missing_tokens(reports: list[dict]) -> list[tuple[str, str]]:
+    """The repositories of platform_refused_names() whose every fetch
+    failed because the platform's token is set nowhere griot looks, with
+    that variable (freshness.py), as they may be printed. Never one of
+    platform_not_found_names() or platform_mixed_refusals(), which keep
+    their word over a record edited by hand."""
+    return [(common.printable(r["repo"]), r["platform_missing_token"]) for r in reports
+            if r.get("platform_refused") and not r.get("platform_not_found") and r.get("platform_missing_token")
+            and not (isinstance(r.get("platform_refusal_causes"), dict) and len(r["platform_refusal_causes"]) > 1)]
+
+
+def platform_missing_token_phrase(name: str, env_var: str) -> str:
+    """Shared by `griot stats` and `griot doctor`, as platform_refused_phrase()."""
+    return (f"no fetch for {name} could be made in the last platform run: {env_var} is not set, so nothing of it "
+            f"was indexed")
 
 
 def platform_failures(reports: list[dict]) -> list[tuple[str, list[str] | None]]:

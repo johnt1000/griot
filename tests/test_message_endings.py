@@ -41,7 +41,7 @@ def test_a_refused_credential_ends_the_search_error_with_one_period(openai_profi
     assert hint.endswith(".") and not hint.endswith("..")
     url = common.EMBED_PROFILES["openai-small"]["endpoint_url"]
     assert str(error.value) == (f"The query could not be embedded with profile 'openai-small': "
-                                f"HTTP error 401 on {url}. {hint}")
+                                f"HTTP error 401 on {url}. {hint}\n  griot doctor")
 
 
 def test_a_refused_gemini_credential_ends_the_search_error_with_one_period(monkeypatch):
@@ -52,8 +52,8 @@ def test_a_refused_gemini_credential_ends_the_search_error_with_one_period(monke
     with pytest.raises(RuntimeError) as error:
         common.search("anything")
     assert str(error.value) == (f"The query could not be embedded with profile 'gemini': "
-                                f"HTTP error 403 from the Gemini API. {common.credential_hint('GEMINI_TOKEN')}")
-    assert str(error.value).endswith(".") and not str(error.value).endswith("..")
+                                f"HTTP error 403 from the Gemini API. {common.credential_hint('GEMINI_TOKEN')}\n  griot doctor")
+    assert ".." not in str(error.value)
 
 
 def test_a_reason_without_a_period_still_gets_one(openai_profile, monkeypatch):
@@ -63,7 +63,7 @@ def test_a_reason_without_a_period_still_gets_one(openai_profile, monkeypatch):
         common.search("anything")
     url = common.EMBED_PROFILES["openai-small"]["endpoint_url"]
     assert str(error.value) == (f"The query could not be embedded with profile 'openai-small': "
-                                f"persistent 429 after 5 attempts on {url}.")
+                                f"persistent 429 after 5 attempts on {url}.\n  griot doctor")
 
 
 def test_no_reason_at_all_ends_with_one_period(monkeypatch):
@@ -71,7 +71,7 @@ def test_no_reason_at_all_ends_with_one_period(monkeypatch):
     common._note_embedding_failure(None)
     with pytest.raises(RuntimeError) as error:
         common.search("anything")
-    assert str(error.value).endswith(": the embedding call returned nothing.")
+    assert str(error.value).endswith(": the embedding call returned nothing.\n  griot doctor")
 
 
 @pytest.mark.parametrize("text, expected", [

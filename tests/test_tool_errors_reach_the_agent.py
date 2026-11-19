@@ -83,7 +83,7 @@ async def test_the_spend_circuit_breaker_reaches_the_agent(monkeypatch):
 
     text = await _search_error()
 
-    assert "Local circuit breaker" in text and "GRIOT_SPEND_CEILING_USD" in text, text
+    assert "Local circuit breaker" in text and "griot config set spend-ceiling" in text, text
     assert "Local circuit breaker" in _recorded_error("griot_search")
 
 
@@ -103,7 +103,7 @@ def test_a_missing_gemini_token_is_a_griot_error(monkeypatch):
     # or the keychain (the suite's keychain holds nothing).
     monkeypatch.setattr(common, "ACTIVE_PROFILE", {"backend": "direct", "model": "gemini-embedding-001"})
     monkeypatch.setattr(common, "GEMINI_TOKEN", None)
-    with pytest.raises(griot.GriotError, match="GEMINI_TOKEN not found"):
+    with pytest.raises(griot.GriotError, match="needs GEMINI_TOKEN, and it is not set"):
         common.embed_texts(["q"])
 
 
@@ -116,7 +116,7 @@ async def test_a_missing_embedding_credential_reaches_the_agent(monkeypatch):
 
     text = await _search_error()
 
-    assert "GRIOT_TEST_EMBED_KEY not found" in text, text
+    assert "needs GRIOT_TEST_EMBED_KEY, and it is not set" in text, text
 
 
 @pytest.mark.anyio
@@ -247,14 +247,14 @@ async def _quality_check_error() -> str:
 @pytest.mark.anyio
 async def test_a_crash_inside_the_golden_set_run_does_not_reach_the_agent(monkeypatch):
     # CheckIncomplete is griot's text, but what stopped the run was a crash:
-    # its text stays masked, only its class is named.
+    # its text stays masked, said as an internal error, never by its class.
     _golden_set_that_stops(monkeypatch, RuntimeError(PRIVATE))
 
     text = await _quality_check_error()
 
     assert "/Users/you/private/path" not in text, text
     assert "The self-check did run and is recorded" in text, text
-    assert "RuntimeError" in text, text
+    assert "an internal error" in text and "RuntimeError" not in text, text
     # The crash's text is not lost: the call log keeps it.
     recorded = _recorded_error("griot_quality_check")
     assert recorded.startswith("CheckIncomplete: "), recorded

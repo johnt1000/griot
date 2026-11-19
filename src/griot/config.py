@@ -340,6 +340,12 @@ _OFF_STAYS_OFF = {
 }
 
 
+# The reason measured_from_environment() gives for a value it cannot
+# measure: named, because doctor's fix for it is `unset`, never writing the
+# same value to the file (which `config set` refuses).
+NOT_A_VALUE_IT_TAKES = "it is not a value this setting takes"
+
+
 def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, str]:
     """For a server: (why `raw`, the value its environment gives `setting`,
     is not taken, or None when it may be; the value in the form it was
@@ -379,7 +385,7 @@ def measured_from_environment(setting: Setting, raw: str) -> tuple[str | None, s
     except ValueError:
         # NotValid is one, and so is whatever else a value nobody thought of
         # raises on the way: what cannot be measured is not known to be narrow.
-        return "it is not a value this setting takes", raw
+        return NOT_A_VALUE_IT_TAKES, raw
 
 
 def _measured(setting: Setting, raw: str, old: str | None) -> tuple[str | None, str]:

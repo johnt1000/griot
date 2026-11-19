@@ -15,6 +15,7 @@ real module's help.
 """
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
@@ -95,7 +96,11 @@ def _busy_head(exc, holders: list | None = None) -> str:
     return f"Another griot process holds the collection '{exc.collection}'." + (f" Holder: {who}." if who else "")
 
 
-def _busy_message(exc) -> str:
+def _busy_message(exc, argv: list[str]) -> str:
+    """Who holds the collection and what to do, then the command that was
+    typed, last, to paste once it is free (policy, section 2). `argv` is the
+    command line as typed, griot's own flags (--profile, --quiet) included:
+    run again, it runs the way it did."""
     from griot import common
 
     holders = common.find_collection_holders(exc.path)
@@ -104,13 +109,14 @@ def _busy_message(exc) -> str:
     if "mcp" in roles:
         idle = f"{common.IDLE_RELEASE_SECONDS:g}"
         tail = (f"That is a griot MCP server. It lets go of the collection after {idle} seconds without a tool call "
-                f"(or when its session ends, if it runs in single mode). Wait and run the command again, close that "
-                f"session, or, from inside a Claude Code session, index through the griot_index_repo tool.")
+                f"(or when its session ends, if it runs in single mode). Close that session, or, from inside a "
+                f"Claude Code session, index through the griot_index_repo tool; or wait and run the command again:")
     elif "index" in roles:
-        tail = "That is an indexing run. Wait for it to finish (`griot stats` shows the last run), then run the command again."
+        tail = ("That is an indexing run (griot stats shows the last run). Wait for it to finish, then run the "
+                "command again:")
     else:
-        tail = "Wait for it to finish or close it, then run the command again."
-    return f"{head}\n{tail}"
+        tail = "Wait for it to finish or close it, then run the command again:"
+    return f"{head}\n{tail}\n  {shlex.join(['griot', *argv])}"
 
 
 def _run_index_source(source: str, rest: list) -> int:
@@ -627,6 +633,37 @@ def _cmd_index(args) -> int:
         return _run_index_all(sources, rest)
 
 
+def _stopped_at(source: str, sources: list, rest: list, what: str) -> str:
+    """What `griot index all` says when `source` stopped it: which sources
+    did not run, and the command that runs the failed one and those again,
+    last. Read by a person and, through jobs._failure_reason(), by the agent
+    of griot_index_preview: the failed source's part of stderr, this text
+    included, is its reason, so "Its error is above" is true for both. A
+    source already indexed is skipped by content hash, so running from the
+    failed one costs only what is left; a dry run skips nothing (it writes
+    nothing), so its resume does not say so."""
+    later = list(sources[sources.index(source) + 1:])
+    # The error itself may end with its own command on a line of its own
+    # (one of griot's: `griot auth set openai`): kept as a line, the fix
+    # before the resume, which stays last. Its prose is one sentence.
+    said = [line for line in what.splitlines() if line.strip()]
+    prose = " ".join(line.strip() for line in said if not line.startswith("  "))
+    fixes = "".join(f"\n  {line.strip()}" for line in said if line.startswith("  "))
+    again = shlex.join(["griot", "index", "all", *rest, "--sources", ",".join([source, *later]), *global_flags_typed()])
+    above = " Its error is above." if prose.startswith("failed (exit") else ""
+    # A sentence of its own, closed once: an error that leads into its
+    # command ("A credential is set in a terminal:") keeps its colon.
+    head = f"Error: 'griot index {source}' {prose}".rstrip()
+    head = head if head.endswith((".", "!", "?", ":")) else head + "."
+    # Worded for one source or several: "no other source did not run" said
+    # the opposite of what it meant.
+    resume = (f"{', '.join(later)} did not run.{above} Once it is fixed, run them again" if later
+              else f"{above.strip()} Once it is fixed, run it again".strip())
+    separator = "\n" if fixes else " "
+    skipped = "" if _is_dry_run(rest) else " (what is already indexed is skipped)"
+    return f"{head}{fixes}{separator}{resume}{skipped}:\n  {again}"
+
+
 def _run_index_all(sources, rest) -> int:
     from griot import common
 
@@ -646,11 +683,11 @@ def _run_index_all(sources, rest) -> int:
             common.progress_source(source, "failed")
             if not isinstance(e, Exception) or _is_collection_busy(e):
                 raise  # main() explains a busy collection once, with who holds it
-            print(f"Error: 'griot index {source}' failed: {e}", file=sys.stderr)
+            print(_stopped_at(source, sources, rest, f"failed: {e}"), file=sys.stderr)
             return 1
         if rc != 0:
             common.progress_source(source, "failed")
-            print(f"Error: 'griot index {source}' failed (exit {rc}) — pipeline stopped.", file=sys.stderr)
+            print(_stopped_at(source, sources, rest, f"failed (exit {rc})"), file=sys.stderr)
             return rc
         common.progress_source(source, "done")
     # Progress, like the headers above it: a person piping stdout must not see a footer without them.
@@ -1424,6 +1461,19 @@ def _end_with_notices() -> None:
         print(line, file=sys.stderr)
 
 
+@contextlib.contextmanager
+def _repairing(repairs: bool):
+    """griot.REPAIRING_SETTINGS while the configuration loads, for a command
+    that repairs it (see the flag), and off again after: it is read only as
+    common.py loads, and a process that runs more than one command (the
+    test suite, a host calling _main) must not carry it into the next."""
+    griot.REPAIRING_SETTINGS = repairs
+    try:
+        yield
+    finally:
+        griot.REPAIRING_SETTINGS = False
+
+
 def _main_with_errors_explained(argv=None) -> int:
     try:
         return _main(argv)
@@ -1433,10 +1483,16 @@ def _main_with_errors_explained(argv=None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 2
     except Exception as e:
-        if not _is_collection_busy(e):
-            raise
-        print(_busy_message(e), file=sys.stderr)
-        return 1
+        if _is_collection_busy(e):
+            print(_busy_message(e, sys.argv[1:] if argv is None else list(argv)), file=sys.stderr)
+            return 1
+        if isinstance(e, griot.GriotError):
+            # An error griot raised on purpose (a missing credential, the
+            # spend ceiling, a filter that cannot match) carries its own text,
+            # what to do last: that text, never a traceback (debt 102).
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        raise
 
 
 def _main(argv=None) -> int:
@@ -1508,7 +1564,8 @@ def _main(argv=None) -> int:
             # Before the configuration is read (see the flag): a server does
             # not take its environment at its word.
             griot.ENVIRONMENT_ONLY_NARROWS = True
-        from griot import common
+        with _repairing(argv[0] == "config" and argv[1:2] in (["set"], ["unset"])):
+            from griot import common
         common.ensure_env_template()
         return _run_module(_MODULES[argv[0]], argv[1:])
 
@@ -1531,7 +1588,8 @@ def _main(argv=None) -> int:
         args.environment_profile = exported_profile
         os.environ["GRIOT_EMBED_PROFILE"] = args.profile
         try:
-            from griot import common  # noqa: F401 — loaded here to catch the one error below
+            with _repairing(True):
+                from griot import common  # noqa: F401 — loaded here to catch the one error below
         except UnknownEmbedProfile as e:
             if e.name != args.profile:
                 raise

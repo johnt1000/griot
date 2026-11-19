@@ -82,7 +82,7 @@ def test_a_commit_that_touched_more_files_than_a_search_returns_is_not_offered(g
     golden_set.cmd_suggest(str(git_repo.path))
     cases = _cases()
     assert len(asked) == 1 and [case["query"] for case in cases] == ["Fix the login bug"]
-    out = " ".join(capsys.readouterr().out.split())
+    out = " ".join(capsys.readouterr().err.split())  # a note about the result: stderr (debt 104)
     assert "1 commit" in out and "more files than" in out, "what was left out is said, with the reason"
 
 
@@ -175,7 +175,7 @@ def test_a_commit_without_a_message_is_not_a_question(git_repo, monkeypatch, cap
     asked = _approve_everything(monkeypatch)
     assert golden_set.cmd_suggest(str(git_repo.path)) == 0
     assert len(asked) == 1 and [case["query"] for case in _cases()] == ["Fix the login bug"]
-    assert "no message" in " ".join(capsys.readouterr().out.split())
+    assert "no message" in " ".join(capsys.readouterr().err.split())
 
 
 def test_a_file_whose_name_git_would_quote_is_still_found(git_repo, monkeypatch):
@@ -215,7 +215,7 @@ def test_when_the_files_cannot_be_listed_it_says_that_and_not_that_nothing_is_re
 
     monkeypatch.setattr(index_code, "discover_files", cannot_list)
     assert golden_set.cmd_suggest(str(git_repo.path)) == 0
-    out = " ".join(capsys.readouterr().out.split())
+    out = " ".join("".join(capsys.readouterr()).split())
     assert "git could not list the files" in out
 
 
@@ -263,11 +263,14 @@ def test_a_candidate_add_case_refuses_is_reported_and_the_run_goes_on(git_repo, 
 
     assert len(asked) == 3, "the candidates after the refused one are still offered"
     assert sorted(case["query"] for case in _cases()) == ["Fix the cache bug", "Fix the login bug"]
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     refused = out.split("Candidate query: Fix the search bug", 1)[1].split("Candidate query:", 1)[0]
     assert "Not added: `mode` must be one of" in refused, "said under the candidate it is about, with the reason"
     summary = " ".join(out.rsplit("Candidate query:", 1)[1].split())
-    assert "2 case(s) added" in summary and "1 approved candidate(s) not added" in summary
+    assert "2 case(s) added" in summary
+    # A note about the result, not the result: stderr (debt 104).
+    assert "1 approved candidate(s) not added" in captured.err
 
 
 def test_a_run_where_every_approved_case_was_written_says_nothing_was_left_out(git_repo, monkeypatch, capsys):

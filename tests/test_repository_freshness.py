@@ -1165,7 +1165,7 @@ def test_doctor_points_a_repository_not_found_at_its_project(tmp_path, monkeypat
     check = doctor.check_repositories(common)
 
     assert check["status"] == "warn" and "gone" in check["detail"] and "not visible to the token" in check["detail"]
-    assert "check the platform's token" not in check["fix"] and "remote" in check["fix"]
+    assert "check the platform's token" not in check["detail"] and "remote" in check["detail"]
 
 
 def test_doctor_with_both_kinds_says_both(tmp_path, monkeypatch):
@@ -1179,7 +1179,7 @@ def test_doctor_with_both_kinds_says_both(tmp_path, monkeypatch):
     check = doctor.check_repositories(common)
 
     assert "not visible to the token" in check["detail"] and "refused every fetch for bad" in check["detail"]
-    assert "check the platform's token" in check["fix"] and "remote" in check["fix"]
+    assert "check the platform's token" in check["detail"] and "remote" in check["detail"]
 
 
 def test_a_run_not_found_entirely_is_said_once_by_stats(tmp_path, monkeypatch):
@@ -1377,7 +1377,7 @@ def test_doctor_names_a_mixed_refusal_with_both_fixes(tmp_path, monkeypatch):
 
     assert check["status"] == "warn" and "both" in check["detail"] and "for mixed reasons" in check["detail"]
     assert "issues: refused for the token" in check["detail"]
-    assert "the platform's token" in check["fix"] and "project path" in check["fix"]
+    assert "the platform's token" in check["detail"] and "project path" in check["detail"]
 
 
 def test_doctor_gives_no_token_fix_to_a_mix_without_a_token_refusal(tmp_path, monkeypatch):
@@ -1390,7 +1390,7 @@ def test_doctor_gives_no_token_fix_to_a_mix_without_a_token_refusal(tmp_path, mo
 
     check = doctor.check_repositories(common)
 
-    assert "the platform's token" not in check["fix"] and "project path" in check["fix"]
+    assert "the platform's token" not in check["detail"] and "project path" in check["detail"]
 
 
 def test_doctor_reads_a_record_without_causes_as_before(tmp_path, monkeypatch):
@@ -1403,7 +1403,7 @@ def test_doctor_reads_a_record_without_causes_as_before(tmp_path, monkeypatch):
     check = doctor.check_repositories(common)
 
     assert "refused every fetch for bad" in check["detail"] and "mixed reasons" not in check["detail"]
-    assert "the platform's token" in check["fix"] and "project path" not in check["fix"]
+    assert "the platform's token" in check["detail"] and "project path" not in check["detail"]
 
 
 def test_a_mixed_run_is_said_once_by_stats(tmp_path, monkeypatch):
@@ -1564,8 +1564,8 @@ def test_doctor_says_the_platform_failed_without_the_token_fix(tmp_path, monkeyp
     check = doctor.check_repositories(common)
 
     assert check["status"] == "warn" and "did not answer or failed every fetch for down (HTTP 503)" in check["detail"]
-    assert "griot auth list" not in check["fix"] and "the platform's token" not in check["fix"]
-    assert "not the token" in check["fix"] and "network" in check["fix"] and "later" in check["fix"]
+    assert "griot auth list" not in check["fix"] and "the platform's token" not in check["detail"] and check["fix"] == "griot index platform"
+    assert "not the token" in check["detail"] and "network" in check["detail"] and "later" in check["detail"]
 
 
 def test_doctor_with_a_failure_and_a_token_refusal_gives_both(tmp_path, monkeypatch):
@@ -1579,7 +1579,7 @@ def test_doctor_with_a_failure_and_a_token_refusal_gives_both(tmp_path, monkeypa
     check = doctor.check_repositories(common)
 
     assert "refused every fetch for bad" in check["detail"] and "failed every fetch for down" in check["detail"]
-    assert "the platform's token" in check["fix"] and "network" in check["fix"]
+    assert "the platform's token" in check["detail"] and "network" in check["detail"]
 
 
 def test_a_failed_run_is_said_once_by_stats(tmp_path, monkeypatch):

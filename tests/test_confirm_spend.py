@@ -289,7 +289,8 @@ def test_a_missing_credential_is_said_before_asking(repo, embedded, monkeypatch,
     out, err = capsys.readouterr()
     assert asked == [] and embedded == []
     assert err.rstrip().splitlines() == [
-        "Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed.",
+        "Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed. "
+        "A credential is set in a terminal:",
         "  griot auth set openai"], err
     assert out == ""
 
@@ -1042,7 +1043,8 @@ def _no_estimate(monkeypatch):
     monkeypatch.setattr(common, "dry_run", lambda *a, **k: pytest.fail("estimated a run that cannot start"))
 
 
-MISSING = ["Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed.",
+MISSING = ["Error: paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was changed. "
+           "A credential is set in a terminal:",
            "  griot auth set openai"]
 
 
@@ -1097,7 +1099,8 @@ def test_a_custom_key_missing_ends_with_doctor_before_any_estimate(repo, embedde
     capsys.readouterr()
     assert cli.main(["index", "code", "--repo", "repo"]) == 1
     assert capsys.readouterr().err.rstrip().splitlines() == [
-        "Error: paid profile 'openai-small' needs MY_CUSTOM_KEY, and it is not set. Nothing was changed.",
+        "Error: paid profile 'openai-small' needs MY_CUSTOM_KEY, and it is not set. Nothing was changed. "
+        "A credential is set in a terminal:",
         "  griot doctor"]
 
 

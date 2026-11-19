@@ -20,7 +20,7 @@ from griot import common, cli, platforms, repos
 OLD_VARIABLE = "RAG_EMBED_PROFILE"
 # What the CLI says of a renamed variable since the notices ledger: one footer
 # line, the sentence itself being listed by `griot doctor` and `griot stats`.
-FOOTER = "1 notice: run `griot doctor`"
+FOOTER = "1 notice: griot doctor lists it with what to do.\n  griot doctor"
 OLD_LINE = f'{OLD_VARIABLE} was renamed and griot ignores it — export GRIOT_EMBED_PROFILE="${OLD_VARIABLE}"'
 
 
@@ -57,7 +57,7 @@ def test_a_warning_stays_out_of_the_result_of_other_commands(tmp_path, argv):
     assert "Warning" not in done.stdout and "renamed" not in done.stdout
     assert done.stdout.strip(), "the result is still printed"
     assert "notice" not in done.stdout
-    assert done.stderr.rstrip().splitlines()[-1] == FOOTER
+    assert done.stderr.rstrip().endswith("\n" + FOOTER) or done.stderr.rstrip() == FOOTER
 
 
 def test_log_and_print_writes_to_stderr_looked_up_at_the_call(capsys):

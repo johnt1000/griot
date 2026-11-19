@@ -98,7 +98,7 @@ def test_suggest_makes_a_hybrid_case_like_add(index, repo_with_a_commit, monkeyp
     _suggest(repo_with_a_commit)
     (case,) = _cases()
     assert case["mode"] == "hybrid", "written explicitly: absent would read as vector"
-    assert "griot index keywords" not in capsys.readouterr().out
+    assert "griot index keywords" not in "".join(capsys.readouterr())
 
 
 def test_suggest_on_a_collection_without_keyword_vectors_makes_a_vector_case_and_says_so(
@@ -109,13 +109,13 @@ def test_suggest_on_a_collection_without_keyword_vectors_makes_a_vector_case_and
     _suggest(git_repo)
     cases = _cases()
     assert len(cases) == 2 and all("mode" not in case for case in cases)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err  # a note: stderr (debt 104)
     assert out.count("griot index keywords") == 1, "said once for the run, not once per case"
     assert "this case" not in out.lower(), "said once for two cases: it may not speak of one"
 
 
 @pytest.mark.parametrize("note", [golden_set.vector_fallback_note(notices.keyword_vectors_missing("c")),
-                                  golden_set.UNREADABLE_CONFIG_NOTE],
+                                  golden_set.unreadable_config_note("c")],
                          ids=["no keyword vectors", "unreadable config"])
 def test_a_fallback_note_is_true_of_one_case_or_of_several(note):
     """Said once for a whole suggest run, which can add several cases, and
@@ -128,7 +128,7 @@ def test_suggest_with_nothing_indexed_makes_a_hybrid_case_with_no_note(repo_with
     _approve_everything(monkeypatch)
     _suggest(repo_with_a_commit)
     assert _cases()[0]["mode"] == "hybrid"
-    out = capsys.readouterr().out
+    out = "".join(capsys.readouterr())
     assert "griot index keywords" not in out and "could not be read" not in out
 
 
@@ -138,14 +138,14 @@ def test_suggest_with_an_unreadable_collection_config_makes_a_vector_case_and_sa
     _approve_everything(monkeypatch)
     _suggest(repo_with_a_commit)
     assert "mode" not in _cases()[0]
-    assert "could not be read" in capsys.readouterr().out
+    assert "could not be read" in capsys.readouterr().err
 
 
 def test_suggest_says_nothing_about_modes_when_nothing_was_approved(legacy_index, repo_with_a_commit, monkeypatch,
                                                                     capsys):
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     _suggest(repo_with_a_commit)
-    assert _cases() == [] and "griot index keywords" not in capsys.readouterr().out
+    assert _cases() == [] and "griot index keywords" not in "".join(capsys.readouterr())
 
 
 def test_suggest_leaves_the_cases_already_in_the_file_as_they_are(index, repo_with_a_commit, monkeypatch):

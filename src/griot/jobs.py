@@ -20,6 +20,7 @@ that exits — never inside the host.
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -674,7 +675,18 @@ def start_index_job(
     time.sleep(_LIVENESS_CHECK_SECONDS)
     if proc.poll() is not None:
         os.unlink(progress_path)
-        return {"started": False, "reason": f"process died immediately (exit code {proc.returncode}) — see {log_path}.", "path": None, "pid": None, "sources": None}
+        # The same run as typed in a terminal, without --yes (a person there
+        # is asked), last: the agent's next step is to have it run where its
+        # error shows. A server started with --profile hands it to the run
+        # through its environment, which a terminal does not have: without
+        # the flag the pasted run would index under another profile.
+        import griot
+
+        profile = ["--profile", griot.PROFILE_FROM_COMMAND_LINE] if griot.PROFILE_FROM_COMMAND_LINE else []
+        in_a_terminal = shlex.join(["griot", *argv[3:-1], *profile])
+        return {"started": False, "reason": f"The index run exited at once (exit code {proc.returncode}); its log says "
+                                            f"why: {log_path}. Run it from a terminal to see the error:\n  {in_a_terminal}",
+                "path": None, "pid": None, "sources": None}
 
     # What tells this process apart from a later one given the same pid,
     # for a host that reloads the record (_same_process_alive()). Read now,
@@ -708,13 +720,34 @@ def _run_dry_run(argv: list[str], env: dict, timeout: float) -> "subprocess.Comp
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
 
 
-def _last_lines(text: str, count: int = 3) -> str:
-    """The end of a subprocess's output, as one line, without the progress
-    bars: they redraw themselves with carriage returns, and split only on
-    line breaks they came along with the message."""
-    lines = [segment.strip() for line in text.splitlines() for segment in line.split("\r")]
-    kept = [line for line in lines if line and "%|" not in line and "it/s]" not in line]
-    return common.printable(" ".join(kept[-count:]))[:400]
+# The longest reason a failed dry run hands the agent: under the policy's
+# 2,000 characters for anything an agent reads, with room for the tool's
+# other fields.
+REASON_LIMIT = 1500
+_SOURCE_HEADER = "=== griot index "
+
+
+def _failure_reason(text: str) -> str:
+    """What a failed `griot index all --dry-run` said about its failure, for
+    the agent that asked for it: the failed source's part of the output
+    (after the last `=== griot index <source> ===` header), lines kept as
+    lines, so an indented command stays a line that pastes and the source's
+    own error and command reach the agent along with the resume command
+    (cli._stopped_at says "Its error is above": it must be). Three lines
+    joined with spaces lost the cause and glued one command to the next
+    sentence. Without the progress bars: they redraw themselves with
+    carriage returns, and split only on line breaks they came along with
+    the message. Longer than REASON_LIMIT, it keeps the end, where the step
+    is."""
+    lines = [segment.rstrip() for line in text.splitlines() for segment in line.split("\r")]
+    kept = [common.printable(line) for line in lines
+            if line.strip() and "%|" not in line and "it/s]" not in line]
+    headers = [i for i, line in enumerate(kept) if line.startswith(_SOURCE_HEADER)]
+    if headers:
+        kept = kept[headers[-1] + 1:]
+    while len(kept) > 1 and len("\n".join(kept)) > REASON_LIMIT:
+        kept.pop(0)
+    return "\n".join(kept)[-REASON_LIMIT:]
 
 
 def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_roots: bool = True,
@@ -764,7 +797,7 @@ def run_index_preview(path: str, sources: list[str] | None = None, *, allow_env_
                               f"in a terminal to see it through."}
         if done.returncode != 0:
             return {**result, "path": str(repo_path),
-                    "reason": _last_lines(done.stderr or done.stdout or "")
+                    "reason": _failure_reason(done.stderr or done.stdout or "")
                               or f"the dry run exited with status {done.returncode}."}
         records = []
         with open(report_path, encoding="utf-8") as f:
