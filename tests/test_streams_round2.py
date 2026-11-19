@@ -69,7 +69,7 @@ def test_a_file_that_was_open_is_closed_when_the_state_changes():
 
 
 def test_adding_a_missing_directory_is_incorrect_use_and_ends_on_how_to_add_one(tmp_path):
-    from tests.test_streams_and_quiet import _run
+    from test_streams_and_quiet import _run
     done = _run(tmp_path, "repos", "add", "/Users/you/not-here")
 
     assert done.returncode == 2
@@ -78,7 +78,7 @@ def test_adding_a_missing_directory_is_incorrect_use_and_ends_on_how_to_add_one(
 
 def test_adding_a_registered_directory_is_a_conflict_with_the_list_not_incorrect_use(tmp_path):
     import json
-    from tests.test_streams_and_quiet import _run
+    from test_streams_and_quiet import _run
     here = tmp_path / "proj"
     here.mkdir()
     listing = tmp_path / "config" / "griot" / "repos.json"
@@ -93,7 +93,7 @@ def test_adding_a_registered_directory_is_a_conflict_with_the_list_not_incorrect
 
 
 def test_deleting_a_profile_with_no_collection_ends_on_the_command_that_lists_them(tmp_path):
-    from tests.test_streams_and_quiet import _run
+    from test_streams_and_quiet import _run
     done = _run(tmp_path, "profiles", "delete", "bge-small")
 
     assert done.returncode == 2, done.stderr
@@ -102,7 +102,7 @@ def test_deleting_a_profile_with_no_collection_ends_on_the_command_that_lists_th
 
 
 def test_a_dash_q_after_the_double_dash_is_data_not_the_flag(tmp_path):
-    from tests.test_streams_and_quiet import _run
+    from test_streams_and_quiet import _run
     # Past `--` a path called -q is a path: it reaches the command, which
     # refuses it by name. Stripped, the command would see no path at all.
     done = _run(tmp_path, "repos", "add", "--", "-q")
@@ -111,7 +111,7 @@ def test_a_dash_q_after_the_double_dash_is_data_not_the_flag(tmp_path):
     assert "'-q' doesn't exist or isn't a directory" in done.stderr
 
 def test_doctor_directories_stays_ok_after_a_real_run_announced_the_old_variable(tmp_path):
-    from tests.test_streams_and_quiet import _run
+    from test_streams_and_quiet import _run
     first = _run(tmp_path, "stats", "--json", extra_env={"RAG_EMBED_PROFILE": "jina-code"})
     assert "was renamed" in first.stderr
 
