@@ -185,6 +185,7 @@ TESTS_MAY_REACH = {
         "_quality_check_lock": _STATE,
         "_run_dry_run": _SEAM,
         "_remove_progress_file": _HELPER,
+        "_failure_reason": _HELPER,
         "_repo_name_if_uniquely_registered": _SEAM,
     },
     "logdb": {

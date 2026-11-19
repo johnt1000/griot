@@ -85,28 +85,48 @@ def pypi_failure_cause(error: BaseException) -> str:
     a Timeout and a ConnectionError. A JSON error from requests is both a
     RequestException and a ValueError; what went wrong is the answer, so
     ValueError is asked before the network."""
+    return _pypi_failure(error)[0]
+
+
+def pypi_retry_lead(error: BaseException) -> str:
+    """The sentence `griot update` puts before its own command after
+    pypi_failure_cause(): when running it again can work. Run again
+    unchanged right after a refused proxy, it fails the same way, so the
+    retry is the step only once the cause is gone; a busy or slow PyPI is
+    only a matter of time."""
+    return _pypi_failure(error)[1]
+
+
+_LATER = "Run it again in a while:"
+
+
+def _pypi_failure(error: BaseException) -> tuple[str, str]:
+    """One classification for the cause and its retry lead, so the two never
+    disagree about what went wrong."""
     import requests
 
     if isinstance(error, requests.Timeout):
-        return "PyPI did not answer within 3 seconds"
+        return "PyPI did not answer within 3 seconds", _LATER
     if isinstance(error, requests.exceptions.ProxyError):
         # The variable the proxy came from, in the order the standard
         # library reads them (the lowercase spelling wins): a person looks
         # in the one that is set, and HTTPS_PROXY may be the one that is not.
         variable = next((name for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
                          if os.environ.get(name)), None)
-        return f"the proxy in {variable} refused the connection" if variable else "the proxy refused the connection"
+        proxy = f"the proxy in {variable}" if variable else "the proxy"
+        return f"{proxy} refused the connection", f"Once {proxy} answers, run it again:"
     if isinstance(error, requests.exceptions.SSLError):
-        return "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause"
+        return ("the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause",
+                "Once the TLS check of pypi.org passes, run it again:")
     if isinstance(error, requests.HTTPError) and getattr(error, "response", None) is not None:
-        return f"PyPI answered HTTP {error.response.status_code}"
+        return f"PyPI answered HTTP {error.response.status_code}", _LATER
     if isinstance(error, ValueError):
-        return "PyPI's answer could not be read"
+        return "PyPI's answer could not be read", _LATER
     if isinstance(error, requests.ConnectionError):
-        return "no network connection to pypi.org"
+        return "no network connection to pypi.org", "Once the network reaches pypi.org, run it again:"
     if isinstance(error, requests.RequestException):
-        return "no network answer"
-    return "PyPI's answer could not be read"
+        return "no network answer", _LATER
+    return "PyPI's answer could not be read", _LATER
 
 
 def _env_path_without_the_configuration() -> Path:
@@ -160,11 +180,18 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
         # broken values of the file are named too, each with its command:
         # every one of these runs whatever state the others are in
         # (config.shadow_broken_file_values).
+        # Where it is set, in the CLI error's words: `unset` in the shell
+        # fixes nothing when the name is only in the file.
         fix = error.fix or "griot profiles use jina-code"
-        return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r} "
-                                        f"(set in the environment, or in {env_path}).{error.reason} It can be one "
-                                        f"of: {', '.join(error.options)} (or unset GRIOT_EMBED_PROFILE)"
-                                        + (f"; and {broken_detail}" if broken else ""),
+        where = ("exported in this environment, which wins over the file" if getattr(error, "exported", False)
+                 else f"in {env_path}")
+        step = ("fix it where it is exported, or unset it" if getattr(error, "exported", False)
+                else "pick one with griot profiles use")
+        return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r}, "
+                                        f"{where}.{error.reason} It can be one of: {', '.join(error.options)}; "
+                                        f"{step}"
+                                        + (f"; and {broken_detail}; or set a valid value with griot config set "
+                                           f"NAME VALUE" if broken else ""),
                       "\n".join([fix, *broken_fix]))
     if broken:
         return _check("settings", FAIL, broken_detail + "; or set a valid value with griot config set NAME VALUE",
@@ -379,7 +406,7 @@ def check_index(common, found: list | None = None, looked: set | None = None) ->
         # The keyword kind is not looked at: a collection that cannot be read
         # is the one thing to fix, and a stored keyword fact stays.
         return _check("index", FAIL, f"the collection could not be read: {str(error)[len('unreadable: '):]}", None)
-    from griot import notices, stats
+    from griot import notices
 
     # Read from the collection's own config file, so it is known while
     # another process holds the collection, while it is empty and after a
@@ -398,6 +425,25 @@ def check_index(common, found: list | None = None, looked: set | None = None) ->
         keyword = notices.keyword_vectors_missing(status.get("collection") or common.COLLECTION_NAME)
         if found is not None:
             found.append(keyword)
+    # None is also what a config on disk that cannot be read gives. Every
+    # default search then runs by meaning only without a word, and the
+    # golden-set note for a case made then sends its reader here: said, as a
+    # warning with no fix (unknown is not "missing": a rebuild could rewrite
+    # a collection that is fine, and the file and the error are the lead).
+    unreadable = None
+    if status.get("keyword_search") is None:
+        unreadable = common.keyword_config_unreadable(status.get("collection") or common.COLLECTION_NAME)
+    row = _check_index_row(common, status, error, last, keyword)
+    if unreadable is None:
+        return row
+    detail = (f"the config of collection '{status.get('collection') or common.COLLECTION_NAME}' could not be read "
+              f"({unreadable}), so whether keyword search can run on it is unknown: searches run by meaning only")
+    return {**row, "status": WARN, "detail": f"{row['detail']}; {detail}"}
+
+
+def _check_index_row(common, status: dict, error, last: dict, keyword) -> dict:
+    """check_index()'s row, before an unreadable config is added to it."""
+    from griot import notices, stats
 
     # A refusal the repositories check names (with the repositories, which
     # this line cannot) is said there only: the same failure said twice.
@@ -670,11 +716,22 @@ def check_server_environment(common) -> dict:
         # command griot accepts: the profile is not set with `config set`
         # (it refuses it), and a value that is not valid is not written back
         # (`config set` refuses it too); it is taken out of the environment.
+        # The advice names only the kinds of fix the lines below hold: an
+        # "unset" sentence beside a fix that holds no unset sends the person
+        # looking for a value that is not wrong.
+        invalid = [s for s, _, reason in ignored if reason == config.NOT_A_VALUE_IT_TAKES]
+        profile = any(s.variable == "GRIOT_EMBED_PROFILE" for s, _, reason in ignored
+                      if reason != config.NOT_A_VALUE_IT_TAKES)
+        steps = []
+        if len(invalid) < len(ignored):
+            steps.append("set them in griot's configuration instead"
+                         + (" (with griot profiles use for the profile)" if profile else ""))
+        if invalid:
+            steps.append("unset a value that is not valid")
         return _check("server environment", WARN,
                       "a server started with this environment would ignore: "
                       + ", ".join(f"{s.variable} ({reason})" for s, _, reason in ignored)
-                      + "; the environment only narrows a server's settings, so set them in griot's configuration "
-                        "instead (or with griot profiles use for the profile), and unset a value that is not valid",
+                      + "; the environment only narrows a server's settings, so " + ", and ".join(steps),
                       "\n".join(_server_environment_fix(s, raw, reason) for s, raw, reason in ignored))
     exported = sorted(v for v in common.ENVIRONMENT_BEFORE_ENV_FILE if any(s.variable == v for s in config.SETTINGS))
     return _check("server environment", OK, "exported and obeyed by a server too: " + ", ".join(exported) if exported

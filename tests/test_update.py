@@ -731,18 +731,23 @@ def test_a_failing_installer_says_where_the_reason_is_and_how_to_see_the_version
                      "griot may still be 0.2.1:", "  griot --version"]
 
 
-@pytest.mark.parametrize("failure, cause", [
-    ("connection", "no network connection to pypi.org"),
-    ("timeout", "PyPI did not answer within 3 seconds"),
+# The lead into the command says when running it again can work: run again
+# unchanged right after a refused proxy, it fails the same way, so the retry
+# is the step only once its condition is met.
+@pytest.mark.parametrize("failure, cause, lead", [
+    ("connection", "no network connection to pypi.org", "Once the network reaches pypi.org, run it again:"),
+    ("timeout", "PyPI did not answer within 3 seconds", "Run it again in a while:"),
     # No proxy variable is set in the suite: the cause says a proxy, not which.
-    ("proxy", "the proxy refused the connection"),
-    ("tls", "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause"),
-    ("status", "PyPI answered HTTP 503"),
-    ("other", "no network answer"),
-    ("json", "PyPI's answer could not be read"),
-    ("value", "PyPI's answer could not be read"),
+    ("proxy", "the proxy refused the connection", "Once the proxy answers, run it again:"),
+    ("tls", "the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause",
+     "Once the TLS check of pypi.org passes, run it again:"),
+    ("status", "PyPI answered HTTP 503", "Run it again in a while:"),
+    ("other", "no network answer", "Run it again in a while:"),
+    ("json", "PyPI's answer could not be read", "Run it again in a while:"),
+    ("value", "PyPI's answer could not be read", "Run it again in a while:"),
 ])
-def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, capsys, monkeypatch, failure, cause):
+def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, capsys, monkeypatch, failure, cause,
+                                                                     lead):
     import requests
 
     for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
@@ -763,7 +768,7 @@ def test_pypi_that_cannot_be_asked_names_the_cause_not_the_exception(world, caps
 
     lines = capsys.readouterr().err.rstrip().splitlines()
     assert lines == [f"Error: could not ask PyPI for the newest release ({cause}); this is griot 0.2.1. "
-                     f"Nothing was run.", "  griot update"]
+                     f"Nothing was run. {lead}", "  griot update"]
 
 
 def test_the_doctor_s_release_row_names_the_same_cause(monkeypatch):

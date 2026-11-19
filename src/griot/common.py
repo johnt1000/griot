@@ -1379,6 +1379,7 @@ if ACTIVE_PROFILE_NAME not in EMBED_PROFILES:
                 f"win over the file, so if one is exported later, unset it there). This one is the default:\n"
                 f"  {_profile_fix}"),
         ACTIVE_PROFILE_NAME, list(EMBED_PROFILES), unknown_profile_reason(ACTIVE_PROFILE_NAME), _profile_fix,
+        exported=_exported_profile,
     )
 ACTIVE_PROFILE = EMBED_PROFILES[ACTIVE_PROFILE_NAME]
 
@@ -4705,6 +4706,19 @@ def keyword_search_status(collection: str) -> bool | None:
         log_and_print(f"Warning: could not read the config of collection '{collection}': {e}",
                       level="warning", echo=False)
         return None
+
+
+def keyword_config_unreadable(collection: str) -> str | None:
+    """Why the config of `collection` cannot be read, naming the file, or
+    None when it reads or is not there. keyword_search_status() answers
+    None for both "no collection" and "unreadable"; a report that sends a
+    person to fix something needs to tell them apart (griot doctor, which
+    the golden-set note for an unreadable config sends its reader to)."""
+    try:
+        has_keyword_vectors(collection)
+    except (OSError, ValueError, AttributeError) as e:
+        return f"{collection_path(collection) / EDGE_CONFIG_MARKER}: {e}"
+    return None
 
 
 def _points_error(collection: str, error: Exception) -> str:

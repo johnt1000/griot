@@ -145,7 +145,7 @@ def test_a_profile_set_in_the_environment_that_does_not_exist_names_the_environm
     done = _cli(tmp_path, exported={"GRIOT_EMBED_PROFILE": "nope"})
 
     assert done.returncode == 1 and "FAIL" in done.stdout and "nope" in done.stdout
-    assert "set in the environment" in done.stdout and "unset GRIOT_EMBED_PROFILE" in done.stdout
+    assert "exported in this environment" in done.stdout and "unset GRIOT_EMBED_PROFILE" in done.stdout
 
 
 def test_nothing_is_created_by_a_check(tmp_path):

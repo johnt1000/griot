@@ -141,9 +141,11 @@ compute.
 with something like `paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY,
 and it is not set. Nothing was sent. A credential is set in a terminal:`,
 then `griot auth set openai` on a line of its own. A platform adapter
-with no token asks the platform nothing: `griot index platform` ends with
-`GITHUB_TOKEN is not set, so nothing was asked.`, then `griot auth set
-github` and `griot index platform`, once for the whole run; `griot stats`
+with no token asks the platform nothing: `griot index platform` names each
+repository with `GITHUB_TOKEN is not set, so nothing was asked.`, then says
+`A credential is set in a terminal; then index the platform again:` and
+ends on `griot auth set github` and `griot index platform`, each on a line
+of its own, once for the whole run; `griot stats`
 and `griot doctor` name the same variable and command. A `griot index` or
 `griot quality-check --from-history` run on a paid profile reads the
 credential before anything else and stops with `Error: paid profile

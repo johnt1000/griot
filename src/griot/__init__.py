@@ -90,7 +90,8 @@ class UnknownEmbedProfile(ConfigurationError):
     name and the valid ones, for the one command that takes a profile name
     as an argument and puts it in force before the configuration loads."""
 
-    def __init__(self, message: str, name: str, options: list[str], reason: str = "", fix: str | None = None):
+    def __init__(self, message: str, name: str, options: list[str], reason: str = "", fix: str | None = None, *,
+                 exported: bool = False):
         super().__init__(message)
         # reason: why the name is gone, for a profile griot used to list
         # (common.RETIRED_EMBED_PROFILES), so the callers that word this
@@ -98,4 +99,8 @@ class UnknownEmbedProfile(ConfigurationError):
         # fix: the command the message ends on, decided once where the
         # error is raised (common.py knows whether the variable was
         # exported), so doctor gives the same one and not another.
+        # exported: where the name came from, the environment (which wins
+        # over the file) or the file, so doctor says the one it is, as the
+        # message does, and not "the environment, or the file".
         self.name, self.options, self.reason, self.fix = name, options, reason, fix
+        self.exported = exported

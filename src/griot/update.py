@@ -222,7 +222,7 @@ def main(argv=None) -> int:
     # there is none, and nothing may run on a missing one.
     except Exception as e:
         print(f"Error: could not ask PyPI for the newest release ({doctor.pypi_failure_cause(e)}); this is griot "
-              f"{installed}. Nothing was run.\n  griot update", file=sys.stderr)
+              f"{installed}. Nothing was run. {doctor.pypi_retry_lead(e)}\n  griot update", file=sys.stderr)
         return 1
     mine, theirs = doctor.release_numbers(installed), doctor.release_numbers(newest)
     if mine is None or theirs is None:

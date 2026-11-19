@@ -224,10 +224,12 @@ def unreadable_config_note(collection: str) -> str:
     config of `collection` cannot be read: whether it can run hybrid is
     unknown, and a hybrid case it cannot run would only ever be skipped.
     Shaped like vector_fallback_note(): the consequence for the cases, why,
-    and the command last, alone on its line (debt 104)."""
+    and the command last, alone on its line (debt 104). griot doctor names
+    the file and the error (doctor.check_index), which is why it is the
+    command: the log said it too, but no command shows the log."""
     return (f"The case(s) just added are checked in mode vector: the config of collection '{collection}' could not "
             f"be read, so whether hybrid can run on it is unknown. To check one in hybrid once it reads, remove the "
-            f"case and add it again. griot doctor says what is wrong with it:\n  griot doctor")
+            f"case and add it again. griot doctor names the file and why it could not be read:\n  griot doctor")
 
 
 def case_mode_for(query: str, mode: str | None) -> tuple[str, str | None]:

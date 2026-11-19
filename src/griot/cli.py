@@ -406,10 +406,12 @@ def _cmd_index(args) -> int:
 def _stopped_at(source: str, sources: list, rest: list, what: str) -> str:
     """What `griot index all` says when `source` stopped it: which sources
     did not run, and the command that runs the failed one and those again,
-    last. Read by a person and, through jobs._last_lines(), by the agent of
-    griot_index_preview: the last lines of stderr are its reason. A source
-    already indexed is skipped by content hash, so running from the failed
-    one costs only what is left."""
+    last. Read by a person and, through jobs._failure_reason(), by the agent
+    of griot_index_preview: the failed source's part of stderr, this text
+    included, is its reason, so "Its error is above" is true for both. A
+    source already indexed is skipped by content hash, so running from the
+    failed one costs only what is left; a dry run skips nothing (it writes
+    nothing), so its resume does not say so."""
     later = list(sources[sources.index(source) + 1:])
     # The error itself may end with its own command on a line of its own
     # (one of griot's: `griot auth set openai`): kept as a line, the fix
@@ -428,7 +430,8 @@ def _stopped_at(source: str, sources: list, rest: list, what: str) -> str:
     resume = (f"{', '.join(later)} did not run.{above} Once it is fixed, run them again" if later
               else f"{above.strip()} Once it is fixed, run it again".strip())
     separator = "\n" if fixes else " "
-    return f"{head}{fixes}{separator}{resume} (what is already indexed is skipped):\n  {again}"
+    skipped = "" if _is_dry_run(rest) else " (what is already indexed is skipped)"
+    return f"{head}{fixes}{separator}{resume}{skipped}:\n  {again}"
 
 
 def _run_index_all(sources, rest) -> int:

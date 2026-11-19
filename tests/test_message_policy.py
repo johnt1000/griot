@@ -785,6 +785,7 @@ def test_update_says_what_kept_pypi_from_answering_then_the_command(tmp_path):
     done = _griot(tmp_path, "update", extra_env={"HTTPS_PROXY": "http://127.0.0.1:9"})
     assert done.returncode == 1 and done.stdout == ""
     assert "the proxy in HTTPS_PROXY refused the connection" in done.stderr, done.stderr
+    assert "Once the proxy in HTTPS_PROXY answers, run it again:\n  griot update\n" in done.stderr, done.stderr
     assert violations(done.stderr) == [], done.stderr
 
 
