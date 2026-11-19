@@ -547,3 +547,29 @@ def test_the_docs_table_lists_n_as_a_skip_in_suggest():
     doc = (Path(__file__).resolve().parents[1] / "docs" / "quality.md").read_text()
     assert "`n`, `no`" in doc and "(`suggest`" in doc.split("`n`, `no`")[1].splitlines()[0]
     assert "`n`, `no`" in golden_set.__doc__ or "n, no" in golden_set.__doc__
+
+
+# --- a golden set of another shape: said before the search, at a terminal ---------------------------
+
+
+def test_add_at_a_terminal_says_the_file_cannot_be_read_before_searching(tmp_path):
+    (tmp_path / "golden.json").write_text(json.dumps({"a": 1}))
+
+    code, out, _ = _in_a_terminal(tmp_path, ["add", "how does login work", "--mode", "vector"], b"")
+
+    assert code == 1
+    assert "Results for" not in out, "the search ran although its result could not be saved"
+    assert "could not be read (not a list of cases, each with must_include)" in out
+    assert out.rstrip().splitlines()[-1].strip() == "griot golden-set suggest <repo-path>"
+    assert json.loads((tmp_path / "golden.json").read_text()) == {"a": 1}
+
+
+def test_add_without_a_terminal_still_refuses_first_with_a_file_of_another_shape(no_terminal, no_search, capsys):
+    common.secure_mkdir(common.GOLDEN_SET_PATH.parent)
+    common.GOLDEN_SET_PATH.write_text(json.dumps({"a": 1}))
+
+    assert golden_set.cmd_add("how does login work") == 2
+
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "no terminal to ask on" in err and "Nothing was changed." in err

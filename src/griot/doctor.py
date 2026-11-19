@@ -323,7 +323,7 @@ def check_repositories(common) -> dict:
     if gone:
         from griot import repos
         return _check("repositories", FAIL, f"{repos.GONE}: " + ", ".join(gone),
-                      "; ".join(f"griot repos remove {p}" for p in gone))
+                      "; ".join(repos.remove_command(p) for p in gone))
     reports = freshness.repository_freshness()
     behind = [r for r in reports if r.get("behind")]
     without_code = [r["repo"] for r in reports if "code" in (r.get("missing_sources") or [])]

@@ -526,6 +526,9 @@ def is_git_hash(value: str) -> bool:
 # True when a person can be asked: both ends are a terminal. Defined in the
 # package (griot.is_interactive) so that `griot assist install`, which must
 # work without this module, asks the same question the same way.
+# A test that fakes a terminal patches the name its caller looks up:
+# `griot.is_interactive` for harnesses (assist install), and
+# `common.is_interactive` for common.confirm and the modules that call it.
 is_interactive = _package.is_interactive
 
 
@@ -537,10 +540,19 @@ def print_json(document) -> None:
     print(json.dumps(document, ensure_ascii=False))
 
 
+class WrongShape(ValueError):
+    """One of griot's own JSON files parsed, but holds something else than
+    what griot writes there. A ValueError, so every reader that already
+    handles a corrupted file handles this one; its message is the cause
+    unreadable_cause() gives, written for a person."""
+
+
 def unreadable_cause(error: BaseException) -> str:
     """Why one of griot's own JSON files (repos.json, the golden set) could
     not be read, classified for a person instead of an exception's name:
     the text says what to do about it, the class name does not."""
+    if isinstance(error, WrongShape):
+        return str(error)
     if isinstance(error, PermissionError):
         return "permission denied"
     if isinstance(error, IsADirectoryError):
@@ -1083,7 +1095,13 @@ def load_repos() -> list[str]:
     the design notes). Centralized here so the five indexers don't
     each resolve the path their own way."""
     with open(REPOS_JSON_PATH, "r") as f:
-        return json.load(f)
+        paths = json.load(f)
+    # Checked on read, the one place every reader goes through: valid JSON
+    # of another shape ([1], {"a": 1}) otherwise surfaced later as a
+    # TypeError traceback, or listed a dict's keys as repositories.
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        raise WrongShape("not a list of directory paths")
+    return paths
 
 
 # griot doesn't depend on LiteLLM/Docker at any point — indexing and

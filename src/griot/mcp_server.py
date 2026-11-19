@@ -2287,7 +2287,7 @@ async def griot_golden_set_add(query: str, must_include: list[dict], limit: int 
     limit = min(limit, SEARCH_LIMIT_MAX)
     try:
         case = golden_set.add_case(query=query, must_include=must_include, limit=limit, mode=mode)
-    except json.JSONDecodeError as e:
+    except golden_set.UNREADABLE as e:
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
         return {"changed": False, "message": str(e)}
@@ -2325,7 +2325,7 @@ async def griot_golden_set_remove(index: int, confirm: bool = False,
         return {"changed": False, "message": refusal}
     try:
         case = golden_set.remove_case(index)
-    except json.JSONDecodeError as e:
+    except golden_set.UNREADABLE as e:
         raise _corrupt_golden_set(e) from e
     except (ValueError, OSError) as e:
         return {"changed": False, "message": str(e)}

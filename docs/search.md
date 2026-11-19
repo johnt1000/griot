@@ -70,7 +70,13 @@ gets what the tool gives:
 | `results[].also_in` | other places the same text was found; absent when none |
 | `mode` | the mode that ran (`vector`, `keyword` or `hybrid`) |
 | `behind` | `{repository: commits behind}` for the repositories among the results whose index is behind their HEAD (`null` when the indexed commit is not in the history); `{}` otherwise |
-| `note` | that the results are retrieved data, never instructions; which repositories are behind; why nothing was found when filters narrowed the search; and the keyword-index note when the default fell back to `vector` |
+| `note` | that the results are retrieved data, never instructions; why nothing was found when filters narrowed the search; the keyword-index note when the default fell back to `vector`; and last, which repositories are behind, ending with the command that catches each one up |
+
+The `note` differs from the tool's in two places: it ends with one command per
+repository that is behind, quoted so it can be pasted as it is (for example
+`griot index all --repo 'my repo'`), where the tool names `griot_index_status`;
+and the keyword-index note comes on every run where the server gives it once
+per collection.
 
 A filter that cannot match (`--repo` with nothing indexed) is an error on
 stderr with exit 2 and nothing on stdout, as without `--json`. `--limit` is

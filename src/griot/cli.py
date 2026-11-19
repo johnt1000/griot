@@ -325,7 +325,7 @@ def _cmd_search(args) -> int:
         from griot import search_result
         common.print_json(search_result.output(
             results, mode=mode, repos=args.repo, source_types=args.source_type, keyword_note=note,
-            behind_next="`griot index all`"))
+            behind_next=search_result.catch_up_commands))
         return 0
     if not results:
         print("No results.")
@@ -437,18 +437,24 @@ def _cmd_profiles_list(args) -> int:
         print()
 
     print("  PAID (requires API key)")
-    fixes = []
+    # {command: the profiles it unlocks}: one provider's credential serves
+    # each of its profiles, so the command is given once and names them.
+    fixes: dict[str, list[str]] = {}
     for entry in (e for e in result["profiles"] if e["paid"]):
-        configured = "configured" if entry["credential_configured"] else f"credential {entry['credential_env']} not set"
-        if entry["fix"] and entry["fix"] not in fixes:
-            fixes.append(entry["fix"])
+        # Worded as `griot doctor` words the same fact.
+        configured = ("configured" if entry["credential_configured"]
+                      else f"its credential ({entry['credential_env']}) is not configured")
+        if entry["fix"]:
+            fixes.setdefault(entry["fix"], []).append(entry["profile"])
         active = "   [ACTIVE]" if entry["is_active"] else ""
         price = f"${entry['price_per_1m_tokens']:.2f}/1M"
         print(f"    {entry['profile']:<14}{entry['dim']}d   {price}   {configured}{active}")
-    # The commands last: what sets a missing credential, then what switches.
-    for fix in fixes:
-        print(f"  {fix}")
+    # The commands last, the more urgent one at the very end: what switches,
+    # then what sets a missing credential, without which that profile
+    # cannot index or search.
     print("\n  griot profiles use <name>   # makes it the active profile")
+    for fix, profiles in fixes.items():
+        print(f"  {fix}   # for {', '.join(profiles)}")
     return 0
 
 

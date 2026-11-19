@@ -67,10 +67,25 @@ def has_effective_constraint(entry: dict) -> bool:
 _must_include_entry = common.case_entry
 
 
-def _load() -> list:
+def _read():
+    """The file as written, whatever it holds."""
     if not common.GOLDEN_SET_PATH.exists():
         return []
     return json.loads(common.GOLDEN_SET_PATH.read_text())
+
+
+def _load() -> list[dict]:
+    """The cases, for a reader that changes or lists them: a file of
+    another shape is common.WrongShape here, the one place they all pass,
+    instead of an AttributeError or KeyError further in (add appended to a
+    dict, remove popped from one)."""
+    return checked_cases(_read())
+
+
+# What a golden-set file that cannot be read raises, besides OSError:
+# unreadable_sentence() says it. Not ValueError as a whole, which is also how
+# add_case and remove_case refuse their arguments (an index out of range).
+UNREADABLE = (json.JSONDecodeError, UnicodeDecodeError, common.WrongShape)
 
 
 def _save(cases: list) -> None:
@@ -82,11 +97,12 @@ def _save(cases: list) -> None:
     common.secure_write_text_atomic(common.GOLDEN_SET_PATH, json.dumps(cases, indent=2, ensure_ascii=False))
 
 
-def list_cases() -> list[dict]:
-    """Pure read of the curated cases — cmd_list()'s data half, so a
-    non-terminal caller gets the data without print(). The caller today is
-    the griot_golden_set_list MCP tool."""
-    return _load()
+def list_cases():
+    """Pure read of the curated cases, as written: not checked, so that
+    check_cases(), which `griot quality-check` and griot_quality_check run
+    before anything is embedded, can name the case at fault. Every other
+    reader goes through _load() or list_result()."""
+    return _read()
 
 
 # [review finding] Delimiting stored injection: golden-set cases are the only
@@ -112,10 +128,25 @@ def list_result() -> dict:
     its mode, the one an absent field stands for too: a reader should not
     have to know that absent means vector. Only what is returned; the file
     is not rewritten. Raises OSError or ValueError when the file cannot be
-    read (unreadable_sentence() says it)."""
-    cases = list_cases()
-    shown = [{**case, "mode": case_mode(case)} if isinstance(case, dict) else case for case in cases]
+    read (unreadable_sentence() says it), common.WrongShape when it holds
+    something else than cases."""
+    cases = checked_cases(list_cases())
+    shown = [{**case, "mode": case_mode(case)} for case in cases]
     return {"note": GOLDEN_SET_NOTE, "cases": shown, "count": len(cases)}
+
+
+def checked_cases(cases) -> list[dict]:
+    """`cases` when it is what `add` writes (a list of cases, each with a
+    list of must_include entries); otherwise common.WrongShape. Checked on
+    read, where `griot golden-set list`, griot_golden_set_list and `griot
+    stats` all pass: a file edited by hand into {"a": 1} was listed as one
+    case named "a" with exit 0, and crashed the text listing."""
+    if not isinstance(cases, list) or not all(
+            isinstance(case, dict) and isinstance(case.get("must_include"), list)
+            and all(isinstance(entry, dict) for entry in case["must_include"])
+            for case in cases):
+        raise common.WrongShape("not a list of cases, each with must_include")
+    return cases
 
 
 def unreadable_sentence(cause, *, before_command: str = "\n  ") -> str:
@@ -126,7 +157,7 @@ def unreadable_sentence(cause, *, before_command: str = "\n  ") -> str:
     command can stand on a line of its own, a space inside a one-line item."""
     if isinstance(cause, BaseException):
         cause = common.unreadable_cause(cause)
-    return (f"{common.GOLDEN_SET_PATH} could not be read ({cause}). Fix or delete it, then curate again:"
+    return (f"{common.GOLDEN_SET_PATH} could not be read ({cause}). Fix it, or delete it and curate again:"
             f"{before_command}{_CURATE}")
 
 
@@ -504,6 +535,9 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         return common.refuse_without_terminal(
             "griot golden-set suggest asks a person which commits make good cases",
             f"griot golden-set suggest {shlex.quote(repo_path_str)}")
+    # Before the git log scan: no approved candidate could be saved.
+    if (refused := _refused_unreadable()) is not None:
+        return refused
 
     try:
         found = suggest_candidates(repo_path, max_commits=max_commits, limit=limit)
@@ -542,12 +576,14 @@ def cmd_suggest(repo_path_str: str, max_commits: int | None = None, limit: int =
         mode, mode_note = case_mode_for(candidate["query"], None)
         try:
             add_case(candidate["query"], candidate["must_include"], limit=candidate["limit"], mode=mode)
-        except json.JSONDecodeError as e:
-            # The file every candidate is written to cannot be read: each
-            # would fail the same way, so the run stops here instead of
-            # asking about candidates that cannot be saved.
-            print(f"Error: {common.GOLDEN_SET_PATH} is not valid JSON ({e}); fix or remove it, then run suggest "
-                  f"again. {added} case(s) were added before this.", file=sys.stderr)
+        except UNREADABLE as e:
+            # The file every candidate is written to cannot be read (it
+            # changed since the check above): each would fail the same way,
+            # so the run stops here instead of asking about candidates that
+            # cannot be saved.
+            # What was saved first, the command last.
+            print(_added_line(added), file=sys.stderr)
+            print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
             return 1
         except ValueError as e:
             # A case add_case refuses: said with the reason, under the
@@ -585,6 +621,9 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
         return common.refuse_without_terminal(
             "griot golden-set add asks a person which results are the right ones",
             _add_command(query, limit, mode))
+    # Before the search, which can be a paid call: its results could not be saved.
+    if (refused := _refused_unreadable()) is not None:
+        return refused
 
     # None is the default: hybrid, or vector where hybrid cannot run
     # (case_mode_for). Resolved once, before the search, so the results shown
@@ -645,6 +684,18 @@ def cmd_add(query: str, limit: int = 5, mode: str | None = None) -> int:
     return 0
 
 
+def _refused_unreadable() -> int | None:
+    """1, with the one sentence on stderr, when the golden set cannot be
+    read; None when it can. For a command that would otherwise search or
+    ask a person first and only then fail to save the answer."""
+    try:
+        _load()
+    except (OSError, *UNREADABLE) as e:
+        print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
+        return 1
+    return None
+
+
 def cmd_list(as_json: bool = False) -> int:
     try:
         result = list_result()
@@ -665,7 +716,8 @@ def cmd_list(as_json: bool = False) -> int:
         preview = query if len(query) <= 80 else query[:80] + "..."
         # The query may have been written by an agent: shown like the mode,
         # so nothing in it can drive the terminal or forge a line.
-        print(f"  [{i}] {common.printable(preview)} ({len(case.get('must_include', []))} required results, "
+        required = len(case["must_include"])
+        print(f"  [{i}] {common.printable(preview)} ({required} required result{'' if required == 1 else 's'}, "
               f"{common.printable(str(case['mode']))[:20]} search)")
     return 0
 
@@ -673,6 +725,9 @@ def cmd_list(as_json: bool = False) -> int:
 def cmd_remove(index: int) -> int:
     try:
         removed = remove_case(index)
+    except (OSError, *UNREADABLE) as e:
+        print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
+        return 1
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1301,7 +1356,7 @@ def cmd_review(limit: int = 10) -> int:
     try:
         found = review_candidates(limit=limit)
     except (OSError, ValueError) as e:
-        print(f"Error: cannot read {common.GOLDEN_SET_PATH}: {e}", file=sys.stderr)
+        print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
         return 1
     note = _not_logged_note(found["omitted"])
     candidates = found["candidates"]
@@ -1413,6 +1468,9 @@ def main(argv=None) -> int:
     # alone is easy to get wrong after an earlier removal shifted the list.
     try:
         case = get_case(args.index)
+    except (OSError, *UNREADABLE) as e:
+        print(f"Error: {unreadable_sentence(e)}", file=sys.stderr)
+        return 1
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

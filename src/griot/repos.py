@@ -6,6 +6,7 @@ hand-editing the JSON.
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -15,7 +16,8 @@ from griot import UsageError, common
 def _load() -> list[str]:
     if not common.REPOS_JSON_PATH.exists():
         return []
-    return json.loads(common.REPOS_JSON_PATH.read_text())
+    # common's reader, so a file of the wrong shape is refused here too.
+    return common.load_repos()
 
 
 def _save(paths: list[str]) -> None:
@@ -58,7 +60,7 @@ def list_result() -> dict:
     return {"repos": entries, "count": len(entries)}
 
 
-# What fixes a repos.json griot cannot read, once it was fixed or deleted.
+# What registers the repositories again once an unreadable repos.json was deleted.
 _REGISTER = "griot repos add <path>"
 
 
@@ -69,13 +71,13 @@ def unreadable_sentence(cause) -> str:
     `cause` is the exception or its already classified text."""
     if isinstance(cause, BaseException):
         cause = common.unreadable_cause(cause)
-    return (f"{common.REPOS_JSON_PATH} could not be read ({cause}). Fix or delete it, then register again:\n"
+    return (f"{common.REPOS_JSON_PATH} could not be read ({cause}). Fix it, or delete it and register again:\n"
             f"  {_REGISTER}")
 
 
 def unreadable_fix() -> str:
     """The fix `griot doctor` gives for the same file, in its fix column."""
-    return f"{_REGISTER}   # after fixing or deleting {common.REPOS_JSON_PATH}"
+    return f"{_REGISTER}   # after deleting {common.REPOS_JSON_PATH}, or fix it instead"
 
 
 # How a registered path that is no longer a directory is named on the CLI
@@ -212,8 +214,15 @@ def cmd_list(as_json: bool = False) -> int:
     # The fix last, as `griot doctor` gives it, one command per path.
     for status in statuses:
         if not status["exists"]:
-            print(f"  griot repos remove {status['path']}")
+            print(f"  {remove_command(status['path'])}")
     return 0
+
+
+def remove_command(path: str) -> str:
+    """The command that unregisters `path`, quoted so it can be pasted as it
+    is: a path with a space otherwise reached argparse as two arguments.
+    Said by `griot repos list` and `griot doctor`."""
+    return f"griot repos remove {shlex.quote(path)}"
 
 
 def cmd_remove(path: str) -> int:

@@ -171,20 +171,14 @@ def _golden_set_state() -> tuple[dict | None, str | None]:
         return None, None
     # The cause is classified (golden_set.unreadable_sentence() says it),
     # never an exception's name: the same sentence as the CLI and MCP.
+    # The shape is checked by the reader `griot golden-set list` uses, so
+    # both say the same cause for the same file.
     try:
-        cases = golden_set.list_cases()
+        cases = golden_set.checked_cases(golden_set.list_cases())
     except (OSError, ValueError) as e:
         return None, common.unreadable_cause(e)
-    try:
-        if not isinstance(cases, list):
-            raise ValueError
-        expected = set()
-        for case in cases:
-            for exp in case["must_include"]:
-                if isinstance(exp.get("repo"), str) and exp["repo"]:
-                    expected.add(exp["repo"])
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None, "not a list of cases, each with must_include"
+    expected = {exp["repo"] for case in cases for exp in case["must_include"]
+                if isinstance(exp.get("repo"), str) and exp["repo"]}
     # Compared with repos.json, not with the index: asking the index costs a
     # scan per name and needs the collection, which another process may
     # hold. `griot quality-check` asks the index itself. When repos.json
