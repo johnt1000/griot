@@ -211,6 +211,39 @@ def assess(runs: list[dict], repositories: list[dict]) -> list[dict]:
     return reports
 
 
+def stale_reason(report: dict, sources) -> str | None:
+    """Why `griot index all --if-stale` indexes this repository (a report
+    of assess()), counting only `sources`; None when it does not, which is
+    also when `griot doctor` says it is not behind. Worded by notices.py, as
+    every other surface words it.
+
+    It counts what doctor, stats and griot_index_status report, and nothing
+    else: a source behind, and code never indexed. Another source that never
+    ran (a platform the person never indexed, or one whose newest run
+    refused the repository) is not counted: no surface reports it as
+    behind, so acting on it would index a repository every surface calls
+    up to date. It is filled anyway the next time the repository is behind,
+    since every source of a chosen repository runs."""
+    from griot import notices
+
+    if report.get("head") is None:
+        return None  # nothing to compare with: no git repository at that path
+    behind = [source for source in report.get("behind_sources") or [] if source in sources]
+    never = report.get("missing_sources") or []
+    parts = []
+    if behind:
+        # The count is of the sources that follow HEAD; one left out by
+        # --sources does not make the others read as commits behind.
+        follows_head = any(source in FOLLOWS_HEAD for source in behind)
+        parts.append(notices.behind_detail({**report, "behind_sources": behind,
+                                            "commits_behind": report.get("commits_behind") if follows_head else 0}))
+    if "code" in never and "code" in sources:
+        # "never indexed" when nothing ran, else the phrase doctor and stats
+        # say: "code never indexed".
+        parts.append(notices.never_indexed(never if set(never) >= set(SOURCES) else ["code"]))
+    return "; ".join(parts) or None
+
+
 # The causes index_platform.py records a refused fetch under.
 REFUSAL_CAUSES = ("not_found", "token", "other")
 

@@ -113,6 +113,9 @@ TESTS_MAY_REACH = {
         "_end_with_notices": _HELPER,
         "_main": _SEAM,
         "_run_index_source": _SEAM,
+        # --if-stale's estimate, replaced to see which repositories it reads.
+        "_pending_by_source": _SEAM,
+        "_take_if_stale": _HELPER,
     },
     "config": {
         "_in_file": _SEAM,

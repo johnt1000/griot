@@ -82,15 +82,24 @@ def _is_collection_busy(exc: BaseException) -> bool:
     return common is not None and isinstance(exc, common.CollectionBusyError)
 
 
-def _busy_message(exc) -> str:
+def _busy_head(exc, holders: list | None = None) -> str:
+    """What holds the collection: the first sentences of _busy_message()
+    and of --if-stale's skip line, one wording for one fact."""
     from griot import common
 
-    holders = common.find_collection_holders(exc.path)
+    holders = common.find_collection_holders(exc.path) if holders is None else holders
     who = "; ".join(
         f"PID {h['pid']}" + (f" ({h['command']}" + (f", started {h['started']}" if h["started"] else "") + ")"
                              if h["command"] else "")
         for h in holders)
-    head = f"Another griot process holds the collection '{exc.collection}'." + (f" Holder: {who}." if who else "")
+    return f"Another griot process holds the collection '{exc.collection}'." + (f" Holder: {who}." if who else "")
+
+
+def _busy_message(exc) -> str:
+    from griot import common
+
+    holders = common.find_collection_holders(exc.path)
+    head = _busy_head(exc, holders)
     roles = {h.get("role") for h in holders}
     if "mcp" in roles:
         idle = f"{common.IDLE_RELEASE_SECONDS:g}"
@@ -215,15 +224,206 @@ DRY_RUN_HELP = ("Says how many chunks would be (re)embedded and, on a paid profi
                 "without embedding or spending anything.")
 
 
+IF_STALE_HELP = ("Index only the registered repositories whose index is behind them: commits made since the last "
+                 "run, a rewritten history, changed tags or remote branches, or code never indexed. Pull "
+                 "requests and issues are not compared. When none is behind it embeds nothing and exits 0; when "
+                 "another griot process holds the collection it stops there, keeps what it already wrote, and "
+                 "exits 0. Made for a scheduler or a git hook. On a paid "
+                 "profile with no terminal, a run at or above confirm-spend still needs --yes.")
+
+
 def _index_all_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="griot index all",
         description=f"Runs every source in one process, in this order: {', '.join(INDEX_SOURCES)}; stops at the "
                     f"first one that fails. On a paid profile it asks once, for every source, before the first "
-                    f"one embeds. Every other flag is forwarded to each source: see `griot index code --help`.")
+                    f"one embeds. With --if-stale, --repo narrows it to one registered repository, and --path "
+                    f"cannot be combined with it. Every other flag is forwarded to each source: see "
+                    f"`griot index code --help`.")
     parser.add_argument("--yes", action="store_true", help=YES_HELP)
+    parser.add_argument("--if-stale", action="store_true", help=IF_STALE_HELP)
     show_flags_read_by_griot(parser, SOURCES_FLAG, PROFILE_FLAG)
     return parser
+
+
+def _take_if_stale(rest: list) -> tuple[list, bool]:
+    """Takes --if-stale out of the argv forwarded to the sources, whose
+    parsers do not know it. Every spelling _index_all_parser() accepts (an
+    unambiguous prefix: no source has another --i* option) and nothing past
+    `--`, as _extract_switch() does."""
+    stop = rest.index("--") if "--" in rest else len(rest)
+    kept, found = [], False
+    for i, token in enumerate(rest):
+        if i < stop and len(token) >= 3 and token.startswith("--i") and "--if-stale".startswith(token):
+            found = True
+            continue
+        kept.append(token)
+    return kept, found
+
+
+def _is_held(exc: BaseException) -> bool:
+    """The collection open in another process, or griot's index lock held:
+    the overlaps --if-stale treats as routine."""
+    common = sys.modules.get("griot.common")
+    return _is_collection_busy(exc) or (common is not None and isinstance(exc, common.IndexLockHeldError))
+
+
+def _held_sentence(exc) -> str:
+    """Who holds what, in lower case: the head of _busy_message() for a held
+    collection, so the fact keeps one wording."""
+    if _is_collection_busy(exc):
+        head = _busy_head(exc)
+    else:
+        head = f"{exc.held_by()}."
+    return head[:1].lower() + head[1:]
+
+
+def _say_skipped(exc, command: str, *, at: tuple[str, str] | None = None, done: dict | None = None) -> None:
+    """--if-stale's line for a held collection: not an error (exit 0), and
+    not silenceable either, because it says the index was NOT written and
+    stays behind."""
+    from griot import common, notices
+
+    global _skipped
+    _skipped = True
+    held = _held_sentence(exc)
+    if done:
+        written = "; ".join(f"{', '.join(sources)} of {name}" for name, sources in done.items())
+        source, name = at
+        # Only what the next run compares is promised again: a source never
+        # compared (the platform) is filled when the repository is next behind.
+        text = (f"Stopped at {source} of {name}: {held.removesuffix('.')}. Indexed before the stop: {written}. "
+                f"The next run indexes again what is still behind ({notices.COMPARED}; {notices.NOT_COMPARED}).")
+    else:
+        text = f"Skipped: {held} Nothing was indexed; the next run tries again."
+    common.progress_note(f"{text}\n  {command}", silenceable=False)
+
+
+def _if_stale_command(typed_repo: str | None, sources_override) -> str:
+    argv = ["griot", "index", "all", "--if-stale"]
+    if typed_repo is not None:
+        argv += [f"--repo={typed_repo}"] if typed_repo.startswith("-") else ["--repo", typed_repo]
+    if sources_override is not None:
+        argv += ["--sources", ",".join(sources_override)]
+    return shlex.join(argv)
+
+
+def _cmd_index_if_stale(sources: list, rest: list, sources_override) -> int:
+    """`griot index all --if-stale`: the repositories behind, each run as
+    `griot index all --repo NAME` would run it, behind the same spend gate."""
+    from griot import common, freshness, notices
+
+    flags = _gate_flags(rest)
+    typed = flags.repo if flags is not None else None
+    if flags is not None and flags.path:
+        print("Error: --if-stale compares the registered repositories, and --path indexes one that is not "
+              "registered: use one or the other.\n  griot index all --if-stale --repo NAME", file=sys.stderr)
+        return 2
+    paths = common.load_repos_or_say()
+    if paths is None:
+        return 1
+    if not paths:
+        print(f"Error: {common.no_repository_sentence()}", file=sys.stderr)
+        return 1
+    if typed is not None and typed not in {Path(path).name for path in paths}:
+        print(f"Error: no repository named '{common.printable(typed)}' is registered.\n  griot repos list",
+              file=sys.stderr)
+        return 2
+    for path in paths:
+        if (typed is None or Path(path).name == typed) and not Path(path).is_dir():
+            common.warn_not_a_directory(path)
+    reports = freshness.repository_freshness(repos=[typed] if typed is not None else None)
+    chosen = [(report, why) for report in reports if (why := freshness.stale_reason(report, sources))]
+    command = _if_stale_command(typed, sources_override)
+
+    if not chosen:
+        compared = [report for report in reports if report.get("head") is not None]
+        if typed is not None:
+            if compared:
+                common.progress_note(f"Nothing to index: {notices.repo_not_behind(common.printable(typed))}.")
+            elif Path(reports[0]["path"]).is_dir():
+                common.progress_note(f"Nothing to index: {common.printable(typed)} is not a git repository, so "
+                                     f"griot cannot tell whether it is behind.")
+            return 0
+        if not compared:
+            common.progress_note("Nothing to index: no registered repository is a git repository on disk.")
+            return 0
+        unreadable = [report for report in reports if report.get("head") is None]
+        among = ("" if not unreadable else " on disk" if all(not Path(r["path"]).is_dir() for r in unreadable)
+                 else " that git can read")
+        common.progress_note(f"Nothing to index: {notices.none_behind(len(compared), among)}.")
+        return 0
+
+    selected = [report["repo"] for report, _ in chosen]
+    if typed is not None:
+        # "Behind", not "Indexing": on a paid profile the spend gate may
+        # refuse right after, and the line stays true either way.
+        common.progress_note(f"Behind: {common.printable(typed)} ({chosen[0][1]}).")
+    else:
+        reasons = ", ".join(f"{common.printable(report['repo'])} ({why})" for report, why in chosen)
+        common.progress_note(f"Behind, {len(chosen)} of {len(paths)} registered "
+                             f"repositor{'y' if len(paths) == 1 else 'ies'}: {reasons}.")
+    try:
+        refused = _confirm_index_spend(sources, rest, run="all", sources_override=sources_override,
+                                       selection=selected, typed_repo=typed)
+        if refused:
+            return refused
+        common.progress_begin(sources)
+        with common.notes_said_once():
+            return _run_index_stale(sources, rest, selected, typed is not None, len(paths), command)
+    except Exception as e:
+        if not _is_held(e):
+            raise
+        _say_skipped(e, command)  # before anything ran: the estimate's dry run found it held
+        return 0
+
+
+def _repo_argv(rest: list, name: str, typed: bool) -> list:
+    """The argv of one repository's run: as typed when --repo named it,
+    else with --repo added (glued with `=`, so a name that starts with `-`
+    is not read as a flag)."""
+    return rest if typed else [*rest, f"--repo={name}"]
+
+
+def _run_index_stale(sources, rest, selected, typed: bool, registered: int, command: str) -> int:
+    """_run_index_all() per repository behind, every source of one before
+    the next, so a held collection can say what was written."""
+    from griot import common
+
+    done: dict[str, list[str]] = {}
+    for name in selected:
+        shown = common.printable(name)
+        argv = _repo_argv(rest, name, typed)
+        for source in sources:
+            common.progress_note(f"=== griot index {source}: {shown} ===")
+            common.progress_source(source, "reading")
+            try:
+                rc = _run_index_source(source, argv)
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            except BaseException as e:
+                common.progress_source(source, "failed")
+                if not isinstance(e, Exception):
+                    raise
+                if _is_held(e):
+                    _say_skipped(e, command, at=(source, shown), done=done)
+                    return 0
+                print(f"Error: 'griot index {source}' failed for {shown}: {e}\n  griot doctor", file=sys.stderr)
+                return 1
+            if rc != 0:
+                common.progress_source(source, "failed")
+                print(f"Error: 'griot index {source}' failed for {shown} (exit {rc}); the pipeline stopped "
+                      f"there.\n  griot doctor", file=sys.stderr)
+                return rc
+            common.progress_source(source, "done")
+            done.setdefault(shown, []).append(source)
+    names = ", ".join(common.printable(name) for name in selected)
+    # The run's result, so stdout and never silenced by --quiet (the
+    # interaction policy): a scheduled `--if-stale --quiet` run is read from
+    # its log, and this is the line that says which repositories it indexed.
+    print(f"=== griot index all --if-stale: {names} indexed ({len(selected)} of {registered} registered) ===",
+          flush=True)
+    return 0
 
 
 def _gate_flags(rest: list):
@@ -291,7 +491,8 @@ def _pending_by_source(sources: list, rest: list):
         common.take_redactions()  # counted by the dry runs; the real run counts and reports its own
 
 
-def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_override) -> int:
+def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_override,
+                         selection: list | None = None, typed_repo: str | None = None) -> int:
     """The confirmation before an index run spends money (decided
     2026-11-19): on a paid profile, what is pending is estimated first and
     said; at or above confirm-spend it asks, once for every source of `run`
@@ -304,7 +505,12 @@ def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_overrid
     --yes included: --yes answers the question, it does not skip the
     estimate, because what runs without a question leaves a trace (a
     script's log, griot_index_repo's job log). A local profile, a dry run
-    and --help never come here."""
+    and --help never come here.
+
+    `selection` is --if-stale's: the repositories behind, the only ones
+    estimated, named and run (`typed_repo` when --repo named it). The
+    command rebuilt for a refusal keeps --if-stale, or pasting it would
+    index every repository."""
     from griot import common
 
     flags = _gate_flags(rest)
@@ -315,7 +521,9 @@ def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_overrid
     refused = common.refuse_missing_credential()
     if refused:
         return refused
-    if flags.repo:
+    if selection is not None:
+        target = None  # named below, from the selection
+    elif flags.repo:
         target = flags.repo
     elif flags.path:
         target = Path(flags.path).resolve().name
@@ -331,23 +539,41 @@ def _confirm_index_spend(sources: list, rest: list, *, run: str, sources_overrid
                   else f"{len(registered)} registered repositories")
     target = None if target is None else common.printable(target)[:80]
     origin = f" from {target}" if target else ""
+    estimated = origin
+    if selection is not None:
+        shown = [common.printable(name) for name in selection]
+        origin = (f" from {shown[0]}" if len(shown) == 1
+                  else f" from {len(shown)} repositories behind ({', '.join(shown)})")
+        estimated = f"{origin} (behind)" if len(shown) == 1 else origin
     # The dry run reads every file (and asks the platform's API) with its
     # output kept out of sight: said first, so a long read does not look hung.
-    common.progress_note(f"Estimating the cost of {', '.join(sources)}{origin} with paid profile "
+    common.progress_note(f"Estimating the cost of {', '.join(sources)}{estimated} with paid profile "
                          f"'{common.ACTIVE_PROFILE_NAME}'...")
-    records, failed = _pending_by_source(sources, rest)
-    if records is None:
-        return failed
+    if selection is None:
+        records, failed = _pending_by_source(sources, rest)
+        if records is None:
+            return failed
+    else:
+        records = []
+        for name in selection:
+            found, failed = _pending_by_source(sources, _repo_argv(rest, name, typed_repo is not None))
+            if found is None:
+                return failed
+            records += found
     pending = [record for record in records if record["to_embed"]]
     count = sum(record["to_embed"] for record in pending)
     if not count:
         return 0  # nothing to embed costs nothing: the run says what it found
     chunks = f"{count:,} chunk{'s' if count != 1 else ''}"
-    kinds = (f"of {run}" if run != "all" else f"({', '.join(record['source'] for record in pending)})")
+    # With --if-stale the records are added up per repository, so a source
+    # comes once per repository behind: named once, in the order first seen,
+    # or the line that reports money reads as if it were counted twice.
+    kinds = (f"of {run}" if run != "all"
+             else f"({', '.join(dict.fromkeys(record['source'] for record in pending))})")
     what = f"{chunks} {kinds}{origin}"
     estimate = common.estimated_embedding_cost_usd(sum(record["to_embed_chars"] for record in pending))
     # The command as it was typed, with what griot took out of argv first.
-    argv = ["griot", "index", run, *rest]
+    argv = ["griot", "index", run, *(["--if-stale"] if selection is not None else []), *rest]
     if sources_override is not None:
         argv += ["--sources", ",".join(sources_override)]
     argv += global_flags_typed()
@@ -369,6 +595,7 @@ def _cmd_index(args) -> int:
     # takes (a prefix, -h) and leaves every other flag alone; its result is
     # not used, so `rest` is forwarded exactly as given.
     _index_all_parser().parse_known_args(rest)
+    rest, if_stale = _take_if_stale(rest)
 
     # `griot index all`: runs the sources in sequence within a single process.
     # `--sources` (resolved) filters which of the INDEX_SOURCES
@@ -381,6 +608,9 @@ def _cmd_index(args) -> int:
         return 2
 
     from griot import common  # lazy, same as every other subcommand here
+
+    if if_stale:
+        return _cmd_index_if_stale(sources, rest, args.sources_override)
 
     # Before the progress record and the loop: a decline is not a failed
     # source, and one question covers every source.
@@ -880,8 +1110,8 @@ _SOURCES_OF_INDEX_ALL = (*SOURCES_FLAG[:2], f"`griot index all` only. {SOURCES_F
 # without a metavar. Every parser's help shows it (it is appended there), so a
 # person who sees a notice they do not want finds the way to silence it in
 # the help of the command that printed it.
-QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never errors, prompts or the result). "
-                               "Same as GRIOT_QUIET=1. Also -q")
+QUIET_FLAG = ("--quiet", None, "Silence notices, warnings and progress (never errors, prompts, a cost estimate or the "
+                               "result). Same as GRIOT_QUIET=1. Also -q")
 
 
 def json_flag_help(guide: str) -> str:
@@ -1152,6 +1382,12 @@ _command: str | None = None
 # end of a command.
 _NO_FOOTER = frozenset({"doctor", "stats", "mcp"})
 
+# True once `griot index all --if-stale` skipped a run for a held
+# collection: its line, with the command to run again, ends what a scheduler
+# log shows, as an error's command does (the index it says is still behind
+# is what a footer would announce).
+_skipped = False
+
 
 def _end_with_notices() -> None:
     """The one notice line a command ends with (notices.footer()), on stderr,
@@ -1160,7 +1396,7 @@ def _end_with_notices() -> None:
     an index run changes (which repositories are behind, whether the
     collection has keyword vectors). A ledger that cannot be read or
     written must never fail a command that succeeded."""
-    if _command is None or _command in _NO_FOOTER or "griot.common" not in sys.modules:
+    if _command is None or _command in _NO_FOOTER or _skipped or "griot.common" not in sys.modules:
         return
     if _command == "update" and getattr(sys.modules.get("griot.update"), "CHECKED_AFTER_UPGRADE", False):
         # It just said what the new version needs done, or pointed at
@@ -1225,8 +1461,9 @@ def _main(argv=None) -> int:
     if chat_profile is not None:
         os.environ["GRIOT_CHAT_PROFILE"] = chat_profile
     argv, sources = _extract_sources_override(argv)
-    global _command
+    global _command, _skipped
     _command = argv[0] if argv and not argv[0].startswith("-") else None
+    _skipped = False
 
     # [real finding] argparse.REMAINDER combined with
     # subparsers has a long-standing CPython bug (reproduced here on
