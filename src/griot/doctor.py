@@ -78,21 +78,63 @@ def counts_phrase(failures: int, warnings: int) -> str:
 
 def pypi_failure_cause(error: BaseException) -> str:
     """Why PyPI gave no answer, in words, never the exception's class: the
-    release check and `griot update` say it the same way. A JSON error from
-    requests is both a RequestException and a ValueError; what went wrong is
-    the answer, so ValueError is asked first."""
+    release check and `griot update` say it the same way. Classified, since
+    each cause has its own fix: a proxy is not the network, and a PyPI that
+    answered with an error status did answer. Most specific first: a
+    ProxyError and an SSLError are ConnectionErrors, a ConnectTimeout is both
+    a Timeout and a ConnectionError. A JSON error from requests is both a
+    RequestException and a ValueError; what went wrong is the answer, so
+    ValueError is asked before the network."""
+    return _pypi_failure(error)[0]
+
+
+def pypi_retry_lead(error: BaseException) -> str:
+    """The sentence `griot update` puts before its own command after
+    pypi_failure_cause(): when running it again can work. Run again
+    unchanged right after a refused proxy, it fails the same way, so the
+    retry is the step only once the cause is gone; a busy or slow PyPI is
+    only a matter of time."""
+    return _pypi_failure(error)[1]
+
+
+_LATER = "Run it again in a while:"
+
+
+def _pypi_failure(error: BaseException) -> tuple[str, str]:
+    """One classification for the cause and its retry lead, so the two never
+    disagree about what went wrong."""
     import requests
 
-    if isinstance(error, requests.RequestException) and not isinstance(error, ValueError):
-        return "no network answer"
-    return "PyPI's answer could not be read"
+    if isinstance(error, requests.Timeout):
+        return "PyPI did not answer within 3 seconds", _LATER
+    if isinstance(error, requests.exceptions.ProxyError):
+        # The variable the proxy came from, in the order the standard
+        # library reads them (the lowercase spelling wins): a person looks
+        # in the one that is set, and HTTPS_PROXY may be the one that is not.
+        variable = next((name for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
+                         if os.environ.get(name)), None)
+        proxy = f"the proxy in {variable}" if variable else "the proxy"
+        return f"{proxy} refused the connection", f"Once {proxy} answers, run it again:"
+    if isinstance(error, requests.exceptions.SSLError):
+        return ("the TLS check of pypi.org failed: a proxy that intercepts TLS is the usual cause",
+                "Once the TLS check of pypi.org passes, run it again:")
+    if isinstance(error, requests.HTTPError) and getattr(error, "response", None) is not None:
+        return f"PyPI answered HTTP {error.response.status_code}", _LATER
+    if isinstance(error, ValueError):
+        return "PyPI's answer could not be read", _LATER
+    if isinstance(error, requests.ConnectionError):
+        return "no network connection to pypi.org", "Once the network reaches pypi.org, run it again:"
+    if isinstance(error, requests.RequestException):
+        return "no network answer", _LATER
+    return "PyPI's answer could not be read", _LATER
 
 
 def _env_path_without_the_configuration() -> Path:
-    """Where the configuration file is, computed as common.py computes it,
-    for the one check that must run when common.py cannot load."""
-    config_home = os.getenv("GRIOT_CONFIG_DIR", os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    return Path(config_home) / "griot" / ".env"
+    """Where the configuration file is, computed as common.py computes it
+    (griot.config_dir()), for the one check that must run when common.py
+    cannot load."""
+    import griot
+    return griot.config_dir() / ".env"
 
 
 def _settings_in_file(env_path: Path) -> list[dict]:
@@ -125,34 +167,72 @@ def check_settings(env_path: Path, error: Exception | None = None, mode_before: 
     `mode_before` is the file's mode before the configuration loaded: every
     griot command closes an open file as it loads, so a look afterwards
     finds it closed and would say nothing."""
-    if isinstance(error, UnknownEmbedProfile):
-        return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r} "
-                                        f"(set in the environment, or in {env_path}).{error.reason}",
-                      f"griot profiles use <name>   # one of: {', '.join(error.options)}; or unset the variable")
     broken = _settings_in_file(env_path)
+    # `config unset` is concrete and pastes: it returns each to its
+    # default. A valid value is one only the person knows. Each value's
+    # sentence ends in a period: joined, it is dropped before the ';'.
+    broken_detail = "; ".join(f"{b['variable']}: {b['why'].rstrip('.')}" for b in broken)
+    broken_fix = [f"griot config unset {b['name']}" for b in broken]
+    if isinstance(error, UnknownEmbedProfile):
+        # The valid names go in the detail and the error's own command in
+        # the fix, the one the CLI ends on (the default profile, or `unset`
+        # when the variable is exported: it wins over the file). The other
+        # broken values of the file are named too, each with its command:
+        # every one of these runs whatever state the others are in
+        # (config.shadow_broken_file_values).
+        # Where it is set, in the CLI error's words: `unset` in the shell
+        # fixes nothing when the name is only in the file.
+        fix = error.fix or "griot profiles use jina-code"
+        where = ("exported in this environment, which wins over the file" if getattr(error, "exported", False)
+                 else f"in {env_path}")
+        step = ("fix it where it is exported, or unset it" if getattr(error, "exported", False)
+                else "pick one with griot profiles use")
+        return _check("settings", FAIL, f"GRIOT_EMBED_PROFILE names a profile that does not exist: {error.name!r}, "
+                                        f"{where}.{error.reason} It can be one of: {', '.join(error.options)}; "
+                                        f"{step}"
+                                        + (f"; and {broken_detail}; or set a valid value with griot config set "
+                                           f"NAME VALUE" if broken else ""),
+                      "\n".join([fix, *broken_fix]))
     if broken:
-        return _check("settings", FAIL,
-                      "; ".join(f"{b['variable']}: {b['why']}" for b in broken),
-                      "; ".join(f"griot config set {b['name']} <value>" for b in broken) + "   (or `griot config unset <name>`)")
+        return _check("settings", FAIL, broken_detail + "; or set a valid value with griot config set NAME VALUE",
+                      "\n".join(broken_fix))
     if error is not None:
-        return _check("settings", FAIL, f"the configuration did not load: {error}", None)
+        # The CLI's error ends with the commands that fix it, indented on lines
+        # of their own; they belong in the row's fix, where every reader of
+        # fixes (an agent, `griot update`, the fix guard) looks for them.
+        # The contract this relies on: a ConfigurationError is prose, then,
+        # when there is one, `:` and each command indented by two spaces on
+        # a line of its own (common._where_to_fix and every other raiser).
+        lines = str(error).splitlines()
+        cut = len(lines)
+        while cut and lines[cut - 1].startswith("  ") and lines[cut - 1].strip():
+            cut -= 1
+        prose = "\n".join(lines[:cut]).rstrip().rstrip(":")
+        commands = "\n".join(line.strip() for line in lines[cut:])
+        return _check("settings", FAIL, f"the configuration did not load: {prose}", commands or None)
     if not env_path.exists() and env_path.is_symlink():
         # Every command writes the template through a link whose target can
         # be created, so one still dangling here leads nowhere griot can
         # write: "written on first use" would be false.
         return _check("settings", WARN, f"{env_path} is a symbolic link to {os.path.realpath(env_path)}, which does "
-                                        f"not exist and cannot be created: defaults in force, and writing a setting fails",
-                      f"point the link at a file, or remove it: rm {env_path}")
+                                        f"not exist and cannot be created: defaults in force, and writing a setting "
+                                        f"fails; point the link at a file, or remove it",
+                      shlex.join(["rm", str(env_path)]))
     if not env_path.exists():
         return _check("settings", OK, f"{env_path} does not exist yet: defaults in force (it is written on first use)")
     mode = stat.S_IMODE(env_path.stat().st_mode)
-    if mode_before is not None and mode_before & OTHERS:
-        return _check("settings", WARN, f"{env_path} was mode {mode_before:04o}, readable by other users; it holds "
-                                        f"credentials. griot closed it to 0600 just now, as every command does",
-                      "nothing more: it is 0600 now; whatever opened it may do so again")
+    # Open now first: "closed it just now" is said only of a file that is
+    # closed (the configuration loaded in this process may have loaded
+    # before the file was opened).
     if mode & OTHERS:
         return _check("settings", WARN, f"{env_path} is mode {mode:04o}; it holds credentials and should be 0600",
-                      f"chmod 600 {env_path}")
+                      shlex.join(["chmod", "600", str(env_path)]))
+    if mode_before is not None and mode_before & OTHERS:
+        # Already repaired, nothing left to do: `ok` with a note (policy,
+        # section 3), not a warning whose fix would be prose.
+        return _check("settings", OK, f"{env_path} was mode {mode_before:04o}, readable by other users; griot "
+                                      f"closed it to 0600 just now, as every command does (whatever opened it may "
+                                      f"do so again)", None)
     return _check("settings", OK, f"{env_path}: every value is one griot can start with, mode 0600")
 
 
@@ -225,14 +305,14 @@ def check_directories(common) -> dict:
     open_ones = [str(d) for d in there if stat.S_IMODE(d.stat().st_mode) & OTHERS]
     if open_ones:
         return _check("directories", WARN, "readable by other users of this machine: " + ", ".join(open_ones),
-                      "chmod 700 " + " ".join(open_ones))
+                      shlex.join(["chmod", "700", *open_ones]))
     inside = _open_entries(common.DATA_DIR) if common.DATA_DIR.is_dir() else []
     if inside:
         named = ", ".join(inside[:OPEN_ENTRIES_NAMED]) + (", ..." if len(inside) > OPEN_ENTRIES_NAMED else "")
         return _check("directories", WARN,
                       f"{len(inside)} entr{'y' if len(inside) == 1 else 'ies'} in {common.DATA_DIR} readable by other "
                       f"users (a permission repair that failed, or a copy that reset modes): {named}",
-                      f"chmod -R go-rwx {common.DATA_DIR}")
+                      shlex.join(["chmod", "-R", "go-rwx", str(common.DATA_DIR)]))
     missing = [str(d) for d in (common.CONFIG_DIR, common.DATA_DIR) if d not in there]
     said = []
     if there:
@@ -283,15 +363,24 @@ def check_credentials(common) -> dict:
             continue
         (overridden if origin["shadows_stored"] else exported).append((env_var, origin))
 
-    details, fixes = [], []
+    details, fixes, warned = [], [], False
     if overridden:
+        # The advice is a clause (where the export is, what direnv does), so
+        # it goes in the detail; the fix is the command that stops the export
+        # in this terminal. An export only direnv makes gets none: direnv
+        # would set it again at the next prompt.
+        warned = True
         details.append("exported in the shell with a value other than the one griot stores, which it hides: "
-                       + "; ".join(f"{var} ({common.export_places(origin)})" for var, origin in overridden))
-        fixes.append("; ".join(f"{var}: {common.export_advice(var, origin)}" for var, origin in overridden))
+                       + "; ".join(f"{var} ({common.export_places(origin)}): {common.export_advice(var, origin)}"
+                                   for var, origin in overridden))
+        fixes.extend(f"unset {var}" for var, origin in overridden
+                     if not (origin.get("direnv_in") and set(origin["direnv_in"]) >= set(origin["exported_in"])))
     if in_file:
         details.append(f"in plaintext in {common.ENV_PATH}: {', '.join(in_file)}")
         if keychain["available"]:
-            fixes.append("`griot auth migrate` moves them into the OS keychain")
+            warned = True
+            details.append("griot auth migrate moves them into the OS keychain")
+            fixes.append("griot auth migrate")
         else:
             # A note, not a warning: with no backend the file is where keys
             # belong, and a container or headless server may never have one.
@@ -305,7 +394,8 @@ def check_credentials(common) -> dict:
     if not overridden:
         details.append("none is overridden by the shell")
     details.append(auth.keychain_phrase(keychain))
-    return _check("credentials", WARN if fixes else OK, "; ".join(details), "; ".join(fixes) or None)
+    # One command per line: format_report gives each its own arrow.
+    return _check("credentials", WARN if warned else OK, "; ".join(details), "\n".join(fixes) or None)
 
 
 def _with_condition(row: dict, notice) -> dict:
@@ -328,7 +418,7 @@ def check_index(common, found: list | None = None, looked: set | None = None) ->
         # The keyword kind is not looked at: a collection that cannot be read
         # is the one thing to fix, and a stored keyword fact stays.
         return _check("index", FAIL, f"the collection could not be read: {str(error)[len('unreadable: '):]}", None)
-    from griot import notices, stats
+    from griot import notices
 
     # Read from the collection's own config file, so it is known while
     # another process holds the collection, while it is empty and after a
@@ -347,6 +437,25 @@ def check_index(common, found: list | None = None, looked: set | None = None) ->
         keyword = notices.keyword_vectors_missing(status.get("collection") or common.COLLECTION_NAME)
         if found is not None:
             found.append(keyword)
+    # None is also what a config on disk that cannot be read gives. Every
+    # default search then runs by meaning only without a word, and the
+    # golden-set note for a case made then sends its reader here: said, as a
+    # warning with no fix (unknown is not "missing": a rebuild could rewrite
+    # a collection that is fine, and the file and the error are the lead).
+    unreadable = None
+    if status.get("keyword_search") is None:
+        unreadable = common.keyword_config_unreadable(status.get("collection") or common.COLLECTION_NAME)
+    row = _check_index_row(common, status, error, last, keyword)
+    if unreadable is None:
+        return row
+    detail = (f"the config of collection '{status.get('collection') or common.COLLECTION_NAME}' could not be read "
+              f"({unreadable}), so whether keyword search can run on it is unknown: searches run by meaning only")
+    return {**row, "status": WARN, "detail": f"{row['detail']}; {detail}"}
+
+
+def _check_index_row(common, status: dict, error, last: dict, keyword) -> dict:
+    """check_index()'s row, before an unreadable config is added to it."""
+    from griot import notices, stats
 
     # A refusal the repositories check names (with the repositories, which
     # this line cannot) is said there only: the same failure said twice.
@@ -354,8 +463,10 @@ def check_index(common, found: list | None = None, looked: set | None = None) ->
         # A run with no counts died; one with counts finished and could not
         # do its job (the platform refused every fetch, say).
         what = "did not finish" if last.get("indexed") is None else "failed"
-        return _with_condition(_check("index", WARN, f"the last indexing run {what}: {last['error']}",
-                                      "griot index all   # and read what it says"), keyword)
+        # The advice in the detail, the command alone in the fix: a comment
+        # after it swallowed the next condition's command (debt 108).
+        return _with_condition(_check("index", WARN, f"the last indexing run {what}: {last['error']}. Run it "
+                                                     f"again and read its first error", notices.INDEX_ALL), keyword)
     if error:
         return _with_condition(_check("index", OK, "the collection is held by another process (a running server "
                                                    "or index run): count not read"), keyword)
@@ -392,7 +503,7 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
     if gone:
         from griot import repos
         return _check("repositories", FAIL, f"{repos.GONE}: " + ", ".join(gone),
-                      "; ".join(repos.remove_command(p) for p in gone))
+                      "\n".join(repos.remove_command(p) for p in gone))
     reports = freshness.repository_freshness()
     _looked(looked, notices.BEHIND)
     from griot import stats
@@ -412,13 +523,15 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
     # repository refused for more than one reason the fixes of its causes
     # alone (debt 70), and one the platform did not answer for, or failed,
     # no token fix at all (debt 72).
-    token_refused = [name for name in refused
-                     if name not in not_found and name not in dict(mixed) and name not in dict(failures)]
+    missing_tokens = stats.platform_missing_tokens(reports)
+    token_refused = [name for name in refused if name not in not_found and name not in dict(mixed)
+                     and name not in dict(failures) and name not in dict(missing_tokens)]
     if behind or without_code or refused:
         parts = []
         parts.extend(n.sentence for n in behind)
         if without_code:
             parts.append(f"{notices.never_indexed(['code'])} in " + ", ".join(without_code))
+        parts.extend(stats.platform_missing_token_phrase(name, env_var) for name, env_var in missing_tokens)
         if token_refused:
             parts.append(stats.platform_refused_phrase(token_refused))
         if not_found:
@@ -432,18 +545,32 @@ def check_repositories(common, found: list | None = None, looked: set | None = N
         # never indexed, no refused repository to index once its token or
         # remote is fixed) is indexed alone, with its own command; anything
         # more, all of them.
+        # A refusal and nothing else is fetched again by the platform source:
+        # the command `griot stats` gives for it.
         fix = (behind[0].action if len(behind) == 1 and not without_code and not refused
+               else "griot index platform" if refused and not behind and not without_code
                else notices.INDEX_ALL)
         checks = (["the platform's token"] if token_refused or any("token" in c for _, c in mixed) else []) + (
             ["the project path in each remote and that the token can see it"]
             if not_found or any("not_found" in c for _, c in mixed) else [])
+        detail = f"{len(paths)} registered; " + "; ".join(parts)
+        if checks:
+            # What to check is prose, so the detail says it; the fix is the
+            # commands, one per line (debt 108: pasted, a comment between
+            # them meant the index command never ran).
+            detail += ("; check " + " and ".join(checks) + " (griot auth list shows which token is in use), "
+                       "then index again")
+            fix = "griot auth list\n" + fix
+        if missing_tokens:
+            # The command that sets each missing token, first: as the run
+            # that found it ended (index_platform.py).
+            fix = "\n".join(dict.fromkeys([*(common.credential_command(env_var) for _, env_var in missing_tokens),
+                                            *fix.splitlines()]))
         if failures or any("other" in c for _, c in mixed):
             # The platform did not answer or failed: retrying now would most
             # likely fail the same way, and no token check fixes it.
-            fix += ("; where the platform did not answer or failed, " + stats.FAILURE_CHECK)
-        if checks:
-            fix = "griot auth list   # check " + " and ".join(checks) + ", then: " + fix
-        return _check("repositories", WARN, f"{len(paths)} registered; " + "; ".join(parts), fix, behind)
+            detail += "; where the platform did not answer or failed, " + stats.FAILURE_CHECK
+        return _check("repositories", WARN, detail, fix, behind)
     # In the words `griot index all --if-stale` says it has nothing to do,
     # and only when it would have nothing to do (freshness.stale_reason, the
     # one rule both read).
@@ -567,11 +694,25 @@ def check_tool_approval(home: Path | None) -> dict:
     if worst == OK:
         fix = None
     elif to_repair:
-        fix = ("fix the file or CLAUDE_CONFIG_DIR first (griot assist install refuses them as they are); then "
-               "`griot assist install` offers the rules")
+        # What to repair is prose, so the detail says it; the fix is the
+        # command, alone.
+        details.append("fix the file or CLAUDE_CONFIG_DIR first (griot assist install refuses them as they are), "
+                       "then griot assist install offers the rules")
+        fix = "griot assist install"
     else:
-        fix = "griot assist install   # offers the rules, asks first"
+        details.append("griot assist install offers the rules and asks before writing")
+        fix = "griot assist install"
     return _check("tool approval", worst, "; ".join(details), fix)
+
+
+def _server_environment_fix(setting, raw: str, reason: str) -> str:
+    from griot import config
+
+    if reason == config.NOT_A_VALUE_IT_TAKES:
+        return shlex.join(["unset", setting.variable])
+    if setting.variable == "GRIOT_EMBED_PROFILE":
+        return shlex.join(["griot", "profiles", "use", raw.strip()])
+    return shlex.join(["griot", "config", "set", setting.name, raw])
 
 
 def check_server_environment(common) -> dict:
@@ -586,10 +727,30 @@ def check_server_environment(common) -> dict:
             continue
         reason, _ = config.measured_from_environment(setting, raw)
         if reason:
-            ignored.append(f"{setting.variable} ({reason})")
+            ignored.append((setting, raw, reason))
     if ignored:
-        return _check("server environment", WARN, "a server started with this environment would ignore: " + ", ".join(ignored),
-                      "griot config set <name> <value>   # or griot profiles use; the environment only narrows")
+        # The names and values are known here (settings, never credentials),
+        # so the fix is the real commands, one per line, and each one a
+        # command griot accepts: the profile is not set with `config set`
+        # (it refuses it), and a value that is not valid is not written back
+        # (`config set` refuses it too); it is taken out of the environment.
+        # The advice names only the kinds of fix the lines below hold: an
+        # "unset" sentence beside a fix that holds no unset sends the person
+        # looking for a value that is not wrong.
+        invalid = [s for s, _, reason in ignored if reason == config.NOT_A_VALUE_IT_TAKES]
+        profile = any(s.variable == "GRIOT_EMBED_PROFILE" for s, _, reason in ignored
+                      if reason != config.NOT_A_VALUE_IT_TAKES)
+        steps = []
+        if len(invalid) < len(ignored):
+            steps.append("set them in griot's configuration instead"
+                         + (" (with griot profiles use for the profile)" if profile else ""))
+        if invalid:
+            steps.append("unset a value that is not valid")
+        return _check("server environment", WARN,
+                      "a server started with this environment would ignore: "
+                      + ", ".join(f"{s.variable} ({reason})" for s, _, reason in ignored)
+                      + "; the environment only narrows a server's settings, so " + ", and ".join(steps),
+                      "\n".join(_server_environment_fix(s, raw, reason) for s, raw, reason in ignored))
     exported = sorted(v for v in common.ENVIRONMENT_BEFORE_ENV_FILE if any(s.variable == v for s in config.SETTINGS))
     return _check("server environment", OK, "exported and obeyed by a server too: " + ", ".join(exported) if exported
                   else "no griot setting is exported in this environment")
@@ -598,7 +759,10 @@ def check_server_environment(common) -> dict:
 def check_git(common=None) -> dict:
     found = shutil.which(GIT)
     if not found:
-        return _check(GIT, FAIL, "git is not on the PATH; every indexer and the freshness report need it", "install git")
+        # No fix line: how git is installed depends on the system, and a fix
+        # is a command that pastes as it is.
+        return _check(GIT, FAIL, "git is not on the PATH; every indexer and the freshness report need it: "
+                                 "install git with the system's package manager", None)
     if common is None:
         return _check(GIT, OK, f"found at {found}")
     try:
@@ -713,10 +877,18 @@ def development_install() -> str | None:
     return None
 
 
-def _upgrade_fix(commands: list[str]) -> str:
-    if len(commands) == 1:
-        return commands[0]
-    return " or ".join(commands) + "   # whichever installed griot"
+def checkout_pull_command(development: str) -> str:
+    """The command that updates the checkout of a development install, from
+    development_install()'s phrase: `git -C <checkout> pull` when the phrase
+    names a file:// URL, `git pull` when it names none. The doctor's fix and
+    `griot update`'s refusal both end with it."""
+    from urllib.parse import unquote, urlparse
+
+    match = re.search(r"file://\S+", development)
+    if match is None:
+        return "git pull"
+    # Printed for a person to run, never run here (GIT, not a git call).
+    return shlex.join([GIT, "-C", unquote(urlparse(match.group(0)).path), "pull"])
 
 
 def check_release(common) -> dict:
@@ -749,10 +921,15 @@ def check_release(common) -> dict:
         if development is not None:
             # An installer would replace the checkout with the release: the
             # same refusal `griot update` makes, so no command is printed.
-            return _check(RELEASE, WARN, detail, f"update the checkout (git pull): this is a development install, "
-                                                 f"{development}")
-        return _check(RELEASE, WARN, detail,
-                      _upgrade_fix(upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)))
+            return _check(RELEASE, WARN, f"{detail}; this is a development install ({development}): update the "
+                                         f"checkout instead", checkout_pull_command(development))
+        commands = upgrade_commands(sys.prefix, sys.base_prefix, sys.executable)
+        # One per line, as `griot update` lists them: the person runs the one
+        # that installed griot, and a comment after them would swallow the
+        # next command.
+        if len(commands) > 1:
+            detail += "; run the one that installed griot"
+        return _check(RELEASE, WARN, detail, "\n".join(commands))
     if mine > theirs:
         return _check(RELEASE, OK, f"{installed} is newer than the newest release on PyPI ({newest}): "
                                    f"a version not released yet")

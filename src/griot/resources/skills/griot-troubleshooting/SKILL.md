@@ -91,9 +91,10 @@ profiles never collide — each profile is a separate collection/directory.
 
 **Symptom**: a paid embedding or chat call fails with either:
 
-> `Local circuit breaker: today's estimated spend ($X) has already reached
-> the $Y ceiling (GRIOT_SPEND_CEILING_USD). Stop and check the reason
-> before continuing — if this is expected, raise the ceiling explicitly.`
+> `Local circuit breaker: today's estimated spend $X reached the $Y daily
+> ceiling, so paid calls are refused until tomorrow. Raising the ceiling
+> asks first:`
+> `  griot config set spend-ceiling N`
 
 or:
 
@@ -101,7 +102,8 @@ or:
 > expected for sequential use (ceiling: $Y, GRIOT_SPEND_VELOCITY_CEILING_USD).
 > This usually indicates two processes running at once or a retry loop out
 > of control (a burst of simultaneous calls). Stop and check before
-> continuing.`
+> continuing; griot stats shows the recent runs:`
+> `  griot stats`
 
 A `griot index` or `griot quality-check --from-history` run checks the
 daily ceiling before it starts: when today's spend already reached it, or
@@ -136,13 +138,20 @@ compute.
 ## Missing credential
 
 **Symptom**: a command using a paid profile or a platform adapter fails
-with something like `GRIOT_OPENAI_API_KEY not found in the environment —
-required for the 'openai-small' embedding profile`. A `griot index` or
+with something like `paid profile 'openai-small' needs GRIOT_OPENAI_API_KEY,
+and it is not set. Nothing was sent. A credential is set in a terminal:`,
+then `griot auth set openai` on a line of its own. A platform adapter
+with no token asks the platform nothing: `griot index platform` names each
+repository with `GITHUB_TOKEN is not set, so nothing was asked.`, then says
+`A credential is set in a terminal; then index the platform again:` and
+ends on `griot auth set github` and `griot index platform`, each on a line
+of its own, once for the whole run; `griot stats`
+and `griot doctor` name the same variable and command. A `griot index` or
 `griot quality-check --from-history` run on a paid profile reads the
 credential before anything else and stops with `Error: paid profile
 'openai-small' needs GRIOT_OPENAI_API_KEY, and it is not set. Nothing was
-changed.`, the command that sets it on the last line; `griot_index_repo`
-refuses the same way, without asking.
+changed. A credential is set in a terminal:`, the command that sets it on
+the last line; `griot_index_repo` refuses the same way, without asking.
 
 **Cause**: the credential for that provider was never set, or was set on a
 different machine/environment. griot never guesses a credential is present.

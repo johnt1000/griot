@@ -119,7 +119,7 @@ def test_doctor_directories_stays_ok_after_a_real_run_announced_the_old_variable
     from test_streams_and_quiet import _run
     env = {"RAG_EMBED_PROFILE": "jina-code"}
     first = _run(tmp_path, "repos", "list", extra_env=env)
-    assert "1 notice: run `griot doctor`" in first.stderr  # the ledger file was written
+    assert "1 notice: griot doctor lists it with what to do.\n  griot doctor" in first.stderr  # the ledger file was written
 
     done = _run(tmp_path, "doctor", "--json", extra_env=env)
 

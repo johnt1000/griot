@@ -183,19 +183,29 @@ def build_documents(repo_path: Path, repo_key: str | None = None, fetches: list 
             if fetches is not None:
                 fetches.append({"id": f"{key}:platform:{label}", "ok": True, "reason": None})
         except Exception as e:
-            common.log_and_print(f"Warning: failed fetching {label} from {common.printable(project_id)} ({platform}): {e}. "
-                                  f"Run it again once that is fixed:\n  griot index platform", level="warning", silenceable=False)
+            missing = isinstance(e, platforms.TokenMissing)
+            if not missing:
+                # A token that is not set is said once, in the closing
+                # message (_refusal_lines), with the command that sets it:
+                # it is the same condition for every fetch and repository.
+                common.log_and_print(f"Warning: failed fetching {label} from {common.printable(project_id)} "
+                                     f"({platform}): {common.sentence(str(e))} Run it again once that is fixed:\n"
+                                     f"  griot index platform", level="warning", silenceable=False)
             status = getattr(getattr(e, "response", None), "status_code", None)
             env_var = platforms.TOKEN_ENV.get(platform)
             if fetches is not None:
                 # The status or the kind of error, never its text: the text
-                # can hold the request URL, and this goes into logs.db.
-                reason = f"HTTP {status}" if status else type(e).__name__
+                # can hold the request URL, and this goes into logs.db. A
+                # missing token is named by its variable (a name, never a
+                # value), not by the class of the error.
+                reason = (f"{e.env_var} not set" if missing else f"HTTP {status}" if status
+                          else type(e).__name__)
                 # label, cause and where serve the closing message only:
                 # main() records id and reason alone.
                 fetches.append({"id": f"{key}:platform:{label}", "ok": False, "reason": reason,
                                 "label": label, "cause": _refusal_cause(e, status, env_var),
-                                "where": f"{common.printable(project_id)} on {platform} (remote {shown_remote})"})
+                                "where": f"{common.printable(project_id)} on {platform} (remote {shown_remote})",
+                                "missing_token": e.env_var if missing else None})
             # A TokenNeeded already says which variable to set and how.
             if status in (401, 403) and env_var and not hinted and not isinstance(e, platforms.TokenNeeded):
                 # Which token the platform refused: the one exported in the
@@ -235,8 +245,13 @@ def _refusal_cause(error: Exception, status: int | None, env_var: str | None) ->
 
 def _refusal_lines(refused_fetches: list[dict]) -> list[str]:
     """One line per project and cause: which fetches got which answer, and
-    what to check for it. A mix of causes says which fetch got which."""
+    what to check for it. A mix of causes says which fetch got which. Then
+    the commands, one per line and last (policy, section 2; jobs.py hands
+    the last lines to an agent as the reason): the one that sets a missing
+    token, `griot auth list` for a token that was refused, and the one that
+    runs this again."""
     lines = []
+    commands: list[str] = []
     by_where: dict[str, list[dict]] = {}
     for f in refused_fetches:
         by_where.setdefault(f["where"], []).append(f)
@@ -247,26 +262,40 @@ def _refusal_lines(refused_fetches: list[dict]) -> list[str]:
                 continue
             labels = ", ".join(f["label"] for f in group)
             reasons = ", ".join(sorted({f["reason"] for f in group}))
+            missing = sorted({f["missing_token"] for f in group if f.get("missing_token")})
             if cause == NOT_FOUND:
                 lines.append(f"  {where}: not found, or not visible to the token in use ({labels}: {reasons}). "
                              f"Check the project path in that remote, and that the token's account can see the "
                              f"project (`griot auth list` shows which token is in use).")
+                commands.append("griot auth list")
+            elif cause == TOKEN and all(f.get("missing_token") for f in group):
+                # Every fetch of the group lacked its token: no request was
+                # made, so nothing was "refused".
+                lines.append(f"  {where}: {labels}: {', '.join(missing)} is not set, so nothing was asked.")
+                commands.extend(common.credential_command(env_var) for env_var in missing)
             elif cause == TOKEN:
                 lines.append(f"  {where}: {labels} refused ({reasons}). "
                              f"Check the token (`griot auth list`) and the warnings above.")
+                commands.extend([*(common.credential_command(env_var) for env_var in missing), "griot auth list"])
             else:
                 # No answer, a timeout, a 5xx: the platform's side or the
                 # network, which a new token would not fix ([debt 72]).
                 lines.append(f"  {where}: the platform did not answer or failed ({labels}: {reasons}). "
                              f"This is not the token: check the network or the platform's status, and try "
                              f"again later; see the warnings above.")
-    return lines
+    commands = list(dict.fromkeys([*commands, "griot index platform"]))
+    lead = (f"{common.SET_IN_A_TERMINAL[:-1]}; then index the platform again:"
+            if any(c.startswith("griot auth set") for c in commands) else "Once that is fixed, index the platform again:")
+    return [*lines, lead, *(f"  {command}" for command in commands)]
 
 
 def _refused_or_failed(refused_fetches: list[dict]) -> str:
     """The verb of the closing message's first line: "refused" blames the
     platform's answer to the request, which is wrong when every fetch
-    failed for another cause (no answer, a server error)."""
+    failed for another cause (no answer, a server error), and when no
+    request was made because the token is not set ("not asked")."""
+    if refused_fetches and all(f.get("missing_token") for f in refused_fetches):
+        return "not asked"
     return "failed" if all(f["cause"] == OTHER for f in refused_fetches) else "refused"
 
 
@@ -336,6 +365,7 @@ def main(argv=None):
     # readers name them instead of blaming the token ([debt 72]). Only the
     # status or the type, as in `failures`: an error's text can hold a URL.
     other_reasons: dict[str, list[str]] = {}
+    missing_tokens: dict[str, str] = {}
     for path_str in repo_paths_str:
         repo_path = Path(path_str)
         if not repo_path.is_dir():
@@ -357,6 +387,12 @@ def main(argv=None):
             failed_why = sorted({f["reason"] for f in repo_fetches if f["cause"] == OTHER})
             if failed_why:
                 other_reasons[repo_path.name] = failed_why
+            # Which token was not set, when that is why every fetch of it
+            # failed: `griot stats` and `griot doctor` name it, with the
+            # command that sets it, as this run does.
+            missing = {f.get("missing_token") for f in repo_fetches}
+            if len(missing) == 1 and None not in missing:
+                missing_tokens[repo_path.name] = missing.pop()
 
     refused =[{"id": f["id"], "reason": f["reason"]} for f in fetches if not f["ok"]]
     # Named in the record, so `griot doctor` and `griot stats` can say which
@@ -372,12 +408,17 @@ def main(argv=None):
         marked["refusal_causes"] = refusal_causes
     if other_reasons:
         marked["other_reasons"] = other_reasons
+    if missing_tokens:
+        marked["missing_tokens"] = missing_tokens
     verb = _refused_or_failed(refused_fetches)
     if refused and not any(f["ok"] for f in fetches):
         # Nothing the platform was asked for came back (an expired token
         # answers 401 to all of it): the run could not do its job, and an
         # exit status of 0 would let `griot index all` call it complete.
-        if verb == "failed":
+        if verb == "not asked":
+            print(f"Error: none of the {len(refused)} fetch(es) to the platform could be made without its token; "
+                  f"nothing was indexed:", file=sys.stderr)
+        elif verb == "failed":
             print(f"Error: all {len(refused)} fetch(es) to the platform failed; nothing was indexed:", file=sys.stderr)
         else:
             print(f"Error: the platform refused all {len(refused)} fetch(es); nothing was indexed:", file=sys.stderr)
@@ -398,7 +439,8 @@ def main(argv=None):
             # PLATFORM run instead. The error still keeps the run from
             # counting as indexing.
             _log_run(args, repo_paths_str, start_time, indexed=0, skipped=0, failed=len(refused), failures=refused,
-                     error=(f"every fetch to the platform failed ({reasons})" if verb == "failed"
+                     error=(f"no fetch to the platform could be made ({reasons})" if verb == "not asked"
+                            else f"every fetch to the platform failed ({reasons})" if verb == "failed"
                             else f"the platform refused every fetch ({reasons})"), **marked)
         return 1
 
@@ -413,7 +455,8 @@ def main(argv=None):
     rc = None
     if refused_repos:
         names = ", ".join(common.printable(n) for n in refused_names)
-        print((f"Error: every fetch for {names} failed; " if verb == "failed"
+        print((f"Error: no fetch for {names} could be made without its token; " if verb == "not asked"
+               else f"Error: every fetch for {names} failed; " if verb == "failed"
                else f"Error: the platform refused every fetch for {names}; ")
               + f"nothing of {'it' if len(refused_repos) == 1 else 'them'} was indexed:", file=sys.stderr)
         for line in _refusal_lines(refused_fetches):

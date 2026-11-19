@@ -149,15 +149,18 @@ def test_the_ordinary_refusal_offers_confirm_and_the_terminal():
 
 
 @pytest.mark.anyio
-async def test_the_real_golden_set_note_is_shown_after_the_command():
+async def test_the_real_golden_set_note_is_shown_before_the_command_which_stays_last():
+    """The note is still said, but on the marker's line, before the command:
+    the command is the last line, where a reader pastes it from."""
     class _Ctx:
         client_capabilities = None
 
     out = await mcp_server.griot_golden_set_add("q", must_include=[{"repo": "r"}], confirm=False, ctx=_Ctx())
     lines = out["message"].split("\n")
     i = next(n for n, line in enumerate(lines) if line.endswith("to run:"))
+    assert "interactive" in lines[i] and "will not reuse" in lines[i]
     assert lines[i + 1].startswith("griot golden-set add")
-    assert "interactive" in lines[i + 2] and "will not reuse" in lines[i + 2]
+    assert i + 1 == len(lines) - 1
 
 
 @pytest.mark.anyio

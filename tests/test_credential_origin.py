@@ -324,7 +324,7 @@ def test_doctor_warns_about_a_credential_the_shell_overrides(shell):
     check = next(c for c in doctor.run_checks() if c["check"] == "credentials")
 
     assert check["status"] == "warn" and "GITHUB_TOKEN" in check["detail"] and "~/.zshrc:3" in check["detail"]
-    assert "~/.zshrc:3" in check["fix"]
+    assert check["fix"] == "unset GITHUB_TOKEN", "the command alone; where it is exported is in the detail"
     _no_secret_in(check["detail"] + check["fix"])
 
 

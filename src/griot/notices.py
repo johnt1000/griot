@@ -369,9 +369,14 @@ def _current(conditions: dict) -> list[str]:
 
 
 def footer_text(count: int) -> str:
-    # The wording the maintainer gave in the brief of this change; the
-    # backticks set the command apart on a line that is otherwise a count.
-    return f"{count} notice{'s' if count != 1 else ''}: run `griot doctor`"
+    """The footer: a count, then the command alone on the last line, as
+    every other griot warning ends (prose(); policy, section 2). It pastes,
+    and a host that reads the last lines of stderr still finds a command
+    there. One block of two lines and never a list: it is said only after a
+    command that succeeded, under that command's own output, and the list
+    with what to do for each is `griot doctor`'s."""
+    return (f"{count} notice{'s' if count != 1 else ''}: griot doctor lists {'them' if count != 1 else 'it'} "
+            f"with what to do.\n  griot doctor")
 
 
 # The ids of the conditions this process said in prose (say_once()): the

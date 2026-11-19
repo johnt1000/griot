@@ -984,9 +984,9 @@ async def test_auth_tool_says_a_running_server_keeps_the_credentials_it_read():
     key still missing."""
     async with Client(mcp_server.mcp) as client:
         result = await client.call_tool("griot_auth_guidance", {})
-    how_to_set = result.structured_content["how_to_set"]
-    assert "restart" in how_to_set
-    assert "/mcp" in how_to_set
+    stored = result.structured_content["where_it_is_stored"]
+    assert "restart" in stored
+    assert "/mcp" in stored
 
 
 # --- tool-call recording ----------------------------------------------------
